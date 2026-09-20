@@ -1,0 +1,92 @@
+import type { Gray, RGBA, Rect } from '../types.ts';
+/** Integer analysis factor: analysis = native / factor exactly, so analysis displacements map to native pixels without rounding drift. */
+export function analysisFactor(width: number, height: number, analysisSize: number): number {
+    return Math.max(1, Math.ceil(Math.max(width, height) / Math.max(1, analysisSize)));
+}
+/** Box-filtered luma at an integer factor. Deterministic in every runtime; no canvas resampling is involved. */
+export function downscaleGray(image: RGBA, factor: number): Gray {
+    if (!Number.isInteger(factor) || factor < 1)
+        throw new Error(`Invalid analysis factor ${factor}.`);
+    const width = Math.max(1, Math.floor(image.width / factor)), height = Math.max(1, Math.floor(image.height / factor));
+    const data = new Uint8Array(width * height), src = image.data, area = factor * factor;
+    for (let y = 0; y < height; y++)
+        for (let x = 0; x < width; x++) {
+            let sum = 0;
+            for (let j = 0; j < factor; j++) {
+                let i = ((y * factor + j) * image.width + x * factor) * 4;
+                for (let k = 0; k < factor; k++, i += 4)
+                    sum += src[i] * 77 + src[i + 1] * 150 + src[i + 2] * 29;
+            }
+            data[y * width + x] = (sum / area) >> 8;
+        }
+    return { width, height, data };
+}
+export function cropRGBA(image: RGBA, r: Rect): RGBA {
+    const x = Math.round(r.x), y = Math.round(r.y), width = Math.round(r.width), height = Math.round(r.height);
+    if (x < 0 || y < 0 || width < 0 || height < 0 || x + width > image.width || y + height > image.height)
+        throw new Error(`Crop ${x},${y} ${width}×${height} exceeds the ${image.width}×${image.height} frame.`);
+    const data = new Uint8ClampedArray(width * height * 4);
+    for (let row = 0; row < height; row++)
+        data.set(image.data.subarray(((y + row) * image.width + x) * 4, ((y + row) * image.width + x + width) * 4), row * width * 4);
+    return { width, height, data };
+}
+/** Opaque RGB average at an integer factor; used only for previews, never for output pixels. */
+export function downscaleRGBA(image: RGBA, factor: number): RGBA {
+    if (!Number.isInteger(factor) || factor < 1)
+        throw new Error(`Invalid thumbnail factor ${factor}.`);
+    const width = Math.max(1, Math.floor(image.width / factor)), height = Math.max(1, Math.floor(image.height / factor));
+    const data = new Uint8ClampedArray(width * height * 4), src = image.data, area = factor * factor;
+    for (let y = 0; y < height; y++)
+        for (let x = 0; x < width; x++) {
+            let r = 0, g = 0, b = 0;
+            for (let j = 0; j < factor; j++) {
+                let i = ((y * factor + j) * image.width + x * factor) * 4;
+                for (let k = 0; k < factor; k++, i += 4) {
+                    r += src[i];
+                    g += src[i + 1];
+                    b += src[i + 2];
+                }
+            }
+            const o = (y * width + x) * 4;
+            data[o] = r / area;
+            data[o + 1] = g / area;
+            data[o + 2] = b / area;
+            data[o + 3] = 255;
+        }
+    return { width, height, data };
+}
+export function thumbnail(image: RGBA, maxWidth: number): RGBA {
+    return downscaleRGBA(image, Math.max(1, Math.ceil(image.width / maxWidth)));
+}
+/** 2:1 preview reduction with alpha weighting, so unobserved (transparent) neighbours never darken observed pixels. */
+export function halveRGBA(image: RGBA): RGBA {
+    const width = Math.max(1, image.width >> 1), height = Math.max(1, image.height >> 1), data = new Uint8ClampedArray(width * height * 4), src = image.data;
+    for (let y = 0; y < height; y++)
+        for (let x = 0; x < width; x++) {
+            let r = 0, g = 0, b = 0, a = 0;
+            for (let j = 0; j < 2; j++)
+                for (let k = 0; k < 2; k++) {
+                    const sx = Math.min(image.width - 1, x * 2 + k), sy = Math.min(image.height - 1, y * 2 + j), i = (sy * image.width + sx) * 4, w = src[i + 3];
+                    r += src[i] * w;
+                    g += src[i + 1] * w;
+                    b += src[i + 2] * w;
+                    a += w;
+                }
+            const o = (y * width + x) * 4;
+            if (a) {
+                data[o] = r / a;
+                data[o + 1] = g / a;
+                data[o + 2] = b / a;
+                data[o + 3] = a / 4;
+            }
+        }
+    return { width, height, data };
+}
+export function meanAbsoluteDifference(a: RGBA, b: RGBA): number {
+    if (a.width !== b.width || a.height !== b.height)
+        return 255;
+    let s = 0;
+    for (let i = 0; i < a.data.length; i += 4)
+        s += Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]);
+    return s / (a.data.length / 4 * 3);
+}

@@ -1,0 +1,9 @@
+# build output: `deno task build` regenerates it
+dist/
+# coverage and test artefacts
+.coverage/
+test-results/
+# user recordings used for manual verification (large, private)
+test_case/
+node_modules/
+.DS_Store

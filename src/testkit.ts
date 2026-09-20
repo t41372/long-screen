@@ -1,0 +1,22 @@
+/** Browser test kit: exposes the shipped modules on window for Playwright-driven integration tests. Not loaded by the app. */
+import { Engine } from './pipeline/engine.ts';
+import { Database, Namespace, iterate, MemoryKV } from './storage/db.ts';
+import { PoseGraph } from './core/pose-graph.ts';
+import { RegionAtlas } from './core/layers.ts';
+import { TileStore, markCovered, covered, pngTileCodec } from './storage/tiles.ts';
+import { DemoSource } from './media/demo.ts';
+import { openMedia, openDemuxer, PreciseSource, CompatibilitySource } from './media/source.ts';
+import { MP4Demuxer } from './media/mp4.ts';
+import { WebMDemuxer } from './media/webm.ts';
+import { BlobReader } from './media/reader.ts';
+import { DEFAULT_SETTINGS } from './types.ts';
+import { buildScenario, SCENARIO_NAMES } from './synthetic/scenarios.ts';
+import { ScenarioSource } from './synthetic/source.ts';
+import { renderFrame } from './synthetic/world.ts';
+import { matchRegion, verifyFixed, verifyLayer } from './synthetic/verify.ts';
+import { exportCanvas, exportProject } from './export/project.ts';
+import { encodePNG, encodeRGBA, decodePNG } from './codec/png.ts';
+import { ZipWriter } from './export/zip.ts';
+const kit = { Engine, Database, Namespace, iterate, MemoryKV, PoseGraph, RegionAtlas, TileStore, markCovered, covered, pngTileCodec, DemoSource, openMedia, openDemuxer, PreciseSource, CompatibilitySource, MP4Demuxer, WebMDemuxer, BlobReader, DEFAULT_SETTINGS, buildScenario, SCENARIO_NAMES, ScenarioSource, renderFrame, matchRegion, verifyFixed, verifyLayer, exportCanvas, exportProject, encodePNG, encodeRGBA, decodePNG, ZipWriter };
+(globalThis as unknown as { longScreenKit: typeof kit }).longScreenKit = kit;
+export default kit;

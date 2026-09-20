@@ -1,0 +1,100 @@
+import type { KV } from '../storage/db.ts';
+import { iterate } from '../storage/db.ts';
+import type { Project, CanvasMeta, Rect } from '../types.ts';
+import { TileStore, type StoredTile, type TileIndex } from '../storage/tiles.ts';
+import { ZipWriter } from './zip.ts';
+import { utf8 } from './crc.ts';
+import { createTarget } from './target.ts';
+import { offlineViewer } from './offline.ts';
+import { encodePNG, rasterRows } from './png.ts';
+export interface ExportResult {
+    blob?: Blob;
+    name: string;
+    temporary?: string;
+    message: string;
+}
+async function* jsonLines(db: KV, prefix: string): AsyncGenerator<Uint8Array> { for await (const row of iterate(db, prefix))
+    yield utf8(JSON.stringify(row.value, (_, value) => ArrayBuffer.isView(value) ? Array.from(value as unknown as number[]) : value) + '\n'); }
+export async function exportProject(db: KV, project: Project, onProgress: (message: string, fraction: number) => void, handle?: FileSystemFileHandle): Promise<ExportResult> {
+    const target = await createTarget('long-screen-project.zip', handle), zip = new ZipWriter(target.sink, db), canvases: CanvasMeta[] = [];
+    try {
+        for await (const { value } of iterate<CanvasMeta>(db, 'canvas/'))
+            canvases.push(value);
+        const manifest = { format: 'long-screen/sparse-canvas', version: 1, tileSize: project.settings.tileSize, coordinates: 'Native source pixels. Each independent canvas has its own origin.', holes: 'Transparent pixels were not observed; the enclosing bounding rectangle is not a coverage guarantee.', levels: 'Level 0 is native resolution; levels 1+ are explicitly downsampled previews.', confidence: 'Heuristic, uncalibrated, not a correctness probability.', sourceIncluded: false, project, canvases };
+        await zip.add('manifest.json', utf8(JSON.stringify(manifest, null, 2)));
+        await zip.add('index.html', utf8(offlineViewer(manifest)));
+        await zip.add('README.txt', utf8('Long Screen — offline reconstruction\n\nUnzip everything, then open index.html. Level-zero PNG tiles preserve native output resolution. Missing tiles and transparent pixels are unobserved holes, not white page content. Independent fragments are not asserted to be adjacent. The original video is NOT included: retain it for source-time comparisons. observations.jsonl records every processed source frame and chosen placement; diagnostics.jsonl contains warnings. quality/*.json stores 16px-block heuristic quality, conflict markers, and source-frame ownership. Pixel coverage bits are least-significant-bit first. Pyramids are previews only.\n'));
+        let n = 0;
+        for await (const row of iterate<TileIndex>(db, 'tile-index/')) {
+            const t = row.value, key = `${t.canvasId}/${t.level}/${t.x}_${t.y}`, tile = await db.get<StoredTile>(`tile/${key}`);
+            if (!tile)
+                throw new Error(`Missing committed tile ${key}; export was not marked complete.`);
+            await zip.add(`tiles/${key}.png`, tile.blob);
+            if (t.level === 0) {
+                await zip.add(`coverage/${t.canvasId}/${t.x}_${t.y}.bin`, tile.coverage);
+                await zip.add(`quality/${t.canvasId}/${t.x}_${t.y}.json`, utf8(JSON.stringify({ blockSize: 16, quality: [...(tile.quality || [])], conflicts: [...(tile.conflicts || [])], frozen: [...(tile.frozen || [])], ownerFrameEncoding: '0 = unassigned; otherwise zero-based source frame index + 1. Block-level representative, not per-pixel provenance.', ownerFrame: [...tile.owner] })));
+            }
+            if (++n % 8 === 0)
+                onProgress(`导出原图与预览瓦片 ${n}`, Math.min(.90, n / Math.max(1, project.tiles * 1.5)));
+        }
+        for (const [name, prefix] of [['observations', 'observation/'], ['diagnostics', 'diagnostic/'], ['poses', 'node/'], ['pose-edges', 'edge/'], ['analysis', 'scan/'], ['temporal', 'temporal/'], ['attachments', 'attach/']])
+            await zip.add(`${name}.jsonl`, jsonLines(db, prefix));
+        for (const key of ['graph-summary', 'memory-stats'])
+            await zip.add(`${key}.json`, utf8(JSON.stringify(await db.get(key) || {}, null, 2)));
+        onProgress('写入 ZIP64 目录并提交文件', .98);
+        await zip.finish();
+        return { ...await target.result(), message: '已导出原尺寸瓦片、离线查看器、覆盖与质量数据、源帧记录和完整诊断。' };
+    }
+    catch (error) {
+        await target.sink.abort?.(error);
+        throw error;
+    }
+}
+export async function exportCanvas(db: KV, project: Project, meta: CanvasMeta, onProgress: (message: string, fraction: number) => void, handle?: FileSystemFileHandle): Promise<ExportResult> {
+    const rect = { x: Math.floor(meta.bounds.x), y: Math.floor(meta.bounds.y), width: Math.ceil(meta.bounds.width), height: Math.ceil(meta.bounds.height) };
+    // These are viewer/interoperability and cache limits, not false claims about the PNG specification.
+    const sheetWidth = Math.min(4096, Math.max(512, Math.floor(project.settings.memoryMB * 1024 * 1024 * .20 / (project.settings.tileSize * 4) / 512) * 512)), sheetHeight = 8192;
+    const single = rect.width <= sheetWidth && rect.height <= 32767 && rect.width * rect.height <= 100000000;
+    const name = single ? 'long-screen.png' : 'long-screen-sheets.zip', target = await createTarget(name, handle), tiles = new TileStore(db, project.settings.tileSize, project.settings.memoryMB);
+    try {
+        if (single) {
+            for await (const bytes of encodePNG(rect.width, rect.height, rasterRows(tiles, meta.id, rect, row => onProgress(`无缩放编码 ${row} / ${rect.height} 行`, row / rect.height))))
+                await target.sink.write(bytes);
+            await target.sink.close();
+            return { ...await target.result(), message: `已导出 ${rect.width} × ${rect.height} 原尺寸 PNG，缺口保持透明。` };
+        }
+        const zip = new ZipWriter(target.sink, db), prefix = `sheet-export/${crypto.randomUUID()}/`, overlap = 32;
+        for await (const { value: t } of iterate<TileIndex>(db, `tile-index/${meta.id}/0/`)) {
+            const x1 = Math.floor((t.x * tiles.size - rect.x) / sheetWidth), x2 = Math.floor(((t.x + 1) * tiles.size - 1 - rect.x) / sheetWidth), y1 = Math.floor((t.y * tiles.size - rect.y) / sheetHeight), y2 = Math.floor(((t.y + 1) * tiles.size - 1 - rect.y) / sheetHeight);
+            for (let y = y1; y <= y2; y++)
+                for (let x = x1; x <= x2; x++)
+                    if (x >= 0 && y >= 0)
+                        await db.put(`${prefix}${x}_${y}`, { x, y });
+        }
+        let count = 0;
+        for await (const row of iterate<{
+            x: number;
+            y: number;
+        }>(db, prefix)) {
+            const { x, y } = row.value, bounds: Rect = { x: rect.x + x * sheetWidth, y: rect.y + y * sheetHeight, width: Math.min(sheetWidth + overlap, rect.width - x * sheetWidth), height: Math.min(sheetHeight + overlap, rect.height - y * sheetHeight) };
+            if (bounds.width < 1 || bounds.height < 1) {
+                await db.delete(row.key);
+                continue;
+            }
+            await zip.add(`sheet_${x}_${y}.png`, encodePNG(bounds.width, bounds.height, rasterRows(tiles, meta.id, bounds)));
+            await zip.add(`sheet_${x}_${y}.json`, utf8(JSON.stringify(bounds)));
+            await db.delete(row.key);
+            onProgress(`已编码 ${++count} 张原尺寸分页图片`, 0);
+        }
+        await zip.add('manifest.json', utf8(JSON.stringify({ canvas: meta, tileSize: tiles.size, sheetWidth, sheetHeight, overlap, notice: 'No resizing. Only sheets intersecting observed tiles are emitted. Per-sheet JSON contains native world coordinates. Overlap is intentional; do not append sheets without removing overlap.' }, null, 2)));
+        await zip.finish();
+        return { ...await target.result(), message: `画布超过单张兼容尺寸，已明确改为 ${count} 张原尺寸图片；相邻页最多重叠 ${overlap}px，坐标见 manifest。` };
+    }
+    catch (error) {
+        await target.sink.abort?.(error);
+        throw error;
+    }
+    finally {
+        await tiles.clear();
+    }
+}
