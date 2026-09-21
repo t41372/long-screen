@@ -1966,7 +1966,7 @@ export class Engine {
    *    different content at the same world position, one of the two is wrong — the comparison itself cannot say
    *    which. Treating both as wrong is what used to condemn a run's genuinely-clean last frame because its only
    *    neighbour happened to be under a floating button, and with it the chance to heal that neighbour's
-   *    provisional pixel (docs/HANDOFF.md item 6, world pixel (314, 3198) on `phone`). So a disagreement now
+   *    provisional pixel (docs/ARCHITECTURE.md §七, world pixel (314, 3198) on `phone`). So a disagreement now
    *    only condemns this frame when the evidence is symmetric: every available neighbour disagrees, or the one
    *    that does carries its own positive voting verdict at that world position and is therefore trustworthy.
    *

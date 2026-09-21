@@ -44,7 +44,7 @@ worldY = tileY * tileSize + inTileY
 
 `ownerFrame`：0 为尚无来源；其他值等于零基源帧索引 + 1。它是整个块的代表来源，**不保证块中每个像素都来自这帧**（例如边界部分被之后观察补齐）。需要原视频与 observations、temporal 账本联合审计，不能把它解释成逐像素来源证书。
 
-`observedPixels` 是覆盖数量。`conflictPixels` 是处理期间多次观察产生的累计差异计数，**不是最终图中互不重复的坏像素个数**。`uncertainPixels` 记录不确定观察首次补入的像素，后续质量改变并不使它成为严格最终错误统计。`provisionalPixels` 是当前仍未被修复的瞬态像素净数（世界一致性掩码找不到支持它的相邻帧、且至少有一个相邻帧与它矛盾——典型是屏幕坐标覆盖物：悬浮按钮、滚动条、鼠标指针、toast）；它会随后续观察涨落，不是单调递增的累计值，也不保证降到零（见 docs/ARCHITECTURE.md §七、docs/HANDOFF.md 的已知局限）。
+`observedPixels` 是覆盖数量。`conflictPixels` 是处理期间多次观察产生的累计差异计数，**不是最终图中互不重复的坏像素个数**。`uncertainPixels` 记录不确定观察首次补入的像素，后续质量改变并不使它成为严格最终错误统计。`provisionalPixels` 是当前仍未被修复的瞬态像素净数（世界一致性掩码找不到支持它的相邻帧、且至少有一个相邻帧与它矛盾——典型是屏幕坐标覆盖物：悬浮按钮、滚动条、鼠标指针、toast）；它会随后续观察涨落，不是单调递增的累计值，也不保证降到零（见 docs/ARCHITECTURE.md §七，以及 issue #2 记录的已知局限）。
 
 ## provisional 位图
 

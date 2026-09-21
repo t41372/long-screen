@@ -14,7 +14,7 @@ import { DECODED_VIDEO_NOISE } from '../../src/media/source.ts';
 // Displacement-spread consistency voting (docs/ARCHITECTURE.md §七, Engine.solve()'s consistencyRing/consistencyCompare/
 // consistencyFinalize). Fixture: a scrolling photo-like page under a screen-fixed, uniformly-coloured blob taller
 // (40px) than the per-frame scroll displacement (8px) — exactly the geometry a ±1-frame comparison alone cannot
-// resolve (docs/HANDOFF.md), which the ring's Dmin-qualifying, displacement-spread partners are meant to close.
+// resolve (docs/ARCHITECTURE.md §七), which the ring's Dmin-qualifying, displacement-spread partners are meant to close.
 Deno.test("consistency voting: a screen-fixed blob taller than one frame's displacement is flagged by a middle frame; the page under it never is", async () => {
   const W = 240, VH = 200, WORLD_H = 800, BLOB = { y: 60, height: 40 };
   const world = new World(W, WORLD_H, [40, 40, 40]);

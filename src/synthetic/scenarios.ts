@@ -548,7 +548,7 @@ export function buildScenario(name: ScenarioName | string): Scenario {
       let path = linearPath([{ x: 0, y: 0 }, { x: 0, y: 1400 }, { x: 0, y: 1100 }, { x: 0, y: 2600 }], [30, 8, 26]);
       path = jitter(path, 5, 2, 3);
       const layer: Layer = { id: 'body', viewport: { x: 0, y: TOP, width: PW, height: PH - TOP - NAV }, world, path };
-      // Precise overlay-contamination split (docs/HANDOFF.md item 6; verify.ts's contaminatedOverlayUnobservable
+      // Precise overlay-contamination split (docs/ARCHITECTURE.md §七, issue #2; verify.ts's contaminatedOverlayUnobservable
       // / contaminatedOverlayRecoverable): measured 3,192px total overlay contamination (was 4,334px).
       // 1,517px are UNOBSERVABLE — the analytic ceiling for this scenario, computed the same way over every
       // ever-visible main-canvas world pixel regardless of contamination — almost entirely the scrollbar
@@ -740,8 +740,8 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         },
       };
       // maxInvented ratchets the known-limitation reconstruction: today's measured invented 48,360px (test-results/scenarios-d.json), +~5%.
-      // maxProvisional, raised from 21,115 with the coordinator's explicit authorisation (docs/HANDOFF.md
-      // item 6): measured 40,722px, +~5%. The cause is this scenario's declared limitation, not a detection
+      // maxProvisional, raised from 21,115 with the coordinator's explicit authorisation (issue #1):
+      // measured 40,722px, +~5%. The cause is this scenario's declared limitation, not a detection
       // regression. The body viewport GROWS at frame 30, so the engine's learned region (x 20, y 18, 620×430)
       // matches neither half of the recording, and the same world position lands on different screen rows
       // before and after the collapse; the ±1-frame check therefore disagrees across that boundary even on
@@ -774,7 +774,7 @@ export function buildScenario(name: ScenarioName | string): Scenario {
       // Split ratchets (world-consistency mask + displacement-spread voting, docs/ARCHITECTURE.md §七).
       // maxContaminatedDynamic covers the caret/counter/video trio alone (legitimately allowed to keep one
       // moment): measured 57,579px; the ratchet keeps its earlier, higher value rather than being re-seeded up.
-      // Precise overlay split (docs/HANDOFF.md item 6): measured 3,569px total overlay contamination, down
+      // Precise overlay split (docs/ARCHITECTURE.md §七, issue #2): measured 3,569px total overlay contamination, down
       // from 9,534px. 1,664px are UNOBSERVABLE — the analytic ceiling, computed the same way over every
       // ever-visible main-canvas world pixel regardless of contamination — the FAB's own trailing-corner
       // content that never migrates toward any future frame's leading edge before the fixed-length recording

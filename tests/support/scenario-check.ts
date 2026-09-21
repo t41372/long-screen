@@ -153,7 +153,7 @@ export async function checkScenario(name: string, settings: Partial<Settings> = 
       v.contaminated <= (e.maxContaminated ?? maxOverlay + maxDynamic),
       `${name}/${layer.id}: contaminated ${v.contaminated} exceeds ratchet ${e.maxContaminated ?? maxOverlay + maxDynamic}`,
     );
-    // Precise overlay-contamination targets (coordinator decision, see docs/HANDOFF.md item 6): a pixel is only
+    // Precise overlay-contamination targets (docs/ARCHITECTURE.md §七, issue #2): a pixel is only
     // a genuine detection miss (contaminatedOverlayRecoverable, target 0 — see maxContaminatedOverlayRecoverable
     // doc) if its world position was observed clean somewhere; otherwise no observation in the recording could
     // ever have healed it (contaminatedOverlayUnobservable), which is a property of the scenario's own overlay

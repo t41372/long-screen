@@ -212,7 +212,7 @@ async function verifyCanvas(
     if (!set) map.set(wi, set = new Set());
     set.add(packed);
   };
-  // Ever-clean tracking (docs/HANDOFF.md item 6): a world pixel this region ever painted is "unobservable" only if
+  // Ever-clean tracking (docs/ARCHITECTURE.md §七, issue #2): a world pixel this region ever painted is "unobservable" only if
   // it was NEVER, in any frame this canvas actually recorded, both on screen and outside every overlay/dynamic
   // rect at once — i.e. no clean look at it exists anywhere in the recording to heal from. `everVisible` is every
   // such pixel regardless of cleanliness (the analytic denominator: a property of the whole layer/scenario, not
