@@ -259,9 +259,52 @@ export interface Expectations {
   ambiguousPeriod?: number;
   /** Known limitation: the run must complete and report conflicts, but pixel-set equality is not asserted. */
   limitation?: boolean;
+  /** Exact integer analysis downscale factor (`Engine.factor`) this scenario's frame size and settings must produce, when declared. */
+  factor?: number;
+  /** Ratchets on ground-truth pixel discrepancies, asserted in addition to the branch above (main canvas and every pixel-checked
+   *  fragment). Each defaults to 0 (exact) when not declared; a nonzero value records a measured, known deviation, not a target. */
+  maxMissing?: number;
+  maxInvented?: number;
+  maxMismatched?: number;
+  /** Pixels that differ from the page but sat under an overlay/dynamic region in some observing frame: recorded contamination
+   *  from screen chrome (cursor, FAB, toast, video), not accepted behaviour. Kept for backward compatibility as the SUM of
+   *  maxContaminatedOverlay + maxContaminatedDynamic when a scenario declares the split explicitly; defaults to 0. */
+  maxContaminated?: number;
+  /** Ratchet on contaminatedOverlay alone: pixels explained only by a screen-space overlay (FAB, scrollbar, cursor,
+   *  toast — never moves with the page). The world-consistency mask targets this at 0; every scenario with an
+   *  overlay must declare it explicitly (0 is the default, so most scenarios need not declare it at all). */
+  maxContaminatedOverlay?: number;
+  /** Ratchet on contaminatedDynamic alone: pixels explained only by a page-space dynamic (animated widget, live
+   *  counter, caret, playing video), which is legitimately allowed to keep one moment (docs/ARCHITECTURE.md §七). */
+  maxContaminatedDynamic?: number;
+  /** Ratchet on contaminatedOverlayRecoverable: overlay-attributed pixels whose world position WAS observed clean
+   *  at least once on the main canvas, so the world-consistency mask/voting should have healed them. This is the
+   *  real target — 0 by default — distinct from maxContaminatedOverlay, which a scenario with any genuinely
+   *  unobservable content (see below) cannot drive to 0 even once every recoverable pixel is healed. */
+  maxContaminatedOverlayRecoverable?: number;
+  /** Ratchet on the scenario's ANALYTIC unobservable count (every ever-visible main-canvas world pixel of this
+   *  layer's region that was never, in any recorded frame, both on screen and clear of every overlay/dynamic rect
+   *  at once) — a property of the scenario's geometry and overlay/dynamic placement alone, not of engine
+   *  behaviour, computed identically whether or not the pixel actually ended up contaminated. Guards against this
+   *  ceiling silently growing (e.g. a scenario edit that makes more content genuinely unrecoverable) even though
+   *  the measured contaminatedOverlayUnobservable can never exceed it regardless of this ratchet (asserted
+   *  unconditionally in scenario-check.ts). Defaults to 0 — a scenario with real unobservable content records
+   *  the analytic number as a comment where it declares this. */
+  maxContaminatedOverlayUnobservable?: number;
+  /** Net provisional-pixel count (CanvasMeta.provisionalPixels) the main canvas must end at or below once the run
+   *  finishes: unhealed world-consistency mask flags still standing in the final result. Defaults to 0 (exact) —
+   *  a scenario with overlays/dynamics that a one-frame lookahead cannot fully heal declares a measured value. */
+  maxProvisional?: number;
 }
 export interface RenderedFrame {
   image: RGBA;
+  /** The same frame one step earlier: page and page-space dynamics composited, before any overlay drew into it.
+   *  An overlay's `overlayRects` are bounding boxes, and several overlays only paint part of their own box (a
+   *  mouse pointer is an arrow inside a 10×16 rect), so "inside an overlay rect" and "painted by an overlay" are
+   *  different questions. Ground-truth attribution needs the second one: a pixel the pointer's box merely
+   *  contained still shows the page (or a page-space dynamic), and blaming a later mismatch there on the pointer
+   *  credits a screen overlay with content it never touched. */
+  beneath: Uint8ClampedArray;
   /** Screen-space rectangles covered by overlays this frame (pixels there are not page content). */
   overlayRects: Rect[];
   /** World-space rectangles per layer that were dynamic this frame. */
@@ -356,11 +399,12 @@ export function renderFrame(s: Scenario, index: number): RenderedFrame {
       }
     }
   }
+  const beneath = image.data.slice();
   const overlayRects: Rect[] = [];
   for (const overlay of s.overlays) {
     overlayRects.push(...overlay.draw(image, index, spec.time));
   }
-  return { image, overlayRects, dynamicRects };
+  return { image, beneath, overlayRects, dynamicRects };
 }
 export function linearPath(waypoints: Point[], stepsBetween: number | number[]): Point[] {
   const out: Point[] = [];

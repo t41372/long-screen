@@ -24,11 +24,12 @@ interface BrowserRun {
   header: { mismatched: number; conflicts: number; covered: number };
   memory: { peakResidentTiles: number; tileCacheLimit: number };
   projectId: string;
+  computeBackend?: unknown;
 }
 await Deno.mkdir(results, { recursive: true });
 /** Runs the shipped engine inside Chrome (IndexedDB, WebCodecs) and returns the verifier's report. */
 async function reconstruct(page: import('playwright').Page, source: string, analysis: number, tolerance: number): Promise<BrowserRun> {
-  return await page.evaluate(async ([source, analysis, tolerance]: [string, number, number]) => {
+  const result = await page.evaluate(async ([source, analysis, tolerance]: [string, number, number]) => {
     const kit = (globalThis as any).longScreenKit;
     const scenario = kit.buildScenario('fixture');
     const file = source === 'demo' ? null : new File([await (await fetch(source)).blob()], source.split('/').pop()!);
@@ -58,6 +59,7 @@ async function reconstruct(page: import('playwright').Page, source: string, anal
     const run = { scenario, store, canvases, observations, regions, atlas, tileSize: engine.tiles.size };
     const body = await kit.verifyLayer(run, scenario.layers[0], { tolerance });
     const header = await kit.verifyFixed(run, { x: 0, y: 0, width: 320, height: 32 });
+    const computeBackend = diagnostics.find((d: any) => d.code === 'COMPUTE_BACKEND')?.detail;
     return {
       status: project.status,
       error: project.error,
@@ -69,8 +71,15 @@ async function reconstruct(page: import('playwright').Page, source: string, anal
       header: { mismatched: header.mismatched, conflicts: header.conflicts, covered: header.covered },
       memory: await store.get('memory-stats'),
       projectId: project.id,
+      computeBackend,
     };
   }, [source, analysis, tolerance] as [string, number, number]) as BrowserRun;
+  // A device was obtained whenever calibration ran; that GPU must never be dropped for a parity mismatch
+  // (a false bitExact here means CPU/GPU disagreed on the box-luma kernel, e.g. a uniform buffer too small
+  // for WGSL's 16-byte struct rounding — see src/core/compute.ts).
+  const calibration = (result.computeBackend as { calibration?: { bitExact: boolean } } | undefined)?.calibration;
+  if (calibration) assertEquals(calibration.bitExact, true, 'a GPU that was obtained must never be dropped for a parity failure');
+  return result;
 }
 Deno.test({
   name: 'browser: lossless synthetic fixture reconstructs with exact placement and pixel identity in Chrome',
@@ -237,7 +246,7 @@ Deno.test({
               conflicts: c.conflictPixels,
               attachedTo: c.attachedTo,
             })),
-            main: main.bounds,
+            main: { ...main.bounds, observedPixels: main.observedPixels },
             memory: await engine.store.get('memory-stats'),
             preview: canvas.toDataURL('image/png'),
           };
@@ -255,8 +264,13 @@ Deno.test({
         );
         assertEquals(report.status, 'complete', String(report.error));
         assertEquals(report.rendered, report.frames);
-        const info = report.info as { height: number; notices: unknown[] }, main = report.main as { height: number; width: number };
-        assert(main.height > info.height * 1.2 || main.width > 0, 'main canvas should extend beyond one frame for a scrolling recording');
+        const info = report.info as { width: number; height: number; notices: unknown[] },
+          main = report.main as { height: number; width: number; observedPixels: number };
+        assert(
+          main.height > info.height * 1.2 || main.width > info.width * 1.2,
+          'main canvas should extend beyond one frame for a scrolling recording',
+        );
+        assert(main.observedPixels > info.width * info.height, 'main canvas should have observed more pixels than fit in a single frame');
         await Deno.writeTextFile(`${results}real-${name}.json`, JSON.stringify(report, null, 2));
         const png = Uint8Array.from(atob(preview.split(',')[1]), (c) => c.charCodeAt(0));
         await Deno.writeFile(`${results}real-${name}-preview.png`, png);

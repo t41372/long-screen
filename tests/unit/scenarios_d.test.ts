@@ -4,7 +4,7 @@ Deno.test('scenario retina: exact placement, pixel identity, coverage set equali
   reports.push(await checkScenario('retina'));
 });
 Deno.test('scenario factor4: exact placement, pixel identity, coverage set equality, fragments and diagnostics', async () => {
-  reports.push(await checkScenario('factor4'));
+  reports.push(await checkScenario('factor4', { analysisSize: 480 }));
 });
 Deno.test('scenario geometry-change: exact placement, pixel identity, coverage set equality, fragments and diagnostics', async () => {
   reports.push(await checkScenario('geometry-change'));

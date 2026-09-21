@@ -394,6 +394,18 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         { x: 0, y: 350 },
         { x: 280, y: 540 },
       ], [13, 11, 13, 9, 8, 13, 13]);
+      // Split ratchets (world-consistency mask + displacement-spread voting, docs/ARCHITECTURE.md §七).
+      // maxContaminatedDynamic covers the animated widget alone (legitimately allowed to keep one moment),
+      // measured 10,500px. The overlay side is now at the TARGET: contaminatedOverlay and
+      // contaminatedOverlayRecoverable both measure 0, so both ratchets are the default 0 and this scenario
+      // asserts the cursor is removed completely rather than merely bounded. Two changes got it there from
+      // 442px: verify.ts now attributes an overlay colour only where the overlay actually PAINTED (an
+      // overlay rect is a bounding box, and this cursor is a 10px-wide arrow inside a 10×16 one — the widget
+      // background showing through the rest of that box was being charged to the cursor), and the
+      // world-consistency comparison tolerance now comes from the source (`MediaInfo.noise`), so a lossless
+      // scenario is compared EXACTLY instead of against the ±10 levels a decoded recording needs. The
+      // cursor's white rows differ from this page's background by a mean |ΔRGB| of 6 and were invisible to
+      // every comparison in the pipeline until that changed. maxProvisional is 0: nothing is left unhealed.
       return {
         name,
         description: '页面内动画组件 + 鼠标指针。',
@@ -408,6 +420,7 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         frames: frames(path.length),
         expect: expect({
           fragments: { body: 0 },
+          maxContaminatedDynamic: 10801,
           diagnostics: { present: ['TEMPORAL_OR_ALIGNMENT_CONFLICT'], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
       };
@@ -492,6 +505,8 @@ export function buildScenario(name: ScenarioName | string): Scenario {
     case 'repeated-list-reversal': {
       const world = makeWorld(900, 2800, 131, 'list');
       const path = linearPath([{ x: 0, y: 0 }, { x: 0, y: 1500 }, { x: 0, y: 1200 }, { x: 0, y: 2300 }], [100, 20, 44]);
+      // maxInvented/maxMismatched ratchet the ambiguous best-guess reconstruction: today's measured invented 563,200 /
+      // mismatched 73,026 (test-results/scenarios-c.json), +~5%.
       return {
         name,
         description:
@@ -506,6 +521,8 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           fragments: { body: 0 },
           maxError: Infinity,
           ambiguousPeriod: 44,
+          maxInvented: 591400,
+          maxMismatched: 76700,
           diagnostics: { present: ['LOW_CONFIDENCE_PLACEMENT', 'AMBIGUOUS_PATTERN'], absent: ['PROCESSING_ERROR'] },
         }),
       };
@@ -531,6 +548,35 @@ export function buildScenario(name: ScenarioName | string): Scenario {
       let path = linearPath([{ x: 0, y: 0 }, { x: 0, y: 1400 }, { x: 0, y: 1100 }, { x: 0, y: 2600 }], [30, 8, 26]);
       path = jitter(path, 5, 2, 3);
       const layer: Layer = { id: 'body', viewport: { x: 0, y: TOP, width: PW, height: PH - TOP - NAV }, world, path };
+      // Precise overlay-contamination split (docs/HANDOFF.md item 6; verify.ts's contaminatedOverlayUnobservable
+      // / contaminatedOverlayRecoverable): measured 3,192px total overlay contamination (was 4,334px).
+      // 1,517px are UNOBSERVABLE — the analytic ceiling for this scenario, computed the same way over every
+      // ever-visible main-canvas world pixel regardless of contamination — almost entirely the scrollbar
+      // thumb's own interior: this page never scrolls horizontally, and the thumb is drawn on every single
+      // frame with no fade, so that ~6-native-px column is never once observed clean. maxContaminatedOverlay-
+      // Unobservable is seeded from this exact analytic count.
+      //
+      // maxContaminatedOverlayRecoverable is DECLARED here (1,759 = measured 1,675 +5%) rather than left at
+      // the target 0 — a known limitation with one traced mechanism, not an open question. Every one of the
+      // 1,675 is detectable in principle (scrollbar grey #969696 1,223px and FAB #cf6750 452px, both a mean
+      // |ΔRGB| ≈ 100 from the true page — nothing here is under a comparison threshold), and 1,240 of them
+      // ARE correctly flagged provisional. What is missing is a frame that can HEAL them, and the reason is
+      // always the same shape: THE ONLY CLEAN LOOK IS A BOUNDARY FRAME OF THE RECORDING, which the very same
+      // pairwise disagreement condemns.
+      //   - World (382, 45), frames 0–1: frame 0 is the run's first frame and covers the pixel under the
+      //     scrollbar; frame 1 is clean but its only comparable neighbour is frame 0 (frame 2 maps out of
+      //     region), so it is condemned too and cannot heal.
+      //   - World (335, 3217), frames 63–64: the mirror image at the end. Frame 63 first covers it under the
+      //     FAB and is correctly flagged; frame 64 is genuinely clean and is the last frame of the run.
+      //   - World (387, 3072), frames 62–64: the thumb is 150px tall against ~58px of scroll per frame, so
+      //     the first look (frame 62, prev out of region) has one comparable neighbour — frame 63, also under
+      //     the thumb, which AGREES — and only frame 64 is clean, again the last frame.
+      // Engine.consistencyMask()'s lone-neighbour excuse exists for exactly this and cannot fire: it needs
+      // voting to have independently found the neighbour inconsistent, and voting has no verdict at a
+      // recording's boundary — a world position entering at the leading edge with one or two frames left is
+      // off screen in every ring partner that clears Dmin, so no comparison is ever possible for it. That is
+      // a property of where the recording stops, not of the detector. Only 2 of the 1,675 sit in analysis
+      // cells the `consistencyInterior` mask excludes from voting, so the mask is not what stands in the way.
       return {
         name,
         description: '手机竖屏：状态栏、底部导航、悬浮按钮、滚动条、手抖。',
@@ -545,7 +591,14 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           scrollbar(() => layer),
         ],
         frames: frames(path.length),
-        expect: expect({ fragments: { body: 0 }, diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] } }),
+        expect: expect({
+          fragments: { body: 0 },
+          maxContaminatedOverlay: 3352,
+          maxContaminatedOverlayUnobservable: 1517,
+          maxContaminatedOverlayRecoverable: 1759,
+          maxProvisional: 1832,
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
+        }),
       };
     }
     case 'vfr': {
@@ -597,17 +650,34 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         frames: frames(path.length),
         expect: expect({
           fragments: { body: 0 },
+          factor: 2,
           diagnostics: { present: ['ANALYSIS_PYRAMID'], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
       };
     }
     case 'factor4': {
+      // A height not divisible by 4 (to exercise downscaleGray's truncating floor(), not just the exact case) was tried
+      // here and made the scenario fail (165px placement error) — reverted; geometry stays exact per-axis, only the
+      // factor claim is fixed (see analysisSize: 480 at the call site and `factor: 4` below).
       const RW = 1920, RH = 1080, RH_HEADER = 80;
       const world = makeWorld(2400, 2600, 181, 'cards', 4);
       const path = linearPath([{ x: 0, y: 0 }, { x: 200, y: 900 }, { x: 400, y: 300 }], [14, 12]);
+      // No overlay or dynamic here; at this scenario's factor (4, the largest any scenario uses),
+      // solve()'s displacement-spread consistency voting (docs/ARCHITECTURE.md §七) used to leave a small,
+      // scattered residual of unhealed flags even with the local-search radius scaled to the analysis factor
+      // and the strictest (6/6 unanimous) finalisation threshold — root-caused to genuine downscaleGray
+      // box-filter PHASE noise: the box-filter grid is fixed to SCREEN pixel 0,0 in every frame, not to world
+      // content, so the same world pixel lands in analysis cells at a different sub-cell phase in frame T vs
+      // a ring partner S whenever their pose delta isn't a multiple of the factor (true for nearly every
+      // partner pair), which flips a small fraction of individual comparisons on fine "cards" edges/borders
+      // even after the local search. A region-masked, edge-replicated 3×3 box-blur of the analysis luma
+      // (computeBoxGray in solve(), gated off at f=1 where no such phase exists) suppresses this at the
+      // comparison level rather than requiring near-unanimity to statistically drown it out, which is what
+      // let the finalisation rule move from literal 6/6 unanimity to the ratio rule below it without
+      // reopening this residual — now genuinely 0, so no ratchet here (default 0, exact).
       return {
         name,
-        description: '桌面横屏 1080p，分析因子 4。',
+        description: '桌面横屏 1080p；以 analysisSize 480 运行时分析因子为 4（默认 640 下为 3）。',
         width: RW,
         height: RH,
         background: [251, 250, 246],
@@ -616,6 +686,7 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         frames: frames(path.length),
         expect: expect({
           fragments: { body: 0 },
+          factor: 4,
           diagnostics: { present: ['ANALYSIS_PYRAMID'], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
       };
@@ -668,6 +739,17 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           return [r];
         },
       };
+      // maxInvented ratchets the known-limitation reconstruction: today's measured invented 48,360px (test-results/scenarios-d.json), +~5%.
+      // maxProvisional, raised from 21,115 with the coordinator's explicit authorisation (docs/HANDOFF.md
+      // item 6): measured 40,722px, +~5%. The cause is this scenario's declared limitation, not a detection
+      // regression. The body viewport GROWS at frame 30, so the engine's learned region (x 20, y 18, 620×430)
+      // matches neither half of the recording, and the same world position lands on different screen rows
+      // before and after the collapse; the ±1-frame check therefore disagrees across that boundary even on
+      // pixels that are perfectly correct. Compositor.add()'s demotion rule then marks the matching covered
+      // pixels provisional. Traced: every sampled provisional pixel here holds the RIGHT value (mean |ΔRGB| = 0
+      // against the generating world over all 36,762 of them, e.g. world (343, 55) = #fbfaf6, exactly the page)
+      // — they are correct pixels the engine can no longer certify once the viewport geometry moves underneath
+      // it, which is the honest report for a scenario that already declares 48,360 invented pixels.
       return {
         name,
         description: '地址栏收起：正文可视区在录制中途变大。已知局限，只要求不崩溃、不伪造。',
@@ -680,6 +762,8 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         expect: expect({
           fragments: { body: -1 },
           limitation: true,
+          maxInvented: 50800,
+          maxProvisional: 42759,
           diagnostics: { present: ['TEMPORAL_OR_ALIGNMENT_CONFLICT'], absent: ['PROCESSING_ERROR', 'NONFINITE_POSE'] },
         }),
       };
@@ -687,6 +771,29 @@ export function buildScenario(name: ScenarioName | string): Scenario {
     case 'chrome-everything': {
       const world = makeWorld(900, 2600, 211, 'article');
       const path = linearPath([{ x: 0, y: 0 }, { x: 0, y: 1200 }, { x: 0, y: 900 }, { x: 0, y: 1900 }], [24, 8, 20]);
+      // Split ratchets (world-consistency mask + displacement-spread voting, docs/ARCHITECTURE.md §七).
+      // maxContaminatedDynamic covers the caret/counter/video trio alone (legitimately allowed to keep one
+      // moment): measured 57,579px; the ratchet keeps its earlier, higher value rather than being re-seeded up.
+      // Precise overlay split (docs/HANDOFF.md item 6): measured 3,569px total overlay contamination, down
+      // from 9,534px. 1,664px are UNOBSERVABLE — the analytic ceiling, computed the same way over every
+      // ever-visible main-canvas world pixel regardless of contamination — the FAB's own trailing-corner
+      // content that never migrates toward any future frame's leading edge before the fixed-length recording
+      // ends (its 52×52 footprint sits at the viewport's OWN bottom-right corner, the freshest-revealed
+      // content in most frames it touches). maxContaminatedOverlayUnobservable is seeded from that count.
+      //
+      // maxContaminatedOverlayRecoverable is DECLARED here (2,001 = measured 1,905 +5%) rather than left at
+      // the target 0 — a known limitation with one traced mechanism. It was 7,870 before this pass; ~2,880 of
+      // that was the FAB's white [255,255,255] glyph over this page's [251,250,246] background, a mean
+      // |ΔRGB| of 6 that no comparison could see until the world-consistency tolerance started coming from
+      // the source (`MediaInfo.noise`: 0 for a lossless scenario, the H.264/VP9 headroom for a real
+      // recording). What is left is the same recording-boundary shape traced pixel by pixel on `phone`:
+      // 1,615 of the 1,905 ARE flagged provisional and simply never meet a frame allowed to heal them.
+      // World (603, 2209) is the type case — frame 51 first covers it under the FAB and is correctly
+      // flagged, frame 52 is genuinely clean and is the LAST frame of the run, and the same pairwise
+      // disagreement condemns frame 52 as well, with voting silent for both (a world position entering at
+      // the leading edge one frame before the end is off screen in every ring partner that clears Dmin).
+      // NONE of the 1,905 sit in analysis cells the `consistencyInterior` mask excludes from voting.
+      // maxProvisional is the net unhealed flag count at the end: measured 32,151px, +~5%.
       return {
         name,
         description: '固定栏、悬浮按钮、toast、闪烁光标、实时计数器、播放中的视频同时存在。',
@@ -711,6 +818,11 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         frames: frames(path.length),
         expect: expect({
           fragments: { body: 0 },
+          maxContaminatedOverlay: 3748,
+          maxContaminatedOverlayUnobservable: 1664,
+          maxContaminatedOverlayRecoverable: 2001,
+          maxContaminatedDynamic: 60436,
+          maxProvisional: 33759,
           diagnostics: { present: ['TEMPORAL_OR_ALIGNMENT_CONFLICT'], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
       };

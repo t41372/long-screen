@@ -6,7 +6,7 @@ import { RegionAtlas } from '../../src/core/layers.ts';
 import { ScenarioSource } from '../../src/synthetic/source.ts';
 import type { Scenario } from '../../src/synthetic/world.ts';
 import type { Observation, VerifiableRun } from '../../src/synthetic/verify.ts';
-export { matchRegion, verifyFixed, verifyLayer } from '../../src/synthetic/verify.ts';
+export { matchRegion, verifyCanvasAccounting, verifyFixed, verifyLayer } from '../../src/synthetic/verify.ts';
 export interface RunResult extends VerifiableRun {
   engine: Engine;
   db: MemoryKV;
