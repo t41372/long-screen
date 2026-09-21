@@ -6,7 +6,7 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 153 头less 运行，ff
 
 两类测试：
 
-- `deno task test`：纯 Deno。核心算法的单元测试，以及 **23 个合成场景的端到端重建**，每个场景都有逐像素真值。
+- `deno task test`：纯 Deno。核心算法的单元测试，以及 **23 个合成场景的端到端重建**，每个场景都有逐像素真值。新增的单元测试文件：`tests/unit/compositor.test.ts`（合成与时间冲突）、`tests/unit/compute.test.ts`（`AnalysisComputer` 的 CPU/WebGPU 校准与回退路径）、`tests/unit/framing.test.ts`（带外框呈现画布的坐标映射与预算跳过）、`tests/unit/geometry.test.ts`（混合坐标系位置图、片段接回后再回环闭合）、`tests/unit/layers.test.ts`（长基线图层学习、非整除的 1080p 级分辨率）、`tests/unit/engine-failure.test.ts`（解码 / 分析 / 持久化三类失败域与可选阶段）、`tests/unit/engine-stop.test.ts`（中途停止后的 partial 状态）、`tests/unit/consistency.test.ts`（世界一致性掩码与片源噪声容差）、`tests/unit/takeover.test.ts`。新增夹具：`tests/fixtures/rotated.mp4`（F18，声明 90° 旋转但像素未转置）、`tests/fixtures/fragmented-bdo.mp4`。
 - `deno task test:browser`：真实 Chrome。WebCodecs 解码、Worker、IndexedDB、OPFS 导出、界面流程，以及（存在时）`test_case/` 里的真实录屏。
 
 解码之后的所有代码在两种环境中完全相同：帧以 `RGBA` 传递，瓦片用纯 TypeScript 的 PNG 编解码，分析缩图是整数因子的盒式滤波。因此 Deno 里验证过的行为就是浏览器里的行为。
@@ -21,36 +21,41 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 153 头less 运行，ff
 | `missing` | 观察过却没有进入结果的像素数 |
 | `invented` | 结果中存在、但不属于任何观察视口的像素数 |
 | `mismatched` | 覆盖像素的取值不等于该坐标在任何内容版本下的真值，且不能用遮挡解释 |
-| `contaminated` | 与页面不同但确实被动态内容或悬浮层覆盖过的像素（记录，不判失败） |
+| `contaminated` | 与页面不同但确实被动态内容或悬浮层覆盖过的像素，拆成 `contaminatedOverlay`（屏幕坐标覆盖物：悬浮按钮、滚动条、鼠标指针、toast；世界一致性掩码的目标是 0——同一像素若也落在页面坐标动态区域内，只算 overlay，不重复计入 dynamic）与 `contaminatedDynamic`（页面坐标动态内容：动画组件、实时计数器、闪烁光标、播放中的视频；允许保留某一个时刻）；各自有默认 0 的上限棘轮 `maxContaminatedOverlay`/`maxContaminatedDynamic`，`maxContaminated`（默认取两者之和）仍可作为合计上限单独声明，向后兼容。`contaminatedOverlay` 进一步精确拆成 `contaminatedOverlayUnobservable`（该世界位置在这块画布记录的任何一帧里都从未同时"在视口内"且"不在任何 overlay/dynamic 矩形内"——录制素材本身就没有干净证据，是场景自身覆盖物几何的属性，与检测/修复机制无关；断言测得值不超过同一算法在"该区域整段录制曾经可见的每个世界像素"上算出的解析上限，该上限另有自己的棘轮 `maxContaminatedOverlayUnobservable`，默认 0）与 `contaminatedOverlayRecoverable`（确实被干净观察到过至少一次，理论上应被修复；真正的目标，棘轮 `maxContaminatedOverlayRecoverable` 默认 0）；`unobservableProvisional`（unobservable 像素里有多少带有瞬态位）只汇报，暂不断言 |
+| `provisionalPixels` | 主画布结束时仍未被世界一致性掩码修复的净瞬态像素数（`CanvasMeta.provisionalPixels`），有上限棘轮 `maxProvisional`（默认 0）。一个瞬态像素不等于一个错误像素：它可能是被降级、值其实完全正确的像素（`toolbar-collapse` 在测得 36,762 个瞬态像素时，这些像素与生成世界的平均 |ΔRGB| 全部为 0；最终实测 40,722，棘轮 42,759），标记的含义是"引擎不再能证明这个像素已经定案"，质量遮罩据此着色 |
 | `fragments` | 独立片段数量 |
 | 诊断码 | 必须出现 / 必须不出现的诊断 |
 | 固定层 | 固定栏画布像素必须与观察一致且零冲突 |
 
-除标注为“已知局限”或“像素级不可分辨”的场景外，**`missing`、`invented`、`mismatched` 必须为 0，`maxError` 必须为 0**。
+除标注为”已知局限”或”像素级不可分辨”的场景外，**`missing`、`invented`、`mismatched` 必须为 0，`maxError` 必须为 0**；这几项之上还各有一个默认 0 的棘轮（`maxMissing`/`maxInvented`/`maxMismatched`/`maxContaminatedOverlay`/`maxContaminatedOverlayUnobservable`/`maxContaminatedOverlayRecoverable`/`maxContaminatedDynamic`/`maxProvisional`），只有测得的已知偏差才会显式声明为非 0，且只能往下调，不能悄悄调高。`maxContaminatedOverlayRecoverable`（真正的目标）在 `dynamic` 上**已经达成 0**；`phone` 与 `chrome-everything` 声明为 1,759 / 2,001（实测 1,675 / 1,905 的 +5%），是按机制查清后确认的**已知局限**，不再是待办——成因单一且可逐像素复现：唯一的干净观察正好是录制的边界帧，被同一次成对分歧一起判为不一致而失去修复资格，而投票在录制边界上不可能有任何一次比较（见 `src/synthetic/scenarios.ts` 里各场景注释给出的具体世界像素与帧号）。本轮把 `phone` 从 2,817 降到 1,675、`chrome-everything` 从 7,870 降到 1,905、`dynamic` 从 442 降到 0，改动是六处：投票参照帧改为"最近两个 + 最远一个 + 位移分段内挑比较次数最少者"（`consistencyPartners`，`performance.consistencyVotedLayers`/`consistencyThinLayers` 是它的看门指标）；投票只在内点格比较（`consistencyInterior`）；投票结论改为三态并被 ±1 帧规则用来判定该归咎于哪一帧；`Compositor` 里"整块逐位相同即跳过"不再跳过仍带瞬态位的块，且被拒绝的观察若与已覆盖像素逐位相同会把它降级为瞬态；比较容差改为取自片源（`MediaInfo.noise`，无损场景 0 级即逐像素精确，压缩视频仍是 10 级）——这一项单独把 `chrome-everything` 的 4,243 降到 1,905、`dynamic` 的 199 降到 0，因为白色覆盖物画在接近白色页面上时平均 |ΔRGB| 只有 6，此前在任何比较里都与页面等同；以及 `verify.ts` 只在覆盖物**实际绘制过**的像素上记录 overlay 颜色（`RenderedFrame.beneath`）。`tests/unit/consistency.test.ts` 是投票机制本身的单元测试：构造一个比单帧位移更高的屏幕固定色块断言中段帧只标记色块内部、从不误标页面内容；构造一个"干净对照只存在于未来帧"的前沿色块断言 `consistencyThinLayers` 为 0 且色块仍被标出；并直接对 `consistencyMask()` 断言那条"唯一邻居被投票判定为不一致时不得连坐"的真值表。`retina`/`factor4`/`fixture`/`geometry-change` 场景（无覆盖物、无动态内容）是这套机制不应产生假阳性的回归测试，`provisionalPixels` 必须保持 0。已测得的具体数值与像素来源追溯见 `docs/HANDOFF.md`”Screen-overlay contamination”条目、各场景自身在 `src/synthetic/scenarios.ts` 里的注释。
 
-场景覆盖：二维非单调移动与回访、纵向滚动（变速 / 暂停 / 手抖 / 反向）、横向、斜向、高速 fling、同一区域三次经过、双 pane 独立滚动、无重叠跳转、页面内动画、懒加载改变内容、pinch zoom、大面积纯色、重复列表（单向可解 / 反向不可分辨两个变体）、长条漫画、手机竖屏（状态栏 + 导航栏 + 悬浮按钮 + 滚动条）、可变帧率与重复帧、2× 与 4× 分析因子、录制中途尺寸改变、地址栏收起、六种动态元素同时存在、单帧一闪而过的内容、编码样本场景。
+**片段（fragment）与主画布受同一套检查**：每个未被回访接回（`attachedTo` 未设置）的独立片段，都会按自己的局部坐标原点（该片段第一帧的实际落点）重新计算期望位置与期望覆盖集，与主画布一样断言 `missing`/`invented`/`mismatched`/`contaminated` 与 `covered > 0`。片段中包含缩放（`zoom ≠ 1`）帧时内容已被重采样，像素级比对没有意义，只检查帧计数与 `observedPixels > 0`（`pixelChecked: false`）。已被接回主画布的片段自身不持有瓦片，其帧数已经算在目标画布名下（观察台账里的 `canvasId` 已经是回访解析后的最终画布）。
+
+**画布自身的瓦片台账**：与页面内容无关的一致性检查——每个有瓦片的画布（移动、固定、presentation 画布皆可），其 `tile-index/<id>/0/` 的行数必须等于 `CanvasMeta.tileCount`，把每个已存瓦片的 coverage 位图重新计数后求和必须等于 `CanvasMeta.observedPixels`。这只检查画布自己声称持有什么与实际持有什么是否一致，不涉及像素颜色或世界真值。
+
+场景覆盖：二维非单调移动与回访、纵向滚动（变速 / 暂停 / 手抖 / 反向）、横向、斜向、高速 fling、同一区域三次经过、双 pane 独立滚动、无重叠跳转、页面内动画、懒加载改变内容、pinch zoom、大面积纯色、重复列表（单向可解 / 反向不可分辨两个变体）、长条漫画、手机竖屏（状态栏 + 导航栏 + 悬浮按钮 + 滚动条）、可变帧率与重复帧、2× 与 4× 分析因子（`factor4` 场景以 `analysisSize: 480` 运行才是真正的 4×——默认 640 下 `ceil(1920/640)` 只有 3×，断言现在检查 `Engine.factor` 本身，不只是描述文字）、录制中途尺寸改变、地址栏收起、六种动态元素同时存在、单帧一闪而过的内容、编码样本场景。
 
 三个场景**声明**了不同的期望，而不是被放宽：
 
-- `repeated-list-reversal`：完全相同的列表行中途反向，向上 15px 与向下 29px 在像素上无法区分。断言改为“误差只能是行高 44px 的整数倍”，并要求出现 `AMBIGUOUS_PATTERN` 与低置信标记。
-- `toolbar-collapse`：地址栏收起使正文可视区在录制中途变大。断言只要求完成、报告冲突、错误像素低于 10%。这是已知局限，不是通过。
+- `repeated-list-reversal`：完全相同的列表行中途反向，向上 15px 与向下 29px 在像素上无法区分。断言改为“误差只能是行高 44px 的整数倍”，并要求出现 `AMBIGUOUS_PATTERN` 与低置信标记；`invented`/`mismatched` 额外棘轮在今天实测值（563,200 / 73,026）之上 +~5%，不是无限放开。
+- `toolbar-collapse`：地址栏收起使正文可视区在录制中途变大。断言只要求完成、报告冲突、错误像素低于 10%；`invented` 额外棘轮在今天实测值（48,360）之上 +~5%。这是已知局限，不是通过。
 - `blank`：大面积纯色时无纹理帧不被画到任何位置，断言其产生 `UNOBSERVABLE_FRAME` 与独立片段。
 
-## 浏览器验收
+## 本轮实测：Deno 单元 + 场景测试
 
-`deno task test:browser` 在真实 Google Chrome 153 中运行，**11 项全部通过（约 2 分 22 秒）**：
+`DEFAULT_SETTINGS` 现在包含 `framing: 'context'` 与 `compute: 'auto'`（此前两者都缺省，worker 校验各自回退到 `'region'` / `'cpu'`），这样 `deno task test`（不显式覆盖 settings 的每个场景）才是在跑应用实际发货的配置，而不是一个从未被验证过的组合——每个场景现在真正跑过带外框呈现阶段和 `auto` 的 WebGPU/CPU 校准，而不是被 worker 校验隐式降级成 `region`/`cpu`。这一切换本轮实测 `deno test --allow-read --allow-write --allow-env tests/unit`：**189 个测试，全部通过**，含新增的 `compositor`、`compute`、`consistency`、`engine-failure`、`engine-stop`、`framing`、`geometry`、`layers`、`takeover` 测试文件（测试数量会随并行开发继续增加，请以自己重新跑出的数字为准，不要把这个数字当成固定基线）。`deno task test:browser`（真实 Chrome）12 个测试，全部通过。（本轮过程中这个切换一度让全部 24 个场景测试因带外框呈现画布的 `CanvasMeta.observedPixels` 未随瓦片写入更新而失败——`<场景>/layer-0-part-0-framed: recomputed covered pixels N vs observedPixels 0`；该问题在 `src/core/framing.ts`/`compositor.ts` 里已被修好，这里记录的是修好之后的最终结果，不是遇到过的中间状态。）
 
 | 测试 | 结果 |
 |---|---|
-| 六种容器解码（含两个 ReplayKit 风格样本） | 各 43 帧，展示顺序单调，无异常通知 |
-| `test_case/` 全部五段真实录屏解码 | 394 / 1274 / 370 / 170 / 1152 帧，每个包都成为一帧，时间戳单调 |
-| 无损合成样本在 Chrome 中重建 | 位置误差 0，缺失 0，虚构 0，不匹配 0，固定栏零冲突 |
-| 五个编码样本重建 | 几何全部精确；像素值差异不超过该编码自身的解码基线 |
-| 真实录屏端到端重建（`0.mov`） | 1418×1590 / 394 帧 → 1322×10778 画布，约 46 秒 |
-| 界面：选文件 → 探测 → 重建 → 刷新恢复 → 导出原尺寸 PNG | 通过，导出尺寸等于画布尺寸 |
-| 界面：内置演示 → Worker → ZIP64 导出 → 390×844 无横向溢出 | 通过 |
+| 六种容器解码（含两个 ReplayKit 风格样本） | 各 43 帧，展示顺序单调，无异常通知（977ms） |
+| F18：声明旋转 90°（tkhd matrix，像素未转置）的容器 | `canvasConverter` 正确旋转，原始像素不受影响（526ms） |
+| `test_case/` 全部五段真实录屏解码 | 394 / 1274 / 370 / 170 / 1152 帧，每个包都成为一帧，时间戳单调（59s） |
+| 无损合成样本 + 五个编码样本在 Chrome 中重建 | 位置误差 0，缺失 0，虚构 0，不匹配 0，固定栏零冲突；编码样本像素差异不超过该编码自身的解码基线（各 1s） |
+| 真实录屏端到端重建（`0.mov`，跳过 all，仅这一段） | 1418×1590 / 394 帧 → 主画布 1418×10778，observedPixels 15,283,204，约 28.5 秒（阶段耗时：scanning 9.5s / solving 8.4s / optimizing 0.5s / rendering 9.2s / framing 67ms / pyramid 0.6s） |
+| 界面：选文件 → 探测 → 重建 → 刷新恢复 → 导出原尺寸 PNG | 通过，导出尺寸等于当前选中画布（`framing: 'context'` 下默认选中带外框呈现画布）的尺寸（2s） |
+| 界面：内置演示 → Worker → ZIP64 导出 → 390×844 无横向溢出 | 通过（4s） |
 
-必须使用真实 Google Chrome，不能用 Playwright 自带的 Chromium（不含 H.264）。可用 `LONGSCREEN_CHROME` 或 `LONGSCREEN_CHANNEL` 覆盖。
+必须使用真实 Google Chrome，不能用 Playwright 自带的 Chromium（不含 H.264）。可用 `LONGSCREEN_CHROME` 或 `LONGSCREEN_CHANNEL` 覆盖。上面的数字是这一轮实测；`0.mov` 的画布尺寸与耗时会随 `DEFAULT_SETTINGS`（分析加速、外框策略）与硬件变化，重新测量请看 `test-results/`，不要照抄这里的数字当作恒定基线。
 
 ### 编码差异如何处理
 
@@ -62,23 +67,7 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 153 头less 运行，ff
 
 `deno task coverage` 跑全部单元与场景测试，然后按**行覆盖率**逐文件设下限。下限是今天实际达到的数字，不是目标：任何文件掉下去就失败，只能往上棘轮。
 
-当前（30 个受控文件，92 个测试）：
-
-| 文件 | 行 % | 备注 |
-|---|---|---|
-| `core/math.ts` `core/features.ts` `core/raster.ts` `types.ts` `export/{crc,png,zip,offline}.ts` `media/{reader,demo}.ts` `storage/diagnostics.ts` `synthetic/{scenarios,source}.ts` | 100 | |
-| `core/motion.ts` | 99.5 | |
-| `core/pose-graph.ts` `storage/tiles.ts` | 98 | |
-| `core/compositor.ts` `codec/png.ts` | 97 | |
-| `core/keyframes.ts` `media/source.ts` `export/project.ts` | 92–94 | |
-| `core/layers.ts` | 91.8 | 未覆盖：手动区域重叠、部分分隔条与合并分支 |
-| `pipeline/engine.ts` | **84.0** | 未覆盖：接回链、暂停/停止、错误恢复 |
-| `main.ts` | 83.7 | 服务器错误分支 |
-| `media/mp4.ts` | **78.9** | 未覆盖：co64、stz2 压缩表、部分编辑列表分支 |
-| `media/webm.ts` | **65.7** | 未覆盖：lacing 变体、未知长度 cluster |
-| `storage/db.ts` (61.6) `export/target.ts` (30.0) | — | IndexedDB / OPFS，无法在 Deno 中执行，由浏览器测试覆盖 |
-
-全项目行覆盖率 89.9%，分支 90.9%。**核心算法尚未达到 100% 行覆盖**，`media/webm.ts`、`media/mp4.ts`、`pipeline/engine.ts` 是最大的三个缺口。
+最终一次 `deno task coverage`（189 个测试全部通过，全部门槛达标；`deno task test:browser` 12 个全部通过）之后，`scripts/coverage.ts` 里的下限已按当次实测重设。这里不再列逐文件百分比，避免和当前代码脱节还被当成基线。注意行覆盖率也取决于排版：整棵树用 `deno fmt` 重排后，原本挤在一行里的未执行分支会被拆成多行，逐文件百分比因此会在没有任何代码或测试改动的情况下移动（例如 `core/compositor.ts` 100 → 98.3、`pipeline/engine.ts` 91.5 → 87.4），下限也随之重设；不要把这种移动当成回退，也不要靠重新排版把数字抬回去。数字应以 `deno task coverage` 自己这次跑出的表格与 `scripts/coverage.ts` 里逐文件下限为准，或查看 `test-results/`。`core/compute.ts`、`core/framing.ts` 是本轮新增、此前从未被覆盖率门槛统计过的文件。
 
 每个文件的下限是 `floor(当次实测值)`，只能往上走。`deno task coverage --update-floors` 会按最近一次结果重写下限表；请审查这个 diff，因为调低下限等于掩盖回退。门槛还会在两种情况下失败：`src/` 下（或 `main.ts`）有文件完全没出现在报告里且不在“仅浏览器”名单上；解析到的表格行数异常少（格式变化）。
 

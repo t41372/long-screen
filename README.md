@@ -1,5 +1,3 @@
-> **本次交付狀態：** 完整專案由原始 ZIP 與保留下來的修改復原；驗證範圍及未保留項目請先看 [delivery/STATUS.md](delivery/STATUS.md)。
-
 # Long Screen
 
 **从本地屏幕录影恢复稀疏二维画布。**
