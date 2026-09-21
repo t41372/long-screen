@@ -60,6 +60,26 @@ function zipEntries(bytes: Uint8Array): string[] {
   }
   return names;
 }
+/** Reads one stored (uncompressed) entry's raw bytes back out of a ZipWriter archive, via the central directory's
+ * ZIP64 extra field (uncompressed size + local header offset), for tests that need actual file content, not just names. */
+function zipEntryBytes(bytes: Uint8Array, name: string): Uint8Array {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const at = Number(view.getBigUint64(bytes.length - 34, true)),
+    cd = Number(view.getBigUint64(at + 48, true)),
+    count = Number(view.getBigUint64(at + 32, true));
+  let p = cd;
+  for (let i = 0; i < count; i++) {
+    const n = view.getUint16(p + 28, true), extra = view.getUint16(p + 30, true), comment = view.getUint16(p + 32, true);
+    const entryName = new TextDecoder().decode(bytes.subarray(p + 46, p + 46 + n));
+    if (entryName === name) {
+      const e = p + 46 + n, size = Number(view.getBigUint64(e + 4, true)), offset = Number(view.getBigUint64(e + 20, true));
+      const contentStart = offset + 30 + n + 20;
+      return bytes.subarray(contentStart, contentStart + size);
+    }
+    p += 46 + n + extra + comment;
+  }
+  throw new Error(`Entry not found: ${name}`);
+}
 async function project(width = 40, height = 30) {
   const db = new MemoryKV(),
     p: Project = {
@@ -89,6 +109,7 @@ async function project(width = 40, height = 30) {
       observedPixels: 0,
       uncertainPixels: 0,
       conflictPixels: 0,
+      provisionalPixels: 0,
       maxLevel: 0,
       fragment: 0,
       firstTime: 0,
@@ -118,21 +139,34 @@ async function project(width = 40, height = 30) {
   await store.put('node/c/0000000000', { id: 'c/0', x: 0, y: 0 });
   await store.put('graph-summary', { loops: 0 });
   await store.put('memory-stats', { peakResidentTiles: 1, tileCacheLimit: 2 });
-  return { db, p, store, meta, tiles };
+  const mask = new Uint8Array([1, 0, 1, 1, 0, 1, 1, 1]);
+  await store.put('regions', [{
+    id: 'l',
+    name: 'l',
+    kind: 'moving',
+    rect: { x: 0, y: 0, width: 4, height: 2 },
+    mask,
+    maskWidth: 4,
+    maskHeight: 2,
+    factor: 1,
+  }]);
+  return { db, p, store, meta, tiles, mask };
 }
 Deno.test('export: project ZIP64 contains tiles, coverage, quality, ledgers and an offline viewer', async () => {
-  const { p, store } = await project(), target = fakeHandle(), messages: string[] = [];
+  const { p, store, mask } = await project(), target = fakeHandle(), messages: string[] = [];
   const result = await exportProject(store, p, (m) => messages.push(m), target.handle);
   assert(target.closed && result.name.endsWith('.zip'));
-  const names = zipEntries(target.bytes());
+  const bytes = target.bytes(), names = zipEntries(bytes);
   for (
     const required of [
       'manifest.json',
       'index.html',
       'README.txt',
+      'regions.json',
       'tiles/c/0/0_0.png',
       'tiles/c/0/-1_-1.png',
       'coverage/c/0_0.bin',
+      'provisional/c/0_0.bin',
       'quality/c/0_0.json',
       'observations.jsonl',
       'diagnostics.jsonl',
@@ -147,6 +181,17 @@ Deno.test('export: project ZIP64 contains tiles, coverage, quality, ledgers and 
     assert(names.includes(required), required);
   }
   assert(messages.length > 0);
+  // regions.json: the mask is base64, not a decimal Array.from JSON array, and decodes back losslessly.
+  const regions = JSON.parse(new TextDecoder().decode(zipEntryBytes(bytes, 'regions.json')));
+  assertEquals(regions.length, 1);
+  assertEquals(typeof regions[0].mask, 'string');
+  assertEquals([...Uint8Array.from(atob(regions[0].mask), (c) => c.charCodeAt(0))], [...mask]);
+  assertEquals(regions[0].maskWidth, 4);
+  assertEquals(regions[0].maskHeight, 2);
+  // analysis.jsonl no longer carries per-feature descriptors (scan-features/ is separate, scratch, and deleted
+  // by solve() once consumed).
+  const analysis = new TextDecoder().decode(zipEntryBytes(bytes, 'analysis.jsonl'));
+  assert(!analysis.includes('descriptor'), analysis);
   const html = offlineViewer({ canvases: [], tileSize: 64 });
   assert(html.includes('<!doctype html>') && !html.includes('</script><script>'));
   assert(offlineViewer({ x: '</script>' }).includes('\\u003c/script>'));
@@ -157,6 +202,46 @@ Deno.test('export: missing committed tile aborts the export instead of writing a
   const target = fakeHandle();
   await assertRejects(() => exportProject(store, p, () => {}, target.handle), Error, 'Missing committed tile');
   assert(target.aborted);
+  // F28: manifest.json/index.html/README.txt/regions.json already succeeded (and so already staged rows under
+  // export-index/<uuid>/) before the missing tile aborted the run; none of that staging may survive the failure.
+  assertEquals((await store.scan('export-index/', { limit: 100 })).length, 0, 'a failed export must not leave export-index/ rows behind');
+});
+Deno.test('export: a sink that fails partway leaves no export-index rows behind (F28)', async () => {
+  const { p, store } = await project();
+  let calls = 0;
+  const handle = {
+    createWritable: () =>
+      Promise.resolve({
+        write: (_d: Uint8Array) => {
+          calls++;
+          if (calls > 3) return Promise.reject(new Error('disk full'));
+          return Promise.resolve();
+        },
+        close: () => Promise.resolve(),
+        abort: () => Promise.resolve(),
+      }),
+  } as unknown as FileSystemFileHandle;
+  await assertRejects(() => exportProject(store, p, () => {}, handle), Error, 'disk full');
+  assertEquals((await store.scan('export-index/', { limit: 100 })).length, 0);
+});
+Deno.test('export: a failing sheet export leaves no export-index or sheet-export rows behind (F28)', async () => {
+  const { p, store, meta } = await project(5000, 24);
+  let calls = 0;
+  const handle = {
+    createWritable: () =>
+      Promise.resolve({
+        write: (_d: Uint8Array) => {
+          calls++;
+          if (calls > 2) return Promise.reject(new Error('disk full'));
+          return Promise.resolve();
+        },
+        close: () => Promise.resolve(),
+        abort: () => Promise.resolve(),
+      }),
+  } as unknown as FileSystemFileHandle;
+  await assertRejects(() => exportCanvas(store, p, meta, () => {}, handle), Error, 'disk full');
+  assertEquals((await store.scan('export-index/', { limit: 100 })).length, 0);
+  assertEquals((await store.scan('sheet-export/', { limit: 100 })).length, 0);
 });
 Deno.test('export: single native PNG keeps holes transparent and negative origins exact', async () => {
   const { p, store, meta } = await project(), target = fakeHandle();

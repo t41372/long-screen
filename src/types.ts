@@ -63,6 +63,8 @@ export interface Region {
   crop?: Rect;
   /** Membership is exactly `crop` (a stationary band or divider) regardless of the analysis-resolution mask. */
   solid?: boolean;
+  /** Integer analysis factor the mask was built at; native→analysis mask lookups use floor(x/factor), not a rounded ratio. */
+  factor?: number;
 }
 export interface Settings {
   analysisSize: number;
@@ -84,6 +86,8 @@ export const DEFAULT_SETTINGS: Settings = {
   temporalPolicy: 'stable',
   decoder: 'precise',
   compatibilityFPS: 60,
+  framing: 'context',
+  compute: 'auto',
 };
 export interface MediaInfo {
   name: string;
@@ -126,15 +130,17 @@ export interface Diagnostic {
   region?: Rect;
   confidence?: number;
   detail?: unknown;
+  /** This event's own count, when the emitter supplies one (e.g. a decoder notice already tallied upstream). */
   count?: number;
+  /** Cumulative number of times this diagnostic code has fired in the run so far; separate from `count` so an
+   * explicit per-event count is never clobbered by the running total. */
+  occurrences?: number;
 }
 export interface ScanRecord {
   index: number;
   time: number;
   duration: number;
   field: MotionField;
-  /** Cached once, reused by the solve pass. */
-  features?: Feature[];
   /** Exact native RGBA equality with the previous observation, not perceptual similarity. */
   duplicate?: boolean;
 }
@@ -160,6 +166,8 @@ export interface Attachment {
   dy: number;
   frame: number;
   confidence: number;
+  /** The matched target keyframe's pose-graph node id; lets a later correction to that node keep the attached fragment aligned. */
+  node: string;
 }
 export interface FramePlan {
   index: number;
@@ -177,6 +185,10 @@ export interface CanvasMeta {
   observedPixels: number;
   uncertainPixels: number;
   conflictPixels: number;
+  /** Net count of pixels currently flagged provisional (world-consistency mask found no supporting neighbour and at
+   *  least one contradicting one): screen-space overlay/dynamic burn-in still awaiting a consistent observation to
+   *  heal it. Rises and falls as later frames confirm or replace these pixels; it is not a cumulative total. */
+  provisionalPixels: number;
   maxLevel: number;
   fragment: number;
   firstTime: number;
@@ -199,9 +211,15 @@ export interface Project {
   tiles: number;
   observedPixels: number;
   diagnostics: Record<string, number>;
+  /** Highest severity seen per diagnostic code, mirroring Diagnostics.severities; lets a badge computed from
+   * `diagnostics` totals alone know a code's real severity instead of defaulting one. */
+  severities?: Record<string, Severity>;
   regions: Region[];
   error?: string;
   decodedBytes?: number;
+  /** Storage layout version. 2: scan-time features live under scan-features/<frame> as compact typed arrays
+   * (not inline on ScanRecord), and keyframe/word/scan-features rows are deleted once solve() finishes with them. */
+  schema?: number;
 }
 export interface Progress {
   phase: string;
@@ -234,6 +252,12 @@ export interface TilePayload {
   blob: Blob;
   quality?: Uint8Array;
   conflicts?: Uint8Array;
+  coverage?: Uint8Array;
+  owner?: Uint32Array;
+  /** Level-0 only: same bitmap layout as `coverage` (LSB-first). A set bit is an unhealed world-consistency
+   *  provisional pixel — content painted from an observation the render pass could not corroborate against a
+   *  neighbouring frame (screen-space overlay/dynamic burn-in), kept because a hole would be worse. */
+  provisional?: Uint8Array;
   level: number;
   x: number;
   y: number;

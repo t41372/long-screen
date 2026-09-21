@@ -1,5 +1,5 @@
 import type { KV } from '../storage/db.ts';
-import { iterate } from '../storage/db.ts';
+import { deletePrefix, iterate } from '../storage/db.ts';
 import { CRC32, utf8 } from './crc.ts';
 import { pad } from '../core/math.ts';
 export interface ByteSink {
@@ -121,5 +121,10 @@ export class ZipWriter {
     end.view.setUint32(16, 0xffffffff, true);
     await this.write(end.data);
     await this.sink.close();
+  }
+  /** Deletes any of this writer's own export-index/<uuid>/ central-directory rows left staged by a failed export;
+   * finish() already drains them all on success, so this is only ever needed on the failure path. */
+  async dispose(): Promise<void> {
+    await deletePrefix(this.db, this.prefix);
   }
 }

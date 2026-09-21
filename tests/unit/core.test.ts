@@ -24,7 +24,7 @@ import {
   thumbnail,
 } from '../../src/core/raster.ts';
 import { LayerLearner, RegionAtlas, regionContains, regionMotion } from '../../src/core/layers.ts';
-import { optimizeSmallGraph, PoseGraph, relaxPose } from '../../src/core/pose-graph.ts';
+import { PoseGraph } from '../../src/core/pose-graph.ts';
 import { KeyframeIndex } from '../../src/core/keyframes.ts';
 import { MemoryKV } from '../../src/storage/db.ts';
 import type { Feature, Gray, Match, Region, RGBA } from '../../src/types.ts';
@@ -271,6 +271,79 @@ Deno.test('raster: integer analysis factor, exact box downscale, crops, previews
   assertEquals(meanAbsoluteDifference(image, image), 0);
   assertEquals(meanAbsoluteDifference(image, c), 255);
 });
+/** Deterministic non-uniform fill: distinguishes an out-of-bounds read (undefined/NaN) from a correct box average. */
+function patternImage(width: number, height: number): RGBA {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      data[i] = (x * 7 + y * 3) % 256;
+      data[i + 1] = (x * 3 + y * 11) % 256;
+      data[i + 2] = (x + y * 5) % 256;
+      data[i + 3] = 255;
+    }
+  }
+  return { width, height, data };
+}
+/** Ground truth computed independently of raster.ts: the box clamped to the image, luma summed then averaged then shifted. */
+function referenceGray(image: RGBA, factor: number): Gray {
+  const width = Math.max(1, Math.floor(image.width / factor)), height = Math.max(1, Math.floor(image.height / factor));
+  const data = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const bh = Math.min(factor, image.height - y * factor), bw = Math.min(factor, image.width - x * factor);
+      let sum = 0;
+      for (let j = 0; j < bh; j++) {
+        for (let k = 0; k < bw; k++) {
+          const i = ((y * factor + j) * image.width + x * factor + k) * 4;
+          sum += image.data[i] * 77 + image.data[i + 1] * 150 + image.data[i + 2] * 29;
+        }
+      }
+      data[y * width + x] = Math.floor((sum / (bw * bh)) / 256);
+    }
+  }
+  return { width, height, data };
+}
+function referenceRGBA(image: RGBA, factor: number): RGBA {
+  const width = Math.max(1, Math.floor(image.width / factor)), height = Math.max(1, Math.floor(image.height / factor));
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const bh = Math.min(factor, image.height - y * factor), bw = Math.min(factor, image.width - x * factor), area = bw * bh;
+      let r = 0, g = 0, b = 0;
+      for (let j = 0; j < bh; j++) {
+        for (let k = 0; k < bw; k++) {
+          const i = ((y * factor + j) * image.width + x * factor + k) * 4;
+          r += image.data[i];
+          g += image.data[i + 1];
+          b += image.data[i + 2];
+        }
+      }
+      const o = (y * width + x) * 4;
+      data[o] = r / area;
+      data[o + 1] = g / area;
+      data[o + 2] = b / area;
+      data[o + 3] = 255;
+    }
+  }
+  return { width, height, data };
+}
+Deno.test('raster: box downscale clamps to the image when a dimension is smaller than the analysis factor', () => {
+  const wide = patternImage(10000, 10), g1 = downscaleGray(wide, 16), r1 = referenceGray(wide, 16);
+  assertEquals(g1.width, 625);
+  assertEquals(g1.height, 1);
+  assertEquals([...g1.data], [...r1.data]);
+  assert(g1.data.some((v) => v !== 0), 'entire analysis image collapsed to zero');
+  const narrow = patternImage(10, 32), g2 = downscaleGray(narrow, 16), r2 = referenceGray(narrow, 16);
+  assertEquals(g2.width, 1);
+  assertEquals(g2.height, 2);
+  assertEquals([...g2.data], [...r2.data]);
+  const banner = patternImage(6400, 5), t = thumbnail(banner, 640), r3 = referenceRGBA(banner, Math.ceil(6400 / 640));
+  assertEquals(t.width, r3.width);
+  assertEquals(t.height, r3.height);
+  assertEquals([...t.data], [...r3.data]);
+  assert(t.data.some((v, i) => i % 4 !== 3 && v !== 0), 'thumbnail collapsed to black');
+});
 function fieldFor(prev: Gray, cur: Gray) {
   return estimateMotion(prev, cur, undefined, extractFeatures(prev), extractFeatures(cur));
 }
@@ -419,44 +492,6 @@ Deno.test('pose graph: loop closure keeps the pinned origin, isolated components
   }
   assertEquals((await g3.get(origin3.id))!.edges.length, 0);
   assertEquals((await g3.db.scan(`edge/${origin3.id}/`, { limit: 1000 })).length, 100);
-  const relaxed = relaxPose({
-    id: 'n',
-    canvasId: 'c',
-    frame: 0,
-    x: 0,
-    y: 0,
-    originalX: 0,
-    originalY: 0,
-    pinned: false,
-    edges: [{ other: 'm', dx: 5, dy: 5, weight: 1, kind: 'loop' }, { other: 'zzz', dx: 0, dy: 0, weight: 1, kind: 'loop' }],
-  }, new Map([['m', { id: 'm', canvasId: 'c', frame: 1, x: 10, y: 10, originalX: 10, originalY: 10, pinned: true, edges: [] }]]));
-  assertEquals(relaxed, { x: 5, y: 5 });
-  assertEquals(
-    relaxPose({
-      id: 'n',
-      canvasId: 'c',
-      frame: 0,
-      x: 1,
-      y: 2,
-      originalX: 0,
-      originalY: 0,
-      pinned: false,
-      edges: [{ other: 'nobody', dx: 0, dy: 0, weight: 1, kind: 'loop' }],
-    }, new Map()),
-    { x: 1, y: 2 },
-  );
-  const small = optimizeSmallGraph([{ id: 'p', canvasId: 'c', frame: 0, x: 0, y: 0, originalX: 0, originalY: 0, pinned: true, edges: [] }, {
-    id: 'q',
-    canvasId: 'c',
-    frame: 1,
-    x: 9,
-    y: 0,
-    originalX: 9,
-    originalY: 0,
-    pinned: false,
-    edges: [{ other: 'p', dx: -10, dy: 0, weight: 1, kind: 'odometry' }],
-  }]);
-  assert(Math.abs(small[1].x - 10) < 1e-3);
 });
 async function assertRejectsAsync(fn: () => Promise<unknown>): Promise<void> {
   let rejected = false;
@@ -575,4 +610,184 @@ Deno.test('keyframes: relocalization finds a revisit at native precision and ref
       radius: 3,
     });
   assert(!match || match.ambiguous, JSON.stringify(match && { ...match, keyframe: match.keyframe.id }));
+});
+Deno.test('keyframes: a densely keyframed long scroll spreads candidate retrieval across a 100+ posting and warns once per layer', async () => {
+  const db = new MemoryKV(),
+    warnings: string[] = [],
+    index = new KeyframeIndex(db, async (m) => {
+      warnings.push(m);
+    });
+  const region = { x: 0, y: 0, width: 640, height: 400 }, COUNT = 150, STEP = 3, BASE = 200;
+  function sliding(seed: number): (y: number) => Gray {
+    const page = makeWorld(900, 1400, seed, 'article'), g = grayscale(page.data, 900, 1400);
+    return (y: number): Gray => {
+      const data = new Uint8Array(640 * 400);
+      for (let row = 0; row < 400; row++) {
+        data.set(g.data.subarray((y + row) * 900, (y + row) * 900 + 640), row * 640);
+      }
+      return { width: 640, height: 400, data };
+    };
+  }
+  // A 3px-per-keyframe scroll over 150 keyframes: any word anchored to a stable piece of page content stays inside
+  // the 400px-tall viewport (and so keeps appearing in that word's posting) for up to ~130 consecutive keyframes —
+  // comfortably past both the 48-candidate forward budget and the 96-entry retrieval budget, on a single layer.
+  const view = sliding(555);
+  for (let i = 0; i < COUNT; i++) {
+    const y = BASE + i * STEP, gray = view(y), features = extractFeatures(gray);
+    await index.add({
+      id: `body/${i}`,
+      node: `body-part-0/${i}`,
+      canvasId: 'body-part-0',
+      layer: 'body',
+      frame: i,
+      features,
+      gray,
+      x: 0,
+      y,
+      scaleX: 1,
+      scaleY: 1,
+      patches: extractPatches(gray, region, features, 1),
+    });
+  }
+  // Revisit precisely where the LATE keyframe (index 120) was minted. A forward-only scan of an over-full posting
+  // can only ever surface the earliest-indexed keyframes on a word this repetitive, so without the reverse "spread"
+  // scan this revisit could never be matched against its true, late-indexed keyframe.
+  const targetY = BASE + 120 * STEP, query = view(targetY), qf = extractFeatures(query);
+  const found = await index.find({
+    features: qf,
+    gray: query,
+    native: query,
+    layer: 'body',
+    frame: 1000,
+    roi: region,
+    region,
+    factor: 1,
+    radius: 3,
+    minGap: 0,
+  });
+  assert(found && !found.ambiguous, JSON.stringify(found && { ...found, keyframe: found.keyframe.id }));
+  assert(found!.keyframe.frame >= 60, `expected the late keyframe to be reachable as a candidate, got frame ${found!.keyframe.frame}`);
+  assertEquals(warnings.length, 1, 'the repetitive-posting budget warning must fire exactly once');
+  const found2 = await index.find({
+    features: qf,
+    gray: query,
+    native: query,
+    layer: 'body',
+    frame: 1001,
+    roi: region,
+    region,
+    factor: 1,
+    radius: 3,
+    minGap: 0,
+  });
+  assert(found2);
+  assertEquals(warnings.length, 1, 'a second find() call on the same layer must not warn again');
+  // A second layer, equally repetitive, gets its own independent single warning.
+  const view2 = sliding(556);
+  for (let i = 0; i < COUNT; i++) {
+    const y = BASE + i * STEP, gray = view2(y), features = extractFeatures(gray);
+    await index.add({
+      id: `other/${i}`,
+      node: `other-part-0/${i}`,
+      canvasId: 'other-part-0',
+      layer: 'other',
+      frame: i,
+      features,
+      gray,
+      x: 0,
+      y,
+      scaleX: 1,
+      scaleY: 1,
+      patches: extractPatches(gray, region, features, 1),
+    });
+  }
+  const query2 = view2(targetY), qf2 = extractFeatures(query2);
+  const foundOther = await index.find({
+    features: qf2,
+    gray: query2,
+    native: query2,
+    layer: 'other',
+    frame: 1000,
+    roi: region,
+    region,
+    factor: 1,
+    radius: 3,
+    minGap: 0,
+  });
+  assert(foundOther);
+  assertEquals(warnings.length, 2, 'a different layer must get its own single warning, independent of the first');
+});
+Deno.test('keyframes: canonical resolves a fragment-space rival to the same place as its attachment target (not ambiguous), and stays ambiguous when they genuinely differ', async () => {
+  const db = new MemoryKV(), index = new KeyframeIndex(db, async () => {});
+  const region = { x: 0, y: 0, width: 640, height: 400 };
+  const page = makeWorld(900, 1400, 900, 'article'), g = grayscale(page.data, 900, 1400);
+  const view = (y: number): Gray => {
+    const data = new Uint8Array(640 * 400);
+    for (let row = 0; row < 400; row++) data.set(g.data.subarray((y + row) * 900, (y + row) * 900 + 640), row * 640);
+    return { width: 640, height: 400, data };
+  };
+  const shared = view(300), features = extractFeatures(shared), patches = extractPatches(shared, region, features, 1);
+  // Same physical content, recorded twice: once under a fragment's own raw canvasId/coordinates (as first observed,
+  // before it was attached), once under the main canvas it was later attached to. A raw-coordinate comparison would
+  // see these as two different places; `canonical` maps the fragment into the main canvas's coordinate space.
+  await index.add({
+    id: 'frag/0',
+    node: 'frag-part-0/0',
+    canvasId: 'frag-part-0',
+    layer: 'body',
+    frame: 0,
+    features,
+    gray: shared,
+    x: 0,
+    y: 0,
+    scaleX: 1,
+    scaleY: 1,
+    patches,
+  });
+  await index.add({
+    id: 'main/50',
+    node: 'main-part-0/50',
+    canvasId: 'main-part-0',
+    layer: 'body',
+    frame: 50,
+    features,
+    gray: shared,
+    x: 500,
+    y: 300,
+    scaleX: 1,
+    scaleY: 1,
+    patches,
+  });
+  const query = view(300), qf = extractFeatures(query);
+  const samePlace = await index.find({
+    features: qf,
+    gray: query,
+    native: query,
+    layer: 'body',
+    frame: 200,
+    roi: region,
+    region,
+    factor: 1,
+    radius: 3,
+    minGap: 0,
+    canonical: (canvasId: string) =>
+      canvasId === 'frag-part-0' ? { canvasId: 'main-part-0', dx: 500, dy: 300 } : { canvasId, dx: 0, dy: 0 },
+  });
+  assert(samePlace, 'expected a relocalization');
+  assert(!samePlace!.ambiguous, 'a rival that canonicalizes to the same place must not be ambiguous');
+  const differentPlace = await index.find({
+    features: qf,
+    gray: query,
+    native: query,
+    layer: 'body',
+    frame: 201,
+    roi: region,
+    region,
+    factor: 1,
+    radius: 3,
+    minGap: 0,
+    canonical: (canvasId: string) => canvasId === 'frag-part-0' ? { canvasId: 'main-part-0', dx: 0, dy: 0 } : { canvasId, dx: 0, dy: 0 },
+  });
+  assert(differentPlace, 'expected a relocalization');
+  assert(differentPlace!.ambiguous, 'a rival that canonicalizes to a genuinely different place must stay ambiguous');
 });

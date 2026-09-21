@@ -1,5 +1,10 @@
 import type { Gray, Motion, MotionField, Rect, Region, RGBA } from '../types.ts';
 import { clamp, contains, DisjointSet, norm } from './math.ts';
+/** A field carries real evidence only once some model moved more than analysis jitter and is reasonably well matched;
+ * shared by per-frame and long-baseline (frame t−k vs t) evidence so both are held to the same bar. */
+export function informativeField(field: MotionField): boolean {
+  return !field.unknown && field.difference >= .2 && field.motions.some((m) => norm(m) > 1 && m.confidence > .3);
+}
 /** Learns screen-space motion discontinuities across the WHOLE recording. */
 export class LayerLearner {
   readonly cols: number;
@@ -41,10 +46,7 @@ export class LayerLearner {
   }
   add(field: MotionField, prev: Gray, current: Gray, prevNative?: RGBA, currentNative?: RGBA): void {
     const { cols, rows } = this;
-    if (field.unknown || field.difference < .2) {
-      return;
-    }
-    if (!field.motions.some((m) => norm(m) > 1 && m.confidence > .3)) {
+    if (!informativeField(field)) {
       return;
     }
     this.informativeFrames++;
@@ -218,7 +220,7 @@ export class LayerLearner {
     }
     return Math.abs(edge - guess) <= window ? edge : guess;
   }
-  finish(nativeWidth: number, nativeHeight: number, manual: Region[] = []): Region[] {
+  finish(nativeWidth: number, nativeHeight: number, manual: Region[] = [], factor = 1): Region[] {
     if (manual.length) {
       const regions = manual.map((r, i) => ({
         ...r,
@@ -443,7 +445,9 @@ export class LayerLearner {
     const activity = large.map((g) =>
       g.reduce((s, i) => s + this.activity[i], 0) / Math.max(1, g.reduce((s, i) => s + this.observations[i], 0))
     );
-    const maxActivity = Math.max(...activity, 1), sx = Math.max(1, Math.round(nativeWidth / this.width)), sy = sx;
+    // The downscale truth is exactly `factor`, not a rounded native/analysis ratio: with a non-divisible native
+    // dimension, round(nativeWidth/this.width) can be off by a whole analysis cell (see regionContains below).
+    const maxActivity = Math.max(...activity, 1), sx = factor, sy = factor;
     const regions = large.map((cells, k): Region => {
       const xs = cells.map((i) => i % this.cols), ys = cells.map((i) => Math.floor(i / this.cols));
       const ax = Math.min(...xs) * this.cell,
@@ -465,6 +469,7 @@ export class LayerLearner {
         mask: new Uint8Array(this.width * this.height),
         maskWidth: this.width,
         maskHeight: this.height,
+        factor,
       };
     });
     for (let y = 0; y < this.height; y++) {
@@ -490,6 +495,7 @@ export class LayerLearner {
           mask: new Uint8Array(this.width * this.height),
           maskWidth: this.width,
           maskHeight: this.height,
+          factor,
         };
         regions.push(divider);
       }
@@ -534,6 +540,7 @@ export class LayerLearner {
           maskWidth: this.width,
           maskHeight: this.height,
           cells: [],
+          factor,
         };
         regions.push(fixed);
       }
@@ -675,11 +682,16 @@ export class LayerLearner {
           }
         }
       }
+      // A mask bbox touching the last analysis row/column may stop short of the native edge: `this.width`/`this.height`
+      // are floor(native/factor), so up to factor−1 trailing native pixels have no analysis cell of their own.
+      // Extend the raw rect all the way to the native (or crop) edge there, so no native pixel goes unowned.
+      const right = maxX === this.width - 1 ? nativeWidth : Math.round((maxX + 1) * sx),
+        bottom = maxY === this.height - 1 ? nativeHeight : Math.round((maxY + 1) * sy);
       const raw = {
         x: Math.round(minX * sx),
         y: Math.round(minY * sy),
-        width: Math.round((maxX + 1) * sx) - Math.round(minX * sx),
-        height: Math.round((maxY + 1) * sy) - Math.round(minY * sy),
+        width: right - Math.round(minX * sx),
+        height: bottom - Math.round(minY * sy),
       };
       r.rect = maxX < 0 ? { x: 0, y: 0, width: 0, height: 0 } : r.crop ? clipRect(raw, r.crop) : raw;
     }
@@ -805,8 +817,14 @@ export function regionContains(region: Region, x: number, y: number, nativeWidth
   if (region.solid || !region.mask) {
     return true;
   }
-  const xx = clamp(Math.floor(x * region.maskWidth! / nativeWidth), 0, region.maskWidth! - 1),
-    yy = clamp(Math.floor(y * region.maskHeight! / nativeHeight), 0, region.maskHeight! - 1);
+  // The downscale truth is floor(x/factor), not a rounded native/analysis ratio (see finish()); fall back to the
+  // ratio only for regions built before `factor` was recorded (e.g. hand-built test masks).
+  const xx = region.factor
+    ? clamp(Math.floor(x / region.factor), 0, region.maskWidth! - 1)
+    : clamp(Math.floor(x * region.maskWidth! / nativeWidth), 0, region.maskWidth! - 1);
+  const yy = region.factor
+    ? clamp(Math.floor(y / region.factor), 0, region.maskHeight! - 1)
+    : clamp(Math.floor(y * region.maskHeight! / nativeHeight), 0, region.maskHeight! - 1);
   return !!region.mask[yy * region.maskWidth! + xx];
 }
 export function regionMotion(field: MotionField, region: Region, width: number, height: number): Motion {
@@ -844,11 +862,14 @@ export function regionMotion(field: MotionField, region: Region, width: number, 
 export class RegionAtlas {
   /** 0 = owned by no region; otherwise index + 1 into `regions`. The first region containing a pixel wins, matching regionContains semantics. */
   readonly labels: Uint8Array;
+  /** Per-code pixel counts accumulated once during construction, so count() is O(1) instead of a full label scan. */
+  private readonly counts: Uint32Array;
   constructor(readonly regions: Region[], readonly width: number, readonly height: number) {
     if (regions.length > 254) {
       throw new Error('Too many regions for the pixel atlas.');
     }
     this.labels = new Uint8Array(width * height);
+    this.counts = new Uint32Array(regions.length + 1);
     regions.forEach((region, index) => {
       const code = index + 1,
         r = region.rect,
@@ -861,6 +882,7 @@ export class RegionAtlas {
           const i = y * width + x;
           if (!this.labels[i] && regionContains(region, x, y, width, height)) {
             this.labels[i] = code;
+            this.counts[code]++;
           }
         }
       }
@@ -878,13 +900,7 @@ export class RegionAtlas {
   }
   /** Pixel count owned by a region (used for coverage accounting and tests). */
   count(code: number): number {
-    let n = 0;
-    for (let i = 0; i < this.labels.length; i++) {
-      if (this.labels[i] === code) {
-        n++;
-      }
-    }
-    return n;
+    return this.counts[code] || 0;
   }
 }
 

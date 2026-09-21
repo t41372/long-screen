@@ -18,6 +18,7 @@ export class ScenarioSource implements FrameSource {
       frameCount: scenario.frames.length,
       codec: 'procedural / lossless pixels',
       mode: 'Deterministic test input',
+      noise: 0,
       warnings: ['This is synthetic test material, not evidence of accuracy on arbitrary real recordings.'],
       notices: [],
     };

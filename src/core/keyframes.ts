@@ -41,9 +41,22 @@ export interface RelocalizationQuery {
   exclude?: string;
   /** Frames closer than this are ordinary odometry, not revisits. */
   minGap?: number;
+  /** Maps a keyframe's raw canvasId onto the canvas/offset it is actually observed at, so a fragment and its attachment
+   * target are recognised as the same physical place instead of scoring each other as rivals. */
+  canonical?: (canvasId: string) => { canvasId: string; dx: number; dy: number };
 }
 export class KeyframeIndex {
+  private warnedLayers = new Set<string>();
   constructor(private db: KV, private warn: (message: string) => Promise<void>) {}
+  private async warnOnce(layer: string): Promise<void> {
+    if (this.warnedLayers.has(layer)) {
+      return;
+    }
+    this.warnedLayers.add(layer);
+    await this.warn(
+      'A highly repetitive visual-word posting exceeded the 96-candidate retrieval budget. Relocalization is approximate here; all image observations remain in the reconstruction journal.',
+    );
+  }
   async add(k: Keyframe): Promise<void> {
     await this.db.put(`keyframe/${k.id}`, k);
     const words = featureWords(k.features.filter((_, i) => i % 2 === 0));
@@ -63,20 +76,34 @@ export class KeyframeIndex {
       votes = new Map<string, number>();
     let truncated = false;
     for (const word of words) {
-      const rows = await this.db.scan<string>(`word/${layer}/${word}/`, { limit: 97 });
-      if (rows.length > 96) {
+      const prefix = `word/${layer}/${word}/`, forward = await this.db.scan<string>(prefix, { limit: 97 });
+      if (forward.length > 96) {
         truncated = true;
       }
-      for (const { value: id } of rows.slice(0, 96)) {
-        if (id !== exclude) {
+      const seen = new Set<string>();
+      // The whole posting can only ever be scanned in ascending frame order; on a long recording that starves recent
+      // keyframes of ever becoming candidates. Take a spread — the earliest half and, when the list overruns the
+      // forward budget, the latest half too — within the same total candidate budget.
+      for (const { value: id } of forward.slice(0, 48)) {
+        if (id === exclude) {
+          continue;
+        }
+        seen.add(id);
+        votes.set(id, (votes.get(id) || 0) + 1);
+      }
+      if (forward.length > 48) {
+        const backward = await this.db.scan<string>(prefix, { limit: 48, reverse: true });
+        for (const { value: id } of backward) {
+          if (id === exclude || seen.has(id)) {
+            continue;
+          }
+          seen.add(id);
           votes.set(id, (votes.get(id) || 0) + 1);
         }
       }
     }
     if (truncated) {
-      await this.warn(
-        'A highly repetitive visual-word posting exceeded the 96-candidate retrieval budget. Relocalization is approximate here; all image observations remain in the reconstruction journal.',
-      );
+      await this.warnOnce(layer);
     }
     const candidates = [...votes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12),
       results: (Relocalization & { strong: boolean })[] = [];
@@ -123,7 +150,14 @@ export class KeyframeIndex {
     if (!best) {
       return;
     }
-    const position = (r: Relocalization) => ({ canvas: r.keyframe.canvasId, x: r.keyframe.x + r.offset.x, y: r.keyframe.y + r.offset.y });
+    const position = (r: Relocalization) => {
+      const x = r.keyframe.x + r.offset.x, y = r.keyframe.y + r.offset.y;
+      if (!q.canonical) {
+        return { canvas: r.keyframe.canvasId, x, y };
+      }
+      const c = q.canonical(r.keyframe.canvasId);
+      return { canvas: c.canvasId, x: x + c.dx, y: y + c.dy };
+    };
     const bp = position(best);
     // Any other plausible place, weak or strong, that lands somewhere else makes the revisit ambiguous. Repeated cards look alike.
     const rival = results.find((r) =>

@@ -1,6 +1,6 @@
 import type { KV } from '../storage/db.ts';
-import { iterate } from '../storage/db.ts';
-import type { CanvasMeta, Project, Rect } from '../types.ts';
+import { deletePrefix, iterate } from '../storage/db.ts';
+import type { CanvasMeta, Project, Rect, Region } from '../types.ts';
 import { type StoredTile, type TileIndex, TileStore } from '../storage/tiles.ts';
 import { ZipWriter } from './zip.ts';
 import { utf8 } from './crc.ts';
@@ -19,6 +19,14 @@ async function* jsonLines(db: KV, prefix: string): AsyncGenerator<Uint8Array> {
       JSON.stringify(row.value, (_, value) => ArrayBuffer.isView(value) ? Array.from(value as unknown as number[]) : value) + '\n',
     );
   }
+}
+/** Base64, chunked so a large mask never blows the argument-count limit of String.fromCharCode(...bytes). */
+function base64(bytes: Uint8Array): string {
+  let binary = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  }
+  return btoa(binary);
 }
 export async function exportProject(
   db: KV,
@@ -50,9 +58,14 @@ export async function exportProject(
     await zip.add(
       'README.txt',
       utf8(
-        'Long Screen — offline reconstruction\n\nUnzip everything, then open index.html. Level-zero PNG tiles preserve native output resolution. Missing tiles and transparent pixels are unobserved holes, not white page content. Independent fragments are not asserted to be adjacent. The original video is NOT included: retain it for source-time comparisons. observations.jsonl records every processed source frame and chosen placement; diagnostics.jsonl contains warnings. quality/*.json stores 16px-block heuristic quality, conflict markers, and source-frame ownership. Pixel coverage bits are least-significant-bit first. Pyramids are previews only.\n',
+        'Long Screen — offline reconstruction\n\nUnzip everything, then open index.html. Level-zero PNG tiles preserve native output resolution. Missing tiles and transparent pixels are unobserved holes, not white page content. Independent fragments are not asserted to be adjacent. The original video is NOT included: retain it for source-time comparisons. observations.jsonl records every processed source frame and chosen placement; diagnostics.jsonl contains warnings. quality/*.json stores 16px-block heuristic quality, conflict markers, and source-frame ownership. provisional/*.bin marks covered pixels the world-consistency mask could not corroborate against a neighbouring frame (screen-space overlay/dynamic burn-in still awaiting a later consistent observation), same bit layout as coverage/*.bin. Pixel coverage bits are least-significant-bit first. Pyramids are previews only. regions.json holds the full region definitions (including their masks, base64-encoded) that produced canvases[].layer.\n',
       ),
     );
+    const regions = (await db.get<Region[]>('regions')) || [];
+    // analysis.jsonl (built from scan/ below) carries no per-feature descriptors any more — features live only
+    // transiently under scan-features/ during solve() and are deleted once it finishes with them — so region
+    // masks are this export's one remaining large binary payload; base64 keeps them out of a decimal JSON array.
+    await zip.add('regions.json', utf8(JSON.stringify(regions.map((r) => ({ ...r, mask: r.mask ? base64(r.mask) : undefined })), null, 2)));
     let n = 0;
     for await (const row of iterate<TileIndex>(db, 'tile-index/')) {
       const t = row.value, key = `${t.canvasId}/${t.level}/${t.x}_${t.y}`, tile = await db.get<StoredTile>(`tile/${key}`);
@@ -62,6 +75,10 @@ export async function exportProject(
       await zip.add(`tiles/${key}.png`, tile.blob);
       if (t.level === 0) {
         await zip.add(`coverage/${t.canvasId}/${t.x}_${t.y}.bin`, tile.coverage);
+        // Same bit layout as coverage/ (LSB-first). A set bit is a covered pixel the world-consistency mask
+        // (docs/ARCHITECTURE.md §七) could not corroborate against a neighbouring frame: screen-space
+        // overlay/dynamic burn-in still awaiting a later consistent observation to heal it.
+        await zip.add(`provisional/${t.canvasId}/${t.x}_${t.y}.bin`, tile.provisional || new Uint8Array(tile.coverage.length));
         await zip.add(
           `quality/${t.canvasId}/${t.x}_${t.y}.json`,
           utf8(
@@ -102,6 +119,9 @@ export async function exportProject(
     return { ...await target.result(), message: '已导出原尺寸瓦片、离线查看器、覆盖与质量数据、源帧记录和完整诊断。' };
   } catch (error) {
     await target.sink.abort?.(error);
+    // A failed export must not leave this writer's staged central-directory rows behind forever; finish()
+    // already drained them all on the success path above.
+    await zip.dispose();
     throw error;
   }
 }
@@ -128,6 +148,8 @@ export async function exportCanvas(
   const name = single ? 'long-screen.png' : 'long-screen-sheets.zip',
     target = await createTarget(name, handle),
     tiles = new TileStore(db, project.settings.tileSize, project.settings.memoryMB);
+  // Declared here (not inside the try) so a failure partway through the sheet branch can still find them to clean up.
+  let zip: ZipWriter | undefined, sheetPrefix: string | undefined;
   try {
     if (single) {
       for await (
@@ -142,7 +164,10 @@ export async function exportCanvas(
       await target.sink.close();
       return { ...await target.result(), message: `已导出 ${rect.width} × ${rect.height} 原尺寸 PNG，缺口保持透明。` };
     }
-    const zip = new ZipWriter(target.sink, db), prefix = `sheet-export/${crypto.randomUUID()}/`, overlap = 32;
+    const overlap = 32;
+    zip = new ZipWriter(target.sink, db);
+    sheetPrefix = `sheet-export/${crypto.randomUUID()}/`;
+    const prefix = sheetPrefix;
     for await (const { value: t } of iterate<TileIndex>(db, `tile-index/${meta.id}/0/`)) {
       const x1 = Math.floor((t.x * tiles.size - rect.x) / sheetWidth),
         x2 = Math.floor(((t.x + 1) * tiles.size - 1 - rect.x) / sheetWidth),
@@ -204,6 +229,10 @@ export async function exportCanvas(
     };
   } catch (error) {
     await target.sink.abort?.(error);
+    // Both of this branch's own staging prefixes must not survive a failed export: zip's export-index/<uuid>/
+    // central-directory rows, and this function's own sheet-export/<uuid>/ work queue.
+    await zip?.dispose();
+    if (sheetPrefix) await deletePrefix(db, sheetPrefix);
     throw error;
   } finally {
     await tiles.clear();

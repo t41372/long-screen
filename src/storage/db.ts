@@ -7,6 +7,7 @@ export interface KV {
   put(key: string, value: unknown): Promise<void>;
   putMany(rows: Row[]): Promise<void>;
   delete(key: string): Promise<void>;
+  deleteMany(keys: string[]): Promise<void>;
   scan<T>(prefix: string, options?: {
     after?: string;
     limit?: number;
@@ -54,13 +55,22 @@ export class Database implements KV {
     await done;
   }
   async delete(key: string): Promise<void> {
-    const tx = this.db.transaction('records', 'readwrite');
-    tx.objectStore('records').delete(key);
-    await new Promise<void>((resolve, reject) => {
+    await this.deleteMany([key]);
+  }
+  async deleteMany(keys: string[]): Promise<void> {
+    if (!keys.length) {
+      return;
+    }
+    const tx = this.db.transaction('records', 'readwrite'), store = tx.objectStore('records');
+    const done = new Promise<void>((resolve, reject) => {
       tx.oncomplete = () => resolve();
       tx.onabort = () => reject(tx.error);
       tx.onerror = () => reject(tx.error);
     });
+    for (const key of keys) {
+      store.delete(key);
+    }
+    await done;
   }
   async scan<T>(prefix: string, options: {
     after?: string;
@@ -108,6 +118,9 @@ export class Namespace implements KV {
   delete(key: string): Promise<void> {
     return this.base.delete(this.prefix + key);
   }
+  deleteMany(keys: string[]): Promise<void> {
+    return this.base.deleteMany(keys.map((k) => this.prefix + k));
+  }
   async scan<T>(prefix: string, options: {
     after?: string;
     limit?: number;
@@ -134,8 +147,15 @@ export async function* iterate<T>(db: KV, prefix: string, reverse = false, pageS
   }
 }
 export async function deletePrefix(db: KV, prefix: string): Promise<void> {
-  for await (const row of iterate(db, prefix)) {
-    await db.delete(row.key);
+  // Page through with scan() (256 at a time) and delete each page in one deleteMany, instead of one delete
+  // transaction per row: a keyframe/word/scan-features cleanup over tens of thousands of rows is one transaction
+  // per 256 rows rather than one per row.
+  while (true) {
+    const rows = await db.scan(prefix, { limit: 256 });
+    if (!rows.length) {
+      return;
+    }
+    await db.deleteMany(rows.map((r) => r.key));
   }
 }
 /** In-memory adapter (tests, Deno). Sorted keys with binary search so word-posting scans stay cheap. Production never keeps tiles in JS RAM. */
@@ -175,6 +195,11 @@ export class MemoryKV implements KV {
     const i = this.lowerBound(key);
     if (this.keys[i] === key) {
       this.keys.splice(i, 1);
+    }
+  }
+  async deleteMany(keys: string[]): Promise<void> {
+    for (const key of keys) {
+      await this.delete(key);
     }
   }
   async scan<T>(prefix: string, options: { after?: string; limit?: number; reverse?: boolean } = {}): Promise<Row<T>[]> {

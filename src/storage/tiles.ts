@@ -1,6 +1,6 @@
-import type { KV } from './db.ts';
+import type { KV, Row } from './db.ts';
 import type { CanvasMeta, RGBA, TilePayload } from '../types.ts';
-import { iterate } from './db.ts';
+import { deletePrefix, iterate } from './db.ts';
 import { decodePNG, encodeRGBA } from '../codec/png.ts';
 import { halveRGBA } from '../core/raster.ts';
 export const QUALITY_BLOCK = 16;
@@ -11,6 +11,10 @@ export interface Tile {
   y: number;
   pixels: Uint8ClampedArray;
   coverage: Uint8Array;
+  /** Same bit layout as `coverage`, level 0 only (pyramid tiles never set it — see TileStore.buildPyramid). A set
+   *  bit is a covered pixel the world-consistency mask could not corroborate against a neighbouring frame when it
+   *  was written; Compositor.add() clears it once a consistent observation overwrites that pixel. */
+  provisional: Uint8Array;
   quality: Uint8Array;
   conflicts: Uint8Array;
   owner: Uint32Array;
@@ -53,6 +57,13 @@ export function tileKey(canvasId: string, level: number, x: number, y: number): 
 export const covered = (tile: Tile, p: number): boolean => !!(tile.coverage[p >> 3] & (1 << (p & 7)));
 export const markCovered = (tile: Tile, p: number): void => {
   tile.coverage[p >> 3] |= 1 << (p & 7);
+};
+export const provisional = (tile: Tile, p: number): boolean => !!(tile.provisional[p >> 3] & (1 << (p & 7)));
+export const markProvisional = (tile: Tile, p: number): void => {
+  tile.provisional[p >> 3] |= 1 << (p & 7);
+};
+export const clearProvisional = (tile: Tile, p: number): void => {
+  tile.provisional[p >> 3] &= ~(1 << (p & 7));
 };
 export function countCovered(coverage: Uint8Array): number {
   let observed = 0;
@@ -110,6 +121,7 @@ export class TileStore {
       level,
       pixels,
       coverage: stored?.coverage || new Uint8Array(Math.ceil(n / 8)),
+      provisional: stored?.provisional || new Uint8Array(Math.ceil(n / 8)),
       quality: stored?.quality || new Uint8Array(blocks),
       conflicts: stored?.conflicts || new Uint8Array(blocks),
       owner: stored?.owner || new Uint32Array(blocks),
@@ -122,16 +134,15 @@ export class TileStore {
     this.peakResidentTiles = Math.max(this.peakResidentTiles, this.cache.size);
     return t;
   }
-  async save(t: Tile): Promise<void> {
-    if (!t.dirty) {
-      return;
-    }
+  /** Encodes one dirty tile into its two KV rows without writing them, so flush() can batch a whole pass into one putMany. */
+  private async encodeRows(t: Tile): Promise<Row[]> {
     this.encodedTiles++;
     const blob = await this.codec.encode({ width: this.size, height: this.size, data: t.pixels }),
       key = tileKey(t.canvasId, t.level, t.x, t.y);
     const stored: StoredTile = {
       blob,
       coverage: t.coverage,
+      provisional: t.provisional,
       quality: t.quality,
       conflicts: t.conflicts,
       owner: t.owner,
@@ -141,16 +152,30 @@ export class TileStore {
       x: t.x,
       y: t.y,
     };
-    await this.db.putMany([{ key: `tile/${key}`, value: stored }, {
+    return [{ key: `tile/${key}`, value: stored }, {
       key: `tile-index/${key}`,
       value: { canvasId: t.canvasId, level: t.level, x: t.x, y: t.y, observed: countCovered(t.coverage) } satisfies TileIndex,
-    }]);
+    }];
+  }
+  async save(t: Tile): Promise<void> {
+    if (!t.dirty) {
+      return;
+    }
+    await this.db.putMany(await this.encodeRows(t));
     t.dirty = false;
     t.existed = true;
   }
   async flush(): Promise<void> {
-    for (const t of this.cache.values()) {
-      await this.save(t);
+    const dirty = [...this.cache.values()].filter((t) => t.dirty), rows: Row[] = [];
+    for (const t of dirty) {
+      rows.push(...await this.encodeRows(t));
+    }
+    if (rows.length) {
+      await this.db.putMany(rows);
+    }
+    for (const t of dirty) {
+      t.dirty = false;
+      t.existed = true;
     }
   }
   async clear(): Promise<void> {
@@ -167,41 +192,51 @@ export class TileStore {
   /** Small image pyramids are previews only. Level zero remains at source resolution. */
   async buildPyramid(meta: CanvasMeta, onProgress: () => Promise<void>): Promise<void> {
     await this.clear();
+    // A previous attempt on this same canvas that crashed mid-level can leave a stale work queue; start from a
+    // clean one rather than resuming into (possibly inconsistent) leftovers.
+    await deletePrefix(this.db, `pyramid-todo/${meta.id}/`);
     const size = this.size, half = size / 2;
     const maxLevel = Math.max(0, Math.ceil(Math.log2(Math.max(meta.bounds.width, meta.bounds.height) / size)));
-    for (let level = 1; level <= maxLevel; level++) {
-      for await (const row of iterate<TileIndex>(this.db, `tile-index/${meta.id}/${level - 1}/`)) {
-        const t = row.value, x = Math.floor(t.x / 2), y = Math.floor(t.y / 2);
-        await this.db.put(`pyramid-todo/${meta.id}/${level}/${x}_${y}`, { x, y });
-      }
-      for await (const row of iterate<{ x: number; y: number }>(this.db, `pyramid-todo/${meta.id}/${level}/`)) {
-        const { x, y } = row.value, parent = new Uint8ClampedArray(size * size * 4);
-        let any = false;
-        for (let dy = 0; dy < 2; dy++) {
-          for (let dx = 0; dx < 2; dx++) {
-            const child = await this.db.get<StoredTile>(`tile/${tileKey(meta.id, level - 1, x * 2 + dx, y * 2 + dy)}`);
-            if (!child) {
-              continue;
+    try {
+      for (let level = 1; level <= maxLevel; level++) {
+        for await (const row of iterate<TileIndex>(this.db, `tile-index/${meta.id}/${level - 1}/`)) {
+          const t = row.value, x = Math.floor(t.x / 2), y = Math.floor(t.y / 2);
+          await this.db.put(`pyramid-todo/${meta.id}/${level}/${x}_${y}`, { x, y });
+        }
+        for await (const row of iterate<{ x: number; y: number }>(this.db, `pyramid-todo/${meta.id}/${level}/`)) {
+          const { x, y } = row.value, parent = new Uint8ClampedArray(size * size * 4);
+          let any = false;
+          for (let dy = 0; dy < 2; dy++) {
+            for (let dx = 0; dx < 2; dx++) {
+              const child = await this.db.get<StoredTile>(`tile/${tileKey(meta.id, level - 1, x * 2 + dx, y * 2 + dy)}`);
+              if (!child) {
+                continue;
+              }
+              const small = halveRGBA({ width: size, height: size, data: await this.codec.decode(child.blob, size) });
+              for (let r = 0; r < half; r++) {
+                parent.set(small.data.subarray(r * half * 4, (r + 1) * half * 4), ((dy * half + r) * size + dx * half) * 4);
+              }
+              any = true;
             }
-            const small = halveRGBA({ width: size, height: size, data: await this.codec.decode(child.blob, size) });
-            for (let r = 0; r < half; r++) {
-              parent.set(small.data.subarray(r * half * 4, (r + 1) * half * 4), ((dy * half + r) * size + dx * half) * 4);
-            }
-            any = true;
           }
+          if (any) {
+            const blob = await this.codec.encode({ width: size, height: size, data: parent }), key = tileKey(meta.id, level, x, y);
+            await this.db.putMany([{
+              key: `tile/${key}`,
+              value: { blob, x, y, level, owner: new Uint32Array(), score: new Float32Array() },
+            }, { key: `tile-index/${key}`, value: { canvasId: meta.id, level, x, y, observed: 0 } satisfies TileIndex }]);
+          }
+          await this.db.delete(row.key);
+          await onProgress();
         }
-        if (any) {
-          const blob = await this.codec.encode({ width: size, height: size, data: parent }), key = tileKey(meta.id, level, x, y);
-          await this.db.putMany([{
-            key: `tile/${key}`,
-            value: { blob, x, y, level, coverage: new Uint8Array(), owner: new Uint32Array(), score: new Float32Array() },
-          }, { key: `tile-index/${key}`, value: { canvasId: meta.id, level, x, y, observed: 0 } satisfies TileIndex }]);
-        }
-        await this.db.delete(row.key);
-        await onProgress();
+        meta.maxLevel = level;
+        await this.db.put(`canvas/${meta.id}`, meta);
       }
-      meta.maxLevel = level;
-      await this.db.put(`canvas/${meta.id}`, meta);
+    } finally {
+      // Best-effort: never leave a half-drained work queue behind on a thrown error either.
+      try {
+        await deletePrefix(this.db, `pyramid-todo/${meta.id}/`);
+      } catch { /* already unwinding */ }
     }
   }
 }
