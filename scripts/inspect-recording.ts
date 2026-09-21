@@ -36,7 +36,12 @@ const ffmpeg = new Deno.Command('ffmpeg', {
   stderr: 'inherit',
 }).spawn();
 const reader = ffmpeg.stdout.getReader(), frameBytes = width * height * 4;
-let buffer = new Uint8Array(0),
+// One frame-sized buffer reused every iteration, filled by a write cursor. The old code reallocated and copied
+// the whole accumulated buffer on every pipe chunk (near-quadratic; ~7GB of memcpy per 3456×2234 frame at typical
+// pipe chunk sizes). `carry` holds only the tail of a chunk that overran the current frame, for the next one.
+const frameBuf = new Uint8Array(frameBytes);
+let filled = 0,
+  carry: Uint8Array | undefined,
   previous: Gray | undefined,
   previousImage: RGBA | undefined,
   previousFeatures: Feature[] | undefined,
@@ -45,21 +50,29 @@ let buffer = new Uint8Array(0),
   index = 0;
 const motions: string[] = [];
 while (true) {
-  while (buffer.length < frameBytes) {
+  if (carry) {
+    const take = Math.min(carry.length, frameBytes - filled);
+    frameBuf.set(carry.subarray(0, take), filled);
+    filled += take;
+    carry = take < carry.length ? carry.subarray(take) : undefined;
+  }
+  while (filled < frameBytes && !carry) {
     const { value, done } = await reader.read();
     if (done) {
       break;
     }
-    const next = new Uint8Array(buffer.length + value.length);
-    next.set(buffer);
-    next.set(value, buffer.length);
-    buffer = next;
+    const take = Math.min(value.length, frameBytes - filled);
+    frameBuf.set(value.subarray(0, take), filled);
+    filled += take;
+    if (take < value.length) {
+      carry = value.subarray(take);
+    }
   }
-  if (buffer.length < frameBytes) {
+  if (filled < frameBytes) {
     break;
   }
-  const image: RGBA = { width, height, data: new Uint8ClampedArray(buffer.buffer.slice(0, frameBytes)) };
-  buffer = buffer.slice(frameBytes);
+  const image: RGBA = { width, height, data: new Uint8ClampedArray(frameBuf) };
+  filled = 0;
   const g = downscaleGray(image, factor), features = extractFeatures(g);
   learner ??= new LayerLearner(g.width, g.height);
   if (previous) {

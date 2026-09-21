@@ -59,6 +59,11 @@ function reverse32(n: number): number {
   }
   return r >>> 0;
 }
+/** AV1 Codec Configuration Record: the ISOBMFF `av1C` box content and Matroska's `V_AV1` CodecPrivate share this
+ *  byte layout (marker/version, then seq_profile/level, then tier/bit-depth), so both callers reuse this. */
+export function av01CodecString(d: Uint8Array): string {
+  return `av01.${d[1] >> 5}.${String(d[1] & 31).padStart(2, '0')}${d[2] & 128 ? 'H' : 'M'}.${d[2] & 64 ? (d[2] & 32 ? '12' : '10') : '08'}`;
+}
 export class MP4Demuxer implements Demuxer {
   reader: BlobReader;
   config!: VideoDecoderConfig;
@@ -183,9 +188,7 @@ export class MP4Demuxer implements Demuxer {
         codec = `vp09.${String(d[4]).padStart(2, '0')}.${String(d[5]).padStart(2, '0')}.${String(d[6] >> 4).padStart(2, '0')}`;
       } else if (c.type === 'av1C') {
         const d = await r.read(c.data, 4);
-        codec = `av01.${d[1] >> 5}.${String(d[1] & 31).padStart(2, '0')}${d[2] & 128 ? 'H' : 'M'}.${
-          d[2] & 64 ? (d[2] & 32 ? '12' : '10') : '08'
-        }`;
+        codec = av01CodecString(d);
       } else if (c.type === 'pasp') {
         const v = await r.view(c.data, 8);
         if (v.getUint32(0) !== v.getUint32(4)) {
@@ -229,6 +232,27 @@ export class MP4Demuxer implements Demuxer {
       }
       if (b.type === 'stco' || b.type === 'co64') {
         this.offsets = b;
+      }
+    }
+    if (this.ctts) {
+      // Composition offsets are always read signed (see the reader below) because QuickTime/ReplayKit write
+      // negative offsets inside version-0 ctts boxes, which ISO 14496-12 only permits in version 1. That is
+      // deliberate and kept; this only adds a diagnostic when it is actually happening, by inspecting the
+      // small entry table directly (at most a few KiB even for long recordings).
+      const version = (await r.read(this.ctts.data, 1))[0];
+      if (version === 0) {
+        const count = await r.u32(this.ctts.data + 4);
+        let negative = false;
+        for (let i = 0; i < count && !negative; i++) {
+          if (await r.u32(this.ctts.data + 12 + i * 8) >= 0x80000000) {
+            negative = true;
+          }
+        }
+        if (negative) {
+          this.warnings.push(
+            'NONSTANDARD_SIGNED_CTTS_V0: 该视频轨道的 ctts box 是 version 0，但包含负的合成时间偏移；ISO 14496-12 仅在 version 1 中定义负偏移。这些偏移按有符号处理（QuickTime/ReplayKit 的常见写法），未被当作异常大的正偏移。',
+          );
+        }
       }
     }
     if (this.stsz) {
@@ -279,6 +303,7 @@ export class MP4Demuxer implements Demuxer {
     const chunkCount = await r.u32(this.offsets.data + 4),
       scCount = await r.u32(this.stsc.data + 4),
       ctCount = this.ctts ? await r.u32(this.ctts.data + 4) : 0;
+    const syncCount = this.stss ? await r.u32(this.stss.data + 4) : 0;
     let tt = 0,
       ttLeft = 0,
       delta = 0,
@@ -286,8 +311,7 @@ export class MP4Demuxer implements Demuxer {
       ctLeft = 0,
       composition = 0,
       ss = 0,
-      nextSync = this.stss ? await r.u32(this.stss.data + 8) : Infinity;
-    const syncCount = this.stss ? await r.u32(this.stss.data + 4) : 0;
+      nextSync = syncCount > 0 ? await r.u32(this.stss!.data + 8) : Infinity;
     let sample = 0, dts = 0, sc = 0, nextSC = scCount > 1 ? await r.u32(this.stsc.data + 20) : Infinity;
     for (let chunk = 1; chunk <= chunkCount && sample < count; chunk++) {
       if (chunk >= nextSC) {
@@ -307,13 +331,18 @@ export class MP4Demuxer implements Demuxer {
           delta = await r.u32(this.stts.data + 12 + tt * 8);
           tt++;
         }
-        if (this.ctts && ctLeft === 0 && ct < ctCount) {
-          ctLeft = await r.u32(this.ctts.data + 8 + ct * 8);
-          // Always signed. ISO 14496-12 only makes version 1 signed, but QuickTime/ReplayKit
-          // recordings (and FFmpeg's reader) use negative offsets in version 0 boxes; reading
-          // them unsigned yields ~7,158,278-second timestamps and breaks presentation order.
-          composition = (await r.view(this.ctts.data + 12 + ct * 8, 4)).getInt32(0);
-          ct++;
+        if (this.ctts && ctLeft === 0) {
+          if (ct < ctCount) {
+            ctLeft = await r.u32(this.ctts.data + 8 + ct * 8);
+            // Always signed. ISO 14496-12 only makes version 1 signed, but QuickTime/ReplayKit
+            // recordings (and FFmpeg's reader) use negative offsets in version 0 boxes; reading
+            // them unsigned yields ~7,158,278-second timestamps and breaks presentation order.
+            composition = (await r.view(this.ctts.data + 12 + ct * 8, 4)).getInt32(0);
+            ct++;
+          } // Table exhausted: pad with a zero offset (FFmpeg's behaviour) instead of repeating the last entry.
+          else {
+            composition = 0;
+          }
         }
         let size = constant;
         if (!size && stsz) {
@@ -361,22 +390,32 @@ export class MP4Demuxer implements Demuxer {
       if (moof.type !== 'moof') {
         continue;
       }
+      // ISO/IEC 14496-12 §8.8.8: a trun with no explicit data-offset has an implicit base of moof.start for
+      // the first track fragment in this moof (or any fragment whose tfhd sets default-base-is-moof), and
+      // otherwise the end of the data belonging to the *previous* track fragment in the same moof — which
+      // may belong to another track, so this is tracked across every traf, not just the one we decode.
+      let trafDataEnd = moof.start;
       for await (const traf of children(r, moof)) {
         if (traf.type !== 'traf') {
           continue;
         }
         const tfhd = await required(r, traf, 'tfhd');
-        const v = await r.view(tfhd.data, 8), flags = v.getUint32(0) & 0xffffff;
-        if (v.getUint32(4) !== this.trackId) {
-          continue;
-        }
-        let p = tfhd.data + 8, base = moof.start;
-        const defaults = { ...this.defaults };
+        const v = await r.view(tfhd.data, 8), flags = v.getUint32(0) & 0xffffff, trackId = v.getUint32(4), mine = trackId === this.trackId;
+        let p = tfhd.data + 8, base: number;
+        // Other tracks' sample-size defaults come from their own trex, which we do not parse (we only ever
+        // needed our own track's). Their sizes are only known here when the trun carries them explicitly.
+        const defaults = mine ? { ...this.defaults } : { duration: 0, size: 0, flags: 0 };
         if (flags & 1) {
           base = await r.u64(p);
           p += 8;
+        } else if (flags & 0x020000) {
+          base = moof.start;
+        } else {
+          base = trafDataEnd;
         }
+        let descriptionIndex: number | undefined;
         if (flags & 2) {
+          descriptionIndex = await r.u32(p);
           p += 4;
         }
         if (flags & 8) {
@@ -390,9 +429,15 @@ export class MP4Demuxer implements Demuxer {
         if (flags & 32) {
           defaults.flags = await r.u32(p);
         }
-        const tfdt = await child(r, traf, 'tfdt');
-        let dts = tfdt ? ((await r.read(tfdt.data, 1))[0] === 1 ? await r.u64(tfdt.data + 4) : await r.u32(tfdt.data + 4)) : implicitDTS;
-        let dataCursor = moof.end + 8;
+        if (mine && descriptionIndex !== undefined && descriptionIndex !== 1) {
+          throw new Error('Sample-description/codec changes require compatibility mode.');
+        }
+        let dts = 0;
+        if (mine) {
+          const tfdt = await child(r, traf, 'tfdt');
+          dts = tfdt ? ((await r.read(tfdt.data, 1))[0] === 1 ? await r.u64(tfdt.data + 4) : await r.u32(tfdt.data + 4)) : implicitDTS;
+        }
+        let dataCursor = base, sizeKnown = true;
         for await (const run of children(r, traf)) {
           if (run.type !== 'trun') {
             continue;
@@ -416,6 +461,12 @@ export class MP4Demuxer implements Demuxer {
             if (f & 0x200) {
               size = await r.u32(q);
               q += 4;
+            } else if (!size) {
+              // No explicit per-sample size, and no usable default (this track's trex is unknown to us):
+              // the end of this traf's data cannot be determined, so the next traf's implicit base
+              // falls back to moof.start. This can only happen for a *skipped* track fragment (our own
+              // throws below instead), and only when it also omits default-sample-size-present.
+              sizeKnown = false;
             }
             if (f & 0x400) {
               sampleFlags = await r.u32(q);
@@ -425,21 +476,26 @@ export class MP4Demuxer implements Demuxer {
               cto = (await r.view(q, 4)).getInt32(0);
               q += 4;
             }
-            if (!size || !duration) {
-              throw new Error('Fragment has no sample size or duration.');
+            if (mine) {
+              if (!size) {
+                throw new Error('Fragment has no sample size.');
+              }
+              yield {
+                offset: dataCursor,
+                size,
+                timestamp: Math.round(((dts + cto) / this.timescale + this.timeOffset) * 1e6),
+                duration: Math.round(duration / this.timescale * 1e6),
+                key: !(sampleFlags & 0x10000),
+              };
+              dts += duration;
             }
-            yield {
-              offset: dataCursor,
-              size,
-              timestamp: Math.round(((dts + cto) / this.timescale + this.timeOffset) * 1e6),
-              duration: Math.round(duration / this.timescale * 1e6),
-              key: !(sampleFlags & 0x10000),
-            };
             dataCursor += size;
-            dts += duration;
           }
         }
-        implicitDTS = dts;
+        if (mine) {
+          implicitDTS = dts;
+        }
+        trafDataEnd = sizeKnown ? dataCursor : moof.start;
       }
     }
   }

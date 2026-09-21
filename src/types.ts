@@ -98,6 +98,14 @@ export interface MediaInfo {
   frameCount?: number;
   mode: string;
   warnings: string[];
+  /** Expected per-channel decode noise, in RGB levels: how far two decodings of the SAME source pixel may differ
+   *  before the difference means anything. It is a property of where the frames came from, not of the algorithm,
+   *  and it is the single knob behind every "are these two pixels the same content?" comparison in the pipeline
+   *  (see DECODED_VIDEO_NOISE in src/media/source.ts and the world-consistency mask in src/pipeline/engine.ts).
+   *  A lossless source (the synthetic scenarios, the built-in demos) declares 0 and is compared exactly; a
+   *  decoded video declares the headroom H.264/VP9 ringing and chroma subsampling need around a sharp edge.
+   *  Omitted means "unknown source" and is treated as decoded video — the conservative reading. */
+  noise?: number;
   /** Decoder-time anomalies (skipped or reordered observations). Collected during decoding and surfaced as diagnostics, never swallowed. */
   notices?: MediaNotice[];
 }

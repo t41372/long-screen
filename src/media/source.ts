@@ -73,6 +73,15 @@ export class Signal {
     });
   }
 }
+/** Expected per-channel decode noise of real compressed video, in RGB levels (`MediaInfo.noise`). Two decodings of
+ *  the same source pixel — the same world content seen in two different frames — are not bit-identical once the
+ *  material has been through H.264 or VP9: ringing around a sharp edge and 4:2:0 chroma reconstruction both move
+ *  individual channels by several levels, and the amount depends on the quantiser, not on anything this code does.
+ *  10 is the headroom the world-consistency mask has always used for decoded video and it stays exactly that for
+ *  every real recording; what is new is that a LOSSLESS source no longer has to pay for it (see MediaInfo.noise).
+ *  It is not a similarity threshold for "close enough looking" content — it is the floor below which a difference
+ *  carries no information at all, so raising it to paper over a registration error would be the wrong fix. */
+export const DECODED_VIDEO_NOISE = 10;
 export class PreciseSource implements FrameSource {
   info: MediaInfo;
   private cancelled = false;
@@ -92,6 +101,7 @@ export class PreciseSource implements FrameSource {
       codec: demux.config.codec,
       frameCount: demux.frameCount,
       mode: 'Frame-accurate WebCodecs',
+      noise: DECODED_VIDEO_NOISE,
       warnings: demux.warnings,
       notices: [],
     };
@@ -111,6 +121,10 @@ export class PreciseSource implements FrameSource {
   }
   async *frames(): AsyncGenerator<FrameImage> {
     const { demux, info } = this, queue: VideoFrame[] = [], signal = new Signal();
+    // Engine calls frames() multiple times (scan, solve, render) on the same PreciseSource; each pass reports its
+    // own diagnostic counts. Without this, notices from earlier passes silently accumulate into later ones, and
+    // since project.media is this exact object by reference, an exported manifest ends up N× over-reporting.
+    info.notices = [];
     let ended = false, producerDone = false, failure: unknown = null, submitted = 0, received = 0, lastOutput = performance.now();
     const decoder = new VideoDecoder({
       output: (frame) => {
@@ -158,7 +172,29 @@ export class PreciseSource implements FrameSource {
           submitted++;
         }
         if (!ended && !failure && decoder.state === 'configured') {
-          await decoder.flush();
+          // flush() has no native deadline: if it never settles (a stuck decoder), race it against the same
+          // stall timeout used elsewhere, and close the decoder on timeout so the orphaned flush promise
+          // (real WebCodecs decoders reject pending flushes on close()) can never keep this loop alive forever.
+          let timer: number | undefined;
+          const settled = await Promise.race([
+            decoder.flush().then(() => 'flushed' as const),
+            new Promise<'timeout'>((resolve) => {
+              timer = setTimeout(() => resolve('timeout'), this.stallTimeout);
+            }),
+          ]);
+          clearTimeout(timer);
+          if (settled === 'timeout') {
+            failure = new Error(
+              `DECODER_STALLED: flush did not complete within ${Math.round(this.stallTimeout / 1000)} s. The committed prefix is retained.`,
+            );
+            try {
+              // Closing rejects/abandons the orphaned flush() promise. state is statically 'configured'
+              // here, but a concurrent decoder error could have already closed it for real; ignore that.
+              decoder.close();
+            } catch {
+              // already closed
+            }
+          }
         }
       } catch (e) {
         if (!ended) {
@@ -176,6 +212,15 @@ export class PreciseSource implements FrameSource {
           throw failure;
         }
         if (!queue.length) {
+          // Mirrors the producer's own stall check (above): if some future producer hang were not caught
+          // there, an empty queue with no decoder output for stallTimeout ms is stuck, not merely slow.
+          if (!producerDone && performance.now() - lastOutput > this.stallTimeout) {
+            throw new Error(
+              `DECODER_STALLED: No decoded frame arrived for ${
+                Math.round(this.stallTimeout / 1000)
+              } seconds. The committed prefix is retained.`,
+            );
+          }
           await signal.wait();
           continue;
         }
@@ -194,23 +239,38 @@ export class PreciseSource implements FrameSource {
           } else {
             lastTimestamp = frame.timestamp;
           }
-          if (frame.displayWidth !== info.codedWidth || frame.displayHeight !== info.codedHeight) {
+          // displayWidth/Height are scaled by the track's pixel aspect ratio (pasp); for an anamorphic
+          // recording they do not describe the stored sample grid. visibleRect does (it is the coded
+          // picture's own crop rect, before any PAR correction), so geometry is checked against that —
+          // not against displayWidth/Height — to avoid mistaking non-square pixels for a real mismatch
+          // and stretching the stored pixels while "fixing" it.
+          const bitstreamWidth = frame.visibleRect ? frame.visibleRect.width : frame.displayWidth;
+          const bitstreamHeight = frame.visibleRect ? frame.visibleRect.height : frame.displayHeight;
+          if (bitstreamWidth !== info.codedWidth || bitstreamHeight !== info.codedHeight) {
             if (index === 0) {
               // Nothing has been observed yet: the bitstream, not the container header, defines the pixel grid.
               this.notice(
                 'CONTAINER_SIZE_MISMATCH',
-                `容器声明 ${info.codedWidth}×${info.codedHeight}，码流实际为 ${frame.displayWidth}×${frame.displayHeight}；以码流尺寸为准。`,
+                `容器声明 ${info.codedWidth}×${info.codedHeight}，码流实际为 ${bitstreamWidth}×${bitstreamHeight}；以码流尺寸为准。`,
               );
-              info.codedWidth = frame.displayWidth;
-              info.codedHeight = frame.displayHeight;
+              info.codedWidth = bitstreamWidth;
+              info.codedHeight = bitstreamHeight;
               const rotated = info.rotation === 90 || info.rotation === 270;
-              info.width = rotated ? frame.displayHeight : frame.displayWidth;
-              info.height = rotated ? frame.displayWidth : frame.displayHeight;
+              info.width = rotated ? bitstreamHeight : bitstreamWidth;
+              info.height = rotated ? bitstreamWidth : bitstreamHeight;
             } else {
               throw new Error(
-                `FRAME_GEOMETRY_CHANGED: ${frame.displayWidth}×${frame.displayHeight}; expected ${info.codedWidth}×${info.codedHeight}. The already decoded prefix will be retained; this run does not merge resolution changes.`,
+                `FRAME_GEOMETRY_CHANGED: ${bitstreamWidth}×${bitstreamHeight}; expected ${info.codedWidth}×${info.codedHeight}. The already decoded prefix will be retained; this run does not merge resolution changes.`,
               );
             }
+          }
+          if (frame.displayWidth !== bitstreamWidth || frame.displayHeight !== bitstreamHeight) {
+            // Non-square pixels (pasp ≠ 1:1): stored samples are kept at bitstream size, unscaled — canvasConverter
+            // already draws into codedWidth×codedHeight, so leaving codedWidth/Height alone is what preserves them.
+            this.notice(
+              'NON_SQUARE_PIXELS',
+              `该录屏声明非方形像素长宽比（显示尺寸 ${frame.displayWidth}×${frame.displayHeight}，存储尺寸 ${bitstreamWidth}×${bitstreamHeight}）；保留原始存储像素，不做缩放。`,
+            );
           }
           const image = this.convert(frame, info), time = frame.timestamp / 1e6, duration = (frame.duration || 0) / 1e6;
           frame.close();
@@ -246,6 +306,9 @@ export class CompatibilitySource implements FrameSource {
     private read: (bitmap: ImageBitmap) => RGBA = bitmapReader(),
   ) {
     info.mode = `Approximate native seek (${fps} Hz)`;
+    // Same compressed material as PreciseSource, one more resampling step removed (the browser's own seek and
+    // bitmap path), so it can only be noisier — never tighter.
+    info.noise ??= DECODED_VIDEO_NOISE;
     info.notices ??= [];
   }
   dispose(): void {

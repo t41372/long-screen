@@ -1,4 +1,29 @@
 import { BlobReader, type Demuxer, type Packet } from './reader.ts';
+import { av01CodecString } from './mp4.ts';
+/** VP9 in Matroska: CodecPrivate is a sequence of `[id:1 byte][len:1 byte][value]` feature records (id 1 = profile,
+ *  2 = level, 3 = bit depth, 4 = chroma subsampling). Returns undefined when a required field is missing, so the
+ *  caller can keep its generic default instead of guessing. */
+export function vp09CodecString(priv: Uint8Array): string | undefined {
+  let profile: number | undefined, level: number | undefined, depth: number | undefined;
+  for (let p = 0; p + 2 <= priv.length;) {
+    const id = priv[p], len = priv[p + 1];
+    if (len < 1 || p + 2 + len > priv.length) {
+      break;
+    }
+    if (id === 1) {
+      profile = priv[p + 2];
+    } else if (id === 2) {
+      level = priv[p + 2];
+    } else if (id === 3) {
+      depth = priv[p + 2];
+    }
+    p += 2 + len;
+  }
+  if (profile === undefined || level === undefined || depth === undefined) {
+    return undefined;
+  }
+  return `vp09.${String(profile).padStart(2, '0')}.${String(level).padStart(2, '0')}.${String(depth).padStart(2, '0')}`;
+}
 interface Element {
   id: number;
   start: number;
@@ -158,6 +183,12 @@ export class WebMDemuxer implements Demuxer {
     let codecString = mapping[codec];
     if (codec === 'V_MPEG4/ISO/AVC' && description) {
       codecString = `avc1.${[...description.subarray(1, 4)].map((x) => x.toString(16).padStart(2, '0')).join('')}`;
+    } else if (codec === 'V_VP9' && description) {
+      // CodecPrivate present but possibly missing individual fields (profile/level/depth); fall back to the default.
+      codecString = vp09CodecString(description) ?? codecString;
+    } else if (codec === 'V_AV1' && description && description.length >= 3) {
+      // CodecPrivate for V_AV1 is the AV1 Codec Configuration Record, same layout as the ISOBMFF av1C box.
+      codecString = av01CodecString(description);
     }
     if (!codecString) {
       throw new Error(`Unsupported Matroska codec ${codec}. Compatibility mode may support it.`);
@@ -167,13 +198,19 @@ export class WebMDemuxer implements Demuxer {
       this.config.description = description;
     }
     this.duration *= this.scale / 1e9;
-    let count = 0, end = 0;
-    for await (const p of this.packets()) {
-      count++;
-      end = Math.max(end, (p.timestamp + p.duration) / 1e6);
+    // A Segment Info Duration was present: trust it and skip the full-file packet walk below, which for a large
+    // (multi-GB) recording would otherwise stall the UI probe for a long time before any frame gets decoded.
+    // frameCount is left undefined in that case (it is an optional MediaInfo field); the walk remains the
+    // fallback for files that omit Duration.
+    if (!this.duration) {
+      let count = 0, end = 0;
+      for await (const p of this.packets()) {
+        count++;
+        end = Math.max(end, (p.timestamp + p.duration) / 1e6);
+      }
+      this.frameCount = count;
+      this.duration = Math.max(this.duration, end);
     }
-    this.frameCount = count;
-    this.duration = Math.max(this.duration, end);
     return this;
   }
   async *packets(): AsyncGenerator<Packet> {

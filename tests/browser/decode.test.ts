@@ -42,6 +42,74 @@ Deno.test({
   },
 });
 Deno.test({
+  name:
+    'browser: F18 — a container that declares rotation 90 (tkhd matrix, no pixel transposed) is rotated by canvasConverter with the stored pixels intact',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const h = await harness();
+    try {
+      await h.page.goto(h.base + '/harness.html');
+      await h.page.waitForFunction('!!window.longScreenKit');
+      const r = await h.page.evaluate(async () => {
+        const kit = (window as any).longScreenKit;
+        const truth = kit.renderFrame(kit.buildScenario('fixture'), 0).image;
+        const blob = await (await fetch('/fixtures/rotated.mp4')).blob(), file = new File([blob], 'rotated.mp4');
+        const source = await kit.openMedia(file);
+        const at = (img: { width: number; data: Uint8ClampedArray }, x: number, y: number) => {
+          const i = (y * img.width + x) * 4;
+          return [img.data[i], img.data[i + 1], img.data[i + 2]];
+        };
+        let first: { width: number; height: number; data: Uint8ClampedArray } | undefined, count = 0;
+        for await (const f of source.frames()) {
+          if (f.index === 0) {
+            first = f.image;
+          }
+          count++;
+        }
+        source.dispose();
+        // 320×240 storage rotates to a 240×320 canvas. A source pixel (sx,sy) lands, under a 90° rotation as this
+        // demuxer reports it, at (codedHeight-1-sy, sx); the opposite direction (270°) would instead put it at
+        // (sy, codedWidth-1-sx) — checked too, so a wrong sign in the rotation math would not go unnoticed.
+        const samples: [number, number][] = [[80, 60], [240, 150], [160, 200]];
+        const results = samples.map(([sx, sy]) => {
+          const truthColor = at(truth, sx, sy);
+          const rightColor = at(first!, 239 - sy, sx);
+          const wrongColor = at(first!, sy, 319 - sx);
+          const diff = (a: number[], b: number[]) => Math.max(...a.map((c, i) => Math.abs(c - b[i])));
+          return { sx, sy, diffRight: diff(truthColor, rightColor), diffWrong: diff(truthColor, wrongColor) };
+        });
+        return {
+          frames: count,
+          width: first!.width,
+          height: first!.height,
+          info: {
+            width: source.info.width,
+            height: source.info.height,
+            codedWidth: source.info.codedWidth,
+            codedHeight: source.info.codedHeight,
+            rotation: source.info.rotation,
+          },
+          results,
+        };
+      });
+      assertEquals(r.frames, truth.frames);
+      assertEquals(r.width, 240);
+      assertEquals(r.height, 320);
+      assertEquals(r.info, { width: 240, height: 320, codedWidth: 320, codedHeight: 240, rotation: 90 });
+      for (const s of r.results) {
+        assert(s.diffRight <= 8, `sample (${s.sx},${s.sy}): rotated pixel differs by ${s.diffRight}`);
+      }
+      assert(
+        r.results.some((s) => s.diffWrong > 20),
+        'sanity check: the opposite rotation direction must not also match, or this test would be vacuous',
+      );
+    } finally {
+      await h.close();
+    }
+  },
+});
+Deno.test({
   name: 'browser: real recordings in test_case/ decode completely (skipped when absent)',
   sanitizeOps: false,
   sanitizeResources: false,
