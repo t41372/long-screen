@@ -1,5 +1,5 @@
 import { assert, assertEquals } from '@std/assert';
-import { createHandler } from '../../main.ts';
+import { createHandler, newestSource } from '../../main.ts';
 const root = await Deno.makeTempDir();
 await Deno.writeTextFile(`${root}/index.html`, '<!doctype html><title>t</title>');
 await Deno.writeFile(`${root}/data.bin`, Uint8Array.from({ length: 1000 }, (_, i) => i & 255));
@@ -63,4 +63,59 @@ Deno.test('server: traversal, missing files, directories, methods, bad encoding 
   assertEquals(mounted.headers.get('content-type'), 'application/json');
   await mounted.body?.cancel();
   assertEquals((await get('/fixtures/../index.html')).status, 200);
+});
+Deno.test('server: a symlink inside the root that resolves outside it is rejected, not served', async () => {
+  const outside = await Deno.makeTempDir();
+  await Deno.writeTextFile(`${outside}/secret.txt`, 'not servable');
+  const escapeRoot = await Deno.makeTempDir();
+  await Deno.writeTextFile(`${escapeRoot}/index.html`, '<!doctype html><title>t</title>');
+  try {
+    await Deno.symlink(`${outside}/secret.txt`, `${escapeRoot}/escape.txt`);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotSupported || error instanceof Deno.errors.PermissionDenied) {
+      return; // symlink creation unavailable in this environment; nothing to assert
+    }
+    throw error;
+  }
+  const escapeHandler = createHandler({ root: escapeRoot });
+  const res = await escapeHandler(new Request('http://localhost/escape.txt'));
+  assertEquals(res.status, 403);
+  await res.body?.cancel();
+});
+Deno.test('server: a small range on a large multi-chunk file still streams exactly the requested bytes (transform tail)', async () => {
+  const big = Uint8Array.from({ length: 4 * 1024 * 1024 }, (_, i) => i & 255);
+  await Deno.writeFile(`${root}/big.bin`, big);
+  const res = await get('/big.bin', { range: 'bytes=0-9' });
+  assertEquals(res.status, 206);
+  assertEquals(res.headers.get('content-range'), `bytes 0-9/${big.length}`);
+  const body = new Uint8Array(await res.arrayBuffer());
+  assertEquals([...body], [...big.subarray(0, 10)]);
+});
+Deno.test('server: newestSource finds the newest .ts/.html/.css mtime recursively, ignoring other extensions', async () => {
+  const dir = await Deno.makeTempDir();
+  const t1 = new Date('2020-01-01T00:00:00Z'),
+    t2 = new Date('2022-06-15T00:00:00Z'),
+    t3 = new Date('2023-09-01T00:00:00Z'),
+    t4 = new Date('2030-01-01T00:00:00Z');
+  await Deno.writeTextFile(`${dir}/a.ts`, 'export {}');
+  await Deno.utime(`${dir}/a.ts`, t1, t1);
+  await Deno.writeTextFile(`${dir}/style.css`, 'body{}');
+  await Deno.utime(`${dir}/style.css`, t2, t2);
+  // A far-future mtime on a non-source extension must never win.
+  await Deno.writeTextFile(`${dir}/ignored.png`, 'not source');
+  await Deno.utime(`${dir}/ignored.png`, t4, t4);
+  await Deno.mkdir(`${dir}/nested`);
+  await Deno.writeTextFile(`${dir}/nested/index.html`, '<html></html>');
+  await Deno.utime(`${dir}/nested/index.html`, t3, t3);
+  assertEquals(
+    await newestSource(dir),
+    t3.getTime(),
+    'the newest source file, including one found recursively, must win; non-source extensions must be ignored',
+  );
+});
+Deno.test('server: newestSource on a directory with no source files is zero', async () => {
+  const dir = await Deno.makeTempDir();
+  await Deno.mkdir(`${dir}/empty-nested`);
+  await Deno.writeTextFile(`${dir}/data.json`, '{}');
+  assertEquals(await newestSource(dir), 0);
 });

@@ -1,5 +1,5 @@
 /** Static file server for the built app. Range requests, correct MIME types, no caching, no upload endpoint. */
-import { extname, join, normalize, resolve } from '@std/path';
+import { extname, join, normalize, resolve, SEPARATOR } from '@std/path';
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -25,6 +25,19 @@ export interface ServerOptions {
 }
 export function createHandler(options: ServerOptions): (request: Request) => Promise<Response> {
   const root = resolve(options.root), mounts = Object.entries(options.mounts || {}).map(([prefix, dir]) => [prefix, resolve(dir)] as const);
+  // Resolved once per distinct root/mount directory (not per request): a symlink can sit inside `base` and still
+  // point outside it, so containment has to be checked against realpath, not the literal joined string. Cached
+  // because realpath also collapses OS-level symlinks in the directory itself (e.g. macOS /var → /private/var),
+  // which would otherwise make every legitimate request pay a mismatch unless both sides go through it.
+  const realBaseCache = new Map<string, Promise<string>>();
+  const realBaseOf = (base: string): Promise<string> => {
+    let p = realBaseCache.get(base);
+    if (!p) {
+      p = Deno.realPath(base).catch(() => base);
+      realBaseCache.set(base, p);
+    }
+    return p;
+  };
   return async (request) => {
     if (request.method !== 'GET' && request.method !== 'HEAD') {
       return new Response('Method not allowed', { status: 405, headers: { allow: 'GET, HEAD' } });
@@ -45,12 +58,22 @@ export function createHandler(options: ServerOptions): (request: Request) => Pro
       }
     }
     const filename = normalize(join(base, relative));
-    if (filename !== base && !filename.startsWith(base + '/')) {
+    if (filename !== base && !filename.startsWith(base + SEPARATOR)) {
+      return new Response('Forbidden', { status: 403 });
+    }
+    let real: string;
+    try {
+      real = await Deno.realPath(filename);
+    } catch {
+      return new Response('Not found', { status: 404 });
+    }
+    const realBase = await realBaseOf(base);
+    if (real !== realBase && !real.startsWith(realBase + SEPARATOR)) {
       return new Response('Forbidden', { status: 403 });
     }
     let info: Deno.FileInfo;
     try {
-      info = await Deno.stat(filename);
+      info = await Deno.stat(real);
     } catch {
       return new Response('Not found', { status: 404 });
     }
@@ -87,7 +110,7 @@ export function createHandler(options: ServerOptions): (request: Request) => Pro
     if (request.method === 'HEAD' || length === 0) {
       return new Response(null, { status, headers });
     }
-    const file = await Deno.open(filename, { read: true });
+    const file = await Deno.open(real, { read: true });
     if (start) {
       await file.seek(start, Deno.SeekMode.Start);
     }
@@ -110,12 +133,38 @@ export function createHandler(options: ServerOptions): (request: Request) => Pro
     return new Response(body, { status, headers });
   };
 }
+/** Newest mtime under a directory; mirrors the check tests/browser/support.ts runs before the browser suite, so
+ *  `deno task start` cannot quietly keep serving a bundle that predates the last source edit. */
+export async function newestSource(dir: string): Promise<number> {
+  let latest = 0;
+  for await (const entry of Deno.readDir(dir)) {
+    const path = join(dir, entry.name);
+    if (entry.isDirectory) {
+      latest = Math.max(latest, await newestSource(path));
+    } else if (entry.name.endsWith('.ts') || entry.name.endsWith('.html') || entry.name.endsWith('.css')) {
+      latest = Math.max(latest, (await Deno.stat(path)).mtime?.getTime() ?? 0);
+    }
+  }
+  return latest;
+}
 if (import.meta.main) {
   const port = Number(Deno.env.get('PORT') || 4173), root = Deno.env.get('LONGSCREEN_DIST') || 'dist';
+  let built = 0;
   try {
-    await Deno.stat(join(root, 'index.html'));
+    built = (await Deno.stat(join(root, 'index.html'))).mtime?.getTime() ?? 0;
   } catch {
-    console.log('dist/ is missing; building first.');
+    built = 0;
+  }
+  let stale = built === 0;
+  if (!stale) {
+    try {
+      stale = built < Math.max(await newestSource('src'), await newestSource('static'));
+    } catch {
+      // src/ or static/ absent (e.g. a standalone dist/ deployed without the source tree): trust the existing build.
+    }
+  }
+  if (stale) {
+    console.log(built ? 'dist/ is older than src/ or static/; rebuilding.' : 'dist/ is missing; building first.');
     const build = await new Deno.Command(Deno.execPath(), {
       args: ['run', '--allow-read', '--allow-write', '--allow-run', '--allow-env', 'scripts/build.ts'],
       stdout: 'inherit',
