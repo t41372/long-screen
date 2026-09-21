@@ -45,15 +45,20 @@ Deno.test({
       await page.locator('.history-item').filter({ hasText: 'negative-cts-v0.mov' }).getByRole('button', { name: '打开', exact: true })
         .first().click();
       await page.waitForFunction(`longScreen.getProject()?.id === ${JSON.stringify(project.id)}`);
-      // PNG export through the OPFS path (no save-file picker).
+      // PNG export through the OPFS path (no save-file picker). Export always encodes viewer.current — with
+      // `framing: 'context'` the canvas selector defaults to the framed presentation canvas, not the plain
+      // `moving` layer `main` above, so the expected dimensions have to come from whatever is actually selected.
       await page.evaluate("Object.defineProperty(window, 'showSaveFilePicker', { value: undefined, configurable: true })");
       await page.waitForFunction('!document.querySelector("#export-png").disabled', null, { timeout: 30000 });
+      const selected = await page.evaluate(
+        '({ w: Math.round(longScreen.viewer.current.bounds.width), h: Math.round(longScreen.viewer.current.bounds.height) })',
+      ) as { w: number; h: number };
       const [download] = await Promise.all([page.waitForEvent('download', { timeout: 120000 }), page.click('#export-png')]);
       const path = `${results}ui-export.png`;
       await download.saveAs(path);
       const png = await decodePNG(await Deno.readFile(path));
-      assertEquals(png.width, main.w);
-      assertEquals(png.height, main.h);
+      assertEquals(png.width, selected.w);
+      assertEquals(png.height, selected.h);
       assertEquals(h.errors, []);
       assertEquals(h.external, []);
     } finally {

@@ -3,7 +3,32 @@ interface Cached {
   bitmap: ImageBitmap | null;
   quality?: Uint8Array;
   conflicts?: Uint8Array;
+  owner?: Uint32Array;
+  /** Per 16px block, 1 if any coverage bit is set: observed background vs. decorative framing pixels that carry no evidence. */
+  evidence?: Uint8Array;
+  /** Per 16px block, 1 if any pixel in it is still provisional (world-consistency mask found no supporting
+   *  neighbour and at least one contradicting one): screen-space overlay/dynamic burn-in awaiting a later
+   *  consistent observation to heal it. */
+  provisional?: Uint8Array;
   time: number;
+}
+/** Same two-bytes-per-row trick as the compositor: a level-0 tile's width is a multiple of 16, so each block row is byte-aligned. */
+function blockEvidence(coverage: Uint8Array | undefined, tileSize: number): Uint8Array | undefined {
+  if (!coverage || !coverage.length) {
+    return undefined;
+  }
+  const perEdge = Math.ceil(tileSize / 16), out = new Uint8Array(perEdge * perEdge);
+  for (let by = 0; by < perEdge; by++) {
+    for (let bx = 0; bx < perEdge; bx++) {
+      let any = 0;
+      for (let row = 0; row < 16 && !any; row++) {
+        const i = ((by * 16 + row) * tileSize + bx * 16) >> 3;
+        if (coverage[i] || coverage[i + 1]) any = 1;
+      }
+      out[by * perEdge + bx] = any;
+    }
+  }
+  return out;
 }
 export class TiledViewer {
   private ctx: CanvasRenderingContext2D;
@@ -192,6 +217,7 @@ export class TiledViewer {
       y0 = Math.max(Math.floor(m.bounds.y / unit), Math.floor(-this.oy / this.scale / unit)),
       y1 = Math.min(Math.floor((m.bounds.y + m.bounds.height - 1) / unit), Math.floor((h - this.oy) / this.scale / unit));
     ctx.imageSmoothingEnabled = this.scale < 1;
+    let unobserved = false, provisionalSeen = false;
     for (let y = y0; y <= y1; y++) {
       for (let x = x0; x <= x1; x++) {
         const key = `${m.id}/${level}/${x}_${y}`;
@@ -209,7 +235,15 @@ export class TiledViewer {
               bitmap?.close();
               return;
             }
-            this.cache.set(key, { bitmap, quality: payload?.quality, conflicts: payload?.conflicts, time: performance.now() });
+            this.cache.set(key, {
+              bitmap,
+              quality: payload?.quality,
+              conflicts: payload?.conflicts,
+              owner: payload?.owner,
+              evidence: blockEvidence(payload?.coverage, this.tileSize),
+              provisional: blockEvidence(payload?.provisional, this.tileSize),
+              time: performance.now(),
+            });
           }).catch((error) => {
             this.fail(error);
             this.cache.set(key, { bitmap: null, time: performance.now() });
@@ -228,8 +262,37 @@ export class TiledViewer {
         if (this.overlay && level === 0) {
           const blocks = Math.ceil(this.tileSize / 16);
           for (let b = 0; b < blocks * blocks; b++) {
-            const conflict = entry.conflicts?.[b], quality = entry.quality?.[b];
-            if (!conflict && (!quality || quality >= 153)) {
+            const conflict = entry.conflicts?.[b],
+              quality = entry.quality?.[b],
+              owner = entry.owner?.[b],
+              observed = !entry.evidence || entry.evidence[b],
+              prov = entry.provisional?.[b];
+            if (!conflict && !observed) {
+              unobserved = true;
+              ctx.fillStyle = 'rgba(70,110,160,.25)';
+              ctx.fillRect(
+                px + (b % blocks) * 16 * this.scale,
+                py + Math.floor(b / blocks) * 16 * this.scale,
+                16 * this.scale,
+                16 * this.scale,
+              );
+              continue;
+            }
+            // A block still holding an unhealed provisional pixel (screen-space overlay/dynamic burn-in
+            // the world-consistency mask could not corroborate) gets its own distinct tint, ahead of the
+            // ordinary low-quality/conflict colours below, since its cause is different from either.
+            if (prov) {
+              provisionalSeen = true;
+              ctx.fillStyle = 'rgba(155,81,196,.40)';
+              ctx.fillRect(
+                px + (b % blocks) * 16 * this.scale,
+                py + Math.floor(b / blocks) * 16 * this.scale,
+                16 * this.scale,
+                16 * this.scale,
+              );
+              continue;
+            }
+            if (!conflict && (!owner || (quality ?? 0) >= 153)) {
               continue;
             }
             ctx.fillStyle = conflict ? 'rgba(193,60,40,.38)' : 'rgba(220,156,49,.32)';
@@ -263,6 +326,8 @@ export class TiledViewer {
     this.changed(
       `${(this.scale * 100).toFixed(this.scale < .01 ? 2 : 0)}% · ${level ? `预览 L${level}（原尺寸未改变）` : '原像素 L0'}${
         this.overlay && level ? ' · 放大查看质量遮罩' : ''
+      }${this.overlay && !level && unobserved ? ' · 蓝色=无观察证据' : ''}${
+        this.overlay && !level && provisionalSeen ? ' · 紫色=瞬态/浮层内容' : ''
       }`,
     );
   }

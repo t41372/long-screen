@@ -24,7 +24,9 @@ export async function* encodePNG(
     throw new Error('Invalid PNG dimensions.');
   }
   if (typeof CompressionStream === 'undefined') {
-    throw new Error('COMPRESSION_UNAVAILABLE: Streaming PNG needs CompressionStream. Native tile ZIP export remains available.');
+    throw new Error(
+      'COMPRESSION_UNAVAILABLE: Streaming PNG needs CompressionStream. Every tile is encoded as a PNG, so no export path is available without it.',
+    );
   }
   yield new Uint8Array(SIGNATURE);
   const ihdr = new Uint8Array(13), v = new DataView(ihdr.buffer);

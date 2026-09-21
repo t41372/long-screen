@@ -1,4 +1,13 @@
-import { type CanvasMeta, DEFAULT_SETTINGS, type Diagnostic, type MediaInfo, type Progress, type Project, type Region } from '../types.ts';
+import {
+  type CanvasMeta,
+  DEFAULT_SETTINGS,
+  type Diagnostic,
+  type MediaInfo,
+  type Progress,
+  type Project,
+  type Region,
+  type Severity,
+} from '../types.ts';
 import { TiledViewer } from './viewer.ts';
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
@@ -14,11 +23,7 @@ function rpc<T = any>(type: string, payload: Record<string, unknown> = {}): Prom
     worker.postMessage({ id, type, payload });
   });
 }
-let selectedFile: File | undefined,
-  videoURL: string | undefined,
-  previewURL: string | undefined,
-  firstBitmap: ImageBitmap | undefined,
-  mediaInfo: MediaInfo | undefined;
+let selectedFile: File | undefined, videoURL: string | undefined, firstBitmap: ImageBitmap | undefined, mediaInfo: MediaInfo | undefined;
 let project: Project | undefined,
   canvases: CanvasMeta[] = [],
   busy = false,
@@ -28,6 +33,10 @@ let project: Project | undefined,
   projectCursor: string | undefined,
   refreshing = false,
   lastRefresh = 0;
+// Defensive: dedupe history pages by project id, since a legacy/index pagination edge case on the worker side
+// could otherwise still hand back a project this session already rendered a row for.
+let historyIds = new Set<string>();
+let capabilities: { offscreen: boolean; webcodecs: boolean; opfs: boolean; compression: boolean; webgpu: boolean } | undefined;
 let manualRegions: Region[] = [],
   draftRegions: Region[] = [],
   draftStart: {
@@ -38,7 +47,51 @@ let manualRegions: Region[] = [],
   toastTimer: ReturnType<typeof setTimeout> | undefined;
 let selectionTouched = false;
 let diagRefresh = false, downloadURL: string | undefined;
+// Per-code severity + authoritative occurrence count for the warning badge. Live events only ever raise a
+// code's count (never sum across events, which double-counts an already-cumulative number); `project.diagnostics`
+// — sent on every `project` event and on open — overrides the count with the true persisted total.
+const warningCounts = new Map<string, { severity: Severity; count: number }>();
+function trackDiagnostic(d: Diagnostic): void {
+  const occurrences = d.occurrences ?? d.count ?? 1, existing = warningCounts.get(d.code);
+  warningCounts.set(d.code, { severity: d.severity, count: Math.max(existing?.count || 0, occurrences) });
+}
+// `project.diagnostics` only carries totals, not severity, so a code's severity comes from the persisted
+// `project.severities` (written by Engine.persist from Diagnostics.severities, covering the whole run, not just
+// whichever diagnostic rows this session happened to load) or from a severity this session already learned via a
+// live event or a loaded diagnostic row. A code with no known severity yet is left out of the badge entirely —
+// never defaulted to 'warning' — since e.g. an info code that only fires past the first page of persisted rows
+// must not inflate the warning count just because its severity hasn't been resolved yet.
+function applyDiagnosticTotals(project: Project | undefined): void {
+  if (!project?.diagnostics) {
+    return;
+  }
+  for (const [code, count] of Object.entries(project.diagnostics)) {
+    const severity = project.severities?.[code] ?? warningCounts.get(code)?.severity;
+    if (!severity) {
+      continue;
+    }
+    warningCounts.set(code, { severity, count });
+  }
+  updateWarningBadge();
+}
+function updateWarningBadge(): void {
+  const warnings = [...warningCounts.values()].filter((v) => v.severity !== 'info').reduce((s, v) => s + v.count, 0);
+  $('warning-count').textContent = warnings > 999 ? '999+' : String(warnings);
+  $('warning-count').classList.toggle('has-issues', warnings > 0);
+}
 const video = $<HTMLVideoElement>('source-video');
+// A dedicated hidden decoder element for compatibility-mode frame-request seeks, so they never race the
+// user-facing dialog's own seeks on the same <video> (both seeking the shared element could resolve on
+// whichever 'seeked' event fired first and capture the wrong-time frame).
+const decoderVideo = $<HTMLVideoElement>('decoder-video');
+// The initial control values come from DEFAULT_SETTINGS, not a second hardcoded copy in the markup, so the
+// shipped UI default and the settings object `start()` builds can never drift apart again.
+$<HTMLSelectElement>('policy').value = DEFAULT_SETTINGS.temporalPolicy;
+$<HTMLSelectElement>('framing').value = DEFAULT_SETTINGS.framing!;
+$<HTMLSelectElement>('analysis-size').value = String(DEFAULT_SETTINGS.analysisSize);
+$<HTMLSelectElement>('memory').value = String(DEFAULT_SETTINGS.memoryMB);
+$<HTMLSelectElement>('compute').value = DEFAULT_SETTINGS.compute!;
+$<HTMLSelectElement>('decoder').value = DEFAULT_SETTINGS.decoder;
 const viewer = new TiledViewer(
   $<HTMLCanvasElement>('viewer'),
   (canvasId, level, x, y) => rpc('tile', { projectId: project?.id, canvasId, level, x, y }),
@@ -78,12 +131,12 @@ async function storageInfo(): Promise<void> {
     toast(`无法查询存储配额：${String(error)}`, true);
   }
 }
-function waitVideo(event: string, timeout = 20000): Promise<void> {
+function waitVideoOn(el: HTMLVideoElement, event: string, timeout = 20000): Promise<void> {
   return new Promise((resolve, reject) => {
     const cleanup = () => {
       clearTimeout(timer);
-      video.removeEventListener(event, done);
-      video.removeEventListener('error', failed);
+      el.removeEventListener(event, done);
+      el.removeEventListener('error', failed);
     };
     const done = () => {
         cleanup();
@@ -91,50 +144,81 @@ function waitVideo(event: string, timeout = 20000): Promise<void> {
       },
       failed = () => {
         cleanup();
-        reject(new Error(video.error?.message || 'Native media playback failed.'));
+        reject(new Error(el.error?.message || 'Native media playback failed.'));
       };
     const timer = setTimeout(() => {
       cleanup();
       reject(new Error(`Native video ${event} timed out.`));
     }, timeout);
-    video.addEventListener(event, done, { once: true });
-    video.addEventListener('error', failed, { once: true });
+    el.addEventListener(event, done, { once: true });
+    el.addEventListener('error', failed, { once: true });
   });
 }
-async function seek(time: number): Promise<void> {
-  if (video.readyState >= 2 && Math.abs(video.currentTime - time) < .00001) {
+function waitVideo(event: string, timeout = 20000): Promise<void> {
+  return waitVideoOn(video, event, timeout);
+}
+async function seekOn(el: HTMLVideoElement, time: number): Promise<void> {
+  if (el.readyState >= 2 && Math.abs(el.currentTime - time) < .00001) {
     return;
   }
-  const done = waitVideo('seeked');
-  video.currentTime = Math.min(Math.max(0, time), Math.max(0, video.duration - .00001));
+  const done = waitVideoOn(el, 'seeked');
+  el.currentTime = Math.min(Math.max(0, time), Math.max(0, el.duration - .00001));
   await done;
-  if (video.readyState < 2) {
-    await waitVideo('loadeddata');
+  if (el.readyState < 2) {
+    await waitVideoOn(el, 'loadeddata');
   }
 }
+async function seek(time: number): Promise<void> {
+  return seekOn(video, time);
+}
 let nativeReady = false;
-async function captureNativeFrame(): Promise<ImageBitmap> {
+async function captureFrame(el: HTMLVideoElement): Promise<ImageBitmap> {
   try {
-    return await createImageBitmap(video);
+    return await createImageBitmap(el);
   } catch (error) {
     // Some containers expose metadata but no capturable frame; a canvas draw is the second attempt, not a silent skip.
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    canvas.width = el.videoWidth;
+    canvas.height = el.videoHeight;
     const ctx = canvas.getContext('2d');
     if (!ctx || !canvas.width) {
       throw error;
     }
-    ctx.drawImage(video, 0, 0);
+    ctx.drawImage(el, 0, 0);
     return await createImageBitmap(canvas);
   }
 }
+async function captureNativeFrame(): Promise<ImageBitmap> {
+  return captureFrame(video);
+}
+const MEDIA_HASH_PREFIX = 'long-screen-media-hash:';
+// Matching name + byte size is not proof of identity (two different recordings can share both). Content
+// identity is a SHA-256 of the first and last 64KB, cheap to compute even for multi-gigabyte files.
+async function fileFingerprint(file: File): Promise<string> {
+  const chunk = 64 * 1024, size = file.size;
+  const head = await file.slice(0, Math.min(chunk, size)).arrayBuffer();
+  const tail = size > chunk ? await file.slice(Math.max(0, size - chunk)).arrayBuffer() : new ArrayBuffer(0);
+  const combined = new Uint8Array(head.byteLength + tail.byteLength);
+  combined.set(new Uint8Array(head), 0);
+  combined.set(new Uint8Array(tail), head.byteLength);
+  const digest = await crypto.subtle.digest('SHA-256', combined);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+function readStoredHash(projectId: string): string | null {
+  try {
+    return localStorage.getItem(MEDIA_HASH_PREFIX + projectId);
+  } catch {
+    return null;
+  }
+}
+let selectedFileHash: Promise<string | undefined> | undefined;
 async function chooseFile(file: File): Promise<void> {
   if (busy) {
     toast('请先完成或保存当前处理部分。');
     return;
   }
   selectedFile = file;
+  selectedFileHash = fileFingerprint(file).catch(() => undefined);
   mediaInfo = undefined;
   nativeReady = false;
   manualRegions = [];
@@ -145,6 +229,7 @@ async function chooseFile(file: File): Promise<void> {
   }
   videoURL = URL.createObjectURL(file);
   video.src = videoURL;
+  decoderVideo.src = videoURL;
   $('file-title').textContent = file.name;
   $('file-subtitle').textContent = `${humanBytes(file.size)} · 未上传 · 正在读取容器与首帧`;
   $('regions-count').textContent = '自动识别 ↗';
@@ -222,6 +307,7 @@ function resetView(): void {
   canvases = [];
   diagnosticRows = [];
   diagnosticCursor = undefined;
+  warningCounts.clear();
   viewer.clear();
   $('empty-state').hidden = false;
   $('canvas-badge').hidden = true;
@@ -238,6 +324,10 @@ async function start(demo?: string): Promise<void> {
     return;
   }
   if (!demo && !selectedFile) {
+    return;
+  }
+  if (capabilities && !capabilities.compression) {
+    toast('当前浏览器缺少 CompressionStream；每张原尺寸瓦片都靠它编码为 PNG，无法开始重建。', true);
     return;
   }
   resetView();
@@ -262,6 +352,16 @@ async function start(demo?: string): Promise<void> {
       regions: demo ? [] : manualRegions,
     };
     project = await rpc<Project>('start', { file: selectedFile, demo, settings, info: mediaInfo });
+    if (!demo && selectedFile) {
+      const hash = await selectedFileHash;
+      if (hash) {
+        try {
+          localStorage.setItem(MEDIA_HASH_PREFIX + project.id, hash);
+        } catch {
+          // Storage unavailable or full: source-time review just skips the identity check for this project.
+        }
+      }
+    }
     updateProject(project);
   } catch (error) {
     setBusy(false);
@@ -275,6 +375,7 @@ function updateProject(value: Project): void {
   project = value;
   $('frames-metric').textContent = value.renderedFrames.toLocaleString();
   $('canvases-metric').textContent = String(value.canvasCount);
+  applyDiagnosticTotals(value);
   if (performance.now() - lastRefresh > 1200) {
     void refreshCanvases();
   }
@@ -399,6 +500,8 @@ function addDiagnostic(d: Diagnostic): void {
   if (diagnosticRows.length > 180) {
     diagnosticRows.shift();
   }
+  trackDiagnostic(d);
+  updateWarningBadge();
   if (!diagRefresh) {
     diagRefresh = true;
     setTimeout(() => {
@@ -412,9 +515,6 @@ function renderDiagnostics(): void {
   const filter = $<HTMLSelectElement>('diagnostic-filter').value,
     rows = diagnosticRows.filter((d) => filter !== 'issues' || d.severity !== 'info');
   container.replaceChildren();
-  const warnings = diagnosticRows.filter((d) => d.severity !== 'info').reduce((s, d) => s + (d.count || 1), 0);
-  $('warning-count').textContent = warnings > 999 ? '999+' : String(warnings);
-  $('warning-count').classList.toggle('has-issues', warnings > 0);
   if (!rows.length) {
     const empty = document.createElement('div');
     empty.className = 'diagnostic-empty';
@@ -463,6 +563,12 @@ async function showDiagnostic(d: Diagnostic): Promise<void> {
       toast('原始视频未包含在项目中。请重新选择对应录屏，再通过时间戳查看；合成结果仍保存在本地。');
       return;
     }
+    // Name and size alone do not prove this is the same recording. Compare content hashes when we have one.
+    const expectedHash = project?.id ? readStoredHash(project.id) : null;
+    if (expectedHash && (await (selectedFileHash ?? fileFingerprint(selectedFile))) !== expectedHash) {
+      toast('所选文件名称与大小相符，但内容哈希与本项目最初处理的录屏不一致，拒绝作为源时刻证据显示。请重新选择正确的录屏文件。', true);
+      return;
+    }
     try {
       $<HTMLDialogElement>('source-dialog').showModal();
       await seek(d.time);
@@ -482,7 +588,14 @@ async function loadDiagnostics(reset = true): Promise<void> {
   }
   try {
     const rows = await rpc('diagnostics', { projectId: project.id, after: diagnosticCursor });
-    diagnosticRows.push(...rows.map((r: any) => r.value));
+    const loaded = rows.map((r: any) => r.value as Diagnostic);
+    diagnosticRows.push(...loaded);
+    // Persisted rows carry real severity, unlike project.diagnostics; use them to learn severity for codes this
+    // session never received a live event for (e.g. after reopening a project from history).
+    for (const d of loaded) {
+      trackDiagnostic(d);
+    }
+    applyDiagnosticTotals(project);
     diagnosticCursor = rows.at(-1)?.key || diagnosticCursor;
     $('more-diagnostics').hidden = rows.length < 100;
     renderDiagnostics();
@@ -518,11 +631,17 @@ async function history(reset = true): Promise<void> {
   try {
     if (reset) {
       projectCursor = undefined;
+      historyIds = new Set();
       $('history-list').replaceChildren();
     }
     const rows = await rpc('projects', { after: projectCursor });
     for (const row of rows) {
-      const p: Project = row.value, item = document.createElement('div');
+      const p: Project = row.value;
+      if (historyIds.has(p.id)) {
+        continue;
+      }
+      historyIds.add(p.id);
+      const item = document.createElement('div');
       item.className = 'history-item';
       const body = document.createElement('div'), title = document.createElement('strong'), sub = document.createElement('p');
       title.textContent = p.name;
@@ -706,7 +825,8 @@ worker.onmessage = (event) => {
     return;
   }
   if (m.event === 'frame-request') {
-    void seek(m.time).then(() => captureNativeFrame()).then((bitmap) =>
+    // Exclusively on decoderVideo, never the dialog's source-video: the two must not share a seek target.
+    void seekOn(decoderVideo, m.time).then(() => captureFrame(decoderVideo)).then((bitmap) =>
       worker.postMessage({ type: 'frame-response', id: m.id, bitmap }, [bitmap])
     ).catch((error) => worker.postMessage({ type: 'frame-response', id: m.id, error: String(error) }));
     return;
@@ -717,11 +837,6 @@ worker.onmessage = (event) => {
     updateProject(m.data);
   } else if (m.event === 'diagnostic') {
     addDiagnostic(m.data);
-  } else if (m.event === 'preview') {
-    if (previewURL) {
-      URL.revokeObjectURL(previewURL);
-    }
-    previewURL = URL.createObjectURL(m.blob);
   } else if (m.event === 'finished') {
     updateProject(m.data);
     setBusy(false);
@@ -882,11 +997,18 @@ globalThis.addEventListener('beforeunload', (e) => {
   }
 });
 void rpc('capabilities').then((c) => {
+  capabilities = c;
   if (!c.offscreen) {
     toast('当前浏览器缺少 OffscreenCanvas；无法运行渲染 Worker。', true);
   }
   if (!c.webcodecs) {
     toast('当前浏览器没有 WebCodecs。需要明确选择可能漏帧的兼容 seek 模式。');
+  }
+  if (!c.compression) {
+    toast('当前浏览器缺少 CompressionStream；每张原尺寸瓦片都靠它编码为 PNG，无法开始重建。', true);
+  }
+  if (!c.opfs && !('showSaveFilePicker' in window)) {
+    toast('当前浏览器既没有 OPFS 也没有文件保存对话框；重建仍可进行，但导出会失败。');
   }
 }).catch((error) => toast(`无法打开本地数据库：${String(error)}`, true));
 void storageInfo();
