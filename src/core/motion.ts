@@ -371,13 +371,15 @@ export function refineNative(
     return { x: Math.round(guess.x), y: Math.round(guess.y), error: Infinity, samples: 0, runnerUp: Infinity };
   }
   const w = b.width, h = b.height, points: number[] = [], step = Math.max(3, Math.floor(Math.sqrt(region.width * region.height / 1600)));
+  // Luma, not a single channel: a texture edge that only shows up as blue-on-green (equal red) must still count.
+  const luma = (i: number) => (b.data[i] * 77 + b.data[i + 1] * 150 + b.data[i + 2] * 29) >> 8;
   for (let y = Math.max(2, Math.ceil(region.y)); y < Math.min(h - 2, region.y + region.height); y += step) {
     for (let x = Math.max(2, Math.ceil(region.x)); x < Math.min(w - 2, region.x + region.width); x += step) {
       if (mask && !mask(x, y)) {
         continue;
       }
       const i = (y * w + x) * 4;
-      const grad = Math.abs(b.data[i - 4] - b.data[i + 4]) + Math.abs(b.data[i - w * 4] - b.data[i + w * 4]);
+      const grad = Math.abs(luma(i - 4) - luma(i + 4)) + Math.abs(luma(i - w * 4) - luma(i + w * 4));
       if (grad > 12) {
         points.push(y * w + x);
       }
@@ -545,6 +547,7 @@ export function probeScale(
   previous: Gray,
   current: Gray,
   currentFeatures: Feature[],
+  roi?: Rect,
   scales = [1.1, 1.25, 1.5, 2, 1 / 1.1, 1 / 1.25, 1 / 1.5, 1 / 2],
 ): { scale: number; error: number } | undefined {
   let best: { scale: number; error: number } | undefined;
@@ -556,7 +559,7 @@ export function probeScale(
       if (m.support < 8) {
         continue;
       }
-      const audit = auditTranslation(scaled, current, m.x, m.y, undefined, true);
+      const audit = auditTranslation(scaled, current, m.x, m.y, roi, true);
       if (audit.samples < 200 || !Number.isFinite(audit.error) || audit.agreement < .5 || audit.agreeingError > 10) {
         continue;
       }

@@ -39,21 +39,25 @@ export interface ComputeStats {
   calibration?: { cpuMS: number; gpuMS: number; bitExact: boolean };
 }
 export const BOX_LUMA_WGSL = `
-struct Params { width: u32, factor: u32, outWidth: u32, outHeight: u32 }
+struct Params { width: u32, height: u32, factor: u32, outWidth: u32, outHeight: u32 }
 @group(0) @binding(0) var<storage, read> src: array<u32>;
 @group(0) @binding(1) var<storage, read_write> dst: array<u32>;
 @group(0) @binding(2) var<uniform> p: Params;
 @compute @workgroup_size(16, 16)
 fn main(@builtin(global_invocation_id) id: vec3<u32>) {
     if (id.x >= p.outWidth || id.y >= p.outHeight) { return; }
+    // Clamp the sampled box to the image, matching the CPU path: the last row/column of an integer downscale
+    // can be smaller than factor when the native dimension isn't an exact multiple of it.
+    let bw = min(p.factor, p.width - id.x * p.factor);
+    let bh = min(p.factor, p.height - id.y * p.factor);
     var sum = 0u;
-    for (var j = 0u; j < p.factor; j++) {
-        for (var k = 0u; k < p.factor; k++) {
+    for (var j = 0u; j < bh; j++) {
+        for (var k = 0u; k < bw; k++) {
             let pixel = src[(id.y * p.factor + j) * p.width + id.x * p.factor + k];
             sum += (pixel & 255u) * 77u + ((pixel >> 8u) & 255u) * 150u + ((pixel >> 16u) & 255u) * 29u;
         }
     }
-    dst[id.y * p.outWidth + id.x] = (sum / (p.factor * p.factor)) >> 8u;
+    dst[id.y * p.outWidth + id.x] = (sum / (bw * bh)) >> 8u;
 }`;
 function deadline<T>(work: Promise<T>, ms: number): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
@@ -81,13 +85,13 @@ export class AnalysisComputer {
     inputBytes: number;
     outputBytes: number;
   };
-  constructor(
-    private mode: 'auto' | 'cpu' | 'webgpu' = 'auto',
-    private provider: GPUProvider | undefined = (globalThis.navigator as unknown as { gpu?: GPUProvider } | undefined)?.gpu,
-  ) {
+  /** `undefined` (the default, when the argument is simply omitted) resolves `navigator.gpu` lazily on first use;
+   * an explicit `null` means "no GPU in this context" and must never be upgraded by that lazy resolution. */
+  constructor(private mode: 'auto' | 'cpu' | 'webgpu' = 'auto', private provider?: GPUProvider | null) {
     this.stats.reason = mode === 'cpu' ? 'CPU requested' : 'CPU until an integer downscale is calibrated';
   }
   private async initialize(): Promise<void> {
+    if (this.provider === undefined) this.provider = (globalThis.navigator as unknown as { gpu?: GPUProvider } | undefined)?.gpu;
     if (!this.provider) throw new Error('WebGPU unavailable in this context');
     const adapter = await deadline(this.provider.requestAdapter({ powerPreference: 'high-performance' }), 4000);
     if (!adapter) throw new Error('No WebGPU adapter');
@@ -161,8 +165,8 @@ export class AnalysisComputer {
   }
   private async dispatch(image: RGBA, factor: number): Promise<Gray> {
     const device = this.device!;
-    const width = Math.floor(image.width / factor), height = Math.floor(image.height / factor);
-    if (!width || !height) throw new Error('GPU factor exceeds an image dimension');
+    // Same dimensions as the CPU path (raster.ts): a dimension smaller than `factor` still yields one output pixel.
+    const width = Math.max(1, Math.floor(image.width / factor)), height = Math.max(1, Math.floor(image.height / factor));
     const inputBytes = image.data.byteLength, outputBytes = width * height * 4;
     if (Math.max(inputBytes, outputBytes) > Math.min(device.limits.maxStorageBufferBindingSize, device.limits.maxBufferSize)) {
       throw new Error('GPU buffer limit exceeded');
@@ -171,12 +175,15 @@ export class AnalysisComputer {
       this.releaseBuffers();
       const input = device.createBuffer({ size: inputBytes, usage: 128 | 8 }),
         output = device.createBuffer({ size: outputBytes, usage: 128 | 4 });
-      const params = device.createBuffer({ size: 16, usage: 64 | 8 }), read = device.createBuffer({ size: outputBytes, usage: 1 | 8 });
+      // WGSL rounds a uniform-address-space struct to 16-byte alignment: five u32 fields still cost 32 bytes
+      // (SizeOf(Params) = roundUp(16, 20) = 32), and Chrome/Dawn validates the bound buffer against that
+      // minimum, so a 20-byte allocation is rejected there even though Deno's wgpu tolerated it.
+      const params = device.createBuffer({ size: 32, usage: 64 | 8 }), read = device.createBuffer({ size: outputBytes, usage: 1 | 8 });
       this.buffers = { input, output, params, read, inputBytes, outputBytes };
     }
     const { input, output, params, read } = this.buffers;
     device.queue.writeBuffer(input, 0, image.data);
-    device.queue.writeBuffer(params, 0, new Uint32Array([image.width, factor, width, height]));
+    device.queue.writeBuffer(params, 0, new Uint32Array([image.width, image.height, factor, width, height]));
     const bindings = device.createBindGroup({
       layout: this.pipeline!.getBindGroupLayout(0),
       entries: [input, output, params].map((buffer, binding) => ({ binding, resource: { buffer } })),

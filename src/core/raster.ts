@@ -9,17 +9,19 @@ export function downscaleGray(image: RGBA, factor: number): Gray {
     throw new Error(`Invalid analysis factor ${factor}.`);
   }
   const width = Math.max(1, Math.floor(image.width / factor)), height = Math.max(1, Math.floor(image.height / factor));
-  const data = new Uint8Array(width * height), src = image.data, area = factor * factor;
+  const data = new Uint8Array(width * height), src = image.data;
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
+      // Clamp the sampled box to the image: a dimension forced up to 1 by the max(1, …) above can be smaller than `factor`.
+      const bh = Math.min(factor, image.height - y * factor), bw = Math.min(factor, image.width - x * factor);
       let sum = 0;
-      for (let j = 0; j < factor; j++) {
+      for (let j = 0; j < bh; j++) {
         let i = ((y * factor + j) * image.width + x * factor) * 4;
-        for (let k = 0; k < factor; k++, i += 4) {
+        for (let k = 0; k < bw; k++, i += 4) {
           sum += src[i] * 77 + src[i + 1] * 150 + src[i + 2] * 29;
         }
       }
-      data[y * width + x] = (sum / area) >> 8;
+      data[y * width + x] = (sum / (bw * bh)) >> 8;
     }
   }
   return { width, height, data };
@@ -41,13 +43,15 @@ export function downscaleRGBA(image: RGBA, factor: number): RGBA {
     throw new Error(`Invalid thumbnail factor ${factor}.`);
   }
   const width = Math.max(1, Math.floor(image.width / factor)), height = Math.max(1, Math.floor(image.height / factor));
-  const data = new Uint8ClampedArray(width * height * 4), src = image.data, area = factor * factor;
+  const data = new Uint8ClampedArray(width * height * 4), src = image.data;
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
+      // Clamp the sampled box to the image: a dimension forced up to 1 by the max(1, …) above can be smaller than `factor`.
+      const bh = Math.min(factor, image.height - y * factor), bw = Math.min(factor, image.width - x * factor), area = bw * bh;
       let r = 0, g = 0, b = 0;
-      for (let j = 0; j < factor; j++) {
+      for (let j = 0; j < bh; j++) {
         let i = ((y * factor + j) * image.width + x * factor) * 4;
-        for (let k = 0; k < factor; k++, i += 4) {
+        for (let k = 0; k < bw; k++, i += 4) {
           r += src[i];
           g += src[i + 1];
           b += src[i + 2];
