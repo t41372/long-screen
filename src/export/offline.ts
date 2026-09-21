@@ -1,7 +1,7 @@
 /** A self-contained file:// viewer. It reads tiles as images; no server or JSON fetch is needed. */
 export function offlineViewer(manifest: unknown): string {
-    const safe = JSON.stringify(manifest).replace(/</g, '\\u003c');
-    return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Long Screen · 离线画布</title>
+  const safe = JSON.stringify(manifest).replace(/</g, '\\u003c');
+  return `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Long Screen · 离线画布</title>
  <style>*{box-sizing:border-box}body{margin:0;background:#eeeee8;color:#263b33;font:14px system-ui}header{height:64px;display:flex;align-items:center;gap:18px;padding:12px 24px;background:#faf9f4;border-bottom:1px solid #ddd}h1{font-size:19px;white-space:nowrap}select,button{padding:9px;border:1px solid #ccc;background:white;border-radius:8px}canvas{position:absolute;top:64px;left:0;width:100%;height:calc(100% - 100px);touch-action:none}footer{position:fixed;bottom:0;height:36px;left:0;right:0;background:#faf9f4;padding:9px 18px;font-size:12px}small{margin-left:auto}@media(max-width:640px){header{gap:8px;padding:8px}small{display:none}}</style>
  <header><h1>▥ Long Screen</h1><select id="layers"></select><button id="fit">适应</button><button id="native">1:1</button><small>本地原尺寸瓦片 · 拖动 / 滚轮缩放</small></header><canvas id="view"></canvas><footer id="status"></footer>
  <script>const M=${safe};const C=document.getElementById('view'),X=C.getContext('2d'),S=document.getElementById('layers'),status=document.getElementById('status');let meta,scale=1,ox=0,oy=0,down,cache=new Map(),pending=0,scheduled=false;for(const m of M.canvases){const o=document.createElement('option');o.value=m.id;o.textContent=m.name+' · '+m.bounds.width+'×'+m.bounds.height;S.append(o)}
