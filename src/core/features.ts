@@ -24,44 +24,43 @@ export function smooth(g: Gray): Gray {
 /** Spatially balanced minimum-eigenvalue corners and deterministic 256-bit BRIEF. */
 export function extractFeatures(image: Gray, maxFeatures = 480, roi?: Rect): Feature[] {
     const g = smooth(image), { width: w, height: h, data: d } = g;
-    const candidates: {
-        x: number;
-        y: number;
-        score: number;
-    }[] = [], cell = 28;
+    // Summed-area tensors: the old inner loop recomputed the same nine gradients for every candidate.
+    // Integer sums in Float64 preserve the exact eigenvalue scores (including tie order) of that implementation.
+    const stride = w + 1, length = stride * (h + 1);
+    const tx = new Float64Array(length), ty = new Float64Array(length), txy = new Float64Array(length);
+    for (let y = 1; y < h - 1; y++) {
+        let xx = 0, yy = 0, xy = 0;
+        for (let x = 1; x < w - 1; x++) {
+            const i = y * w + x, gx = d[i + 1] - d[i - 1], gy = d[i + w] - d[i - w];
+            xx += gx * gx; yy += gy * gy; xy += gx * gy;
+            const j = (y + 1) * stride + x + 1;
+            tx[j] = tx[j - stride] + xx;
+            ty[j] = ty[j - stride] + yy;
+            txy[j] = txy[j - stride] + xy;
+        }
+    }
+    const candidates: { x: number; y: number; score: number }[] = [], cell = 28;
+    const localX = new Int32Array(cell * cell), localY = new Int32Array(cell * cell), localScore = new Float64Array(cell * cell);
     for (let by = 11; by < h - 11; by += cell)
         for (let bx = 11; bx < w - 11; bx += cell) {
-            const local: {
-                x: number;
-                y: number;
-                score: number;
-            }[] = [];
+            let count = 0;
             for (let y = by; y < Math.min(h - 11, by + cell); y++)
                 for (let x = bx; x < Math.min(w - 11, bx + cell); x++) {
-                    if (roi && !contains(roi, x, y))
-                        continue;
-                    let xx = 0, xy = 0, yy = 0;
-                    for (let j = -1; j <= 1; j++)
-                        for (let k = -1; k <= 1; k++) {
-                            const i = (y + j) * w + x + k, gx = d[i + 1] - d[i - 1], gy = d[i + w] - d[i - w];
-                            xx += gx * gx;
-                            xy += gx * gy;
-                            yy += gy * gy;
-                        }
+                    if (roi && !contains(roi, x, y)) continue;
+                    const a = (y - 1) * stride + x - 1, b = a + 3, c = a + 3 * stride, e = c + 3;
+                    const xx = tx[e] - tx[b] - tx[c] + tx[a], yy = ty[e] - ty[b] - ty[c] + ty[a], xy = txy[e] - txy[b] - txy[c] + txy[a];
                     const score = (xx + yy - Math.sqrt((xx - yy) ** 2 + 4 * xy * xy)) / 2;
-                    if (score > 100)
-                        local.push({ x, y, score });
+                    if (score > 100) { localX[count] = x; localY[count] = y; localScore[count++] = score; }
                 }
-            local.sort((a, b) => b.score - a.score);
-            const chosen: typeof local = [];
-            for (const p of local) {
-                if (chosen.every(q => (p.x - q.x) ** 2 + (p.y - q.y) ** 2 > 36)) {
-                    chosen.push(p);
-                    if (chosen.length === 3)
-                        break;
-                }
+            // Three stable argmax passes replace a sort and hundreds of short-lived objects per cell.
+            for (let n = 0; n < 3; n++) {
+                let best = -1, score = 100;
+                for (let i = 0; i < count; i++) if (localScore[i] > score) { best = i; score = localScore[i]; }
+                if (best < 0) break;
+                const x = localX[best], y = localY[best];
+                candidates.push({ x, y, score });
+                for (let i = 0; i < count; i++) if ((localX[i] - x) ** 2 + (localY[i] - y) ** 2 <= 36) localScore[i] = 0;
             }
-            candidates.push(...chosen);
         }
     candidates.sort((a, b) => b.score - a.score);
     return candidates.slice(0, maxFeatures).map(p => {

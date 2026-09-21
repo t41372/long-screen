@@ -90,3 +90,12 @@ export function meanAbsoluteDifference(a: RGBA, b: RGBA): number {
         s += Math.abs(a.data[i] - b.data[i]) + Math.abs(a.data[i + 1] - b.data[i + 1]) + Math.abs(a.data[i + 2] - b.data[i + 2]);
     return s / (a.data.length / 4 * 3);
 }
+
+/** Exact observation equality. Small or single-frame content updates must never be discarded by a similarity threshold. */
+export function equalRGBA(a: RGBA, b: RGBA): boolean {
+    if (a.width !== b.width || a.height !== b.height) return false;
+    const x = new Uint32Array(a.data.buffer, a.data.byteOffset, a.data.length / 4);
+    const y = new Uint32Array(b.data.buffer, b.data.byteOffset, b.data.length / 4);
+    for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
+    return true;
+}

@@ -5,13 +5,15 @@ import { Diagnostics } from '../storage/diagnostics.ts';
 import { TileStore } from '../storage/tiles.ts';
 import { extractFeatures, grayscale, matchFeatures } from '../core/features.ts';
 import { auditTranslation, estimateMotion, extractPatches, type NativeRefinement, probeScale, refineNative, refinePatches, translationHypotheses } from '../core/motion.ts';
-import { LayerLearner, RegionAtlas, regionContains } from '../core/layers.ts';
+import { LayerLearner, RegionAtlas, regionContains, stickyOcclusions } from '../core/layers.ts';
 import { PoseGraph, type PoseNode } from '../core/pose-graph.ts';
 import { KeyframeIndex, type Keyframe } from '../core/keyframes.ts';
 import { Compositor } from '../core/compositor.ts';
 import { pad } from '../core/math.ts';
-import { analysisFactor, downscaleGray, thumbnail } from '../core/raster.ts';
+import { analysisFactor, equalRGBA, thumbnail } from '../core/raster.ts';
 import { encodeRGBA } from '../codec/png.ts';
+import { buildFramedCanvas } from '../core/framing.ts';
+import { AnalysisComputer } from '../core/compute.ts';
 interface State {
     region: Region;
     code: number;
@@ -51,14 +53,19 @@ export class Engine {
     private pauseWaiters: (() => void)[] = [];
     private processed = 0;
     private regions: Region[] = [];
+    private timings: Record<string, number> = {};
+    private duplicates = 0;
+    private skippedPaints = 0;
     private atlas?: RegionAtlas;
     private source: FrameSource;
+    private computer: AnalysisComputer;
     /** Integer analysis factor: analysis pixels × factor = native pixels, exactly. */
     readonly factor: number;
     /** Native refinement radius must cover the ±factor/2 quantisation of an integer analysis estimate. */
     readonly refineRadius: number;
     constructor(private db: KV, source: FrameSource, settings: Settings, private events: EngineEvents) {
         this.source = source;
+        this.computer = new AnalysisComputer(settings.compute || 'cpu');
         const id = crypto.randomUUID(), now = new Date().toISOString();
         this.project = { id, created: now, updated: now, name: source.info.name, settings, media: source.info, status: 'scanning', frames: 0, renderedFrames: 0, canvasCount: 0, tiles: 0, observedPixels: 0, diagnostics: {}, regions: [] };
         this.store = new Namespace(db, `run/${id}/`);
@@ -77,10 +84,10 @@ export class Engine {
         if (performance.now() - this.lastProgress > 100)
             await new Promise<void>(resolve => setTimeout(resolve, 0));
     }
-    private gray(image: RGBA): Gray {
+    private async gray(image: RGBA): Promise<Gray> {
         if (image.width !== this.source.info.width || image.height !== this.source.info.height)
             throw new Error(`FRAME_GEOMETRY_CHANGED: observation is ${image.width}×${image.height}; the run is ${this.source.info.width}×${this.source.info.height}.`);
-        return downscaleGray(image, this.factor);
+        return this.computer.gray(image, this.factor);
     }
     private async persist(): Promise<void> {
         this.project.updated = new Date().toISOString();
@@ -111,11 +118,32 @@ export class Engine {
                 await this.diagnostics.emit({ code: 'MEDIA_NOTICE', severity: 'warning', message: warning });
             if (this.source.info.width * this.source.info.height * 4 * 4 > this.project.settings.memoryMB * 1024 * 1024 * .8)
                 await this.diagnostics.emit({ code: 'FRAME_MEMORY_PRESSURE', severity: 'warning', message: '单帧原始像素及参考帧占用已接近所选缓存预算。解码器/GPU 自身内存不受 JavaScript 缓存预算控制。', action: '不会静默降低输出分辨率；内存不足时保留已提交数据并报告失败。' });
+            let phaseStart = performance.now();
             await this.scan();
+            this.timings.scanMS = performance.now() - phaseStart;
             if (!this.project.frames)
                 throw new Error('No observations could be decoded. Nothing has been marked as reconstructed.');
+            phaseStart = performance.now();
             await this.solve();
+            this.timings.solveMS = performance.now() - phaseStart;
+            phaseStart = performance.now();
             await this.render();
+            this.timings.renderMS = performance.now() - phaseStart;
+            phaseStart = performance.now();
+            if (this.project.settings.framing === 'context') {
+                this.phase = 'framing';
+                const originals: CanvasMeta[] = [];
+                for await (const { value } of iterate<CanvasMeta>(this.store, 'canvas/')) if (value.kind === 'moving' && value.tileCount && !value.attachedTo) originals.push(value);
+                this.events.progress({ phase: 'framing', fraction: 0, frames: this.project.renderedFrames, time: 0, message: '保留原始外框；只延伸背景，不拉伸侧栏文字或重复图标。' });
+                for (const meta of originals) {
+                    const region = this.regions.find(r => r.id === meta.layer)!;
+                    const framed = await buildFramedCanvas(this.store, this.tiles, meta, region, this.regions, () => this.checkpoint());
+                    if (framed) { this.project.canvasCount++; this.project.tiles += framed.tileCount; }
+                }
+                if (originals.length) await this.diagnostics.emit({ code: 'PRESENTATION_FRAME', severity: 'info', message: '带外框视图与原始二维内容分别保留。外框来自参考帧，延长部分仅为装饰背景，不算作已观察内容；不会拉伸或复制工具栏图标。其他 pane 在外框中只是参考快照。' });
+            }
+            this.timings.framingMS = performance.now() - phaseStart;
+            phaseStart = performance.now();
             this.phase = 'pyramid';
             this.project.status = 'pyramid';
             await this.persist();
@@ -126,6 +154,8 @@ export class Engine {
                 }
                 built++;
             }
+            this.timings.pyramidMS = performance.now() - phaseStart;
+            await this.store.put('performance', { ...this.timings, exactDuplicateFrames: this.duplicates, skippedPaints: this.skippedPaints, tileEncodes: this.tiles.encodedTiles, tileDecodes: this.tiles.decodedTiles, tileEvictions: this.tiles.evictions, compute: this.computer.stats, note: 'Stage timings include decoding, storage and yields; not GPU-only kernel time.' });
             this.project.status = this.partial ? 'partial' : 'complete';
             await this.diagnostics.flush();
             await this.persist();
@@ -146,6 +176,7 @@ export class Engine {
             }
         }
         finally {
+            this.computer.dispose();
             this.source.dispose();
         }
         return this.project;
@@ -160,10 +191,15 @@ export class Engine {
         try {
             for await (const frame of this.source.frames()) {
                 await this.checkpoint();
-                const g = this.gray(frame.image), features = extractFeatures(g);
+                const duplicate = !!previousImage && equalRGBA(previousImage, frame.image);
+                const g = duplicate ? previous! : await this.gray(frame.image), features = duplicate ? previousFeatures! : extractFeatures(g);
                 learner ??= new LayerLearner(g.width, g.height);
                 let field: MotionField;
-                if (previous) {
+                if (duplicate && lastField) {
+                    this.duplicates++;
+                    field = { ...lastField, motions: [{ x: 0, y: 0, support: features.length, unique: features.length, confidence: 1, error: 0, ambiguous: false }], labels: new Uint8Array(lastField.labels.length), dynamic: new Uint8Array(lastField.labels.length), difference: 0, unknown: false, zoom: 1 };
+                }
+                else if (previous) {
                     field = estimateMotion(previous, g, lastField, previousFeatures, features);
                     learner.add(field, previous, g, previousImage, frame.image);
                 }
@@ -171,8 +207,11 @@ export class Engine {
                     const cols = Math.ceil(g.width / 24), rows = Math.ceil(g.height / 24);
                     field = { motions: [{ x: 0, y: 0, support: features.length, unique: features.length, confidence: 1, error: 0, ambiguous: false }], labels: new Uint8Array(cols * rows), confidence: new Uint8Array(cols * rows).fill(255), dynamic: new Uint8Array(cols * rows), cols, rows, cell: 24, difference: 0, featureCount: features.length, unknown: false, zoom: 1 };
                     this.events.preview(new Blob([await encodeRGBA(thumbnail(frame.image, 640))], { type: 'image/png' }));
+                    await this.diagnostics.emit({ code: 'COMPUTE_BACKEND', severity: 'info', message: `${this.computer.stats.backend} — ${this.computer.stats.reason}。匹配、位置图与像素合成仍在 CPU。`, detail: this.computer.stats });
+                    if (this.project.settings.framing === 'context')
+                        await this.store.put('frame-reference', { frame: frame.index, image: new Blob([await encodeRGBA(frame.image)], { type: 'image/png' }) });
                 }
-                const record: ScanRecord = { index: frame.index, time: frame.time, duration: frame.duration, field };
+                const record: ScanRecord = { index: frame.index, time: frame.time, duration: frame.duration, field, features: duplicate ? undefined : features, duplicate };
                 pending.push({ key: `scan/${pad(frame.index)}`, value: record });
                 if (pending.length >= 24)
                     await this.store.putMany(pending.splice(0));
@@ -238,7 +277,7 @@ export class Engine {
         const graph = new PoseGraph(this.store), index = new KeyframeIndex(this.store, async (message) => this.diagnostics.emit({ code: 'RELOCALIZATION_BUDGET', severity: 'warning', message }));
         const atlas = this.atlas!, f = this.factor, radius = this.refineRadius, attachments = new Map<string, Attachment>();
         const states: State[] = this.regions.filter(r => r.kind !== 'ignore').map(region => ({ region, code: atlas.code(region), canvasId: '', fragment: 0, pose: { x: 0, y: 0 }, velocity: { x: 0, y: 0 }, blind: false, weak: false, started: false }));
-        let previous: RGBA | undefined, previousGray: Gray | undefined, solved = 0;
+        let previous: RGBA | undefined, previousGray: Gray | undefined, previousFeaturesAll: Feature[] | undefined, previousPlan: FramePlan | undefined, solved = 0;
         const pending: { key: string; value: FramePlan }[] = [];
         const resolveTarget = (id: string): string => {
             const seen = new Set<string>();
@@ -253,7 +292,22 @@ export class Engine {
             const scan = await this.store.get<ScanRecord>(`scan/${pad(frame.index)}`);
             if (!scan)
                 break;
-            const image = frame.image, g = this.gray(image), features = extractFeatures(g), native = grayscale(image.data, image.width, image.height);
+            if (scan.duplicate && previousPlan && states.every(s => !s.blind)) {
+                const plan: FramePlan = { index: frame.index, time: frame.time, duplicate: true,
+                    placements: previousPlan.placements.map(p => ({ ...p, time: frame.time })) };
+                pending.push({ key: `plan/${pad(frame.index)}`, value: plan });
+                if (pending.length >= 24) await this.store.putMany(pending.splice(0));
+                previousPlan = plan;
+                for (const s of states) s.velocity = { x: 0, y: 0 };
+                solved = frame.index + 1;
+                await this.report(solved, frame.time, '完全相同的观察复用定位；保留源帧与时间记录。', solved / this.project.frames);
+                if (solved >= this.project.frames) break;
+                if (this.stopRequested) { this.partial = true; this.stopRequested = false; break; }
+                continue;
+            }
+            const image = frame.image, g = scan.duplicate && previousGray ? previousGray : await this.gray(image);
+            const features = scan.features || (scan.duplicate ? previousFeaturesAll : undefined) || extractFeatures(g);
+            const native = grayscale(image.data, image.width, image.height);
             const placements: Placement[] = [];
             for (const state of states) {
                 const r = state.region, code = state.code, roi = { x: r.rect.x / f, y: r.rect.y / f, width: r.rect.width / f, height: r.rect.height / f };
@@ -481,14 +535,18 @@ export class Engine {
                             await index.add(k);
                     }
                 }
-                placements.push({ layer: r.id, canvasId: state.canvasId, node: state.lastNode?.id || '', x: state.pose.x, y: state.pose.y, confidence, uncertain, time: frame.time, ...(skip ? { skip: true } : {}) });
+                const occlusions = previous && r.kind === 'moving' && (decision === 'tracked' || decision === 'static') ? stickyOcclusions(previous, image, r, delta, previousPlan?.placements.find(p => p.layer === r.id && p.canvasId === state.canvasId)?.occlusions) : [];
+                if (occlusions.length) await this.diagnostics.emit({ code: 'STICKY_OCCLUSION', severity: 'info', frame: frame.index, time: frame.time, canvasId: state.canvasId, region: occlusions[0], message: '顶端纹理支持屏幕固定而非页面位移；本次观察的固定遮挡不写入移动画布。原始参考界面保留在外框呈现中。' });
+                placements.push({ layer: r.id, canvasId: state.canvasId, node: state.lastNode?.id || '', x: state.pose.x, y: state.pose.y, confidence, uncertain, time: frame.time, ...(skip ? { skip: true } : {}), ...(occlusions.length ? { occlusions } : {}) });
                 if (r.kind === 'moving') {
                     state.blind = !textured;
                     state.weak = decision === 'tracked' ? weakStep : false;
                 }
                 state.previousFeatures = ownFeatures;
             }
-            pending.push({ key: `plan/${pad(frame.index)}`, value: { index: frame.index, time: frame.time, placements } });
+            previousPlan = { index: frame.index, time: frame.time, placements, duplicate: scan.duplicate };
+            pending.push({ key: `plan/${pad(frame.index)}`, value: previousPlan });
+            previousFeaturesAll = features;
             if (pending.length >= 24)
                 await this.store.putMany(pending.splice(0));
             previous = image;
@@ -534,6 +592,10 @@ export class Engine {
         const regionMap = new Map(this.regions.map(r => [r.id, r])), attachments = new Map<string, Attachment>();
         for await (const { value } of iterate<Attachment>(this.store, 'attach/'))
             attachments.set(value.id, value);
+        const fixedPixels = new Map<string, Uint32Array>(), previousPlacements = new Map<string, Placement>();
+        const fixedBytes = this.regions.filter(r => r.kind === 'fixed').reduce((n, r) => n + Math.ceil(r.rect.width) * Math.ceil(r.rect.height) * 4, 0);
+        this.tiles.configureBudget(this.project.settings.memoryMB, this.source.info.width * this.source.info.height * 5 + fixedBytes + 8 * 1024 * 1024);
+        let lastFlush = performance.now();
         for await (const frame of this.source.frames()) {
             await this.checkpoint();
             const plan = await this.store.get<FramePlan>(`plan/${pad(frame.index)}`);
@@ -559,6 +621,30 @@ export class Engine {
                 if (!meta)
                     throw new Error('Canvas metadata is missing.');
                 const region = regionMap.get(p.layer)!;
+                const last = previousPlacements.get(p.layer);
+                let unchanged = !!plan.duplicate && !!last && last.canvasId === p.canvasId && last.x === p.x && last.y === p.y;
+                if (region.kind === 'fixed' && !unchanged) {
+                    const rect = region.rect, rw = Math.ceil(rect.width), rh = Math.ceil(rect.height), code = this.atlas!.code(region);
+                    const old = fixedPixels.get(region.id), saved = old || new Uint32Array(rw * rh);
+                    const src = new Uint32Array(image.data.buffer, image.data.byteOffset, image.data.length / 4);
+                    unchanged = !!old;
+                    for (let y = 0; y < rh; y++) for (let x = 0; x < rw; x++) {
+                        const nx = Math.floor(rect.x) + x, ny = Math.floor(rect.y) + y;
+                        if (!this.atlas!.contains(code, nx, ny)) continue;
+                        const i = ny * image.width + nx, j = y * rw + x;
+                        if (saved[j] !== src[i]) { saved[j] = src[i]; unchanged = false; }
+                    }
+                    fixedPixels.set(region.id, saved);
+                }
+                previousPlacements.set(p.layer, p);
+                if (unchanged) {
+                    this.skippedPaints++;
+                    meta.lastTime = p.time;
+                    await this.store.put(`canvas/${p.canvasId}`, meta);
+                    latest = region.kind === 'moving' ? meta : latest;
+                    decisions.push({ canvasId: p.canvasId, placement: p, addedPixels: 0, conflictPixels: 0, uncertainPixels: 0, reusedExactObservation: true });
+                    continue;
+                }
                 const stats = await compositor.add(image, region, p, frame.index, meta);
                 this.project.tiles += stats.tiles;
                 this.project.observedPixels += stats.added;
@@ -569,7 +655,8 @@ export class Engine {
             // Every decoded observation has a durable placement and a pixel contribution ledger.
             await this.store.put(`observation/${pad(frame.index)}`, { frame: frame.index, time: frame.time, decisions });
             this.project.renderedFrames = frame.index + 1;
-            if (frame.index % 8 === 0) {
+            if (performance.now() - lastFlush >= 1200) {
+                lastFlush = performance.now();
                 await this.tiles.flush();
                 await this.diagnostics.flush();
             }

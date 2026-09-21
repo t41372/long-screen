@@ -66,13 +66,21 @@ export function countCovered(coverage: Uint8Array): number {
 }
 export class TileStore {
     private cache = new Map<string, Tile>();
-    readonly maxTiles: number;
+    maxTiles: number;
+    encodedTiles = 0;
+    decodedTiles = 0;
+    evictions = 0;
     peakResidentTiles = 0;
     constructor(readonly db: KV, readonly size = 512, memoryMB = 128, readonly codec: TileCodec = pngTileCodec) {
         if (!Number.isInteger(size) || size < QUALITY_BLOCK || size % QUALITY_BLOCK)
             throw new Error(`Tile size must be a positive multiple of ${QUALITY_BLOCK}.`);
         // Reserve most requested working memory for native frames, decoder surfaces, features, and UI.
         this.maxTiles = Math.max(2, Math.floor(memoryMB * 1024 * 1024 * .30 / (size * size * 4.3)));
+    }
+    /** Rebalance the same working-memory budget between passes. Rendering no longer holds solve-reference frames. */
+    configureBudget(memoryMB: number, reservedBytes: number): void {
+        const available = Math.max(0, memoryMB * 1024 * 1024 - reservedBytes);
+        this.maxTiles = Math.max(2, Math.floor(available * .8 / (this.size * this.size * 4.3)));
     }
     async get(canvasId: string, x: number, y: number, level = 0): Promise<Tile> {
         const key = tileKey(canvasId, level, x, y);
@@ -85,9 +93,11 @@ export class TileStore {
         while (this.cache.size >= this.maxTiles) {
             const [oldKey, old] = this.cache.entries().next().value!;
             await this.save(old);
+            this.evictions++;
             this.cache.delete(oldKey);
         }
         const stored = await this.db.get<StoredTile>(`tile/${key}`), n = this.size * this.size, blocks = Math.ceil(this.size / QUALITY_BLOCK) ** 2;
+        if (stored) this.decodedTiles++;
         const pixels = stored ? await this.codec.decode(stored.blob, this.size) : new Uint8ClampedArray(n * 4);
         t = { canvasId, x, y, level, pixels, coverage: stored?.coverage || new Uint8Array(Math.ceil(n / 8)), quality: stored?.quality || new Uint8Array(blocks), conflicts: stored?.conflicts || new Uint8Array(blocks), owner: stored?.owner || new Uint32Array(blocks), score: stored?.score || new Float32Array(blocks), frozen: stored?.frozen || new Uint8Array(blocks), dirty: false, existed: !!stored };
         this.cache.set(key, t);
@@ -97,6 +107,7 @@ export class TileStore {
     async save(t: Tile): Promise<void> {
         if (!t.dirty)
             return;
+        this.encodedTiles++;
         const blob = await this.codec.encode({ width: this.size, height: this.size, data: t.pixels }), key = tileKey(t.canvasId, t.level, t.x, t.y);
         const stored: StoredTile = { blob, coverage: t.coverage, quality: t.quality, conflicts: t.conflicts, owner: t.owner, score: t.score, frozen: t.frozen, level: t.level, x: t.x, y: t.y };
         await this.db.putMany([{ key: `tile/${key}`, value: stored }, { key: `tile-index/${key}`, value: { canvasId: t.canvasId, level: t.level, x: t.x, y: t.y, observed: countCovered(t.coverage) } satisfies TileIndex }]);

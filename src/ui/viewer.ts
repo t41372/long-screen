@@ -23,11 +23,12 @@ export class TiledViewer {
     private focus?: Rect;
     private maxCache = 48;
     private lastLOD = 0;
+    private animation = 0;
     constructor(private canvas: HTMLCanvasElement, private fetch: (canvasId: string, level: number, x: number, y: number) => Promise<TilePayload | null>, private changed: (text: string) => void, private fail: (error: unknown) => void, private tileSize = 512) {
         this.ctx = canvas.getContext('2d')!;
         new ResizeObserver(() => this.schedule()).observe(canvas);
         canvas.addEventListener('wheel', e => { e.preventDefault(); const r = canvas.getBoundingClientRect(); this.zoom(Math.exp(-e.deltaY * .0015), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
-        canvas.addEventListener('pointerdown', e => { const r = canvas.getBoundingClientRect(); this.pointers.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top }); canvas.setPointerCapture(e.pointerId); });
+        canvas.addEventListener('pointerdown', e => { this.animation++; const r = canvas.getBoundingClientRect(); this.pointers.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top }); canvas.setPointerCapture(e.pointerId); });
         canvas.addEventListener('pointermove', e => {
             if (!this.pointers.has(e.pointerId))
                 return;
@@ -53,22 +54,44 @@ export class TiledViewer {
     setCanvas(meta: CanvasMeta, tileSize: number): void { const different = this.meta?.id !== meta.id || this.tileSize !== tileSize; this.meta = meta; this.tileSize = tileSize; this.maxCache = globalThis.innerWidth < 700 ? 20 : 48; if (different) {
         this.invalidate();
         this.focus = undefined;
-        this.fit();
+        this.fit(false);
     }
     else
         this.schedule(); }
-    clear(): void { this.meta = undefined; this.invalidate(); this.schedule(); }
+    clear(): void { this.animation++; this.meta = undefined; this.invalidate(); this.schedule(); }
     invalidate(): void { this.generation++; for (const entry of this.cache.values())
         entry.bitmap?.close(); this.cache.clear(); this.loading.clear(); this.schedule(); }
     refresh(): void { for (const [key, t] of this.cache)
         if (!t.bitmap)
             this.cache.delete(key); this.schedule(); }
     setQuality(on: boolean): void { this.overlay = on; this.schedule(); }
-    fit(): void { const m = this.meta; if (!m || !m.bounds.width || !m.bounds.height)
-        return; const w = this.canvas.clientWidth, h = this.canvas.clientHeight; this.scale = Math.min((w - 64) / m.bounds.width, (h - 64) / m.bounds.height); this.scale = Math.max(1e-8, this.scale); this.ox = (w - m.bounds.width * this.scale) / 2 - m.bounds.x * this.scale; this.oy = (h - m.bounds.height * this.scale) / 2 - m.bounds.y * this.scale; this.schedule(); }
-    native(): void { this.zoom(1 / this.scale); }
-    zoom(factor: number, x = this.canvas.clientWidth / 2, y = this.canvas.clientHeight / 2): void { const next = Math.min(12, Math.max(1e-9, this.scale * factor)), ratio = next / this.scale; this.ox = x - (x - this.ox) * ratio; this.oy = y - (y - this.oy) * ratio; this.scale = next; this.schedule(); }
-    focusRegion(region: Rect): void { this.focus = region; this.scale = Math.min(this.canvas.clientWidth / (region.width + 80), this.canvas.clientHeight / (region.height + 80), 1.5); this.ox = this.canvas.clientWidth / 2 - (region.x + region.width / 2) * this.scale; this.oy = this.canvas.clientHeight / 2 - (region.y + region.height / 2) * this.scale; this.schedule(); }
+    private moveTo(scale: number, ox: number, oy: number, animate: boolean): void {
+        const token = ++this.animation;
+        if (!animate || globalThis.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+            this.scale = scale; this.ox = ox; this.oy = oy; this.schedule(); return;
+        }
+        const from = { scale: this.scale, x: this.ox, y: this.oy }, start = performance.now();
+        const step = (now: number) => {
+            if (token !== this.animation) return;
+            const t = Math.min(1, (now - start) / 220), ease = 1 - (1 - t) ** 3;
+            this.scale = from.scale + (scale - from.scale) * ease;
+            this.ox = from.x + (ox - from.x) * ease; this.oy = from.y + (oy - from.y) * ease;
+            this.schedule(); if (t < 1) requestAnimationFrame(step);
+        };
+        requestAnimationFrame(step);
+    }
+    fit(animate = true): void {
+        const m = this.meta; if (!m || !m.bounds.width || !m.bounds.height) return;
+        const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
+        const scale = Math.max(1e-8, Math.min((w - 64) / m.bounds.width, (h - 64) / m.bounds.height));
+        this.moveTo(scale, (w - m.bounds.width * scale) / 2 - m.bounds.x * scale, (h - m.bounds.height * scale) / 2 - m.bounds.y * scale, animate);
+    }
+    native(): void { this.zoom(1 / this.scale, undefined, undefined, true); }
+    zoom(factor: number, x = this.canvas.clientWidth / 2, y = this.canvas.clientHeight / 2, animate = false): void {
+        const next = Math.min(12, Math.max(1e-9, this.scale * factor)), ratio = next / this.scale;
+        this.moveTo(next, x - (x - this.ox) * ratio, y - (y - this.oy) * ratio, animate);
+    }
+    focusRegion(region: Rect): void { this.animation++; this.focus = region; this.scale = Math.min(this.canvas.clientWidth / (region.width + 80), this.canvas.clientHeight / (region.height + 80), 1.5); this.ox = this.canvas.clientWidth / 2 - (region.x + region.width / 2) * this.scale; this.oy = this.canvas.clientHeight / 2 - (region.y + region.height / 2) * this.scale; this.schedule(); }
     get current(): CanvasMeta | undefined { return this.meta; }
     private schedule(): void { if (!this.requested) {
         this.requested = true;

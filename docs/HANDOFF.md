@@ -1,3 +1,5 @@
+> **歷史文件。** 以下內容来自原始 ZIP，不代表本次交付重新驗證。最新復原與驗證狀態見 [../delivery/STATUS.md](../delivery/STATUS.md)。
+
 # Handoff
 
 Written 2026-09-20. Audience: whoever picks this up next, with no memory of this session.

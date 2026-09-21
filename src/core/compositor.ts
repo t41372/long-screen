@@ -23,56 +23,73 @@ export interface CompositeStats {
 /** Pixel ownership, not alpha blending. Conflicting moving objects are selected as whole observed patches. */
 export class Compositor {
     private temporalSequence = 0;
-    constructor(private db: KV, readonly tiles: TileStore, private policy: 'stable' | 'latest', private emit: (d: Diagnostic) => Promise<void>, private atlas: RegionAtlas) { }
+    private rectangular = new Set<string>();
+    constructor(private db: KV, readonly tiles: TileStore, private policy: 'stable' | 'latest', private emit: (d: Diagnostic) => Promise<void>, private atlas: RegionAtlas) {
+        for (const region of atlas.regions) if (Number.isInteger(region.rect.x) && Number.isInteger(region.rect.y) && Number.isInteger(region.rect.width) && Number.isInteger(region.rect.height) && atlas.count(atlas.code(region)) === region.rect.width * region.rect.height) this.rectangular.add(region.id);
+    }
     async add(image: RGBA, region: Region, p: Placement, frame: number, meta: CanvasMeta): Promise<CompositeStats> {
         const size = this.tiles.size, B = QUALITY_BLOCK, blocks = size / B, ox = Math.round(p.x), oy = Math.round(p.y);
         if (image.width !== this.atlas.width || image.height !== this.atlas.height)
             throw new Error(`Frame is ${image.width}×${image.height} but the region atlas is ${this.atlas.width}×${this.atlas.height}.`);
-        const code = this.atlas.code(region), labels = this.atlas.labels, W = image.width, H = image.height;
+        const code = this.atlas.code(region), labels = this.atlas.labels, W = image.width, H = image.height, rectangular = this.rectangular.has(region.id);
         const world = { x: region.rect.x + ox, y: region.rect.y + oy, width: region.rect.width, height: region.rect.height };
         const stats: CompositeStats = { added: 0, conflicts: 0, uncertain: 0, tiles: 0, bounds: world };
         const conflictBlocks = new Set<string>();
+        const source32 = new Uint32Array(image.data.buffer, image.data.byteOffset, image.data.length / 4);
         const x0 = Math.floor(world.x / size), x1 = Math.floor((world.x + world.width - 1) / size), y0 = Math.floor(world.y / size), y1 = Math.floor((world.y + world.height - 1) / size);
         for (let ty = y0; ty <= y1; ty++)
             for (let tx = x0; tx <= x1; tx++) {
                 const tile = await this.tiles.get(p.canvasId, tx, ty), wasNew = !tile.existed && !tile.coverage.some(x => x !== 0);
                 let changed = false;
+                const pixels32 = new Uint32Array(tile.pixels.buffer, tile.pixels.byteOffset, tile.pixels.length / 4);
                 const patch = intersect(world, { x: tx * size, y: ty * size, width: size, height: size });
                 const bx0 = Math.floor((patch.x - tx * size) / B), by0 = Math.floor((patch.y - ty * size) / B), bx1 = Math.ceil((patch.x + patch.width - tx * size) / B), by1 = Math.ceil((patch.y + patch.height - ty * size) / B);
                 for (let by = by0; by < by1; by++)
                     for (let bx = bx0; bx < bx1; bx++) {
-                        const q = by * blocks + bx, positions: number[] = [], source: number[] = [];
-                        let mismatch = 0, overlap = 0, sharpness = 0;
-                        for (let y = by * B; y < (by + 1) * B; y++) {
+                        const q = by * blocks + bx;
+                        let mismatch = 0, overlap = 0, sharpness = 0, count = 0, identical = 0;
+                        const sy0 = Math.ceil(Math.max(by * B, world.y - ty * size)), sy1 = Math.ceil(Math.min((by + 1) * B, world.y + world.height - ty * size));
+                        const sx0 = Math.ceil(Math.max(bx * B, world.x - tx * size)), sx1 = Math.ceil(Math.min((bx + 1) * B, world.x + world.width - tx * size));
+                        for (let y = sy0; y < sy1; y++) {
                             const sy = ty * size + y - oy;
+                            if (p.occlusions?.some(r => sy >= r.y && sy < r.y + r.height && r.x <= region.rect.x && r.x + r.width >= region.rect.x + region.rect.width)) continue;
                             if (sy < 0 || sy >= H)
                                 continue;
-                            for (let x = bx * B; x < (bx + 1) * B; x++) {
+                            for (let x = sx0; x < sx1; x++) {
                                 const sx = tx * size + x - ox;
                                 if (sx < 0 || sx >= W)
                                     continue;
                                 const src = sy * W + sx;
-                                if (labels[src] !== code)
+                                if (!rectangular && labels[src] !== code)
                                     continue;
                                 const dst = y * size + x, i = dst * 4, j = src * 4;
-                                positions.push(dst);
-                                source.push(src);
-                                if (sx > 0 && sx < W - 1)
-                                    sharpness += Math.abs(image.data[j - 4] - image.data[j + 4]);
+                                count++;
                                 if (covered(tile, dst)) {
                                     overlap++;
+                                    if (pixels32[dst] === source32[src]) { identical++; continue; }
                                     const diff = (Math.abs(tile.pixels[i] - image.data[j]) + Math.abs(tile.pixels[i + 1] - image.data[j + 1]) + Math.abs(tile.pixels[i + 2] - image.data[j + 2])) / 3;
                                     if (diff > 25)
                                         mismatch++;
                                 }
                             }
                         }
-                        if (!positions.length)
-                            continue;
+                        if (!count) continue;
+                        // Exact native-pixel equality, not a similarity threshold. Preserve ownership and skip all writes.
+                        if (identical === count) continue;
                         const conflict = overlap >= 12 && mismatch / overlap > .16;
-                        const complete = positions.length === B * B;
+                        const complete = count === B * B;
                         const edge = Math.min((tx * size + bx * B) - world.x, (ty * size + by * B) - world.y, world.x + world.width - (tx * size + (bx + 1) * B), world.y + world.height - (ty * size + (by + 1) * B));
-                        const score = p.confidence * 100 + Math.min(12, sharpness / positions.length * .15) + Math.min(6, Math.max(0, edge) / 40);
+                        if ((!conflict && !tile.frozen[q] && complete) || !tile.owner[q]) {
+                            for (let y = sy0; y < sy1; y++) {
+                                const sy = ty * size + y - oy;
+                                if (p.occlusions?.some(r => sy >= r.y && sy < r.y + r.height && r.x <= region.rect.x && r.x + r.width >= region.rect.x + region.rect.width)) continue;
+                                for (let x = sx0; x < sx1; x++) {
+                                    const sx = tx * size + x - ox, src = sy * W + sx, j = src * 4;
+                                    if (sx > 0 && sx < W - 1 && (rectangular || labels[src] === code)) sharpness += Math.abs(image.data[j - 4] - image.data[j + 4]);
+                                }
+                            }
+                        }
+                        const score = p.confidence * 100 + Math.min(12, sharpness / count * .15) + Math.min(6, Math.max(0, edge) / 40);
                         const replace = complete && !conflict && !tile.frozen[q] && score > tile.score[q] + 4;
                         if (conflict) {
                             tile.conflicts[q] = 1;
@@ -80,22 +97,22 @@ export class Compositor {
                             stats.conflicts += mismatch;
                             changed = true;
                         }
-                        for (let k = 0; k < positions.length; k++) {
-                            const dst = positions[k], src = source[k], fresh = !covered(tile, dst);
-                            if (!fresh && !replace)
-                                continue;
-                            const di = dst * 4, si = src * 4;
-                            tile.pixels[di] = image.data[si];
-                            tile.pixels[di + 1] = image.data[si + 1];
-                            tile.pixels[di + 2] = image.data[si + 2];
-                            tile.pixels[di + 3] = image.data[si + 3];
-                            if (fresh) {
-                                markCovered(tile, dst);
-                                stats.added++;
-                                if (p.uncertain)
-                                    stats.uncertain++;
+                        if (replace || overlap < count) for (let y = sy0; y < sy1; y++) {
+                            const sy = ty * size + y - oy;
+                            if (p.occlusions?.some(r => sy >= r.y && sy < r.y + r.height && r.x <= region.rect.x && r.x + r.width >= region.rect.x + region.rect.width)) continue;
+                            const srcRow = sy * W + tx * size - ox, dstRow = y * size;
+                            for (let x = sx0; x < sx1; x++) {
+                                const dst = dstRow + x, src = srcRow + x;
+                                if (!rectangular && labels[src] !== code) continue;
+                                const fresh = !covered(tile, dst);
+                                if (!fresh && !replace) continue;
+                                pixels32[dst] = source32[src];
+                                if (fresh) {
+                                    markCovered(tile, dst); stats.added++;
+                                    if (p.uncertain) stats.uncertain++;
+                                }
+                                changed = true;
                             }
-                            changed = true;
                         }
                         if (replace || !tile.owner[q]) {
                             tile.quality[q] = Math.round(p.confidence * 255);
@@ -176,7 +193,7 @@ export class Compositor {
             const ox = Math.round(p.x), oy = Math.round(p.y), code = this.atlas.code(region);
             for (let y = r.y; y < r.y + r.height && maskComplete; y++)
                 for (let x = r.x; x < r.x + r.width; x++)
-                    if (!this.atlas.contains(code, x - ox, y - oy)) {
+                    if (!this.atlas.contains(code, x - ox, y - oy) || p.occlusions?.some(o => x - ox >= o.x && x - ox < o.x + o.width && y - oy >= o.y && y - oy < o.y + o.height)) {
                         maskComplete = false;
                         break;
                     }
@@ -200,6 +217,7 @@ export class Compositor {
                 const tile = await this.tiles.get(p.canvasId, tx, ty), part = intersect(r, { x: tx * size, y: ty * size, width: size, height: size });
                 for (let y = part.y; y < part.y + part.height; y++)
                     for (let x = part.x; x < part.x + part.width; x++) {
+                        if (p.occlusions?.some(o => x - ox >= o.x && x - ox < o.x + o.width && y - oy >= o.y && y - oy < o.y + o.height)) continue;
                         const src = ((y - oy) * image.width + x - ox) * 4, dst = ((y - ty * size) * size + x - tx * size) * 4;
                         if (src < 0 || src + 3 >= image.data.length)
                             continue;

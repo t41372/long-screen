@@ -22,6 +22,7 @@ export class LayerLearner {
     private nativeColChange?: Float64Array;
     private nativeColMean?: Float64Array;
     private nativeFrames = 0;
+    private reference?: RGBA;
     constructor(readonly width: number, readonly height: number) {
         this.cols = Math.ceil(width / this.cell);
         this.rows = Math.ceil(height / this.cell);
@@ -70,7 +71,9 @@ export class LayerLearner {
         for (let y = 0; y < rows; y++)
             for (let x = 0; x < cols; x++) {
                 const i = y * cols + x, py = Math.min(this.height - 1, Math.floor((y + .5) * this.cell));
-                if (field.confidence[i] <= 110 || field.dynamic[i] || this.rowChange[py] / this.informativeFrames < .9)
+                // A blank gutter assigned to the zero-motion model is not a second pane. Global cuts require
+                // disagreement between independently MOVING populations; fixed chrome is learned separately.
+                if (field.confidence[i] <= 110 || field.dynamic[i] || norm(field.motions[field.labels[i]]) <= 1 || this.rowChange[py] / this.informativeFrames < .9)
                     continue;
                 const w = field.confidence[i] / 255;
                 columns[x][field.labels[i]] += w;
@@ -130,6 +133,7 @@ export class LayerLearner {
         }
     }
     private addNative(prev: RGBA, current: RGBA): void {
+        this.reference = current;
         const w = prev.width, h = prev.height, a = prev.data, b = current.data;
         this.nativeRowChange ??= new Float64Array(h);
         this.nativeColChange ??= new Float64Array(w);
@@ -211,27 +215,62 @@ export class LayerLearner {
         }
         // Stationary side columns can be a real side panel, or just the page's blank margin. Only a band that carries its own
         // visible structure is treated as separate UI; a uniform margin belongs to the page, so the export keeps it.
+        // Chrome above/below a pane must not make a uniform page gutter look like a textured sidebar.
+        const middleMean = new Float64Array(this.width);
+        if (this.reference) {
+            const img = this.reference, scaleX = img.width / this.width, scaleY = img.height / this.height;
+            for (let x = 0; x < this.width; x++) {
+                let sum = 0, count = 0;
+                for (let y = top + 2; y < bottom - 2; y += 3) {
+                    const i = (Math.min(img.height - 1, Math.floor(y * scaleY)) * img.width + Math.min(img.width - 1, Math.floor(x * scaleX))) * 4;
+                    sum += (img.data[i] + img.data[i + 1] + img.data[i + 2]) / 3; count++;
+                }
+                middleMean[x] = sum / Math.max(1, count);
+            }
+        }
         const textured = (from: number, to: number): boolean => {
             if (to - from < 6 || !this.informativeFrames)
                 return false;
             let lo = Infinity, hi = -Infinity;
             for (let x = from; x < to; x++) {
-                const mean = this.colMean[x] / this.informativeFrames;
+                const mean = this.reference ? middleMean[x] : this.colMean[x] / this.informativeFrames;
                 lo = Math.min(lo, mean);
                 hi = Math.max(hi, mean);
             }
-            return hi - lo > 6;
+            if (!this.reference && hi - lo <= 6) return false;
+            if (this.reference) {
+                const img = this.reference, sx = img.width / this.width, sy = img.height / this.height;
+                let structure = 0, samples = 0;
+                for (let y = top + 3; y < bottom - 3; y += 2) for (let x = from + 1; x < to - 1; x += 2) {
+                    const nx = Math.floor(x * sx), ny = Math.floor(y * sy), step = Math.max(1, Math.round(sy));
+                    const i = (ny * img.width + nx) * 4, a = i - step * img.width * 4, b = i + step * img.width * 4;
+                    if (a < 0 || b >= img.data.length) continue;
+                    if (Math.abs(img.data[a] - img.data[b]) > 12) structure++;
+                    samples++;
+                }
+                // A different-coloured but otherwise empty margin is still page geometry, not a sidebar.
+                return structure >= 8 && structure / Math.max(1, samples) > .003;
+            }
+            return true;
         };
         let left = 0, right = this.width;
+        let exactLeft: number | undefined, exactRight: number | undefined;
         if (this.informativeFrames >= 2) {
             while (left < this.width * .45 && this.colChange[left] / this.informativeFrames < .7)
                 left++;
             while (right > this.width * .55 && this.colChange[right - 1] / this.informativeFrames < .7)
                 right--;
-            if (left < 6 || left >= this.width * .45 || !textured(0, left))
-                left = 0;
-            if (this.width - right < 6 || right <= this.width * .55 || !textured(right, this.width))
-                right = this.width;
+            // Refine appearance edges BEFORE testing texture, otherwise wide empty page gutters dilute the
+            // sidebar's visible structure and cause asymmetrical left/right classifications.
+            if (this.reference) {
+                const scale = nativeWidth / this.width;
+                exactLeft = left > 0 && left < this.width * .45 ? stationaryBoundary(this.reference, 'x', 0, Math.ceil(left * scale), Math.ceil(top * nativeHeight / this.height), Math.floor(bottom * nativeHeight / this.height), 'last') : undefined;
+                exactRight = right < this.width && right > this.width * .55 ? stationaryBoundary(this.reference, 'x', Math.floor(right * scale), nativeWidth, Math.ceil(top * nativeHeight / this.height), Math.floor(bottom * nativeHeight / this.height), 'first') : undefined;
+                if (exactLeft !== undefined) left = Math.floor(exactLeft / scale);
+                if (exactRight !== undefined) right = Math.ceil(exactRight / scale);
+            }
+            if (left < 6 || left >= this.width * .45 || !textured(0, left)) { left = 0; exactLeft = undefined; }
+            if (this.width - right < 6 || right <= this.width * .55 || !textured(right, this.width)) { right = this.width; exactRight = undefined; }
         }
         const strongestCut = (g: Float64Array) => { let best = 0; for (let k = 2; k < g.length - 2; k++)
             if (g[k] > g[best])
@@ -284,7 +323,7 @@ export class LayerLearner {
                 large[choice].push(i);
             }
         const activity = large.map(g => g.reduce((s, i) => s + this.activity[i], 0) / Math.max(1, g.reduce((s, i) => s + this.observations[i], 0)));
-        const maxActivity = Math.max(...activity, 1), sx = nativeWidth / this.width, sy = nativeHeight / this.height;
+        const maxActivity = Math.max(...activity, 1), sx = Math.max(1, Math.round(nativeWidth / this.width)), sy = sx;
         const regions = large.map((cells, k): Region => {
             const xs = cells.map(i => i % this.cols), ys = cells.map(i => Math.floor(i / this.cols));
             const ax = Math.min(...xs) * this.cell, ay = Math.min(...ys) * this.cell, bx = Math.min(this.width, (Math.max(...xs) + 1) * this.cell), by = Math.min(this.height, (Math.max(...ys) + 1) * this.cell);
@@ -371,8 +410,8 @@ export class LayerLearner {
         // Native-precision band edges and pane divider; analysis masks only decide membership inside these crops.
         const nativeTop = top > 0 ? this.nativeEdge(this.nativeRowChange, top, sy, 1, nativeHeight) : 0;
         const nativeBottom = bottom < this.height ? this.nativeEdge(this.nativeRowChange, bottom, sy, -1, nativeHeight) : nativeHeight;
-        const nativeLeft = left > 0 ? this.nativeEdge(this.nativeColChange, left, sx, 1, nativeWidth, .7) : 0;
-        const nativeRight = right < this.width ? this.nativeEdge(this.nativeColChange, right, sx, -1, nativeWidth, .7) : nativeWidth;
+        const nativeLeft = exactLeft ?? (left > 0 ? this.nativeEdge(this.nativeColChange, left, sx, 1, nativeWidth, .7) : 0);
+        const nativeRight = exactRight ?? (right < this.width ? this.nativeEdge(this.nativeColChange, right, sx, -1, nativeWidth, .7) : nativeWidth);
         const content: Rect = { x: nativeLeft, y: nativeTop, width: Math.max(0, nativeRight - nativeLeft), height: Math.max(0, nativeBottom - nativeTop) };
         for (const r of regions) {
             const side = (r as Region & { bandSide?: number }).bandSide ?? (r.cells?.length ? (r.cells.some(i => band(i) === 1) ? 1 : r.cells.some(i => band(i) === 2) ? 2 : r.cells.some(i => band(i) === 3) ? 3 : r.cells.some(i => band(i) === 4) ? 4 : 0) : 0);
@@ -444,7 +483,26 @@ export class LayerLearner {
                 small.rect.width = 0;
             }
         }
-        return valid.filter(r => r.rect.width > 0);
+        // An edge component whose cell bounding box substantially overlaps the main pane is not evidence for
+        // another rectangular viewport. Sticky/collapsing headers commonly produce precisely this signature.
+        const main = valid.filter(r => r.kind === 'moving').sort((a, b) => b.rect.width * b.rect.height - a.rect.width * a.rect.height)[0];
+        if (main) for (const edge of valid.filter(r => r !== main && r.kind === 'moving' && r.rect.width > content.width * .8 && r.rect.height < content.height * .3)) {
+            const overlap = clipRect(edge.rect, main.rect);
+            if ((edge.rect.y <= content.y + sy || edge.rect.y + edge.rect.height >= content.y + content.height - sy) && overlap.height >= this.cell * sy * .8 && (!this.reference || stationaryBoundary(this.reference, 'y', overlap.y, overlap.y + overlap.height, content.x, content.x + content.width, 'first') === undefined)) {
+                for (let i = 0; i < edge.mask!.length; i++) if (edge.mask![i]) main.mask![i] = 1;
+                edge.rect.width = 0;
+            }
+        }
+        const result = valid.filter(r => r.rect.width > 0);
+        const moving = result.filter(r => r.kind === 'moving');
+        if (moving.length === 1 && result.every(r => r === moving[0] || r.kind === 'fixed' && r.solid && clipRect(r.rect, content).width * clipRect(r.rect, content).height === 0)) {
+            // A blank gutter has no flow, but it still belongs to the pane. Cell masks identify motion evidence,
+            // NOT the output geometry. Fill the entire proven rectangular pane, including its natural margins.
+            moving[0].crop = content;
+            moving[0].rect = { ...content };
+            moving[0].solid = true;
+        }
+        return result;
     }
 }
 /** Nearest run of columns whose per-frame change stays below the stationary threshold; [start, end) or undefined.
@@ -541,4 +599,66 @@ export class RegionAtlas {
                 n++;
         return n;
     }
+}
+
+/** Strong persistent appearance boundary within a stationary run. Never infer a pane edge from its first glyph.
+ * Returns the boundary coordinate in native pixels, or undefined if the image offers no boundary evidence. */
+export function stationaryBoundary(image: RGBA, axis: 'x' | 'y', from: number, to: number, crossFrom: number, crossTo: number, choose: 'first' | 'last'): number | undefined {
+    const { width, height, data } = image, limit = axis === 'x' ? width : height;
+    const crossLimit = axis === 'x' ? height : width;
+    const step = Math.max(1, Math.floor((crossTo - crossFrom) / 160));
+    let found: number | undefined;
+    for (let v = Math.max(1, from); v < Math.min(limit, to + 1); v++) {
+        let strong = 0, count = 0, sum = 0;
+        for (let c = Math.max(0, crossFrom + 2); c < Math.min(crossLimit, crossTo - 2); c += step) {
+            const i = (axis === 'x' ? c * width + v : v * width + c) * 4;
+            const j = i - (axis === 'x' ? 4 : width * 4);
+            const d = (Math.abs(data[i] - data[j]) + Math.abs(data[i + 1] - data[j + 1]) + Math.abs(data[i + 2] - data[j + 2])) / 3;
+            if (d > 3) strong++; sum += d; count++;
+        }
+        if (count && strong / count > .68 && sum / count > 3) {
+            found = v;
+            if (choose === 'first') break;
+        }
+    }
+    return found;
+}
+
+/** A sticky navigation band can move initially and become screen-fixed later. Its geometry is per-observation,
+ * not a second scroll world. Only exclude an edge band when native texture agrees with zero motion and clearly
+ * disagrees with the accepted page translation; uniform gutters alone never provide this evidence. */
+export function stickyOcclusions(previous: RGBA, current: RGBA, region: Region, motion: { x: number; y: number }, previousOcclusions: Rect[] = []): Rect[] {
+    if (previous.width !== current.width || previous.height !== current.height) return [];
+    // A clock/cursor elsewhere may change a paused frame. Retain an already-proven sticky band only while
+    // ALL its native RGBA pixels are unchanged; do not drop the mask just because the page stops scrolling.
+    const carry = previousOcclusions.filter(o => {
+        if (o.x < 0 || o.y < 0 || o.x + o.width > current.width || o.y + o.height > current.height) return false;
+        for (let y = Math.ceil(o.y); y < o.y + o.height; y++) {
+            const end = (y * current.width + Math.ceil(o.x + o.width)) * 4;
+            for (let i = (y * current.width + Math.ceil(o.x)) * 4; i < end; i++) if (previous.data[i] !== current.data[i]) return false;
+        }
+        return true;
+    });
+    if (Math.hypot(motion.x, motion.y) < 2) return carry;
+    const r = region.crop || region.rect, w = current.width, h = current.height, a = previous.data, b = current.data;
+    const dx = Math.round(motion.x), dy = Math.round(motion.y);
+    const end = Math.min(h - 2, Math.floor(r.y + Math.min(288, r.height * .23))), start = Math.max(2, Math.floor(r.y));
+    const step = Math.max(1, Math.floor(r.width / 700));
+    let lastFixed = -1, strongRows = 0, matched = 0;
+    for (let y = start; y < end; y++) {
+        if (y + dy < 2 || y + dy >= h - 2) continue;
+        let n = 0, zero = 0, shifted = 0;
+        for (let x = Math.max(2, Math.ceil(r.x)); x < Math.min(w - 2, r.x + r.width); x += step) {
+            if (x + dx < 2 || x + dx >= w - 2) continue;
+            const i = (y * w + x) * 4;
+            if (Math.abs(b[i - 4] - b[i + 4]) < 24) continue;
+            const j = ((y + dy) * w + x + dx) * 4;
+            zero += Math.abs(a[i] - b[i]); shifted += Math.abs(a[j] - b[i]); n++;
+        }
+        if (n >= 8 && zero / n < 6 && shifted / n > 18) { lastFixed = y; strongRows++; matched += n; }
+    }
+    if (strongRows < 4 || matched < 64 || lastFixed < 0) return carry;
+    const edge = stationaryBoundary(current, 'y', lastFixed + 1, Math.min(end, lastFixed + 80), r.x, r.x + r.width, 'first');
+    if (edge === undefined || edge - start > r.height * .23) return carry;
+    return [{ x: r.x, y: r.y, width: r.width, height: edge - r.y + 1 }];
 }

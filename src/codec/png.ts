@@ -30,16 +30,21 @@ export async function* encodePNG(width: number, height: number, rows: AsyncItera
     const producer = (async () => {
         try {
             let count = 0;
+            const stride = width * 4 + 1, batchRows = Math.max(1, Math.floor(65536 / stride));
+            let batch = new Uint8Array(stride * batchRows), used = 0;
             for await (const row of rows) {
-                if (row.length !== width * 4)
-                    throw new Error('PNG row has incorrect byte length.');
-                const filtered = new Uint8Array(row.length + 1);
-                filtered[0] = 1;
-                for (let i = 0; i < row.length; i++)
-                    filtered[i + 1] = (row[i] - (i >= 4 ? row[i - 4] : 0)) & 255;
-                await writer.write(filtered);
-                count++;
+                if (row.length !== width * 4) throw new Error('PNG row has incorrect byte length.');
+                const offset = used * stride;
+                batch[offset] = 1;
+                batch.set(row.subarray(0, 4), offset + 1);
+                for (let i = 4; i < row.length; i++) batch[offset + i + 1] = (row[i] - row[i - 4]) & 255;
+                used++; count++;
+                // One native compression write per ~64 KiB, not per scanline. Bounded memory, same PNG predictor.
+                if (used === batchRows) {
+                    await writer.write(batch); batch = new Uint8Array(stride * batchRows); used = 0;
+                }
             }
+            if (used) await writer.write(batch.subarray(0, used * stride));
             if (count !== height)
                 throw new Error(`Expected ${height} PNG rows, received ${count}.`);
             await writer.close();

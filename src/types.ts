@@ -72,6 +72,9 @@ export interface Settings {
     temporalPolicy: 'stable' | 'latest';
     decoder: 'precise' | 'compatibility';
     compatibilityFPS: number;
+    /** Context is a presentation of the source chrome, never part of the moving world's geometry. */
+    framing?: 'context' | 'region';
+    compute?: 'auto' | 'cpu' | 'webgpu';
 }
 export const DEFAULT_SETTINGS: Settings = {
     analysisSize: 640, memoryMB: 128, tileSize: 512, regions: [],
@@ -117,6 +120,10 @@ export interface ScanRecord {
     time: number;
     duration: number;
     field: MotionField;
+    /** Cached once, reused by the solve pass. */
+    features?: Feature[];
+    /** Exact native RGBA equality with the previous observation, not perceptual similarity. */
+    duplicate?: boolean;
 }
 export interface Placement {
     layer: string;
@@ -129,6 +136,8 @@ export interface Placement {
     time: number;
     /** True when the observation carries no positional information (textureless pane); its pixels are not painted anywhere. */
     skip?: boolean;
+    /** Native-screen sticky occluders for this observation; not missing page margins. */
+    occlusions?: Rect[];
 }
 /** A fragment that later evidence tied to another canvas: every placement on `id` maps rigidly onto `target`. */
 export interface Attachment {
@@ -143,6 +152,7 @@ export interface FramePlan {
     index: number;
     time: number;
     placements: Placement[];
+    duplicate?: boolean;
 }
 export interface CanvasMeta {
     id: string;
@@ -160,6 +170,7 @@ export interface CanvasMeta {
     lastTime: number;
     /** Set when this fragment was merged into another canvas by revisit evidence; it then holds no tiles of its own. */
     attachedTo?: string;
+    presentation?: { sourceCanvas: string; sourceRegion: Rect; referenceFrame: number; offset: Point; extension: string };
 }
 export interface Project {
     id: string;

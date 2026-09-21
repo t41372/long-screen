@@ -20,7 +20,7 @@ export async function exportProject(db: KV, project: Project, onProgress: (messa
     try {
         for await (const { value } of iterate<CanvasMeta>(db, 'canvas/'))
             canvases.push(value);
-        const manifest = { format: 'long-screen/sparse-canvas', version: 1, tileSize: project.settings.tileSize, coordinates: 'Native source pixels. Each independent canvas has its own origin.', holes: 'Transparent pixels were not observed; the enclosing bounding rectangle is not a coverage guarantee.', levels: 'Level 0 is native resolution; levels 1+ are explicitly downsampled previews.', confidence: 'Heuristic, uncalibrated, not a correctness probability.', sourceIncluded: false, project, canvases };
+        const manifest = { format: 'long-screen/sparse-canvas', version: 2, presentation: 'Canvases with kind=presentation are framed views, not independent reconstructed worlds. Their opaque decorative extensions have NO evidence coverage; see canvas.presentation. Original moving and fixed canvases are retained.', tileSize: project.settings.tileSize, coordinates: 'Native source pixels. Each independent canvas has its own origin.', holes: 'Transparent pixels were not observed; the enclosing bounding rectangle is not a coverage guarantee.', levels: 'Level 0 is native resolution; levels 1+ are explicitly downsampled previews.', confidence: 'Heuristic, uncalibrated, not a correctness probability.', sourceIncluded: false, project, canvases };
         await zip.add('manifest.json', utf8(JSON.stringify(manifest, null, 2)));
         await zip.add('index.html', utf8(offlineViewer(manifest)));
         await zip.add('README.txt', utf8('Long Screen — offline reconstruction\n\nUnzip everything, then open index.html. Level-zero PNG tiles preserve native output resolution. Missing tiles and transparent pixels are unobserved holes, not white page content. Independent fragments are not asserted to be adjacent. The original video is NOT included: retain it for source-time comparisons. observations.jsonl records every processed source frame and chosen placement; diagnostics.jsonl contains warnings. quality/*.json stores 16px-block heuristic quality, conflict markers, and source-frame ownership. Pixel coverage bits are least-significant-bit first. Pyramids are previews only.\n'));
@@ -39,7 +39,7 @@ export async function exportProject(db: KV, project: Project, onProgress: (messa
         }
         for (const [name, prefix] of [['observations', 'observation/'], ['diagnostics', 'diagnostic/'], ['poses', 'node/'], ['pose-edges', 'edge/'], ['analysis', 'scan/'], ['temporal', 'temporal/'], ['attachments', 'attach/']])
             await zip.add(`${name}.jsonl`, jsonLines(db, prefix));
-        for (const key of ['graph-summary', 'memory-stats'])
+        for (const key of ['graph-summary', 'memory-stats', 'performance'])
             await zip.add(`${key}.json`, utf8(JSON.stringify(await db.get(key) || {}, null, 2)));
         onProgress('写入 ZIP64 目录并提交文件', .98);
         await zip.finish();

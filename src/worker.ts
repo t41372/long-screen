@@ -22,7 +22,7 @@ function requestFrame(time: number): Promise<ImageBitmap> { return new Promise((
 async function dispatch(type: string, payload: Record<string, any>): Promise<unknown> {
     const database = await db();
     if (type === 'capabilities')
-        return { worker: true, offscreen: typeof OffscreenCanvas !== 'undefined', webcodecs: typeof VideoDecoder !== 'undefined', opfs: !!navigator.storage?.getDirectory, compression: typeof CompressionStream !== 'undefined' };
+        return { worker: true, offscreen: typeof OffscreenCanvas !== 'undefined', webcodecs: typeof VideoDecoder !== 'undefined', opfs: !!navigator.storage?.getDirectory, compression: typeof CompressionStream !== 'undefined', webgpu: !!(navigator as unknown as { gpu?: unknown }).gpu };
     if (type === 'projects')
         return database.scan<Project>('project/', { after: payload.after, limit: 30, reverse: true });
     if (type === 'probe') {
@@ -49,6 +49,7 @@ async function dispatch(type: string, payload: Record<string, any>): Promise<unk
         const settings: Settings = { ...DEFAULT_SETTINGS, ...payload.settings };
         if (![320, 480, 640, 960, 1280].includes(settings.analysisSize) || ![64, 128, 256, 512].includes(settings.memoryMB) || ![256, 512, 1024].includes(settings.tileSize))
             throw new Error('Invalid analysis/cache/tile settings.');
+        if (!['auto', 'cpu', 'webgpu'].includes(settings.compute || 'cpu') || !['context', 'region'].includes(settings.framing || 'region')) throw new Error('Invalid compute/framing setting.');
         let source;
         if (payload.demo)
             source = new DemoSource(payload.demo);

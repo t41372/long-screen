@@ -14,13 +14,14 @@ let manualRegions: Region[] = [], draftRegions: Region[] = [], draftStart: {
     x: number;
     y: number;
 } | undefined, draftRect: Region['rect'] | undefined, toastTimer: ReturnType<typeof setTimeout> | undefined;
+let selectionTouched = false;
 let diagRefresh = false, downloadURL: string | undefined;
 const video = $<HTMLVideoElement>('source-video');
 const viewer = new TiledViewer($<HTMLCanvasElement>('viewer'), (canvasId, level, x, y) => rpc('tile', { projectId: project?.id, canvasId, level, x, y }), text => { $('zoom-label').textContent = text.split(' · ')[0]; $('lod-label').textContent = text; }, error => toast(String(error), true));
 function toast(message: string, error = false): void { const el = $('toast'); el.textContent = message; el.className = error ? 'error' : ''; el.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => el.hidden = true, error ? 16000 : 9000); }
 const humanBytes = (n: number) => n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : `${(n / 1e6).toFixed(1)} MB`;
 const timeText = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
-function setBusy(value: boolean): void { busy = value; $<HTMLButtonElement>('start-btn').disabled = value || !selectedFile; $<HTMLButtonElement>('demo-btn').disabled = value; $<HTMLButtonElement>('regions-btn').disabled = value || !firstBitmap; $('run-controls').hidden = !value; $('status-dot').classList.toggle('running', value); $<HTMLButtonElement>('export-project').disabled = value || !project?.renderedFrames; $<HTMLButtonElement>('export-png').disabled = value || !viewer.current?.tileCount; }
+function setBusy(value: boolean): void { busy = value; document.body.classList.toggle('is-processing', value); $<HTMLButtonElement>('start-btn').disabled = value || !selectedFile; $<HTMLButtonElement>('demo-btn').disabled = value; $<HTMLButtonElement>('regions-btn').disabled = value || !firstBitmap; $('run-controls').hidden = !value; $('status-dot').classList.toggle('running', value); $<HTMLButtonElement>('export-project').disabled = value || !project?.renderedFrames; $<HTMLButtonElement>('export-png').disabled = value || !viewer.current?.tileCount; }
 async function storageInfo(): Promise<void> { try {
     const estimate = await navigator.storage.estimate();
     $('storage-status').textContent = `本地已用 ${humanBytes(estimate.usage || 0)} / 可用配额 ${humanBytes(estimate.quota || 0)}`;
@@ -109,7 +110,7 @@ async function chooseFile(file: File): Promise<void> {
         toast(String(error), true);
     }
 }
-function resetView(): void { canvases = []; diagnosticRows = []; diagnosticCursor = undefined; viewer.clear(); $('empty-state').hidden = false; $('canvas-badge').hidden = true; $<HTMLSelectElement>('canvas-select').replaceChildren(new Option('等待重建画布', '')); $('frames-metric').textContent = '0'; $('canvases-metric').textContent = '0'; $('warning-count').textContent = '0'; $('warning-count').classList.remove('has-issues'); $('progress-bar').style.width = '0'; renderDiagnostics(); }
+function resetView(): void { selectionTouched = false; canvases = []; diagnosticRows = []; diagnosticCursor = undefined; viewer.clear(); $('empty-state').hidden = false; $('canvas-badge').hidden = true; $<HTMLSelectElement>('canvas-select').replaceChildren(new Option('等待重建画布', '')); $('frames-metric').textContent = '0'; $('canvases-metric').textContent = '0'; $('warning-count').textContent = '0'; $('warning-count').classList.remove('has-issues'); $('progress-bar').style.width = '0'; renderDiagnostics(); }
 async function start(demo?: string): Promise<void> {
     if (busy)
         return;
@@ -125,7 +126,7 @@ async function start(demo?: string): Promise<void> {
         const decoder = $<HTMLSelectElement>('decoder').value as 'precise' | 'compatibility';
         if (!demo && decoder === 'compatibility' && (!mediaInfo || !nativeReady))
             throw new Error('兼容模式需要浏览器原生播放器能够读取这段视频。');
-        const settings = { ...DEFAULT_SETTINGS, analysisSize: Number($<HTMLSelectElement>('analysis-size').value), memoryMB: Number($<HTMLSelectElement>('memory').value), temporalPolicy: $<HTMLSelectElement>('policy').value, decoder, regions: demo ? [] : manualRegions };
+        const settings = { ...DEFAULT_SETTINGS, analysisSize: Number($<HTMLSelectElement>('analysis-size').value), memoryMB: Number($<HTMLSelectElement>('memory').value), temporalPolicy: $<HTMLSelectElement>('policy').value, decoder, framing: $<HTMLSelectElement>('framing').value, compute: $<HTMLSelectElement>('compute').value, regions: demo ? [] : manualRegions };
         project = await rpc<Project>('start', { file: selectedFile, demo, settings, info: mediaInfo });
         updateProject(project);
     }
@@ -139,7 +140,7 @@ async function start(demo?: string): Promise<void> {
 }
 function updateProject(value: Project): void { project = value; $('frames-metric').textContent = value.renderedFrames.toLocaleString(); $('canvases-metric').textContent = String(value.canvasCount); if (performance.now() - lastRefresh > 1200)
     void refreshCanvases(); }
-const phaseNames: Record<string, string> = { scanning: '逐帧观察与运动分层', solving: '全局定位与原像素精修', optimizing: '校正回环与累计漂移', rendering: '合成原尺寸稀疏画布', pyramid: '建立可缩放预览', complete: '已完成 · 请检查诊断', partial: '部分结果已保存', error: '处理遇到错误' };
+const phaseNames: Record<string, string> = { scanning: '逐帧观察与运动分层', solving: '全局定位与原像素精修', optimizing: '校正回环与累计漂移', rendering: '合成原尺寸稀疏画布', framing: '保留外框与原始比例', pyramid: '建立可缩放预览', complete: '已完成 · 请检查诊断', partial: '部分结果已保存', error: '处理遇到错误' };
 function progress(p: Progress): void {
     $('status-title').textContent = phaseNames[p.phase] || p.phase;
     $('progress-count').textContent = `${p.frames.toLocaleString()} 帧 · ${timeText(p.time)}`;
@@ -147,7 +148,7 @@ function progress(p: Progress): void {
     const phaseWeight: Record<string, [
         number,
         number
-    ]> = { scanning: [0, .30], solving: [.30, .32], optimizing: [.62, .03], rendering: [.65, .30], pyramid: [.95, .05], complete: [1, 0], partial: [1, 0] };
+    ]> = { scanning: [0, .30], solving: [.30, .32], optimizing: [.62, .03], rendering: [.65, .26], framing: [.91, .04], pyramid: [.95, .05], complete: [1, 0], partial: [1, 0] };
     const [base, weight] = phaseWeight[p.phase] || [0, 0];
     $('progress-bar').style.width = `${Math.min(100, (base + Math.max(0, p.fraction || 0) * weight) * 100)}%`;
     if (p.canvas?.tileCount) {
@@ -202,14 +203,15 @@ function updateCanvasOptions(): void {
     const usable = canvases.filter(c => c.tileCount && Number.isFinite(c.bounds.width) && Number.isFinite(c.bounds.height));
     if (!usable.length)
         return;
-    usable.sort((a, b) => (a.kind === 'fixed' ? 1 : 0) - (b.kind === 'fixed' ? 1 : 0) || b.observedPixels - a.observedPixels);
+    const rank = (c: CanvasMeta) => c.kind === 'presentation' ? -1 : c.kind === 'fixed' ? 1 : 0;
+    usable.sort((a, b) => rank(a) - rank(b) || b.observedPixels - a.observedPixels);
     select.replaceChildren(...usable.map(c => new Option(`${c.name} · ${Math.round(c.bounds.width)} × ${Math.round(c.bounds.height)}`, c.id)));
-    select.value = usable.some(c => c.id === old) ? old : usable[0].id;
+    select.value = !selectionTouched && project?.settings.framing === 'context' && usable[0].kind === 'presentation' ? usable[0].id : usable.some(c => c.id === old) ? old : usable[0].id;
     selectCanvas(false);
 }
 function selectCanvas(fit = true): void { const c = canvases.find(c => c.id === $<HTMLSelectElement>('canvas-select').value); if (!c)
     return; viewer.setCanvas(c, project?.settings.tileSize || 512); if (fit)
-    viewer.fit(); $('empty-state').hidden = true; $('canvas-badge').hidden = false; $('canvas-badge').textContent = `${c.kind === 'fixed' ? '固定 / 观察层' : '二维内容层'} · ${c.tileCount} 原图瓦片${c.fragment ? ' · 片段间关系未证实' : ''}`; $<HTMLButtonElement>('export-png').disabled = busy || !c.tileCount; }
+    viewer.fit(); $('empty-state').hidden = true; $('canvas-badge').hidden = false; $('canvas-badge').textContent = `${c.kind === 'presentation' ? '带框呈现 · 延伸背景非观察证据' : c.kind === 'fixed' ? '固定 / 观察层' : '二维内容层'} · ${c.tileCount} 原图瓦片${c.fragment ? ' · 片段间关系未证实' : ''}`; $<HTMLButtonElement>('export-png').disabled = busy || !c.tileCount; }
 function addDiagnostic(d: Diagnostic): void { diagnosticRows.push(d); if (diagnosticRows.length > 180)
     diagnosticRows.shift(); if (!diagRefresh) {
     diagRefresh = true;
@@ -487,7 +489,7 @@ $('fit-btn').onclick = () => viewer.fit();
 $('native-btn').onclick = () => viewer.native();
 $('zoom-in').onclick = () => viewer.zoom(1.3);
 $('zoom-out').onclick = () => viewer.zoom(1 / 1.3);
-$<HTMLSelectElement>('canvas-select').onchange = () => selectCanvas();
+$<HTMLSelectElement>('canvas-select').onchange = () => { selectionTouched = true; selectCanvas(); };
 $<HTMLInputElement>('quality-toggle').onchange = e => viewer.setQuality((e.target as HTMLInputElement).checked);
 $<HTMLSelectElement>('diagnostic-filter').onchange = renderDiagnostics;
 $('more-diagnostics').onclick = () => void loadDiagnostics(false);
