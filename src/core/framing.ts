@@ -1,7 +1,16 @@
 import type { CanvasMeta, Rect, Region, RGBA } from '../types.ts';
 import type { KV } from '../storage/db.ts';
 import { iterate } from '../storage/db.ts';
-import { covered, markCovered, type TileIndex, TileStore } from '../storage/tiles.ts';
+import {
+  countCovered,
+  covered,
+  markCovered,
+  markProvisional,
+  provisional,
+  QUALITY_BLOCK,
+  type TileIndex,
+  type TileStore,
+} from '../storage/tiles.ts';
 import { decodePNG } from '../codec/png.ts';
 import { intersect } from './math.ts';
 import { regionContains } from './layers.ts';
@@ -109,8 +118,12 @@ export async function buildFramedCanvas(
     tileCount: 0,
     maxLevel: 0,
     observedPixels: 0,
-    uncertainPixels: 0,
-    conflictPixels: 0,
+    // Recount the copied level-zero mask below; the source count includes pixels that may not land in this view.
+    provisionalPixels: 0,
+    // These counters are aggregate source-run diagnostics rather than tile-local masks. The framed canvas is a
+    // presentation of the same reconstructed content, so preserve them instead of claiming that the evidence vanished.
+    uncertainPixels: sourceCanvas.uncertainPixels,
+    conflictPixels: sourceCanvas.conflictPixels,
     presentation: {
       sourceCanvas: sourceCanvas.id,
       sourceRegion: pane,
@@ -124,13 +137,6 @@ export async function buildFramedCanvas(
     sourcePixels = new Uint32Array(source.data.buffer, source.data.byteOffset, source.data.length / 4),
     size = tiles.size;
   const ignored = regions.filter((r) => r.kind === 'ignore');
-  // Existing source tiles only: the content rect spans the whole reconstructed world, most of which was never
-  // observed. Without this set, every grid cell under the content rect would materialise a phantom all-zero
-  // source tile through the shared LRU just to find out it is empty.
-  const existingSourceTiles = new Set<string>();
-  for await (const row of iterate<TileIndex>(store, `tile-index/${sourceCanvas.id}/0/`)) {
-    existingSourceTiles.add(`${row.value.x}_${row.value.y}`);
-  }
   const cols = Math.ceil(layout.width / size), rows = Math.ceil(layout.height / size);
   const boundsFor = (tx: number, ty: number): Rect => ({
     x: tx * size,
@@ -138,93 +144,164 @@ export async function buildFramedCanvas(
     width: Math.min(size, layout.width - tx * size),
     height: Math.min(size, layout.height - ty * size),
   });
-  // Cheap pre-check: grid arithmetic and Set lookups only, never pixel work or allocation. A tile that spills
-  // outside the content rect always carries chrome or decorative-extension pixels and is never dropped; a
-  // tile fully inside the content rect is only worth touching if a real source tile backs some of it.
-  const candidate = (bounds: Rect): boolean => {
-    const overlap = intersect(bounds, content);
-    if (overlap.width < bounds.width || overlap.height < bounds.height) return true;
-    const wx = Math.floor(sourceCanvas.bounds.x + overlap.x - content.x), wy = Math.floor(sourceCanvas.bounds.y + overlap.y - content.y);
-    for (let sy = Math.floor(wy / size); sy <= Math.floor((wy + overlap.height - 1) / size); sy++) {
-      for (let sx = Math.floor(wx / size); sx <= Math.floor((wx + overlap.width - 1) / size); sx++) {
-        if (existingSourceTiles.has(`${sx}_${sy}`)) return true;
+  const maxTiles = options?.maxTiles ?? 20000;
+  // Build a bounded candidate set instead of asking every output grid cell whether it is interesting. The
+  // complement of the fully-contained content tiles is a perimeter ring (chrome/decorative pixels), and each
+  // observed source tile maps to at most four output tiles because both grids have the same tile size.
+  const candidates: Array<[number, number]> = [], candidateKeys = new Set<string>();
+  const addCandidate = (tx: number, ty: number): boolean => {
+    if (tx < 0 || tx >= cols || ty < 0 || ty >= rows) return true;
+    const key = `${tx}_${ty}`;
+    if (candidateKeys.has(key)) return true;
+    if (candidates.length >= maxTiles) return false;
+    candidateKeys.add(key);
+    candidates.push([tx, ty]);
+    return true;
+  };
+  let candidateChecks = 0;
+  const addRange = async (x0: number, x1: number, y0: number, y1: number): Promise<boolean> => {
+    for (let ty = Math.max(0, y0); ty < Math.min(rows, y1); ty++) {
+      for (let tx = Math.max(0, x0); tx < Math.min(cols, x1); tx++) {
+        if (!addCandidate(tx, ty)) return false;
+        if ((++candidateChecks & 255) === 0) await checkpoint();
       }
     }
-    return false;
+    return true;
   };
-  const maxTiles = options?.maxTiles ?? 20000;
-  let candidateTiles = 0;
-  for (let ty = 0; ty < rows; ty++) for (let tx = 0; tx < cols; tx++) if (candidate(boundsFor(tx, ty))) candidateTiles++;
-  if (candidateTiles > maxTiles) {
-    options?.onSkipped?.(
-      `Framed canvas needs ${candidateTiles} tiles across a ${cols}×${rows} grid, over the ${maxTiles} tile limit; skipped.`,
-    );
+  const bounded = (n: number, upper: number): number => Math.max(0, Math.min(upper, n));
+  // A tile is fully inside content only when both of its edges are inside. Everything else belongs to the
+  // perimeter candidate set; this also handles content rectangles whose edges cut through a tile.
+  const innerX0 = bounded(Math.ceil(content.x / size), cols),
+    innerX1 = bounded(Math.floor((content.x + content.width) / size), cols),
+    innerY0 = bounded(Math.ceil(content.y / size), rows),
+    innerY1 = bounded(Math.floor((content.y + content.height) / size), rows);
+  await checkpoint();
+  if (
+    !await addRange(0, cols, 0, innerY0) || !await addRange(0, cols, innerY1, rows) ||
+    !await addRange(0, innerX0, innerY0, innerY1) || !await addRange(innerX1, cols, innerY0, innerY1)
+  ) {
+    options?.onSkipped?.(`Framed canvas exceeded the ${maxTiles} tile limit; skipped before allocating output tiles.`);
     return undefined;
   }
+  // Existing source tiles only: the content rect spans the whole reconstructed world, most of which was never
+  // observed. Without this set, every grid cell under the content rect would materialise a phantom all-zero
+  // source tile through the shared LRU just to find out it is empty. Read the index only after the perimeter
+  // guard so a frame that is already too large never scans source storage or allocates a source tile.
+  const existingSourceTiles = new Set<string>();
+  let sourceTilesSeen = 0;
+  const outputTileRange = (rect: Rect): [number, number, number, number] => [
+    Math.floor(rect.x / size),
+    Math.ceil((rect.x + rect.width) / size),
+    Math.floor(rect.y / size),
+    Math.ceil((rect.y + rect.height) / size),
+  ];
+  for await (const row of iterate<TileIndex>(store, `tile-index/${sourceCanvas.id}/0/`)) {
+    if (row.value.observed > 0) existingSourceTiles.add(`${row.value.x}_${row.value.y}`);
+  }
+  for (const key of existingSourceTiles) {
+    const [sx, sy] = key.split('_').map(Number);
+    // World tile (sx, sy) is translated into the output content rect by the source canvas origin.
+    const mapped = {
+      x: content.x + sx * size - sourceCanvas.bounds.x,
+      y: content.y + sy * size - sourceCanvas.bounds.y,
+      width: size,
+      height: size,
+    };
+    const overlap = intersect(mapped, content);
+    if (overlap.width > 0 && overlap.height > 0) {
+      const [x0, x1, y0, y1] = outputTileRange(overlap);
+      if (!await addRange(x0, x1, y0, y1)) {
+        options?.onSkipped?.(`Framed canvas exceeded the ${maxTiles} tile limit; skipped before allocating output tiles.`);
+        return undefined;
+      }
+    }
+    sourceTilesSeen++;
+    if ((sourceTilesSeen & 255) === 0) await checkpoint();
+  }
   // Tilewise traversal: at most four raw input tiles per output tile. Never allocate a giant output canvas or a full output row.
-  for (let ty = 0; ty < rows; ty++) {
-    for (let tx = 0; tx < cols; tx++) {
-      await checkpoint();
-      const bounds = boundsFor(tx, ty);
-      if (!candidate(bounds)) continue;
-      const tile = await tiles.get(meta.id, tx, ty),
-        dst = new Uint32Array(tile.pixels.buffer, tile.pixels.byteOffset, tile.pixels.length / 4);
-      for (let y = 0; y < bounds.height; y++) {
-        for (let x = 0; x < bounds.width; x++) {
-          const ox = bounds.x + x, oy = bounds.y + y, p = frameCoordinate(layout, ox, oy), at = y * size + x;
-          if (p === null) continue;
-          if (p) {
-            if (ignored.some((r) => regionContains(r, p.x, p.y, source.width, source.height))) continue;
-            dst[at] = sourcePixels[p.y * source.width + p.x];
-            if (tile.pixels[at * 4 + 3]) {
-              markCovered(tile, at);
-              meta.observedPixels++;
-            }
-          } else if (oy < pane.y || oy >= content.y + content.height) {
-            dst[at] = bg.rows[oy < pane.y ? oy : oy - layout.dy];
-          } else {
-            dst[at] = bg.columns[ox < pane.x ? ox : ox - layout.dx];
-          }
+  for (const [tx, ty] of candidates) {
+    await checkpoint();
+    const bounds = boundsFor(tx, ty),
+      tile = await tiles.get(meta.id, tx, ty),
+      dst = new Uint32Array(tile.pixels.buffer, tile.pixels.byteOffset, tile.pixels.length / 4);
+    for (let y = 0; y < bounds.height; y++) {
+      for (let x = 0; x < bounds.width; x++) {
+        const ox = bounds.x + x, oy = bounds.y + y, p = frameCoordinate(layout, ox, oy), at = y * size + x;
+        if (p === null) continue;
+        if (p) {
+          if (ignored.some((r) => regionContains(r, p.x, p.y, source.width, source.height))) continue;
+          dst[at] = sourcePixels[p.y * source.width + p.x];
+          if (tile.pixels[at * 4 + 3]) markCovered(tile, at);
+        } else if (oy < pane.y || oy >= content.y + content.height) {
+          dst[at] = bg.rows[oy < pane.y ? oy : oy - layout.dy];
+        } else {
+          dst[at] = bg.columns[ox < pane.x ? ox : ox - layout.dx];
         }
       }
-      const overlap = intersect(bounds, content);
-      if (overlap.width > 0 && overlap.height > 0) {
-        const wx = Math.floor(sourceCanvas.bounds.x + overlap.x - content.x),
-          wy = Math.floor(sourceCanvas.bounds.y + overlap.y - content.y);
-        for (let sy = Math.floor(wy / size); sy <= Math.floor((wy + overlap.height - 1) / size); sy++) {
-          for (let sx = Math.floor(wx / size); sx <= Math.floor((wx + overlap.width - 1) / size); sx++) {
-            if (!existingSourceTiles.has(`${sx}_${sy}`)) continue;
-            const raw = await tiles.get(sourceCanvas.id, sx, sy);
-            const part = intersect({ x: wx, y: wy, width: overlap.width, height: overlap.height }, {
-              x: sx * size,
-              y: sy * size,
-              width: size,
-              height: size,
-            });
-            for (let y = part.y; y < part.y + part.height; y++) {
-              const dy = overlap.y - bounds.y + y - wy, dx = overlap.x - bounds.x + part.x - wx;
-              const from = (y - sy * size) * size + part.x - sx * size;
-              tile.pixels.set(raw.pixels.subarray(from * 4, (from + part.width) * 4), (dy * size + dx) * 4);
-              for (let x = 0; x < part.width; x++) {
-                if (covered(raw, from + x)) {
-                  markCovered(tile, dy * size + dx + x);
-                  meta.observedPixels++;
+    }
+    const overlap = intersect(bounds, content);
+    if (overlap.width > 0 && overlap.height > 0) {
+      const evidence = new Map<number, { quality: number; score: number; owners: Set<number>; conflicts: boolean; frozen: boolean }>();
+      const wx = Math.floor(sourceCanvas.bounds.x + overlap.x - content.x),
+        wy = Math.floor(sourceCanvas.bounds.y + overlap.y - content.y);
+      for (let sy = Math.floor(wy / size); sy <= Math.floor((wy + overlap.height - 1) / size); sy++) {
+        for (let sx = Math.floor(wx / size); sx <= Math.floor((wx + overlap.width - 1) / size); sx++) {
+          if (!existingSourceTiles.has(`${sx}_${sy}`)) continue;
+          const raw = await tiles.get(sourceCanvas.id, sx, sy);
+          const part = intersect({ x: wx, y: wy, width: overlap.width, height: overlap.height }, {
+            x: sx * size,
+            y: sy * size,
+            width: size,
+            height: size,
+          });
+          for (let y = part.y; y < part.y + part.height; y++) {
+            const dy = overlap.y - bounds.y + y - wy, dx = overlap.x - bounds.x + part.x - wx;
+            const from = (y - sy * size) * size + part.x - sx * size;
+            for (let x = 0; x < part.width; x++) {
+              const sourcePixel = from + x, destinationPixel = dy * size + dx + x;
+              tile.pixels.set(raw.pixels.subarray(sourcePixel * 4, sourcePixel * 4 + 4), destinationPixel * 4);
+              if (covered(raw, sourcePixel)) {
+                markCovered(tile, destinationPixel);
+                const sourceBlock = Math.floor((part.x - sx * size + x) / QUALITY_BLOCK) +
+                  Math.floor((y - sy * size) / QUALITY_BLOCK) * (size / QUALITY_BLOCK);
+                const destinationBlock = Math.floor((dx + x) / QUALITY_BLOCK) + Math.floor(dy / QUALITY_BLOCK) * (size / QUALITY_BLOCK);
+                let block = evidence.get(destinationBlock);
+                if (!block) {
+                  block = { quality: 255, score: Number.POSITIVE_INFINITY, owners: new Set<number>(), conflicts: false, frozen: false };
+                  evidence.set(destinationBlock, block);
                 }
+                block.quality = Math.min(block.quality, raw.quality[sourceBlock]);
+                block.score = Math.min(block.score, raw.score[sourceBlock]);
+                block.owners.add(raw.owner[sourceBlock]);
+                block.conflicts ||= !!raw.conflicts[sourceBlock];
+                block.frozen ||= !!raw.frozen[sourceBlock];
+              }
+              if (provisional(raw, sourcePixel)) {
+                markProvisional(tile, destinationPixel);
               }
             }
           }
         }
       }
-      if (
-        dst.some((w) => w >>> 24)
-      ) {
-        tile.dirty = true;
-        meta.tileCount++;
-        await tiles.save(tile);
+      for (const [q, block] of evidence) {
+        tile.quality[q] = block.quality;
+        tile.score[q] = Number.isFinite(block.score) ? block.score : 0;
+        tile.conflicts[q] = block.conflicts ? 1 : 0;
+        tile.frozen[q] = block.frozen ? 1 : 0;
+        tile.owner[q] = block.owners.size === 1 && !block.owners.has(0) ? [...block.owners][0] : 0;
       }
     }
+    if (dst.some((w) => w >>> 24)) {
+      tile.dirty = true;
+      meta.tileCount++;
+      meta.observedPixels += countCovered(tile.coverage);
+      meta.provisionalPixels += countCovered(tile.provisional);
+      await tiles.save(tile);
+    }
   }
-  // Presentation evidence must not inflate reconstructed-pixel totals; provenance lives in presentation + coverage.
+  // The aggregate uncertainty/conflict counters above describe the source run and are preserved in `meta`; coverage
+  // and provisional counts are recomputed from the exact pixels copied into this presentation. Decorative pixels are
+  // intentionally covered for display provenance but do not inherit source quality or ownership evidence.
   await store.put(`canvas/${meta.id}`, meta);
   return meta;
 }

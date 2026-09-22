@@ -1,5 +1,18 @@
 import type { Gray, Rect, RGBA } from '../types.ts';
-/** Integer analysis factor: analysis = native / factor exactly, so analysis displacements map to native pixels without rounding drift. */
+
+/** The floating-point pose remains diagnostic data; every native raster operation uses this integer origin. */
+export interface RasterPose {
+  optimizedX: number;
+  optimizedY: number;
+  rasterX: number;
+  rasterY: number;
+}
+
+export function resolveRasterPose(x: number, y: number): RasterPose {
+  return { optimizedX: x, optimizedY: y, rasterX: Math.round(x), rasterY: Math.round(y) };
+}
+
+/** Integer analysis factor: each full analysis cell is factor×factor native pixels; edge cells may be partial. */
 export function analysisFactor(width: number, height: number, analysisSize: number): number {
   return Math.max(1, Math.ceil(Math.max(width, height) / Math.max(1, analysisSize)));
 }
@@ -8,7 +21,7 @@ export function downscaleGray(image: RGBA, factor: number): Gray {
   if (!Number.isInteger(factor) || factor < 1) {
     throw new Error(`Invalid analysis factor ${factor}.`);
   }
-  const width = Math.max(1, Math.floor(image.width / factor)), height = Math.max(1, Math.floor(image.height / factor));
+  const width = Math.max(1, Math.ceil(image.width / factor)), height = Math.max(1, Math.ceil(image.height / factor));
   const data = new Uint8Array(width * height), src = image.data;
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -42,7 +55,7 @@ export function downscaleRGBA(image: RGBA, factor: number): RGBA {
   if (!Number.isInteger(factor) || factor < 1) {
     throw new Error(`Invalid thumbnail factor ${factor}.`);
   }
-  const width = Math.max(1, Math.floor(image.width / factor)), height = Math.max(1, Math.floor(image.height / factor));
+  const width = Math.max(1, Math.ceil(image.width / factor)), height = Math.max(1, Math.ceil(image.height / factor));
   const data = new Uint8ClampedArray(width * height * 4), src = image.data;
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {

@@ -264,6 +264,18 @@ Deno.test('export: single native PNG keeps holes transparent and negative origin
   }
   assert(transparent > 0 && opaque > 0);
 });
+Deno.test('export: fractional bounds extent covers the ceil of the absolute right and bottom edges', async () => {
+  const { p, store, meta } = await project(41, 31), target = fakeHandle();
+  meta.bounds = { x: -2.4, y: -1.6, width: 40, height: 30 };
+  const result = await exportCanvas(store, p, meta, () => {}, target.handle);
+  assert(result.name.endsWith('.png') && result.message.includes('41 × 31'));
+  const image = await decodePNG(target.bytes());
+  assertEquals([image.width, image.height], [41, 31]);
+  const right = (1 * image.width + 40) * 4, bottom = (30 * image.width + 1) * 4;
+  assertEquals([...image.data.subarray(right, right + 2)], [47, 9]);
+  assertEquals([...image.data.subarray(bottom, bottom + 2)], [8, 38]);
+  assertEquals([image.data[right + 3], image.data[bottom + 3]], [255, 255]);
+});
 Deno.test('export: canvases beyond the compatible sheet size are split into overlapping native sheets with coordinates', async () => {
   const { p, store, meta } = await project(5000, 24), target = fakeHandle();
   const result = await exportCanvas(store, p, meta, () => {}, target.handle);
@@ -274,6 +286,30 @@ Deno.test('export: canvases beyond the compatible sheet size are split into over
       names.includes('sheet_1_0.png'),
     names.join(','),
   );
+  assertEquals((await store.scan('sheet-export/', { limit: 10 })).length, 0);
+});
+Deno.test('export: fractional sheet bounds preserve absolute edge pixels and overlap coordinates', async () => {
+  const { p, store, meta } = await project(5001, 31), target = fakeHandle();
+  meta.bounds = { x: -2.4, y: -1.6, width: 5000, height: 30 };
+  const result = await exportCanvas(store, p, meta, () => {}, target.handle);
+  assert(result.name.endsWith('.zip'));
+  const bytes = target.bytes();
+  const firstBounds = JSON.parse(new TextDecoder().decode(zipEntryBytes(bytes, 'sheet_0_0.json')));
+  const lastBounds = JSON.parse(new TextDecoder().decode(zipEntryBytes(bytes, 'sheet_1_0.json')));
+  assertEquals(firstBounds, { x: -3, y: -2, width: 4128, height: 31 });
+  assertEquals(lastBounds, { x: 4093, y: -2, width: 905, height: 31 });
+  const first = await decodePNG(zipEntryBytes(bytes, 'sheet_0_0.png'));
+  const last = await decodePNG(zipEntryBytes(bytes, 'sheet_1_0.png'));
+  assertEquals([first.width, first.height, last.width, last.height], [4128, 31, 905, 31]);
+  const right = (last.width + last.width - 1) * 4, bottom = (30 * first.width + 1) * 4;
+  assertEquals([...last.data.subarray(right, right + 4)], [(4997 + 10) & 255, 9, 7, 255]);
+  assertEquals([...first.data.subarray(bottom, bottom + 4)], [8, 38, 7, 255]);
+  for (let y = 0; y < first.height; y++) {
+    assertEquals(
+      first.data.subarray((y * first.width + 4096) * 4, (y * first.width + 4128) * 4),
+      last.data.subarray(y * last.width * 4, (y * last.width + 32) * 4),
+    );
+  }
   assertEquals((await store.scan('sheet-export/', { limit: 10 })).length, 0);
 });
 Deno.test('export: rasterRows streams rows of exact width from tiles', async () => {

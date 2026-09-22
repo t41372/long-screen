@@ -25,7 +25,9 @@ deno task test:browser   # 真实 Chrome 中的解码、重建、界面与导出
 deno task fixtures   # 用 ffmpeg 重新生成编码测试样本
 ```
 
-主应用使用 ES modules、Worker 和安全上下文 API，不能直接双击 `dist/index.html`。部署到手机可访问的地址时使用 **HTTPS**；同一局域网内的普通 HTTP IP 不等于 `localhost` 安全上下文。导出的**结果包**不同：解压后可直接打开其中的 `index.html` 离线查看。
+浏览器测试（`deno task test:browser`）需要 Google Chrome（Playwright 自带的 Chromium 不含 H.264）和 Playwright 的 WebKit：`npx playwright@1.58.2 install webkit`（需要 Node.js；版本与 `deno.json` 里的 `playwright` 一致）。`deno task fixtures` 需要 ffmpeg。
+
+主应用使用 ES modules 和 Worker，需要静态文件服务器，不能直接双击 `dist/index.html`。**本机开发直接用 HTTP localhost，不需要配置证书。** 手机访问电脑的局域网 HTTP IP 也可打开应用、运行演示，并使用“近似 · 原生 seek”模式测试本地视频（浏览器须能播放该视频，可能漏帧）。浏览器通常只在安全来源开放 WebCodecs 精确解码和 OPFS 磁盘导出；`localhost` 算安全来源，局域网 IP 不算，因此手机验证这些能力需用 HTTPS，例如 GitHub Pages。应用按实际 API 能力启用功能，不会仅因 HTTP 拒绝运行；这些浏览器限制与上传无关，所有处理仍在本机。导出的**结果包**不同：解压后可直接打开其中的 `index.html` 离线查看。
 
 ## 使用
 

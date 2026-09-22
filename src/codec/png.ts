@@ -192,38 +192,52 @@ export async function decodePNG(bytes: Uint8Array): Promise<RGBA> {
   if (raw.length !== (stride + 1) * height) {
     throw new Error(`PNG data has ${raw.length} bytes; expected ${(stride + 1) * height}.`);
   }
-  const out = new Uint8ClampedArray(width * height * 4), line = new Uint8Array(stride), previous = new Uint8Array(stride);
+  const out = new Uint8ClampedArray(width * height * 4);
+  let line = new Uint8Array(stride), previous = new Uint8Array(stride);
   for (let y = 0; y < height; y++) {
     const filter = raw[y * (stride + 1)], src = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
-    for (let i = 0; i < stride; i++) {
-      const a = i >= channels ? line[i - channels] : 0, b = previous[i], c = i >= channels ? previous[i - channels] : 0;
-      let v = src[i];
-      if (filter === 1) {
-        v += a;
-      } else if (filter === 2) {
-        v += b;
-      } else if (filter === 3) {
-        v += (a + b) >> 1;
-      } else if (filter === 4) {
-        v += paeth(a, b, c);
-      } else if (filter !== 0) {
+    switch (filter) {
+      case 0:
+        line.set(src);
+        break;
+      case 1:
+        line.set(src.subarray(0, channels));
+        for (let i = channels; i < stride; i++) line[i] = src[i] + line[i - channels];
+        break;
+      case 2:
+        for (let i = 0; i < stride; i++) line[i] = src[i] + previous[i];
+        break;
+      case 3:
+        for (let i = 0; i < stride; i++) line[i] = src[i] + (((i >= channels ? line[i - channels] : 0) + previous[i]) >> 1);
+        break;
+      case 4:
+        for (let i = 0; i < stride; i++) {
+          line[i] = src[i] + paeth(i >= channels ? line[i - channels] : 0, previous[i], i >= channels ? previous[i - channels] : 0);
+        }
+        break;
+      default:
         throw new Error(`Invalid PNG filter ${filter}.`);
-      }
-      line[i] = v & 255;
     }
-    for (let x = 0; x < width; x++) {
-      const o = (y * width + x) * 4, i = x * channels;
-      if (channels >= 3) {
-        out[o] = line[i];
-        out[o + 1] = line[i + 1];
-        out[o + 2] = line[i + 2];
-        out[o + 3] = channels === 4 ? line[i + 3] : 255;
-      } else {
-        out[o] = out[o + 1] = out[o + 2] = line[i];
-        out[o + 3] = channels === 2 ? line[i + 1] : 255;
+    // Tile PNGs are already RGBA: preserve bytes directly, including transparent RGB.
+    if (channels === 4) {
+      out.set(line, y * stride);
+    } else {
+      for (let x = 0; x < width; x++) {
+        const o = (y * width + x) * 4, i = x * channels;
+        if (channels >= 3) {
+          out[o] = line[i];
+          out[o + 1] = line[i + 1];
+          out[o + 2] = line[i + 2];
+          out[o + 3] = 255;
+        } else {
+          out[o] = out[o + 1] = out[o + 2] = line[i];
+          out[o + 3] = channels === 2 ? line[i + 1] : 255;
+        }
       }
     }
-    previous.set(line);
+    const scratch = previous;
+    previous = line;
+    line = scratch;
   }
   return { width, height, data: out };
 }

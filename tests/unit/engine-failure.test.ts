@@ -5,13 +5,17 @@ import {
   DEFAULT_SETTINGS,
   type Diagnostic,
   type FrameImage,
+  type FramePlan,
   type FrameSource,
   type MediaInfo,
   type Progress,
+  type RGBA,
   type Settings,
 } from '../../src/types.ts';
 import { buildScenario } from '../../src/synthetic/scenarios.ts';
 import { ScenarioSource } from '../../src/synthetic/source.ts';
+import { pad } from '../../src/core/math.ts';
+import { RegionAtlas } from '../../src/core/layers.ts';
 import { runScenario } from '../support/run.ts';
 /** Minimal synthetic FrameSource: deterministic, always-different pixel content (never bit-identical between
  * frames), independent of the synthetic-world/scenario machinery. Good enough for tests that only care about
@@ -88,6 +92,39 @@ function faultySource(
         yield frame;
       }
     },
+  };
+}
+/** Keeps the declared frame count but ends a selected decode pass after a shorter natural prefix. */
+function truncatedSource(inner: FrameSource, limits: Record<number, number>): FrameSource & { disposed: boolean } {
+  let calls = 0, disposed = false;
+  return {
+    info: inner.info,
+    get disposed() {
+      return disposed;
+    },
+    dispose(): void {
+      disposed = true;
+      inner.dispose();
+    },
+    async *frames(): AsyncGenerator<FrameImage> {
+      const limit = limits[++calls];
+      let yielded = 0;
+      for await (const frame of inner.frames()) {
+        if (limit !== undefined && yielded >= limit) break;
+        yield frame;
+        yielded++;
+      }
+    },
+  };
+}
+function hideKey(db: MemoryKV, suffix: string): KV {
+  return {
+    get: (key) => key.endsWith(suffix) ? Promise.resolve(undefined) : db.get(key),
+    put: (key, value) => db.put(key, value),
+    delete: (key) => db.delete(key),
+    deleteMany: (keys) => db.deleteMany(keys),
+    scan: (prefix, options) => db.scan(prefix, options),
+    putMany: (rows) => db.putMany(rows),
   };
 }
 function makeEngine(
@@ -194,6 +231,144 @@ Deno.test('engine F16: a decode failure on solve()\'s pass (the SECOND frames() 
   const decodePrefix = codes.filter((d) => d.code === 'DECODE_PREFIX_ONLY');
   assertEquals(decodePrefix.length, 1);
   assertEquals((decodePrefix[0].detail as { pass?: string })?.pass, 'solve');
+});
+Deno.test('engine P0: a natural scan EOF before the declared frame count is partial and journaled', async () => {
+  const inner = syntheticSource(6), source = truncatedSource(inner, { 1: 3 });
+  const diagnostics: Diagnostic[] = [];
+  const project = await makeEngine(new MemoryKV(), source, {}, (d) => diagnostics.push(d)).run();
+  assertEquals(project.status, 'partial');
+  const mismatch = diagnostics.find((d) => d.code === 'PASS_FRAME_COUNT_MISMATCH');
+  assert(mismatch, JSON.stringify(diagnostics.map((d) => d.code)));
+  assertEquals(mismatch?.detail, { pass: 'scan', expected: 6, actual: 3 });
+});
+Deno.test('engine P0: a natural solve EOF does not silently render a short solved prefix', async () => {
+  const inner = syntheticSource(6), source = truncatedSource(inner, { 2: 3 });
+  const diagnostics: Diagnostic[] = [];
+  const project = await makeEngine(new MemoryKV(), source, {}, (d) => diagnostics.push(d)).run();
+  assertEquals(project.status, 'partial');
+  const mismatch = diagnostics.find((d) => d.code === 'PASS_FRAME_COUNT_MISMATCH');
+  assert(mismatch, JSON.stringify(diagnostics.map((d) => d.code)));
+  assertEquals(mismatch?.detail, { pass: 'solve', expected: 6, actual: 3 });
+  assertEquals(project.renderedFrames, 3);
+});
+Deno.test('engine P0: explicitly skipped edit-list preroll is not a missing presentation frame', async () => {
+  const source = syntheticSource(6), diagnostics: Diagnostic[] = [];
+  source.info.frameCount = 7;
+  source.info.notices = [{ code: 'NEGATIVE_TIMESTAMP_SKIPPED', message: 'Edit-list preroll.', count: 1 }];
+  const project = await makeEngine(new MemoryKV(), source, {}, (d) => diagnostics.push(d)).run();
+  assertEquals(project.status, 'complete');
+  assertEquals(project.renderedFrames, 6);
+  assert(!diagnostics.some((d) => d.code === 'PASS_FRAME_COUNT_MISMATCH'));
+});
+Deno.test('engine P0: a natural render EOF is partial even when every rendered plan exists', async () => {
+  const inner = syntheticSource(6), source = truncatedSource(inner, { 3: 3 });
+  const diagnostics: Diagnostic[] = [];
+  const project = await makeEngine(new MemoryKV(), source, {}, (d) => diagnostics.push(d)).run();
+  assertEquals(project.status, 'partial');
+  const mismatch = diagnostics.find((d) => d.code === 'PASS_FRAME_COUNT_MISMATCH');
+  assert(mismatch, JSON.stringify(diagnostics.map((d) => d.code)));
+  assertEquals(mismatch?.detail, { pass: 'render', expected: 6, actual: 3 });
+  assertEquals(project.renderedFrames, 3);
+});
+Deno.test('engine P0: a missing scan record stops solve at the committed prefix with an explicit diagnostic', async () => {
+  const db = new MemoryKV(), source = syntheticSource(6), diagnostics: Diagnostic[] = [];
+  const project = await makeEngine(hideKey(db, `/scan/${pad(2)}`), source, {}, (d) => diagnostics.push(d)).run();
+  assertEquals(project.status, 'partial');
+  assert(diagnostics.some((d) => d.code === 'MISSING_SCAN_RECORD'));
+  assertEquals(project.renderedFrames, 2);
+});
+Deno.test('engine P0: a missing plan stops render at the committed prefix with an explicit diagnostic', async () => {
+  const db = new MemoryKV(), source = syntheticSource(6), diagnostics: Diagnostic[] = [];
+  const project = await makeEngine(hideKey(db, `/plan/${pad(2)}`), source, {}, (d) => diagnostics.push(d)).run();
+  assertEquals(project.status, 'partial');
+  assert(diagnostics.some((d) => d.code === 'MISSING_PLAN'));
+  assertEquals(project.renderedFrames, 2);
+});
+Deno.test('engine P1: a failed final observation commit leaves the run partial instead of falsely complete', async () => {
+  const db = new MemoryKV();
+  const flaky: KV = {
+    get: (key) => db.get(key),
+    put: (key, value) => db.put(key, value),
+    delete: (key) => db.delete(key),
+    deleteMany: (keys) => db.deleteMany(keys),
+    scan: (prefix, options) => db.scan(prefix, options),
+    putMany: (rows) =>
+      rows.some((row) => row.key.includes('/observation/')) ? Promise.reject(new Error('observation quota exceeded')) : db.putMany(rows),
+  };
+  const diagnostics: Diagnostic[] = [];
+  const project = await makeEngine(flaky, syntheticSource(3), {}, (d) => diagnostics.push(d)).run();
+  assertEquals(project.status, 'partial');
+  assert(diagnostics.some((d) => d.code === 'PERSISTENCE_PREFIX_ONLY'));
+  assertEquals((await db.scan(`run/${project.id}/observation/`, { limit: 10 })).length, 0);
+});
+Deno.test('engine raster consistency: rounds current and neighbour poses separately and ignores sticky neighbour occlusions', () => {
+  const width = 48, height = 32;
+  const image = (value: number): RGBA => {
+    const data = new Uint8ClampedArray(width * height * 4);
+    for (let i = 0; i < data.length; i += 4) data.set([value, value, value, 255], i);
+    return { width, height, data };
+  };
+  const region = { id: 'body', name: 'body', kind: 'moving' as const, rect: { x: 0, y: 0, width, height } };
+  const atlas = new RegionAtlas([region], width, height), code = atlas.code(region);
+  const engine = makeEngine(new MemoryKV(), syntheticSource(1), {});
+  const mask = (engine as unknown as { consistencyMask: (...args: unknown[]) => Uint8Array }).consistencyMask.bind(engine);
+  const current = image(10), fractionalNeighbour = image(10);
+  fractionalNeighbour.data[(10 * width + 11) * 4] = 255;
+  fractionalNeighbour.data[(10 * width + 11) * 4 + 1] = 255;
+  fractionalNeighbour.data[(10 * width + 11) * 4 + 2] = 255;
+  const separatelyRounded = mask(
+    current,
+    atlas,
+    region,
+    code,
+    { x: .49, y: 0 },
+    'canvas',
+    { image: fractionalNeighbour, x: -.49, y: 0, canvasId: 'canvas' },
+  );
+  assertEquals(separatelyRounded[10 * width + 10], 1, 'two poses rounding to the same raster origin must compare the same pixel');
+
+  const changedNeighbour = image(10), pixel = (10 * width + 10) * 4;
+  changedNeighbour.data[pixel] = changedNeighbour.data[pixel + 1] = changedNeighbour.data[pixel + 2] = 255;
+  const withoutOcclusion = mask(
+    current,
+    atlas,
+    region,
+    code,
+    { x: 0, y: 0 },
+    'canvas',
+    { image: changedNeighbour, x: 0, y: 0, canvasId: 'canvas' },
+  );
+  const withOcclusion = mask(
+    current,
+    atlas,
+    region,
+    code,
+    { x: 0, y: 0 },
+    'canvas',
+    { image: changedNeighbour, x: 0, y: 0, canvasId: 'canvas', occlusions: [{ x: 10, y: 10, width: 1, height: 1 }] },
+  );
+  assertEquals(withoutOcclusion[pixel / 4], 0, 'an unmasked neighbour disagreement is inconsistent');
+  assertEquals(withOcclusion[pixel / 4], 1, 'a sticky neighbour occlusion is not evidence against the current frame');
+});
+Deno.test('engine integration: solve persists sticky occlusions and render carries them into observation decisions', async () => {
+  const run = await runScenario(buildScenario('toolbar-collapse'), {});
+  assertEquals(run.project.status, 'complete', run.project.error);
+  let planned = 0, rendered = 0, plans = 0, observations = 0;
+  for await (const { value } of iterate<FramePlan>(run.store, 'plan/')) {
+    plans++;
+    planned += value.placements.filter((placement) => placement.occlusions?.length).length;
+  }
+  for await (
+    const { value } of iterate<{ decisions: { placement: FramePlan['placements'][number] }[] }>(run.store, 'observation/')
+  ) {
+    observations++;
+    rendered += value.decisions.filter((decision) => decision.placement.occlusions?.length).length;
+  }
+  assertEquals(plans, run.project.frames, 'solve must persist one plan for every reconstructed frame');
+  assertEquals(observations, run.project.renderedFrames, 'render must persist one observation ledger row per rendered frame');
+  assert(planned > 0, 'the toolbar fixture must produce at least one sticky occlusion in solve()');
+  assertEquals(rendered, planned, 'render must carry every solve-time sticky occlusion into its durable decision ledger');
+  assert(run.codes.has('STICKY_OCCLUSION'), 'solve must journal the sticky-occlusion inference');
 });
 // F23: the scan-time preview thumbnail is gone; a frame-reference failure degrades to a warning, not a run failure.
 Deno.test('engine F23: no preview events are ever emitted', async () => {

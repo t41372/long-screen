@@ -306,6 +306,7 @@ export class CompatibilitySource implements FrameSource {
     private read: (bitmap: ImageBitmap) => RGBA = bitmapReader(),
   ) {
     info.mode = `Approximate native seek (${fps} Hz)`;
+    info.frameCount = Math.ceil(info.duration * fps);
     // Same compressed material as PreciseSource, one more resampling step removed (the browser's own seek and
     // bitmap path), so it can only be noisier — never tighter.
     info.noise ??= DECODED_VIDEO_NOISE;
@@ -315,8 +316,8 @@ export class CompatibilitySource implements FrameSource {
     this.cancelled = true;
   }
   async *frames(): AsyncGenerator<FrameImage> {
-    let index = 0;
-    for (let time = 0; time < this.info.duration && !this.cancelled; time += 1 / this.fps) {
+    for (let index = 0; index < this.info.frameCount! && !this.cancelled; index++) {
+      const time = index / this.fps;
       const bitmap = await this.request(time);
       let image: RGBA;
       try {
@@ -329,7 +330,7 @@ export class CompatibilitySource implements FrameSource {
       } finally {
         bitmap.close();
       }
-      yield { image, time, duration: 1 / this.fps, index: index++ };
+      yield { image, time, duration: 1 / this.fps, index };
     }
   }
 }

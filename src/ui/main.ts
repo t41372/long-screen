@@ -123,6 +123,10 @@ function setBusy(value: boolean): void {
   $<HTMLButtonElement>('export-png').disabled = value || !viewer.current?.tileCount;
 }
 async function storageInfo(): Promise<void> {
+  if (typeof navigator.storage?.estimate !== 'function') {
+    $('storage-status').textContent = '浏览器未提供存储配额；不影响本地重建';
+    return;
+  }
   try {
     const estimate = await navigator.storage.estimate();
     $('storage-status').textContent = `本地已用 ${humanBytes(estimate.usage || 0)} / 可用配额 ${humanBytes(estimate.quota || 0)}`;
@@ -193,7 +197,7 @@ async function captureNativeFrame(): Promise<ImageBitmap> {
 }
 const MEDIA_HASH_PREFIX = 'long-screen-media-hash:';
 // Matching name + byte size is not proof of identity (two different recordings can share both). Content
-// identity is a SHA-256 of the first and last 64KB, cheap to compute even for multi-gigabyte files.
+// fingerprint samples the first and last 64KB; it is not a full content hash.
 async function fileFingerprint(file: File): Promise<string> {
   const chunk = 64 * 1024, size = file.size;
   const head = await file.slice(0, Math.min(chunk, size)).arrayBuffer();
@@ -303,6 +307,7 @@ async function chooseFile(file: File): Promise<void> {
   }
 }
 function resetView(): void {
+  project = undefined;
   selectionTouched = false;
   canvases = [];
   diagnosticRows = [];
@@ -328,6 +333,15 @@ async function start(demo?: string): Promise<void> {
   }
   if (capabilities && !capabilities.compression) {
     toast('当前浏览器缺少 CompressionStream；每张原尺寸瓦片都靠它编码为 PNG，无法开始重建。', true);
+    return;
+  }
+  if (!demo && $<HTMLSelectElement>('decoder').value === 'precise' && capabilities && !capabilities.webcodecs) {
+    toast(
+      !globalThis.isSecureContext
+        ? '浏览器在当前 HTTP 地址未开放 WebCodecs。可选择“近似 · 原生 seek”继续本地测试；精确逐帧解码需要 localhost 或 HTTPS。视频不会上传。'
+        : '当前浏览器没有 WebCodecs。请更新 Safari / iOS，或明确选择可能漏帧的兼容 seek 模式。',
+      true,
+    );
     return;
   }
   resetView();
@@ -928,6 +942,10 @@ for (const el of document.querySelectorAll<HTMLElement>('[data-close]')) {
   };
 }
 $('persist-btn').onclick = () => {
+  if (typeof navigator.storage?.persist !== 'function') {
+    toast('当前浏览器不支持申请持久存储；本地重建仍可使用，请在支持导出的环境保存重要结果。');
+    return;
+  }
   void navigator.storage.persist().then((granted) =>
     toast(granted ? '浏览器已授予持久存储；清除网站数据仍会删除项目。' : '浏览器未授予持久存储。请导出重要结果，避免自动回收。')
   ).catch((error) => toast(String(error), true));

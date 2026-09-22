@@ -837,6 +837,7 @@ Deno.test('source: compatibility source samples native seeks at the configured r
     codedHeight: 2,
     rotation: 0,
     duration: .5,
+    frameCount: 15,
     codec: 'native',
     mode: '',
     warnings: [],
@@ -856,6 +857,7 @@ Deno.test('source: compatibility source samples native seeks at the configured r
     return Promise.resolve(bitmap(4, 2));
   }, (b) => ({ width: b.width, height: b.height, data: new Uint8ClampedArray(b.width * b.height * 4) }));
   assert(info.mode.includes('10 Hz'));
+  assertEquals(info.frameCount, 5, 'seek samples replace the original encoded packet count');
   let count = 0;
   for await (const f of source.frames()) {
     assertEquals(f.image.width, 4);

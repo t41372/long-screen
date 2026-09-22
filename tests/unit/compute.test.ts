@@ -149,6 +149,18 @@ Deno.test('compute: a bit-exact fake GPU calibrates, is used for the backend, an
   assertEquals(c.stats.gpuFrames, 2);
   c.dispose();
 });
+Deno.test('compute: CPU and WebGPU retain partial right and bottom analysis cells', async () => {
+  const src: RGBA = {
+    width: 5,
+    height: 3,
+    data: Uint8ClampedArray.from({ length: 5 * 3 * 4 }, (_, i) => (i * 31 + 7) % 256),
+  };
+  const cpu = downscaleGray(src, 2), gpu = new AnalysisComputer('webgpu', fakeGPU());
+  assertEquals([cpu.width, cpu.height], [3, 2]);
+  assertEquals(await gpu.gray(src, 2), cpu);
+  assertEquals(gpu.stats.backend, 'WebGPU box-luma + CPU registration');
+  gpu.dispose();
+});
 Deno.test('compute: a fake GPU that miscomputes fails calibration and falls back to CPU with the correct output', async () => {
   const c = new AnalysisComputer('webgpu', fakeGPU({ corrupt: true })), src = image();
   assertEquals(await c.gray(src, 2), downscaleGray(src, 2));

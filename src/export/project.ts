@@ -1,3 +1,4 @@
+import { createId } from '../core/id.ts';
 import type { KV } from '../storage/db.ts';
 import { deletePrefix, iterate } from '../storage/db.ts';
 import type { CanvasMeta, Project, Rect, Region } from '../types.ts';
@@ -132,12 +133,11 @@ export async function exportCanvas(
   onProgress: (message: string, fraction: number) => void,
   handle?: FileSystemFileHandle,
 ): Promise<ExportResult> {
-  const rect = {
-    x: Math.floor(meta.bounds.x),
-    y: Math.floor(meta.bounds.y),
-    width: Math.ceil(meta.bounds.width),
-    height: Math.ceil(meta.bounds.height),
-  };
+  const left = Math.floor(meta.bounds.x),
+    top = Math.floor(meta.bounds.y),
+    right = Math.ceil(meta.bounds.x + meta.bounds.width),
+    bottom = Math.ceil(meta.bounds.y + meta.bounds.height);
+  const rect = { x: left, y: top, width: right - left, height: bottom - top };
   // These are viewer/interoperability and cache limits, not false claims about the PNG specification.
   const sheetWidth = Math.min(
       4096,
@@ -166,7 +166,7 @@ export async function exportCanvas(
     }
     const overlap = 32;
     zip = new ZipWriter(target.sink, db);
-    sheetPrefix = `sheet-export/${crypto.randomUUID()}/`;
+    sheetPrefix = `sheet-export/${createId()}/`;
     const prefix = sheetPrefix;
     for await (const { value: t } of iterate<TileIndex>(db, `tile-index/${meta.id}/0/`)) {
       const x1 = Math.floor((t.x * tiles.size - rect.x) / sheetWidth),

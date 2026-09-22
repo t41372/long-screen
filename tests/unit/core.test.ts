@@ -21,6 +21,7 @@ import {
   downscaleRGBA,
   halveRGBA,
   meanAbsoluteDifference,
+  resolveRasterPose,
   thumbnail,
 } from '../../src/core/raster.ts';
 import { LayerLearner, RegionAtlas, regionContains, regionMotion } from '../../src/core/layers.ts';
@@ -257,6 +258,28 @@ Deno.test('raster: integer analysis factor, exact box downscale, crops, previews
   assertEquals(g2.width, 2);
   assertEquals(g2.height, 1);
   assertEquals([...g2.data], [127, 127]);
+  assertEquals(resolveRasterPose(7.6, -2.4), { optimizedX: 7.6, optimizedY: -2.4, rasterX: 8, rasterY: -2 });
+  const nonDiv = patternImage(5, 3),
+    g3 = downscaleGray(nonDiv, 2),
+    r3 = referenceGray(nonDiv, 2),
+    t3 = downscaleRGBA(nonDiv, 2),
+    r4 = referenceRGBA(nonDiv, 2);
+  assertEquals([g3.width, g3.height], [3, 2], 'ceil dimensions retain the partial right/bottom boxes');
+  assertEquals([...g3.data], [...r3.data]);
+  assertEquals([t3.width, t3.height], [3, 2]);
+  assertEquals([...t3.data], [...r4.data]);
+  const partialRegion: Region = {
+    id: 'partial',
+    name: 'partial',
+    kind: 'moving',
+    rect: { x: 0, y: 0, width: 5, height: 3 },
+    mask: Uint8Array.from([0, 0, 1, 0, 0, 1]),
+    maskWidth: 3,
+    maskHeight: 2,
+    factor: 2,
+  };
+  assert(regionContains(partialRegion, 4, 2, 5, 3), 'the final partial analysis cell must own the native edge');
+  assert(!regionContains(partialRegion, 2, 0, 5, 3), 'mask membership must still use the exact analysis cell');
   assertThrows(() => downscaleGray(image, 0));
   assertThrows(() => downscaleRGBA(image, 1.5));
   assertEquals(downscaleRGBA(image, 2).data[3], 255);
@@ -287,7 +310,7 @@ function patternImage(width: number, height: number): RGBA {
 }
 /** Ground truth computed independently of raster.ts: the box clamped to the image, luma summed then averaged then shifted. */
 function referenceGray(image: RGBA, factor: number): Gray {
-  const width = Math.max(1, Math.floor(image.width / factor)), height = Math.max(1, Math.floor(image.height / factor));
+  const width = Math.max(1, Math.ceil(image.width / factor)), height = Math.max(1, Math.ceil(image.height / factor));
   const data = new Uint8Array(width * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
@@ -305,7 +328,7 @@ function referenceGray(image: RGBA, factor: number): Gray {
   return { width, height, data };
 }
 function referenceRGBA(image: RGBA, factor: number): RGBA {
-  const width = Math.max(1, Math.floor(image.width / factor)), height = Math.max(1, Math.floor(image.height / factor));
+  const width = Math.max(1, Math.ceil(image.width / factor)), height = Math.max(1, Math.ceil(image.height / factor));
   const data = new Uint8ClampedArray(width * height * 4);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {

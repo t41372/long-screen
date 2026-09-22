@@ -2,6 +2,7 @@ import type { KV } from '../storage/db.ts';
 import { deletePrefix, iterate } from '../storage/db.ts';
 import { CRC32, utf8 } from './crc.ts';
 import { pad } from '../core/math.ts';
+import { createId } from '../core/id.ts';
 export interface ByteSink {
   write(data: Uint8Array): Promise<void>;
   close(): Promise<void>;
@@ -35,7 +36,7 @@ function record(size: number): {
 export class ZipWriter {
   private offset = 0n;
   private count = 0;
-  private prefix = `export-index/${crypto.randomUUID()}/`;
+  private prefix = `export-index/${createId()}/`;
   constructor(private sink: ByteSink, private db: KV) {}
   private async write(data: Uint8Array): Promise<void> {
     await this.sink.write(data);

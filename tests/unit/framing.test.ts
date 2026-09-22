@@ -2,7 +2,7 @@ import { assert, assertEquals } from '@std/assert';
 import { buildFramedCanvas, frameCoordinate, frameLayout } from '../../src/core/framing.ts';
 import { encodeRGBA } from '../../src/codec/png.ts';
 import { iterate, MemoryKV } from '../../src/storage/db.ts';
-import { covered, markCovered, TileStore } from '../../src/storage/tiles.ts';
+import { covered, markCovered, markProvisional, provisional, TileStore } from '../../src/storage/tiles.ts';
 import type { CanvasMeta, Region, RGBA } from '../../src/types.ts';
 const region: Region = { id: 'pane', name: 'pane', kind: 'moving', rect: { x: 2, y: 2, width: 8, height: 6 }, solid: true };
 const meta: CanvasMeta = {
@@ -89,6 +89,78 @@ Deno.test('framing: raw pixels and holes survive negative origins; decorated pix
   assert(covered(t, 0));
   assertEquals((await tiles.get(meta.id, -1, 0)).pixels[i * 4], 19);
 });
+Deno.test('framing: copied content preserves provisional and block evidence conservatively across the presentation offset', async () => {
+  const db = new MemoryKV(), tiles = new TileStore(db, 16, 64), source = reference();
+  const sourceMeta: CanvasMeta = { ...meta, id: 'evidence', uncertainPixels: 7, conflictPixels: 11, provisionalPixels: 1 };
+  const raw = await tiles.get(sourceMeta.id, -1, 0), i = 7 * 16 + 13;
+  raw.pixels.set([19, 29, 39, 255], i * 4);
+  markCovered(raw, i);
+  markProvisional(raw, i);
+  raw.quality[0] = 37;
+  raw.score[0] = 0.42;
+  raw.conflicts[0] = 1;
+  raw.owner[0] = 23;
+  raw.frozen[0] = 1;
+  raw.dirty = true;
+  await tiles.flush();
+  await db.put('frame-reference', { frame: 0, image: new Blob([await encodeRGBA(source)]) });
+
+  const framed = await buildFramedCanvas(db, tiles, sourceMeta, region, [region], async () => {});
+  assert(framed);
+  assertEquals(framed.uncertainPixels, sourceMeta.uncertainPixels);
+  assertEquals(framed.conflictPixels, sourceMeta.conflictPixels);
+  assertEquals(framed.provisionalPixels, 1);
+  const tile = await tiles.get(framed.id, 0, 0), destination = 2 * 16 + 2;
+  assertEquals([...tile.pixels.subarray(destination * 4, destination * 4 + 4)], [19, 29, 39, 255]);
+  assert(covered(tile, destination));
+  assert(provisional(tile, destination));
+  assertEquals(tile.quality[0], 37);
+  assert(Math.abs(tile.score[0] - 0.42) < 0.001);
+  assertEquals(tile.conflicts[0], 1);
+  assertEquals(tile.owner[0], 23);
+  assertEquals(tile.frozen[0], 1);
+});
+Deno.test('framing: a non-tile-aligned offset carries block evidence to the correct destination block', async () => {
+  const db = new MemoryKV(), tiles = new TileStore(db, 32, 64), source = reference();
+  const sourceMeta: CanvasMeta = {
+    ...meta,
+    id: 'evidence-shifted',
+    bounds: { x: -3, y: 7, width: 64, height: 64 },
+    tileCount: 1,
+    uncertainPixels: 4,
+    conflictPixels: 9,
+    provisionalPixels: 1,
+  };
+  const raw = await tiles.get(sourceMeta.id, 0, 0), sourcePixel = 7 * 32 + 11;
+  raw.pixels.set([31, 41, 51, 255], sourcePixel * 4);
+  markCovered(raw, sourcePixel);
+  markProvisional(raw, sourcePixel);
+  raw.quality[0] = 37;
+  raw.score[0] = 0.42;
+  raw.conflicts[0] = 1;
+  raw.owner[0] = 23;
+  raw.frozen[0] = 1;
+  raw.dirty = true;
+  await tiles.flush();
+  await db.put('frame-reference', { frame: 0, image: new Blob([await encodeRGBA(source)]) });
+
+  const framed = await buildFramedCanvas(db, tiles, sourceMeta, region, [region], async () => {});
+  assert(framed);
+  assertEquals(framed.uncertainPixels, sourceMeta.uncertainPixels);
+  assertEquals(framed.conflictPixels, sourceMeta.conflictPixels);
+  assertEquals(framed.provisionalPixels, 1);
+  // The source origin (-3, 7) and pane origin (2, 2) produce a +5px presentation offset. The source pixel
+  // lands at output (16, 2): tile (0, 0), block 1, not source block 0's local destination by coincidence.
+  const tile = await tiles.get(framed.id, 0, 0), destination = 2 * 32 + 16;
+  assertEquals([...tile.pixels.subarray(destination * 4, destination * 4 + 4)], [31, 41, 51, 255]);
+  assert(covered(tile, destination));
+  assert(provisional(tile, destination));
+  assertEquals(tile.quality[1], 37);
+  assert(Math.abs(tile.score[1] - 0.42) < 0.001);
+  assertEquals(tile.conflicts[1], 1);
+  assertEquals(tile.owner[1], 23);
+  assertEquals(tile.frozen[1], 1);
+});
 Deno.test('framing: missing references, empty/attached canvases and full-frame panes do not fabricate a frame', async () => {
   const db = new MemoryKV(), tiles = new TileStore(db, 16, 64);
   assertEquals(await buildFramedCanvas(db, tiles, meta, region, [region], async () => {}), undefined);
@@ -110,8 +182,8 @@ Deno.test('framing: explicit ignore regions are not reintroduced as reference ch
 Deno.test('framing: sparse source content skips content-only tiles with no backing source tile, but never drops a perimeter tile', async () => {
   const db = new MemoryKV(), tiles = new TileStore(db, 32, 256), source = reference();
   await db.put('frame-reference', { frame: 0, image: new Blob([await encodeRGBA(source)]) });
-  // content is 800×800 against an 8×6 pane; sourceCanvas.bounds.{x,y} equal pane.{x,y} so interior output
-  // tile (tx,ty) maps 1:1 onto source tile (tx,ty) with no straddling, keeping the expected count exact.
+  // Content is 800×800 against an 8×6 pane; sourceCanvas.bounds.{x,y} equal pane.{x,y}, so the interior
+  // output tile (tx,ty) maps onto source tile (tx,ty) with no straddling, keeping the expected count exact.
   const sparse: CanvasMeta = { ...meta, id: 'sparse', bounds: { x: 2, y: 2, width: 800, height: 800 }, tileCount: 4 };
   // Two far-apart observed clusters; everything else under the 800×800 content rect is unobserved.
   await paintSourceTile(tiles, sparse.id, 2, 3);
@@ -175,4 +247,29 @@ Deno.test('framing: a 12000×12000 sparse bounding box with 8 observed tiles sta
   assert(framed.tileCount < 0.3 * gridCells, `expected far below ${gridCells} grid cells, got ${framed.tileCount}`);
   assert(framedGets < 0.3 * gridCells, `expected far fewer framed-tile allocations than ${gridCells} grid cells, got ${framedGets}`);
   assert(framedGets >= framed.tileCount, `every stored framed tile was allocated: ${framedGets} allocations for ${framed.tileCount} tiles`);
+});
+Deno.test('framing: giant sparse bounds stop at the candidate limit without traversing the full grid', async () => {
+  const db = new MemoryKV(), tiles = new TileStore(db, 512, 1024), source = reference();
+  await db.put('frame-reference', { frame: 0, image: new Blob([await encodeRGBA(source)]) });
+  const giant: CanvasMeta = {
+    ...meta,
+    id: 'giant-sparse',
+    bounds: { x: 2, y: 2, width: 52_000_000, height: 52_000_000 },
+    tileCount: 1,
+  };
+  let reason: string | undefined;
+  let checkpoints = 0;
+  const result = await buildFramedCanvas(db, tiles, giant, region, [region], async () => {
+    checkpoints++;
+  }, {
+    maxTiles: 64,
+    onSkipped: (r) => {
+      reason = r;
+    },
+  });
+  assertEquals(result, undefined);
+  assert(reason?.includes('64'), `expected reason to name the 64-tile limit, got: ${reason}`);
+  assert(checkpoints >= 1 && checkpoints <= 2, `expected bounded checkpoint work before skipping, got ${checkpoints}`);
+  assertEquals(await countPrefix(db, `tile/${giant.id}-framed/`), 0);
+  assertEquals(await countPrefix(db, `tile-index/${giant.id}-framed/`), 0);
 });

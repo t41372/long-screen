@@ -1,3 +1,4 @@
+import { createId } from '../core/id.ts';
 import type {
   Attachment,
   CanvasMeta,
@@ -12,6 +13,7 @@ import type {
   Point,
   Progress,
   Project,
+  Rect,
   Region,
   RGBA,
   ScanRecord,
@@ -38,7 +40,7 @@ import { PoseGraph, type PoseNode } from '../core/pose-graph.ts';
 import { type Keyframe, KeyframeIndex } from '../core/keyframes.ts';
 import { Compositor } from '../core/compositor.ts';
 import { pad } from '../core/math.ts';
-import { analysisFactor, equalRGBA } from '../core/raster.ts';
+import { analysisFactor, equalRGBA, resolveRasterPose } from '../core/raster.ts';
 import { encodeRGBA } from '../codec/png.ts';
 import { buildFramedCanvas } from '../core/framing.ts';
 import { AnalysisComputer } from '../core/compute.ts';
@@ -185,6 +187,12 @@ export class Engine {
   private processed = 0;
   private regions: Region[] = [];
   private timings: Record<string, number> = {};
+  /** Reused native-to-analysis coordinate maps for consistency verdict lookups. */
+  private consistencyAnalysisX = new Int32Array(0);
+  private consistencyAnalysisY = new Int32Array(0);
+  private consistencyAnalysisWidth = 0;
+  private consistencyAnalysisHeight = 0;
+  private consistencyAnalysisFactor = 0;
   private duplicates = 0;
   private skippedPaints = 0;
   private atlas?: RegionAtlas;
@@ -203,7 +211,7 @@ export class Engine {
   constructor(private db: KV, source: FrameSource, settings: Settings, private events: EngineEvents) {
     this.source = source;
     this.computer = new AnalysisComputer(settings.compute || 'cpu');
-    const id = crypto.randomUUID(), now = new Date().toISOString();
+    const id = createId(), now = new Date().toISOString();
     this.project = {
       id,
       created: now,
@@ -284,6 +292,24 @@ export class Engine {
     } catch (error) {
       throw new StorageError(error);
     }
+  }
+  /** Commit a snapshot, then remove exactly that committed prefix from the pending queue. */
+  private async commitRows(rows: { key: string; value: unknown }[]): Promise<void> {
+    if (!rows.length) return;
+    const batch = rows.slice();
+    await this.storagePutMany(batch);
+    rows.splice(0, batch.length);
+  }
+  private async passMismatch(pass: string, expected: number, actual: number): Promise<void> {
+    if (expected === actual) return;
+    this.partial = true;
+    await this.diagnostics.emit({
+      code: 'PASS_FRAME_COUNT_MISMATCH',
+      severity: 'error',
+      message: `${pass} 阶段只完成 ${actual}/${expected} 帧；结果被标记为 partial。`,
+      action: '已保留成功提交的前缀；缺失的帧不会被静默当作已处理。',
+      detail: { pass, expected, actual },
+    });
   }
   private async report(frame: number, time: number, message: string, fraction?: number, canvas?: CanvasMeta): Promise<void> {
     const now = performance.now();
@@ -539,6 +565,7 @@ export class Engine {
     const pending: { key: string; value: unknown }[] = [];
     const it = this.source.frames();
     let storageFailed = false;
+    let endedNaturally = false;
     try {
       while (true) {
         await this.checkpoint();
@@ -562,6 +589,7 @@ export class Engine {
           break;
         }
         if (step.done) {
+          endedNaturally = true;
           break;
         }
         const frame = step.value;
@@ -649,7 +677,7 @@ export class Engine {
             pending.push({ key: `scan-features/${pad(frame.index)}`, value: encodeFeatures(features) });
           }
           if (pending.length >= 24) {
-            await this.storagePutMany(pending.splice(0));
+            await this.commitRows(pending);
           }
           this.project.frames = frame.index + 1;
           previous = g;
@@ -753,9 +781,10 @@ export class Engine {
       // trailing <24-row batch is classified and handled the same way an in-loop flush failure is — partial
       // and PERSISTENCE_PREFIX_ONLY — instead of escaping scan() entirely as an unclassified top-level error.
       try {
-        await this.storagePutMany(pending.splice(0));
+        await this.commitRows(pending);
       } catch (error) {
         this.partial = true;
+        storageFailed = true;
         try {
           await this.diagnostics.emit({
             code: 'PERSISTENCE_PREFIX_ONLY',
@@ -765,6 +794,10 @@ export class Engine {
           });
         } catch { /* the journal write itself failed too; the run is already marked partial. */ }
       }
+    }
+    if (endedNaturally && this.source.info.frameCount !== undefined) {
+      const preroll = this.source.info.notices?.find((n) => n.code === 'NEGATIVE_TIMESTAMP_SKIPPED')?.count || 0;
+      await this.passMismatch('scan', this.source.info.frameCount - preroll, this.project.frames);
     }
     for (const notice of this.source.info.notices || []) {
       await this.diagnostics.emit({
@@ -867,6 +900,8 @@ export class Engine {
       previousPlan: FramePlan | undefined,
       solved = 0;
     const pending: { key: string; value: FramePlan }[] = [];
+    let endedNaturally = false;
+    let missingScan = false;
     // Displacement-spread consistency voting (docs/ARCHITECTURE.md §七): a ring of recent analysis-resolution
     // frames per run, bounded by gray bytes retained (native frames are never kept here). For each moving
     // region's placement, pixels are compared against several ring partners whose world displacement clears
@@ -1080,7 +1115,6 @@ export class Engine {
      * in value, would only ever make agreement MORE likely, and a cell whose own (lx,ly) or matched (sx,sy)
      * isn't in the region is skipped up front exactly as before). */
     const consistencyCompare = (
-      region: Region,
       box: ConsistencyBox,
       interior: Uint8Array,
       layerT: ConsistencyLayer,
@@ -1236,12 +1270,23 @@ export class Engine {
           break;
         }
         if (step.done) {
+          endedNaturally = true;
           break;
         }
         const frame = step.value;
         try {
           const scan = await this.store.get<ScanRecord>(`scan/${pad(frame.index)}`);
           if (!scan) {
+            missingScan = true;
+            this.partial = true;
+            await this.diagnostics.emit({
+              code: 'MISSING_SCAN_RECORD',
+              severity: 'error',
+              frame: frame.index,
+              message: `求解阶段缺少 scan/${pad(frame.index)}；已停止在已提交的求解前缀。`,
+              action: '检查本地存储完整性；缺失的扫描记录不会被当作零位移。',
+              detail: { pass: 'solve', frame: frame.index },
+            });
             break;
           }
           if (scan.duplicate && previousPlan && states.every((s) => !s.blind)) {
@@ -1252,7 +1297,7 @@ export class Engine {
               placements: previousPlan.placements.map((p) => ({ ...p, time: frame.time })),
             };
             pending.push({ key: `plan/${pad(frame.index)}`, value: plan });
-            if (pending.length >= 24) await this.storagePutMany(pending.splice(0));
+            if (pending.length >= 24) await this.commitRows(pending);
             previousPlan = plan;
             for (const s of states) s.velocity = { x: 0, y: 0 };
             solved = frame.index + 1;
@@ -1760,7 +1805,7 @@ export class Engine {
                 boxGray: computeBoxGray(r, box, g),
               };
               for (const partner of consistencyPartners(r.id, state.canvasId, state.pose, dmin)) {
-                consistencyCompare(r, box, consistencyInterior.get(r.id)!, layer, partner.layer);
+                consistencyCompare(box, consistencyInterior.get(r.id)!, layer, partner.layer);
               }
               consistencyLayers.set(r.id, layer);
             }
@@ -1818,14 +1863,14 @@ export class Engine {
               consistencyFinalize(evicted);
             }
             if (pendingConsistency.length >= 24) {
-              await this.storagePutMany(pendingConsistency.splice(0));
+              await this.commitRows(pendingConsistency);
             }
           }
           previousPlan = { index: frame.index, time: frame.time, placements, duplicate: scan.duplicate };
           pending.push({ key: `plan/${pad(frame.index)}`, value: previousPlan });
           previousFeaturesAll = features;
           if (pending.length >= 24) {
-            await this.storagePutMany(pending.splice(0));
+            await this.commitRows(pending);
           }
           previous = image;
           previousGray = g;
@@ -1874,7 +1919,24 @@ export class Engine {
       } catch { /* already unwinding */ }
     }
     if (pending.length && !storageFailed) {
-      await this.storagePutMany(pending.splice(0));
+      try {
+        await this.commitRows(pending);
+      } catch (error) {
+        storageFailed = true;
+        this.partial = true;
+        try {
+          await this.diagnostics.emit({
+            code: 'PERSISTENCE_PREFIX_ONLY',
+            severity: 'error',
+            message: String(error),
+            action: `仅对已经求解的前 ${solved} 帧继续渲染；存储写入已停止。`,
+            detail: { pass: 'solve', frames: solved },
+          });
+        } catch { /* the journal write itself failed too; the run is already marked partial. */ }
+      }
+    }
+    if (endedNaturally || missingScan) {
+      await this.passMismatch('solve', this.project.frames, solved);
     }
     // Every frame still resident in the ring when solve() ends (the tail of the run never got displaced by a
     // later frame's bytes) is finalised here exactly as an evicted one would have been.
@@ -1883,7 +1945,21 @@ export class Engine {
         consistencyFinalize(entry);
       }
       if (pendingConsistency.length) {
-        await this.storagePutMany(pendingConsistency.splice(0));
+        try {
+          await this.commitRows(pendingConsistency);
+        } catch (error) {
+          storageFailed = true;
+          this.partial = true;
+          try {
+            await this.diagnostics.emit({
+              code: 'PERSISTENCE_PREFIX_ONLY',
+              severity: 'error',
+              message: String(error),
+              action: `仅对已经求解的前 ${solved} 帧继续渲染；存储写入已停止。`,
+              detail: { pass: 'solve', frames: solved },
+            });
+          } catch { /* the journal write itself failed too; the run is already marked partial. */ }
+        }
       }
     }
     this.processed = solved;
@@ -1953,6 +2029,22 @@ export class Engine {
     }
     return shift;
   }
+  private consistencyAnalysisCoordinates(width: number, height: number): { x: Int32Array; y: Int32Array } {
+    if (
+      this.consistencyAnalysisWidth !== width || this.consistencyAnalysisHeight !== height ||
+      this.consistencyAnalysisFactor !== this.factor
+    ) {
+      const x = new Int32Array(width), y = new Int32Array(height), f = this.factor;
+      for (let i = 0; i < width; i++) x[i] = Math.floor(i / f);
+      for (let i = 0; i < height; i++) y[i] = Math.floor(i / f);
+      this.consistencyAnalysisX = x;
+      this.consistencyAnalysisY = y;
+      this.consistencyAnalysisWidth = width;
+      this.consistencyAnalysisHeight = height;
+      this.consistencyAnalysisFactor = f;
+    }
+    return { x: this.consistencyAnalysisX, y: this.consistencyAnalysisY };
+  }
   /** World-consistency mask for one moving-region placement (docs/ARCHITECTURE.md §七): per screen pixel inside
    *  `region.rect`, decides whether the content this observation shows there can be trusted as page content at
    *  the world position it is about to be written to (screen pixel + this frame's resolved `pose`). Two kinds of
@@ -2013,13 +2105,18 @@ export class Engine {
     code: number,
     pose: Point,
     canvasId: string,
-    prev?: { image: RGBA; x: number; y: number; canvasId: string; voting?: ConsistencyVote },
-    next?: { image: RGBA; x: number; y: number; canvasId: string; voting?: ConsistencyVote },
+    prev?: { image: RGBA; x: number; y: number; canvasId: string; occlusions?: Rect[]; voting?: ConsistencyVote },
+    next?: { image: RGBA; x: number; y: number; canvasId: string; occlusions?: Rect[]; voting?: ConsistencyVote },
     voting?: ConsistencyVote,
   ): Uint8Array {
-    const W = image.width, H = image.height, out = new Uint8Array(W * H).fill(1), f = this.factor;
+    const W = image.width,
+      H = image.height,
+      out = new Uint8Array(W * H).fill(1),
+      currentRaster = resolveRasterPose(pose.x, pose.y);
+    const labels = atlas.labels, imageData = image.data;
     const rx0 = Math.max(0, Math.floor(region.rect.x)), ry0 = Math.max(0, Math.floor(region.rect.y));
     const rx1 = Math.min(W, Math.ceil(region.rect.x + region.rect.width)), ry1 = Math.min(H, Math.ceil(region.rect.y + region.rect.height));
+    const coordinates = this.consistencyAnalysisCoordinates(W, H), analysisX = coordinates.x, analysisY = coordinates.y;
     // −1 inconsistent, +1 confidently consistent, 0 no verdict. The box is the region's own, identical for
     // every frame of the run, so a neighbour's verdict is read at the NEIGHBOUR's screen position in the very
     // same box — which is the same world position, by construction of the lookup below.
@@ -2027,40 +2124,74 @@ export class Engine {
       if (!v) {
         return 0;
       }
-      const lx = Math.floor(x / f) - v.x0, ly = Math.floor(y / f) - v.y0;
+      const lx = analysisX[x] - v.x0, ly = analysisY[y] - v.y0;
       if (lx < 0 || ly < 0 || lx >= v.w || ly >= v.h) {
         return 0;
       }
       const i = ly * v.w + lx, bit = 1 << (i & 7);
       return v.bits[i >> 3] & bit ? -1 : v.clean[i >> 3] & bit ? 1 : 0;
     };
+    const neighbours: {
+      data: Uint8ClampedArray;
+      rasterX: number;
+      rasterY: number;
+      occlusions?: Rect[];
+      voting?: ConsistencyVote;
+    }[] = [];
+    for (const neighbour of [prev, next]) {
+      if (neighbour && neighbour.canvasId === canvasId) {
+        const raster = resolveRasterPose(neighbour.x, neighbour.y);
+        neighbours.push({
+          data: neighbour.image.data,
+          rasterX: raster.rasterX,
+          rasterY: raster.rasterY,
+          occlusions: neighbour.occlusions,
+          voting: neighbour.voting,
+        });
+      }
+    }
+    const currentRasterX = currentRaster.rasterX, currentRasterY = currentRaster.rasterY;
     for (let sy = ry0; sy < ry1; sy++) {
+      let src = sy * W + rx0;
       for (let sx = rx0; sx < rx1; sx++) {
-        if (!atlas.contains(code, sx, sy)) {
+        if (labels[src] !== code) {
+          src++;
           continue;
         }
-        const src = sy * W + sx, k = src * 4;
+        const k = src * 4;
         if (verdict(voting, sx, sy) < 0) {
           out[src] = 0;
+          src++;
           continue;
         }
         let checked = 0, condemned = 0, excused = 0;
-        for (const neighbour of [prev, next]) {
-          if (!neighbour || neighbour.canvasId !== canvasId) {
+        const r = imageData[k], g = imageData[k + 1], b = imageData[k + 2];
+        for (let n = 0; n < neighbours.length; n++) {
+          const neighbour = neighbours[n];
+          // The compositor rasterizes each placement before writing it. Match that exact integer pose here;
+          // rounding the combined difference would disagree around opposing fractional corrections.
+          const ix = sx + currentRasterX - neighbour.rasterX, iy = sy + currentRasterY - neighbour.rasterY;
+          if (ix < 0 || iy < 0 || ix >= W || iy >= H || labels[iy * W + ix] !== code) {
             continue;
           }
-          const ix = Math.round(sx + pose.x - neighbour.x), iy = Math.round(sy + pose.y - neighbour.y);
-          if (!atlas.contains(code, ix, iy)) {
-            continue;
+          const occlusions = neighbour.occlusions;
+          if (occlusions) {
+            let occluded = false;
+            for (let i = 0; i < occlusions.length; i++) {
+              const occlusion = occlusions[i];
+              if (ix >= occlusion.x && iy >= occlusion.y && ix < occlusion.x + occlusion.width && iy < occlusion.y + occlusion.height) {
+                occluded = true;
+                break;
+              }
+            }
+            if (occluded) continue;
           }
           checked++;
-          const j = (iy * W + ix) * 4;
+          const j = (iy * W + ix) * 4, neighbourData = neighbour.data;
           if (
-            image.data[k] === neighbour.image.data[j] && image.data[k + 1] === neighbour.image.data[j + 1] &&
-            image.data[k + 2] === neighbour.image.data[j + 2]
+            r === neighbourData[j] && g === neighbourData[j + 1] && b === neighbourData[j + 2]
           ) continue;
-          const diff = (Math.abs(image.data[k] - neighbour.image.data[j]) + Math.abs(image.data[k + 1] - neighbour.image.data[j + 1]) +
-            Math.abs(image.data[k + 2] - neighbour.image.data[j + 2])) / 3;
+          const diff = (Math.abs(r - neighbourData[j]) + Math.abs(g - neighbourData[j + 1]) + Math.abs(b - neighbourData[j + 2])) / 3;
           if (diff <= this.noise) {
             continue;
           }
@@ -2068,11 +2199,13 @@ export class Engine {
             excused++;
           } else {
             condemned++;
+            break;
           }
         }
         if (condemned || excused && checked >= 2) {
           out[src] = 0;
         }
+        src++;
       }
     }
     return out;
@@ -2118,6 +2251,9 @@ export class Engine {
         seen.add(canvasId);
         canvasId = attachments.get(canvasId)!.target;
       }
+      // Keep the optimized pose in the graph/render ledger. Compositor and consistencyMask() each resolve
+      // this same floating-point pose independently, matching the raster coordinates without discarding subpixel
+      // diagnostics or making a rounded placement part of the render-time state.
       return { x: raw.x + correction.x + shift.x, y: raw.y + correction.y + shift.y, canvasId };
     };
     // Rolling window over solve()'s per-frame voting verdicts. Each rendered frame needs its own record plus
@@ -2152,14 +2288,16 @@ export class Engine {
     const flushMetas = async (): Promise<void> => {
       if (!dirtyMetas.size) return;
       const ids = [...dirtyMetas];
-      dirtyMetas.clear();
       await this.storagePutMany(ids.map((id) => ({ key: `canvas/${id}`, value: metas.get(id) })));
+      for (const id of ids) dirtyMetas.delete(id);
     };
     // Per-frame observation ledger rows, batched like the scan/plan rows instead of one transaction each.
     const pendingObservations: { key: string; value: unknown }[] = [];
     let lastFlush = performance.now();
     const it = this.source.frames();
     let storageFailed = false;
+    let endedNaturally = false;
+    let missingPlan: number | undefined;
     // `stop` is set by processFrame() once a stop request was honoured or the solved prefix has been fully
     // rendered, so the outer loop below can break WITHOUT decoding one further (wasted) lookahead frame first.
     let stop = false;
@@ -2173,6 +2311,16 @@ export class Engine {
       try {
         const plan = await this.store.get<FramePlan>(`plan/${pad(frame.index)}`);
         if (!plan) {
+          this.partial = true;
+          missingPlan = frame.index;
+          await this.diagnostics.emit({
+            code: 'MISSING_PLAN',
+            severity: 'error',
+            frame: frame.index,
+            message: `渲染阶段缺少 plan/${pad(frame.index)}；已停止在已提交的渲染前缀。`,
+            action: '检查本地存储完整性；缺失的求解计划不会被静默当作空观察。',
+            detail: { pass: 'render', frame: frame.index },
+          });
           stop = true;
           return;
         }
@@ -2262,8 +2410,12 @@ export class Engine {
               code,
               p,
               p.canvasId,
-              prevResolved ? { image: prevImage!, ...prevResolved, voting: prevVoting?.[region.id] } : undefined,
-              nextResolved ? { image: nextImage!, ...nextResolved, voting: nextVoting?.[region.id] } : undefined,
+              prevResolved
+                ? { image: prevImage!, ...prevResolved, occlusions: prevRaw?.occlusions, voting: prevVoting?.[region.id] }
+                : undefined,
+              nextResolved
+                ? { image: nextImage!, ...nextResolved, occlusions: nextRaw?.occlusions, voting: nextVoting?.[region.id] }
+                : undefined,
               votingRecord?.[region.id],
             );
           }
@@ -2283,7 +2435,7 @@ export class Engine {
         // Every decoded observation has a durable placement and a pixel contribution ledger.
         pendingObservations.push({ key: `observation/${pad(frame.index)}`, value: { frame: frame.index, time: frame.time, decisions } });
         if (pendingObservations.length >= 32) {
-          await this.storagePutMany(pendingObservations.splice(0));
+          await this.commitRows(pendingObservations);
         }
         this.project.renderedFrames = frame.index + 1;
         if (performance.now() - lastFlush >= 1200) {
@@ -2292,7 +2444,7 @@ export class Engine {
           await this.diagnostics.flush();
           await flushMetas();
           if (pendingObservations.length) {
-            await this.storagePutMany(pendingObservations.splice(0));
+            await this.commitRows(pendingObservations);
           }
         }
         await this.report(
@@ -2369,6 +2521,7 @@ export class Engine {
           break;
         }
         if (step.done) {
+          endedNaturally = true;
           if (pending) {
             await processFrame(pending, pendingPrev, undefined);
           }
@@ -2393,11 +2546,38 @@ export class Engine {
       // Best-effort: committed tiles and in-memory metas should not be stranded even when the loop exited through
       // a storage failure; a repeat failure here is swallowed rather than masking the original error.
       try {
-        if (pendingObservations.length && !storageFailed) await this.storagePutMany(pendingObservations.splice(0));
-      } catch { /* already unwinding */ }
+        if (pendingObservations.length && !storageFailed) await this.commitRows(pendingObservations);
+      } catch (error) {
+        storageFailed = true;
+        this.partial = true;
+        try {
+          await this.diagnostics.emit({
+            code: 'PERSISTENCE_PREFIX_ONLY',
+            severity: 'error',
+            message: String(error),
+            action: `仅对已经渲染的前 ${this.project.renderedFrames} 帧保留结果；存储写入已停止。`,
+            detail: { pass: 'render', frames: this.project.renderedFrames },
+          });
+        } catch { /* the journal write itself failed too; the run is already marked partial. */ }
+      }
       try {
         if (!storageFailed) await flushMetas();
-      } catch { /* already unwinding */ }
+      } catch (error) {
+        storageFailed = true;
+        this.partial = true;
+        try {
+          await this.diagnostics.emit({
+            code: 'PERSISTENCE_PREFIX_ONLY',
+            severity: 'error',
+            message: String(error),
+            action: `仅对已经渲染的前 ${this.project.renderedFrames} 帧保留结果；存储写入已停止。`,
+            detail: { pass: 'render', frames: this.project.renderedFrames },
+          });
+        } catch { /* the journal write itself failed too; the run is already marked partial. */ }
+      }
+    }
+    if ((endedNaturally || missingPlan !== undefined) && this.project.renderedFrames !== this.processed) {
+      await this.passMismatch('render', this.processed, this.project.renderedFrames);
     }
     await this.tiles.flush();
     await this.diagnostics.flush();

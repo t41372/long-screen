@@ -57,7 +57,7 @@ Deno.test('takeover: high-resolution sparse 2D traversal preserves full pane, gu
     JSON.stringify(
       {
         verification: result,
-        regions: run.regions.map(({ mask, cells, ...r }) => r),
+        regions: run.regions.map(({ mask: _mask, cells: _cells, ...r }) => r),
         performance: await run.store.get('performance'),
       },
       null,

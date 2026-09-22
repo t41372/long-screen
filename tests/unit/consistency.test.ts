@@ -10,6 +10,131 @@ import { ScenarioSource } from '../../src/synthetic/source.ts';
 import { buildScenario } from '../../src/synthetic/scenarios.ts';
 import { DEFAULT_SETTINGS, type RGBA } from '../../src/types.ts';
 import { DECODED_VIDEO_NOISE } from '../../src/media/source.ts';
+import {
+  consistencyMaskReference,
+  type ConsistencyReferenceNeighbour,
+  type ConsistencyReferenceVote,
+} from '../support/consistency-reference.ts';
+
+function consistencyRandom(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = Math.imul(state ^ state >>> 15, 1 | state);
+    state ^= state + Math.imul(state ^ state >>> 7, 61 | state);
+    return ((state ^ state >>> 14) >>> 0) / 4294967296;
+  };
+}
+
+function consistencyRandomInt(random: () => number, max: number): number {
+  return Math.floor(random() * max);
+}
+
+function randomConsistencyImage(random: () => number, width: number, height: number): RGBA {
+  const data = new Uint8ClampedArray(width * height * 4);
+  for (let i = 0; i < data.length; i += 4) {
+    data[i] = consistencyRandomInt(random, 256);
+    data[i + 1] = consistencyRandomInt(random, 256);
+    data[i + 2] = consistencyRandomInt(random, 256);
+    data[i + 3] = 255;
+  }
+  return { width, height, data };
+}
+
+function randomConsistencyVote(random: () => number, width: number, height: number, factor: number): ConsistencyReferenceVote {
+  const w = Math.max(1, Math.ceil(width / factor) + consistencyRandomInt(random, 3) - 1);
+  const h = Math.max(1, Math.ceil(height / factor) + consistencyRandomInt(random, 3) - 1);
+  const bytes = Math.ceil(w * h / 8), bits = new Uint8Array(bytes), clean = new Uint8Array(bytes);
+  for (let i = 0; i < bytes; i++) {
+    bits[i] = consistencyRandomInt(random, 256);
+    clean[i] = consistencyRandomInt(random, 256);
+  }
+  return {
+    x0: consistencyRandomInt(random, 5) - 2,
+    y0: consistencyRandomInt(random, 5) - 2,
+    w,
+    h,
+    bits,
+    clean,
+  };
+}
+
+function randomConsistencyNeighbour(
+  random: () => number,
+  width: number,
+  height: number,
+  factor: number,
+  image: RGBA,
+): ConsistencyReferenceNeighbour | undefined {
+  if (consistencyRandomInt(random, 4) === 0) return undefined;
+  const occlusions = consistencyRandomInt(random, 3) === 0
+    ? Array.from({ length: consistencyRandomInt(random, 3) }, () => ({
+      x: consistencyRandomInt(random, width + 5) - 2,
+      y: consistencyRandomInt(random, height + 5) - 2,
+      width: consistencyRandomInt(random, 8),
+      height: consistencyRandomInt(random, 8),
+    }))
+    : undefined;
+  return {
+    image,
+    x: consistencyRandomInt(random, 13) - 6 + (random() < .5 ? -.49 : .49),
+    y: consistencyRandomInt(random, 13) - 6 + (random() < .5 ? -.49 : .49),
+    canvasId: consistencyRandomInt(random, 3) === 0 ? 'other' : 'canvas',
+    occlusions,
+    voting: consistencyRandomInt(random, 3) === 0 ? randomConsistencyVote(random, width, height, factor) : undefined,
+  };
+}
+
+// This intentionally compares the optimized private method with a frozen copy of its former implementation,
+// rather than asserting a handful of hand-picked pixels. It exercises raster rounding, atlas boundaries, voting,
+// noise, occlusions, fractional analysis factors, and all neighbour/canvas combinations together.
+Deno.test('consistency mask: optimized raster loop is byte-exact against the frozen implementation', () => {
+  const random = consistencyRandom(0x5eedcafe);
+  const source = new ScenarioSource(buildScenario('fixture'));
+  source.info.noise = 3;
+  const engine = new Engine(new MemoryKV(), source, DEFAULT_SETTINGS, {
+    progress: () => {},
+    diagnostic: () => {},
+    preview: () => {},
+    project: () => {},
+  });
+  const mask = (engine as unknown as { consistencyMask: (...args: unknown[]) => Uint8Array }).consistencyMask.bind(engine);
+  for (let trial = 0; trial < 180; trial++) {
+    const width = 1 + consistencyRandomInt(random, 72),
+      height = 1 + consistencyRandomInt(random, 64),
+      factor = 1 + consistencyRandomInt(random, 4);
+    const region = {
+      id: 'body',
+      name: 'body',
+      kind: 'moving' as const,
+      rect: {
+        x: consistencyRandomInt(random, width + 3) - 1,
+        y: consistencyRandomInt(random, height + 3) - 1,
+        width: 1 + consistencyRandomInt(random, width + 2),
+        height: 1 + consistencyRandomInt(random, height + 2),
+      },
+    };
+    const atlas = new RegionAtlas([region], width, height), code = atlas.code(region);
+    const current = randomConsistencyImage(random, width, height),
+      previousImage = randomConsistencyImage(random, width, height),
+      nextImage = randomConsistencyImage(random, width, height);
+    const pose = {
+      x: consistencyRandomInt(random, 13) - 6 + (random() < .5 ? -.49 : .49),
+      y: consistencyRandomInt(random, 13) - 6 + (random() < .5 ? -.49 : .49),
+    };
+    const prev = randomConsistencyNeighbour(random, width, height, factor, previousImage);
+    const next = randomConsistencyNeighbour(random, width, height, factor, nextImage);
+    const voting = consistencyRandomInt(random, 3) === 0 ? randomConsistencyVote(random, width, height, factor) : undefined;
+    (engine as unknown as { factor: number }).factor = factor;
+    const actual = mask(current, atlas, region, code, pose, 'canvas', prev, next, voting);
+    const expected = consistencyMaskReference(current, atlas, region, code, pose, 'canvas', prev, next, voting, factor, 3);
+    assertEquals(actual.length, expected.length);
+    for (let i = 0; i < actual.length; i++) {
+      if (actual[i] !== expected[i]) {
+        throw new Error(`consistency mask diverged in trial ${trial} at pixel ${i} (${actual[i]} !== ${expected[i]})`);
+      }
+    }
+  }
+});
 
 // Displacement-spread consistency voting (docs/ARCHITECTURE.md §七, Engine.solve()'s consistencyRing/consistencyCompare/
 // consistencyFinalize). Fixture: a scrolling photo-like page under a screen-fixed, uniformly-coloured blob taller
@@ -61,7 +186,7 @@ Deno.test("consistency voting: a screen-fixed blob taller than one frame's displ
   );
   assert(record, 'a mid-run frame under a persistent screen-fixed overlay must have a consistency record');
   const [regionId] = Object.keys(record);
-  const { x0, y0, w, h, bits } = record[regionId];
+  const { y0, w, h, bits } = record[regionId];
   let blobFlags = 0, pageFlags = 0;
   for (let ly = 0; ly < h; ly++) {
     for (let lx = 0; lx < w; lx++) {

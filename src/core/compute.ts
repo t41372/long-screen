@@ -166,7 +166,7 @@ export class AnalysisComputer {
   private async dispatch(image: RGBA, factor: number): Promise<Gray> {
     const device = this.device!;
     // Same dimensions as the CPU path (raster.ts): a dimension smaller than `factor` still yields one output pixel.
-    const width = Math.max(1, Math.floor(image.width / factor)), height = Math.max(1, Math.floor(image.height / factor));
+    const width = Math.max(1, Math.ceil(image.width / factor)), height = Math.max(1, Math.ceil(image.height / factor));
     const inputBytes = image.data.byteLength, outputBytes = width * height * 4;
     if (Math.max(inputBytes, outputBytes) > Math.min(device.limits.maxStorageBufferBindingSize, device.limits.maxBufferSize)) {
       throw new Error('GPU buffer limit exceeded');

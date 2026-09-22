@@ -1,8 +1,12 @@
 # build output: `deno task build` regenerates it
 dist/
+dist.build*/
 # coverage and test artefacts
 .coverage/
+coverage/
 test-results/
+# baseline checkout for A/B benchmarks (benchmark-pipeline.ts --baseline-root)
+.baseline/
 # user recordings used for manual verification (large, private)
 test_case/
 node_modules/

@@ -1,4 +1,4 @@
-import { type Browser, chromium, type Page } from 'playwright';
+import { type Browser, type BrowserContext, chromium, type Page, webkit } from 'playwright';
 import { createHandler } from '../../main.ts';
 export const root = new URL('../../', import.meta.url).pathname;
 export interface Harness {
@@ -45,19 +45,37 @@ export async function rebuildIfStale(): Promise<void> {
   }
 }
 /** Serves dist/ (built on demand) plus fixtures and optional real recordings, and launches the system Chrome, which has H.264/HEVC decoders. */
-export async function harness(options: { viewport?: { width: number; height: number } } = {}): Promise<Harness> {
+export async function harness(
+  options: { viewport?: { width: number; height: number }; browser?: 'chromium' | 'webkit'; hostname?: string } = {},
+): Promise<Harness> {
   await rebuildIfStale();
   const server = Deno.serve(
-    { port: 0, hostname: '127.0.0.1', onListen: () => {} },
+    { port: 0, hostname: options.hostname || '127.0.0.1', onListen: () => {} },
     createHandler({ root: `${root}dist`, mounts: { '/fixtures/': `${root}tests/fixtures`, '/test_case/': `${root}test_case` } }),
   );
-  const base = `http://127.0.0.1:${server.addr.port}`;
-  const browser = await chromium.launch({
-    channel: Deno.env.get('LONGSCREEN_CHANNEL') || 'chrome',
-    headless: true,
-    executablePath: Deno.env.get('LONGSCREEN_CHROME') || undefined,
-  });
-  const page = await browser.newPage({ viewport: options.viewport || { width: 1440, height: 1000 }, acceptDownloads: true });
+  const base = `http://${options.hostname || '127.0.0.1'}:${server.addr.port}`;
+  const contextOptions = { viewport: options.viewport || { width: 1440, height: 1000 }, acceptDownloads: true };
+  let browser: Browser, context: BrowserContext, profile: string | undefined;
+  try {
+    if (options.browser === 'webkit') {
+      // WebKit's ephemeral context cannot store IndexedDB Blobs; test normal Safari storage with an isolated profile.
+      profile = await Deno.makeTempDir({ prefix: 'long-screen-webkit-' });
+      context = await webkit.launchPersistentContext(profile, { ...contextOptions, headless: true });
+      browser = context.browser()!;
+    } else {
+      browser = await chromium.launch({
+        channel: Deno.env.get('LONGSCREEN_CHANNEL') || 'chrome',
+        headless: true,
+        executablePath: Deno.env.get('LONGSCREEN_CHROME') || undefined,
+      });
+      context = await browser.newContext(contextOptions);
+    }
+  } catch (error) {
+    await server.shutdown();
+    if (profile) await Deno.remove(profile, { recursive: true });
+    throw error;
+  }
+  const page = await context.newPage();
   const errors: string[] = [], external: string[] = [];
   page.on('pageerror', (e) => errors.push(String(e)));
   page.on('request', (r) => {
@@ -70,8 +88,10 @@ export async function harness(options: { viewport?: { width: number; height: num
     errors,
     external,
     close: async () => {
+      await context.close();
       await browser.close();
       await server.shutdown();
+      if (profile) await Deno.remove(profile, { recursive: true });
     },
   };
 }

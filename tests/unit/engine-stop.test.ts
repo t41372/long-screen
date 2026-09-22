@@ -10,7 +10,7 @@ import { ScenarioSource } from '../../src/synthetic/source.ts';
 // the 'rendering' phase, and checks all three symptoms: status, no framed canvas, no pyramid levels.
 Deno.test('engine stop: a stop requested while rendering yields partial status with no framing or pyramid stage', async () => {
   const scenario = buildScenario('traversal'), db = new MemoryKV(), source = new ScenarioSource(scenario);
-  let engine!: Engine, stopSignalled = false;
+  let stopSignalled = false;
   const handlers: EngineEvents = {
     progress: (p: Progress) => {
       if (p.phase === 'rendering' && !stopSignalled) {
@@ -21,7 +21,7 @@ Deno.test('engine stop: a stop requested while rendering yields partial status w
     diagnostic: () => {},
     project: () => {},
   };
-  engine = new Engine(db, source, { ...DEFAULT_SETTINGS, framing: 'context' }, handlers);
+  const engine = new Engine(db, source, { ...DEFAULT_SETTINGS, framing: 'context' }, handlers);
   const project = await engine.run();
   assert(stopSignalled, 'the progress callback never observed the rendering phase; the test setup is not exercising render()');
   assertEquals(project.status, 'partial', project.error);

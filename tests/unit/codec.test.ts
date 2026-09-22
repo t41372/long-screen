@@ -134,6 +134,10 @@ Deno.test('png: every filter type and colour type decodes to known pixels', asyn
     }
   }
 });
+Deno.test('png: native tile Sub rows preserve wrapping and transparent RGB bytes', async () => {
+  const { bytes, expected } = await handmade(513, 9, 6, 1);
+  assertEquals((await decodePNG(bytes)).data, expected);
+});
 Deno.test('png: malformed or unsupported input is rejected explicitly', async () => {
   await assertRejects(() => decodePNG(new Uint8Array([1, 2, 3])), Error, 'Not a PNG');
   await assertRejects(async () => decodePNG((await handmade(4, 4, 6, 0, 8, 0, true)).bytes), Error, 'CRC');

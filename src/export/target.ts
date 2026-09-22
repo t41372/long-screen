@@ -1,4 +1,5 @@
 import type { ByteSink } from './zip.ts';
+import { createId } from '../core/id.ts';
 interface SyncFile {
   write(data: Uint8Array, options: {
     at: number;
@@ -39,7 +40,7 @@ export async function createTarget(name: string, handle?: FileSystemFileHandle):
   }
   const root = await navigator.storage.getDirectory(),
     dir = await root.getDirectoryHandle('long-screen-exports', { create: true }),
-    key = `${crypto.randomUUID()}-${name}`,
+    key = `${createId()}-${name}`,
     file = await dir.getFileHandle(key, { create: true }) as Handle;
   let closed = false;
   let sink: ByteSink;

@@ -95,6 +95,10 @@ export class TileStore {
     const available = Math.max(0, memoryMB * 1024 * 1024 - reservedBytes);
     this.maxTiles = Math.max(2, Math.floor(available * .8 / (this.size * this.size * 4.3)));
   }
+  /** Checks residency without touching LRU order; callers can schedule hits before cold loads. */
+  isResident(canvasId: string, x: number, y: number, level = 0): boolean {
+    return this.cache.has(tileKey(canvasId, level, x, y));
+  }
   async get(canvasId: string, x: number, y: number, level = 0): Promise<Tile> {
     const key = tileKey(canvasId, level, x, y);
     let t = this.cache.get(key);

@@ -228,6 +228,7 @@ export class LayerLearner {
         manual: true,
         maskWidth: this.width,
         maskHeight: this.height,
+        factor,
         exclusions: [...manual.slice(i + 1).map((v) => v.rect), ...manual.filter((v) => v.kind === 'ignore').map((v) => v.rect)],
       }));
       let uncovered = false;
@@ -250,11 +251,13 @@ export class LayerLearner {
             unassigned: true,
             maskWidth: this.width,
             maskHeight: this.height,
+            factor,
             exclusions: manual.map((r) => r.rect),
           } as Region & {
             exclusions: Rect[];
             maskWidth: number;
             maskHeight: number;
+            factor: number;
             manual: boolean;
           },
         );
@@ -282,7 +285,7 @@ export class LayerLearner {
     // Chrome above/below a pane must not make a uniform page gutter look like a textured sidebar.
     const middleMean = new Float64Array(this.width);
     if (this.reference) {
-      const img = this.reference, scaleX = img.width / this.width, scaleY = img.height / this.height;
+      const img = this.reference, scaleX = factor, scaleY = factor;
       for (let x = 0; x < this.width; x++) {
         let sum = 0, count = 0;
         for (let y = top + 2; y < bottom - 2; y += 3) {
@@ -305,7 +308,7 @@ export class LayerLearner {
       }
       if (!this.reference && hi - lo <= 6) return false;
       if (this.reference) {
-        const img = this.reference, sx = img.width / this.width, sy = img.height / this.height;
+        const img = this.reference, sx = factor, sy = factor;
         let structure = 0, samples = 0;
         for (let y = top + 3; y < bottom - 3; y += 2) {
           for (let x = from + 1; x < to - 1; x += 2) {
@@ -333,15 +336,15 @@ export class LayerLearner {
       // Refine appearance edges BEFORE testing texture, otherwise wide empty page gutters dilute the
       // sidebar's visible structure and cause asymmetrical left/right classifications.
       if (this.reference) {
-        const scale = nativeWidth / this.width;
+        const scale = factor;
         exactLeft = left > 0 && left < this.width * .45
           ? stationaryBoundary(
             this.reference,
             'x',
             0,
             Math.ceil(left * scale),
-            Math.ceil(top * nativeHeight / this.height),
-            Math.floor(bottom * nativeHeight / this.height),
+            Math.min(nativeHeight, Math.ceil(top * factor)),
+            Math.min(nativeHeight, Math.floor(bottom * factor)),
             'last',
           )
           : undefined;
@@ -351,8 +354,8 @@ export class LayerLearner {
             'x',
             Math.floor(right * scale),
             nativeWidth,
-            Math.ceil(top * nativeHeight / this.height),
-            Math.floor(bottom * nativeHeight / this.height),
+            Math.min(nativeHeight, Math.ceil(top * factor)),
+            Math.min(nativeHeight, Math.floor(bottom * factor)),
             'first',
           )
           : undefined;
@@ -445,8 +448,7 @@ export class LayerLearner {
     const activity = large.map((g) =>
       g.reduce((s, i) => s + this.activity[i], 0) / Math.max(1, g.reduce((s, i) => s + this.observations[i], 0))
     );
-    // The downscale truth is exactly `factor`, not a rounded native/analysis ratio: with a non-divisible native
-    // dimension, round(nativeWidth/this.width) can be off by a whole analysis cell (see regionContains below).
+    // The downscale grid is ceil(native/factor); the final analysis cell is a smaller partial box when needed.
     const maxActivity = Math.max(...activity, 1), sx = factor, sy = factor;
     const regions = large.map((cells, k): Region => {
       const xs = cells.map((i) => i % this.cols), ys = cells.map((i) => Math.floor(i / this.cols));
@@ -682,9 +684,8 @@ export class LayerLearner {
           }
         }
       }
-      // A mask bbox touching the last analysis row/column may stop short of the native edge: `this.width`/`this.height`
-      // are floor(native/factor), so up to factor−1 trailing native pixels have no analysis cell of their own.
-      // Extend the raw rect all the way to the native (or crop) edge there, so no native pixel goes unowned.
+      // A mask bbox touching the last analysis row/column may stop short of the native edge because the final box
+      // is partial. Extend the raw rect all the way to the native (or crop) edge there, so no native pixel goes unowned.
       const right = maxX === this.width - 1 ? nativeWidth : Math.round((maxX + 1) * sx),
         bottom = maxY === this.height - 1 ? nativeHeight : Math.round((maxY + 1) * sy);
       const raw = {
@@ -817,8 +818,8 @@ export function regionContains(region: Region, x: number, y: number, nativeWidth
   if (region.solid || !region.mask) {
     return true;
   }
-  // The downscale truth is floor(x/factor), not a rounded native/analysis ratio (see finish()); fall back to the
-  // ratio only for regions built before `factor` was recorded (e.g. hand-built test masks).
+  // The downscale truth is floor(x/factor), including the final partial cell; fall back to the ratio only for
+  // regions built before `factor` was recorded (e.g. hand-built test masks).
   const xx = region.factor
     ? clamp(Math.floor(x / region.factor), 0, region.maskWidth! - 1)
     : clamp(Math.floor(x * region.maskWidth! / nativeWidth), 0, region.maskWidth! - 1);

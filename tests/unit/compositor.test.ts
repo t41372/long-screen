@@ -2,7 +2,7 @@ import { assert, assertEquals, assertRejects } from '@std/assert';
 import { iterate, MemoryKV } from '../../src/storage/db.ts';
 import { countCovered, covered, provisional, QUALITY_BLOCK, type StoredTile, type TileIndex, TileStore } from '../../src/storage/tiles.ts';
 import { RegionAtlas } from '../../src/core/layers.ts';
-import { Compositor } from '../../src/core/compositor.ts';
+import { Compositor, sameBlockSet } from '../../src/core/compositor.ts';
 import type { CanvasMeta, Diagnostic, Placement, Rect, Region, RGBA } from '../../src/types.ts';
 type RGB4 = [number, number, number, number];
 function solid(width: number, height: number, color: RGB4): RGBA {
@@ -83,6 +83,16 @@ Deno.test('compositor: an unaligned world offset (x=8) upgrades both straddled b
   assertEquals(tile.owner[1], 2, 'block straddled at the tile-local right edge must upgrade');
   assertEquals(tile.quality[0], Math.round(0.95 * 255));
   assertEquals(tile.quality[1], Math.round(0.95 * 255));
+});
+Deno.test('compositor: fractional poses use one rounded raster origin for bounds and pixels', async () => {
+  const region = makeRegion({ x: 0, y: 0, width: 16, height: 16 });
+  const { tiles, compositor } = setup([region], 32, 32, 32);
+  const meta = makeMeta();
+  await compositor.add(solid(32, 32, [71, 72, 73, 255]), region, place(0.6, -0.4, 0.8), 0, meta);
+  assertEquals(meta.bounds, { x: 1, y: 0, width: 16, height: 16 });
+  const tile = await tiles.get('c', 0, 0), offset = (1 * 32 + 1) * 4;
+  assertEquals([...tile.pixels.subarray(offset, offset + 4)], [71, 72, 73, 255]);
+  assertEquals(countCovered(tile.coverage), 16 * 16);
 });
 Deno.test('compositor: a viewport edge that occludes the remainder of a block refuses replacement (F8)', async () => {
   const region = makeRegion({ x: 0, y: 0, width: 16, height: 16 });
@@ -314,11 +324,18 @@ Deno.test('compositor: a provisional pixel is healed by a later consistent obser
   for (let i = 0; i < 256; i++) {
     assert(!provisional(tile, i), 'healed pixels must have their provisional bit cleared');
   }
+  assertEquals(tile.quality[0], 230, 'healing the last provisional bit must restore the corroborated quality');
   assertEquals(
     tile.frozen[0],
     1,
     'frozen stays set: healing a provisional pixel does not unfreeze the block for ordinary replace purposes',
   );
+});
+Deno.test('compositor: temporal block equality compares membership, not only bbox and count', () => {
+  const left: [number, number][] = [[0, 0], [0, 1], [1, 1]];
+  const right: [number, number][] = [[0, 0], [1, 0], [1, 1]];
+  assert(!sameBlockSet(left, right), 'same cardinality and bounding box can still describe different masks');
+  assert(sameBlockSet(left, [...left].reverse()));
 });
 Deno.test('compositor: an inconsistent observation never overwrites an already-covered consistent pixel, even under a qualifying replace', async () => {
   const region = makeRegion({ x: 0, y: 0, width: 16, height: 16 });
