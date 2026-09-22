@@ -1,6 +1,7 @@
 # build output: `deno task build` regenerates it
 dist/
 dist.build*/
+rust/target/
 # coverage and test artefacts
 .coverage/
 coverage/

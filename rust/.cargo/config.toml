@@ -1,0 +1,2 @@
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=--export=__heap_base", "-C", "target-feature=-simd128"]

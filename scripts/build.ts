@@ -1,15 +1,27 @@
-/** Bundles the browser app with `deno bundle` and copies static assets into dist/. No npm, no CDN, no runtime dependencies.
- *  Builds into a staging directory and swaps it in on success, so a failed build never deletes a working dist/. */
+/** Builds the Rust core to WebAssembly, bundles the browser adapter with `deno bundle` and copies static assets
+ *  into dist/. No npm, no CDN, no runtime dependencies. Builds into a staging directory and swaps it in on
+ *  success, so a failed build never deletes a working dist/. */
 import { copy, ensureDir } from '@std/fs';
 const entries: [string, string][] = [['src/ui/main.ts', 'assets/main.js'], ['src/worker.ts', 'assets/worker.js'], [
   'src/testkit.ts',
   'assets/testkit.js',
 ]];
 const minify = Deno.args.includes('--minify');
+const CORE_WASM = 'rust/target/wasm32-unknown-unknown/release/long_screen_core.wasm';
 const staging = 'dist.build';
 await Deno.remove(staging, { recursive: true }).catch(() => {});
 await ensureDir(`${staging}/assets`);
 try {
+  if (!Deno.args.includes('--skip-core')) {
+    const core = await new Deno.Command('bash', { args: ['scripts/build-core.sh'], stdout: 'inherit', stderr: 'inherit' }).output();
+    if (!core.success) {
+      console.error('Building the Rust core failed. Install rustup (see README.md); rust/rust-toolchain.toml pins the toolchain.');
+      await Deno.remove(staging, { recursive: true }).catch(() => {});
+      Deno.exit(core.code);
+    }
+  }
+  await Deno.copyFile(CORE_WASM, `${staging}/assets/core.wasm`);
+  console.log(`rust/core → dist/assets/core.wasm (${((await Deno.stat(CORE_WASM)).size / 1024).toFixed(1)} KB)`);
   for (const [input, output] of entries) {
     const target = `${staging}/${output}`;
     const args = ['bundle', '--platform', 'browser', '--sourcemap=linked', '--quiet', ...(minify ? ['--minify'] : []), '-o', target, input];

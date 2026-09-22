@@ -40,7 +40,8 @@ import { PoseGraph, type PoseNode } from '../core/pose-graph.ts';
 import { type Keyframe, KeyframeIndex } from '../core/keyframes.ts';
 import { Compositor } from '../core/compositor.ts';
 import { pad } from '../core/math.ts';
-import { analysisFactor, equalRGBA, resolveRasterPose } from '../core/raster.ts';
+import { analysisFactor, equalRGBA } from '../core/raster.ts';
+import { core, type VotingRecord, type VotingRing } from '../core/wasm.ts';
 import { encodeRGBA } from '../codec/png.ts';
 import { buildFramedCanvas } from '../core/framing.ts';
 import { AnalysisComputer } from '../core/compute.ts';
@@ -113,41 +114,12 @@ function decodeFeatures(c: CompactFeatures): Feature[] {
   }
   return out;
 }
-/** Displacement-spread consistency voting (docs/ARCHITECTURE.md §七): analysis-resolution box, in this region's
- * own local coordinates (box.x0/box.y0 offset, box.w×box.h pixels), that bounds the region's roi with a 1px margin
- * so every point the region's own mask can contain has a home cell — computed once per moving region, reused for
- * every ring frame's score/comparisons arrays (which are therefore all the same size and directly comparable). */
+/** Analysis-resolution voting box of one moving region, in that region's own local cell coordinates. */
 interface ConsistencyBox {
   x0: number;
   y0: number;
   w: number;
   h: number;
-}
-/** One moving region's per-frame voting state, scoped to that region's own ConsistencyBox (not the whole analysis
- * frame) to keep the ring's memory bounded to what voting actually touches. `score`/`comparisons` start at zero and
- * accumulate as this frame is compared — both as the "current" frame against older ring partners, and later as an
- * older partner other frames pick while it is still resident. `pairs` is the same accumulation at FRAME level (how
- * many partner frames this one has been paired with, in either role) and exists only to make partner selection fair:
- * without it, `consistencyPartners` keeps re-picking whichever frames happen to sit on its displacement-spread
- * anchors, and a frame whose only clean counterparts lie in the FUTURE accumulates far too few comparisons to ever
- * be finalised either way. `boxGray` is this region's own box-local, region-masked 3×3-blurred luma (see
- * computeBoxGray in solve()) — never the raw per-pixel analysis value — so the vote is insensitive to
- * downscaleGray's box-filter phase (see the block comment at computeBoxGray) without smoothing across this region's
- * own boundary into a neighbour's unrelated content. */
-interface ConsistencyLayer {
-  canvasId: string;
-  pose: Point;
-  score: Int8Array;
-  comparisons: Uint8Array;
-  pairs: number;
-  boxGray: Uint8Array;
-}
-/** One ring-resident frame: every moving region's own ConsistencyLayer (each already carries its own box-local
- * gray, so nothing frame-wide needs to be kept here beyond the index). */
-interface ConsistencyFrame {
-  index: number;
-  bytes: number;
-  layers: Map<string, ConsistencyLayer>;
 }
 /** Persisted analysis-resolution verdict for one frame: per moving region id, the box it was scored in and TWO
  * plain bitsets (LSB-first, row-major over box.w×box.h) — `bits` for cells solve() finalised as inconsistent,
@@ -183,16 +155,12 @@ export class Engine {
    *  means consistencyPartners has stopped sharing comparisons fairly. */
   private consistencyVotedLayers = 0;
   private consistencyThinLayers = 0;
+  /** Core-resident voting ring of the running solve pass; released in run()'s finally on every exit path. */
+  private voting?: VotingRing;
   private pauseWaiters: (() => void)[] = [];
   private processed = 0;
   private regions: Region[] = [];
   private timings: Record<string, number> = {};
-  /** Reused native-to-analysis coordinate maps for consistency verdict lookups. */
-  private consistencyAnalysisX = new Int32Array(0);
-  private consistencyAnalysisY = new Int32Array(0);
-  private consistencyAnalysisWidth = 0;
-  private consistencyAnalysisHeight = 0;
-  private consistencyAnalysisFactor = 0;
   private duplicates = 0;
   private skippedPaints = 0;
   private atlas?: RegionAtlas;
@@ -540,6 +508,8 @@ export class Engine {
         });
       }
     } finally {
+      this.voting?.free();
+      this.voting = undefined;
       this.computer.dispose();
       this.source.dispose();
       // The `stopped` latch (unlike `stopRequested`) is deliberately left set across the whole run, from
@@ -902,329 +872,34 @@ export class Engine {
     const pending: { key: string; value: FramePlan }[] = [];
     let endedNaturally = false;
     let missingScan = false;
-    // Displacement-spread consistency voting (docs/ARCHITECTURE.md §七): a ring of recent analysis-resolution
-    // frames per run, bounded by gray bytes retained (native frames are never kept here). For each moving
-    // region's placement, pixels are compared against several ring partners whose world displacement clears
-    // Dmin — spread across the available range, not just the immediate neighbour — so a screen-fixed overlay
-    // whose own screen extent exceeds one frame's scroll velocity (which defeats a pure ±1-frame check, see
-    // consistencyMask()) still gets caught once the ring holds a partner displaced far enough that the overlay
-    // cannot possibly still be at the same world position in both frames.
-    const CONSISTENCY_RING_BYTES = 24 * 1024 * 1024, CONSISTENCY_PARTNERS = 6;
-    // Vote agreement threshold, from the SAME knob as the native ±1 check (this.noise) plus one term the native
-    // check does not need. `downscaleGray`'s box filter is anchored to screen pixel (0,0), not to world content,
-    // so at f>1 the same world pixel lands at a different SUB-CELL PHASE in two frames whenever their pose delta
-    // is not a multiple of the factor — true of nearly every partner pair. That is a real, content-dependent
-    // difference between two averages of the SAME lossless pixels, so it cannot be charged to decode noise and
-    // does not go away on a lossless source; `computeBoxGray`'s 3×3 average suppresses it but does not erase it.
-    // CONSISTENCY_PHASE is the residual headroom it needs, measured on `factor4`/`retina` (both lossless), and
-    // it applies on exactly the same condition as the blur itself: f>1 only. At f=1 analysis IS native
-    // resolution, there is no phase term at all, and a lossless source is therefore compared exactly.
-    // `Math.max` rather than a sum so a decoded recording keeps precisely the 26 it has always had.
-    const CONSISTENCY_PHASE = 26, CONSISTENCY_TAU = Math.max(f === 1 ? 0 : CONSISTENCY_PHASE, Math.round(this.noise * 2.6));
-    // The local-search radius scales with the analysis factor: one analysis cell already averages f×f native
-    // pixels, so the fractional-analysis-cell misalignment a given native-pixel pose residual produces grows
-    // with f too (see the comment on the local search below). Measured: f=1 needs none beyond the exact cell,
-    // f=2 needs ±1, f=4 (factor4, the largest factor any scenario uses) needs the full ±f to stay noise-free
-    // on fine "cards"-style text/border content — tests/unit/scenarios_d.test.ts's `factor4` and `retina`
-    // scenarios (no overlay, no dynamics) are the actual regression tests for this: provisionalPixels must
-    // stay exactly 0 there.
-    const consistencyRadius = f, consistencyW = this.source.info.width, consistencyH = this.source.info.height;
-    const consistencyRing: ConsistencyFrame[] = [];
-    let consistencyRingBytes = 0;
-    const consistencyBox = new Map<string, ConsistencyBox>(), consistencyDmin = new Map<string, number>();
-    for (const state of states) {
-      if (state.region.kind !== 'moving') {
-        continue;
-      }
-      const rect = state.region.rect, x0 = Math.floor(rect.x / f) - 1, y0 = Math.floor(rect.y / f) - 1;
-      consistencyBox.set(state.region.id, {
-        x0,
-        y0,
-        w: Math.ceil((rect.x + rect.width) / f) - x0 + 1,
-        h: Math.ceil((rect.y + rect.height) / f) - y0 + 1,
-      });
-      consistencyDmin.set(state.region.id, Math.max(64, .25 * Math.min(rect.width, rect.height)));
-    }
-    // Which box cells may take part in a vote at all, precomputed once per region (the box and the region mask
-    // are both constant for the whole run). A cell qualifies only when it is INTERIOR: the cell itself and all
-    // eight of its blur taps are inside this region, and the whole ±consistencyRadius search window around it
-    // fits inside the box. Both exclusions are about the same measured failure — a cell at the region's own
-    // boundary is compared using values its neighbour never had. computeBoxGray replaces an out-of-region tap
-    // with the centre cell's raw value (edge replication, the right call for the blur itself); a partner cell
-    // away from ITS own boundary is a plain 9-tap average, so the two differ by a content-dependent bias with
-    // nothing to do with an overlay. A clipped search window loses candidates on one side only, which biases
-    // the same way. Neither bias cancels over partners, so at a leading edge — where a cell has only two or
-    // three comparisons to begin with — they were enough to carry a unanimous false "inconsistent" verdict on
-    // `retina`, on ordinary page content with no overlay anywhere near it.
-    const consistencyInterior = new Map<string, Uint8Array>();
-    for (const state of states) {
-      if (state.region.kind !== 'moving') {
-        continue;
-      }
-      const r = state.region, box = consistencyBox.get(r.id)!, mask = new Uint8Array(box.w * box.h);
-      for (let ly = 0; ly < box.h; ly++) {
-        for (let lx = 0; lx < box.w; lx++) {
-          if (lx < consistencyRadius || ly < consistencyRadius || lx >= box.w - consistencyRadius || ly >= box.h - consistencyRadius) {
-            continue;
-          }
-          let ok = true;
-          for (let oy = -1; oy <= 1 && ok; oy++) {
-            for (let ox = -1; ox <= 1 && ok; ox++) {
-              ok = regionContains(r, (box.x0 + lx + ox) * f, (box.y0 + ly + oy) * f, consistencyW, consistencyH);
-            }
-          }
-          mask[ly * box.w + lx] = ok ? 1 : 0;
-        }
-      }
-      consistencyInterior.set(r.id, mask);
-    }
+    // Displacement-spread consistency voting (docs/ARCHITECTURE.md §七) runs in the Rust core
+    // (rust/core/src/voting.rs): a ring of recent analysis-resolution frames bounded by bytes retained, each
+    // moving region's final pose compared against partners whose world displacement clears Dmin. Only the
+    // moving regions take part; slot order is the order below. The ring is freed in the finally of this pass.
+    const CONSISTENCY_RING_BYTES = 24 * 1024 * 1024;
+    const votingRegions = states.filter((s) => s.region.kind === 'moving').map((s) => s.region);
+    const votingSlot = new Map(votingRegions.map((r, i) => [r.id, i]));
+    const voting = this.voting = core().votingRing(votingRegions, {
+      factor: f,
+      noise: this.noise,
+      nativeWidth: this.source.info.width,
+      nativeHeight: this.source.info.height,
+      analysisWidth: Math.max(1, Math.ceil(this.source.info.width / f)),
+      analysisHeight: Math.max(1, Math.ceil(this.source.info.height / f)),
+      budgetBytes: CONSISTENCY_RING_BYTES,
+    });
     const pendingConsistency: { key: string; value: ConsistencyRecord }[] = [];
-    /** Picks up to CONSISTENCY_PARTNERS ring frames on the same canvas whose displacement from `pose` clears
-     * `dmin`. Candidates are sorted by displacement; the NEAREST TWO and the FARTHEST are always taken, and the
-     * remaining slots cut what is left into equal index bands and take one from each. Three properties are being
-     * balanced, and all three were measured:
-     *  - SPREAD. Every partner already clears `dmin` (chosen larger than any plausible overlay), so any single
-     *    one of them is far enough that a screen-fixed overlay cannot still sit at the same world position. The
-     *    spread matters for the different reason quantified in the finalisation comment below: a CLEAN pixel at
-     *    world position P disagrees with a partner whose displacement happens to land P inside THAT frame's own
-     *    overlay footprint — a window exactly as wide as the overlay. Partners bunched into a narrow
-     *    displacement range fall into that window together or not at all, which is how a couple of coincidences
-     *    turn into a false flag; spreading them makes the coincidences independent.
-     *  - THE LEADING EDGE. A world position that has just scrolled into view is visible in NO past frame, so
-     *    every partner that can ever judge it is a future frame picking this one — and among those, the nearest
-     *    qualifying ones overlap it most. Taking the two nearest is what gives such a cell its two comparisons
-     *    at all; without them the whole leading-edge band finalises with no verdict, which is where screen
-     *    overlays do most of their damage (they get painted on the very first look at a position).
-     *  - FAIRNESS. Inside each band the candidate with the FEWEST comparisons so far wins (ties by the larger
-     *    displacement). Picking by displacement alone kept landing on the same few anchor frames, so a frame
-     *    whose clean counterparts are all in the future was rarely chosen by any of them. Since a comparison
-     *    scores BOTH frames (see consistencyCompare) and a frame is only finalised when it leaves the ring, a
-     *    late pick still counts in full; `performance.consistencyThinLayers` is the watchdog for this. */
-    const consistencyPartners = (
-      regionId: string,
-      canvasId: string,
-      pose: Point,
-      dmin: number,
-    ): { entry: ConsistencyFrame; layer: ConsistencyLayer }[] => {
-      const candidates: { entry: ConsistencyFrame; layer: ConsistencyLayer; d: number }[] = [];
-      for (const entry of consistencyRing) {
-        const layer = entry.layers.get(regionId);
-        if (!layer || layer.canvasId !== canvasId) {
-          continue;
-        }
-        const d = Math.hypot(pose.x - layer.pose.x, pose.y - layer.pose.y);
-        if (d >= dmin) {
-          candidates.push({ entry, layer, d });
-        }
-      }
-      if (candidates.length <= CONSISTENCY_PARTNERS) {
-        return candidates;
-      }
-      candidates.sort((a, b) => a.d - b.d);
-      const n = candidates.length, seen = new Set<number>(), out: typeof candidates = [];
-      const take = (c: typeof candidates[number] | undefined) => {
-        if (c && !seen.has(c.entry.index)) {
-          seen.add(c.entry.index);
-          out.push(c);
-        }
-      };
-      take(candidates[0]);
-      take(candidates[1]);
-      take(candidates[n - 1]);
-      const bands = CONSISTENCY_PARTNERS - out.length, lo = 2, hi = n - 1;
-      for (let band = 0; band < bands && hi > lo; band++) {
-        const from = lo + Math.floor(band * (hi - lo) / bands), to = lo + Math.floor((band + 1) * (hi - lo) / bands);
-        let best: typeof candidates[number] | undefined;
-        for (let i = from; i < to; i++) {
-          const c = candidates[i];
-          if (seen.has(c.entry.index)) {
-            continue;
-          }
-          if (!best || c.layer.pairs < best.layer.pairs || c.layer.pairs === best.layer.pairs && c.d > best.d) {
-            best = c;
-          }
-        }
-        take(best);
-      }
-      return out;
-    };
-    /** Builds one region's box-local analysis luma for voting. At f=1 (analysis IS native resolution — the
-     * common case) this is a plain copy: downscaleGray at factor 1 samples exactly one native pixel per
-     * analysis cell, so there is no box-filter phase to suppress and blurring would only ever cost accuracy
-     * (measured: it introduces a small but real boundary artifact, below). At f>1 it is a 3×3 box-blur, region-
-     * masked like core/features.ts's smooth() but with every tap outside the box or outside THIS region's own
-     * mask (a neighbouring region, a fixed overlay just past the boundary, or off-frame) excluded from the
-     * average rather than bleeding in. Root cause, measured with a temporary per-comparison diff histogram on
-     * `factor4`/`retina`: downscaleGray's box filter grid is fixed to SCREEN pixel 0,0 in every frame, not to
-     * world content, so the same world pixel lands in analysis cells at a different SUB-CELL PHASE in frame T
-     * vs a ring partner S whenever their pose delta isn't a multiple of the analysis factor — true for nearly
-     * every partner pair. Flat content is insensitive to this; a sharp edge (card borders/text — exactly what
-     * these scenarios render) genuinely changes the averaged luma by tens of levels even though the underlying
-     * world pixels are bit-identical. The ±consistencyRadius local search below already picks the best nearby
-     * cell, but "best nearby single raw cell" still can't reconstruct a value the box filter never computed at
-     * that phase. Two things were measured and rejected before settling on region-masked-with-edge-replication:
-     * a plain (region-unaware) blur leaks a neighbouring fixed region's constant colour into THIS region's own
-     * boundary row (regressed `fixture`/`geometry-change`, both f=1 — every flagged cell sat at the box's first
-     * real row); simply DROPPING an excluded tap instead of substituting something for it leaves a smaller but
-     * still nonzero residual, because at the region's true edge only 4–6 of the 9 taps are ever in-region, so
-     * the average is weaker there and doesn't fully suppress the same phase noise. Replacing excluded taps with
-     * the CENTRE cell's own raw value (edge replication, the standard box-filter boundary treatment) restores
-     * full 9-tap averaging strength everywhere without ever importing a neighbour's content — but this in turn
-     * only matters at f>1: gating the whole blur off at f=1 is what finally cleared `fixture`/`geometry-change`,
-     * because at f=1 the blur (any variant of it) was solving a problem — box-filter phase — that provably does
-     * not exist there, while still paying its edge-asymmetry cost (T's boundary cell uses a centre-weighted
-     * value; the partner cell it is compared against, offset by a generally-fractional pose delta, usually
-     * lands away from ITS OWN box edge and gets a plain unweighted average — a small but real bias between the
-     * two on any content with a local gradient, e.g. right next to a card border). */
-    const computeBoxGray = (region: Region, box: ConsistencyBox, g: Gray): Uint8Array => {
-      const out = new Uint8Array(box.w * box.h);
-      for (let ly = 0; ly < box.h; ly++) {
-        const ay = box.y0 + ly;
-        for (let lx = 0; lx < box.w; lx++) {
-          const ax = box.x0 + lx;
-          if (ax < 0 || ay < 0 || ax >= g.width || ay >= g.height) {
-            continue;
-          }
-          const centre = g.data[ay * g.width + ax];
-          if (f === 1) {
-            out[ly * box.w + lx] = centre;
-            continue;
-          }
-          let sum = 0;
-          for (let oy = -1; oy <= 1; oy++) {
-            const ty = ay + oy;
-            for (let ox = -1; ox <= 1; ox++) {
-              const tx = ax + ox;
-              sum +=
-                tx < 0 || ty < 0 || tx >= g.width || ty >= g.height || !regionContains(region, tx * f, ty * f, consistencyW, consistencyH)
-                  ? centre
-                  : g.data[ty * g.width + tx];
-            }
-          }
-          out[ly * box.w + lx] = Math.round(sum / 9);
-        }
-      }
-      return out;
-    };
-    /** Compares region cells of `layerT` (the frame just placed) against ring partner `layerS` at the SAME
-     * world position (world = box-local cell + pose/f), updating BOTH layers' score/comparisons — a pair flags
-     * the evidence in the past frame too, not only the current one. Both layers share the SAME box (one per
-     * region, constant for the whole run), so displacement stays entirely in that box's own local coordinates —
-     * no absolute frame coordinates, and no separate region-membership check on the search window's raw
-     * candidates (they are only ever used to pick the least-bad match; a candidate outside the region, if nearer
-     * in value, would only ever make agreement MORE likely, and a cell whose own (lx,ly) or matched (sx,sy)
-     * isn't in the region is skipped up front exactly as before). */
-    const consistencyCompare = (
-      box: ConsistencyBox,
-      interior: Uint8Array,
-      layerT: ConsistencyLayer,
-      layerS: ConsistencyLayer,
-    ): void => {
-      const dx = (layerT.pose.x - layerS.pose.x) / f, dy = (layerT.pose.y - layerS.pose.y) / f;
-      layerT.pairs++;
-      layerS.pairs++;
-      for (let ly = 0; ly < box.h; ly++) {
-        for (let lx = 0; lx < box.w; lx++) {
-          const i = ly * box.w + lx;
-          if (!interior[i]) {
-            continue;
-          }
-          const sx = Math.round(lx + dx), sy = Math.round(ly + dy), si = sy * box.w + sx;
-          if (sx < 0 || sy < 0 || sx >= box.w || sy >= box.h || !interior[si]) {
-            continue;
-          }
-          // A ±consistencyRadius-cell local search around (sx, sy), not a single rigid point sample: the
-          // pose delta between two ring frames is a NATIVE-pixel quantity divided by the integer analysis
-          // factor, so it is essentially never an exact multiple of one analysis cell (a 1-native-pixel
-          // jitter alone is already a fractional analysis cell at factor 2) — rounding that to the
-          // nearest cell lands one or more cells off from the true match on any edge or textured content
-          // often enough to swamp real signal with false disagreements. A native ±1-frame comparison
-          // doesn't need this (native resolution has no such quantization); analysis resolution does,
-          // more so at larger analysis factors (see consistencyRadius above).
-          let best = 255;
-          for (let oy = -consistencyRadius; oy <= consistencyRadius && best > CONSISTENCY_TAU; oy++) {
-            const py = sy + oy;
-            if (py < 0 || py >= box.h) {
-              continue;
-            }
-            for (let ox = -consistencyRadius; ox <= consistencyRadius; ox++) {
-              const px = sx + ox;
-              if (px < 0 || px >= box.w) {
-                continue;
-              }
-              const diff = Math.abs(layerT.boxGray[i] - layerS.boxGray[py * box.w + px]);
-              if (diff < best) {
-                best = diff;
-              }
-            }
-          }
-          const agree = best <= CONSISTENCY_TAU;
-          layerT.comparisons[i] = Math.min(255, layerT.comparisons[i] + 1);
-          layerT.score[i] = Math.max(-128, Math.min(127, layerT.score[i] + (agree ? 1 : -1)));
-          layerS.comparisons[si] = Math.min(255, layerS.comparisons[si] + 1);
-          layerS.score[si] = Math.max(-128, Math.min(127, layerS.score[si] + (agree ? 1 : -1)));
+    /** Queues finalised ring records for persistence and folds their layer statistics into the run's counters. */
+    const queueVoting = (records: VotingRecord[]): void => {
+      for (const record of records) {
+        this.consistencyVotedLayers += record.votedLayers;
+        this.consistencyThinLayers += record.thinLayers;
+        if (record.record) {
+          pendingConsistency.push({ key: `consistency/${pad(record.index)}`, value: record.record });
         }
       }
     };
-    // Finalisation threshold — a deliberate, measured deviation from the literal "≥2 comparisons, net score <
-    // 0" wording. A screen-fixed overlay recurs in EVERY frame at the same screen position, so for a genuinely
-    // clean pixel at world position P in frame t, a partner s with displacement D disagrees with it whenever P
-    // falls inside s's OWN overlay footprint — which happens whenever D lands in a window exactly as wide as
-    // the overlay's own extent, positioned by P (proven and measured with a dedicated fixture:
-    // tests/unit/consistency.test.ts). Because CONSISTENCY_PARTNERS spreads displacements across the whole
-    // available range, it is common for one or more of the ~6 selected partners to land in that window purely
-    // by coincidence — a simple majority ("≥2, <0") lets a couple of such coincidences flip a clean pixel.
-    // Requiring literal unanimity (comparisons === CONSISTENCY_PARTNERS, score === -CONSISTENCY_PARTNERS) fixed
-    // that, but has its own cost: a frame with fewer than 6 qualifying partners (near the start/end of a run,
-    // or a canvas with few same-canvas frames) can never flag anything at all, and a single coincidentally-
-    // agreeing partner blocks healing even with 5 other partners unanimously disagreeing. A ratio rule keeps
-    // both properties that matter — comparisons in {2,3} still require literal unanimity (⌈0.75×2⌉=2,
-    // ⌈0.75×3⌉=3), so a thin sample is never trusted on a bare majority — while comparisons ≥4 only need a
-    // ≥75% supermajority, which a genuine overlay interior (disagreeing with essentially every partner) clears
-    // easily but a single coincidental agreement no longer blocks outright.
-    const consistencyThreshold = (comparisons: number): number => comparisons - 2 * Math.ceil(comparisons * .75);
-    // A POSITIVE verdict is the exact mirror of the negative one (score ≥ −consistencyThreshold(comparisons):
-    // 3/3, 3/4, 4/5, 5/6 agreements), and additionally needs CONSISTENCY_VERDICT_MIN comparisons, because it
-    // is trusted for more than flagging — consistencyMask() lets it overrule a disagreeing ±1-frame neighbour,
-    // and lets a NEIGHBOUR's own positive verdict decide whether that neighbour may condemn this frame. Two
-    // unanimous comparisons are enough to raise suspicion (a flag only ever marks a pixel provisional, which
-    // a later clean look can undo); they are not enough to overrule direct native-resolution evidence.
-    const CONSISTENCY_VERDICT_MIN = 3;
-    /** Finalises one ring frame once it is about to leave the ring (or solve() is ending). A box cell meeting
-     * the ratio threshold above (comparisons ≥ 2, net score ≤ consistencyThreshold) is inconsistent; one
-     * meeting the mirrored positive threshold on ≥ CONSISTENCY_VERDICT_MIN comparisons is confidently
-     * consistent; everything else — including every cell no partner could compare at all — is left with no
-     * verdict. Only regions that end up with at least one cell in either set are written into the record. */
-    const consistencyFinalize = (entry: ConsistencyFrame): void => {
-      const record: ConsistencyRecord = {};
-      let any = false;
-      for (const [regionId, layer] of entry.layers) {
-        const box = consistencyBox.get(regionId)!;
-        const bits = new Uint8Array(Math.ceil(box.w * box.h / 8)), clean = new Uint8Array(bits.length);
-        let regionAny = false;
-        this.consistencyVotedLayers++;
-        if (layer.pairs < CONSISTENCY_VERDICT_MIN) {
-          this.consistencyThinLayers++;
-        }
-        for (let i = 0; i < layer.score.length; i++) {
-          const comparisons = layer.comparisons[i];
-          if (comparisons >= 2 && layer.score[i] <= consistencyThreshold(comparisons)) {
-            bits[i >> 3] |= 1 << (i & 7);
-            regionAny = true;
-          } else if (comparisons >= CONSISTENCY_VERDICT_MIN && layer.score[i] >= -consistencyThreshold(comparisons)) {
-            clean[i >> 3] |= 1 << (i & 7);
-            regionAny = true;
-          }
-        }
-        if (regionAny) {
-          record[regionId] = { ...box, bits, clean };
-          any = true;
-        }
-      }
-      if (any) {
-        pendingConsistency.push({ key: `consistency/${pad(entry.index)}`, value: record });
-      }
-    };
+
     const resolveTarget = (id: string): string => {
       const seen = new Set<string>();
       while (attachments.has(id) && !seen.has(id)) {
@@ -1317,12 +992,12 @@ export class Engine {
             extractFeatures(g);
           const native = grayscale(image.data, image.width, image.height);
           const placements: Placement[] = [];
-          const consistencyLayers = new Map<string, ConsistencyLayer>();
+          let votingUploaded = false, votingObserved = false;
           for (const state of states) {
             const r = state.region,
               code = state.code,
               roi = { x: r.rect.x / f, y: r.rect.y / f, width: r.rect.width / f, height: r.rect.height / f };
-            const mask = (x: number, y: number) => atlas.contains(code, x, y);
+            const mask = { labels: atlas.labels, code };
             const ownFeatures = features.filter((p) => regionContains(r, p.x * f, p.y * f, image.width, image.height));
             const textured = ownFeatures.length >= 8;
             // A frame-global zoom gate fires for every pane at once, so one pane's pinch fragments every other pane too.
@@ -1795,19 +1470,9 @@ export class Engine {
             // done with this frame's FINAL pose/canvasId for this region, after every branch above that could
             // still move it (attachment, thin-overlap correction, NONFINITE_POSE recovery).
             if (r.kind === 'moving' && !skip) {
-              const box = consistencyBox.get(r.id)!, dmin = consistencyDmin.get(r.id)!;
-              const layer: ConsistencyLayer = {
-                canvasId: state.canvasId,
-                pose: { x: state.pose.x, y: state.pose.y },
-                score: new Int8Array(box.w * box.h),
-                comparisons: new Uint8Array(box.w * box.h),
-                pairs: 0,
-                boxGray: computeBoxGray(r, box, g),
-              };
-              for (const partner of consistencyPartners(r.id, state.canvasId, state.pose, dmin)) {
-                consistencyCompare(box, consistencyInterior.get(r.id)!, layer, partner.layer);
-              }
-              consistencyLayers.set(r.id, layer);
+              voting.observe(votingSlot.get(r.id)!, state.canvasId, state.pose, g, votingUploaded);
+              votingUploaded = true;
+              votingObserved = true;
             }
             const occlusions = previous && r.kind === 'moving' && (decision === 'tracked' || decision === 'static')
               ? stickyOcclusions(
@@ -1850,18 +1515,8 @@ export class Engine {
           // This frame joins the ring (unless it had no moving-region evidence at all) only after every state's
           // voting comparisons above have already used it as a "current" frame against older partners; eviction
           // below then finalises whichever frame the new one's bytes just pushed out, oldest first.
-          if (consistencyLayers.size) {
-            let bytes = 0;
-            for (const layer of consistencyLayers.values()) {
-              bytes += layer.boxGray.byteLength + layer.score.byteLength + layer.comparisons.byteLength;
-            }
-            consistencyRing.push({ index: frame.index, bytes, layers: consistencyLayers });
-            consistencyRingBytes += bytes;
-            while (consistencyRingBytes > CONSISTENCY_RING_BYTES && consistencyRing.length > 1) {
-              const evicted = consistencyRing.shift()!;
-              consistencyRingBytes -= evicted.bytes;
-              consistencyFinalize(evicted);
-            }
+          if (votingObserved) {
+            queueVoting(voting.pushFrame(frame.index));
             if (pendingConsistency.length >= 24) {
               await this.commitRows(pendingConsistency);
             }
@@ -1941,9 +1596,7 @@ export class Engine {
     // Every frame still resident in the ring when solve() ends (the tail of the run never got displaced by a
     // later frame's bytes) is finalised here exactly as an evicted one would have been.
     if (!storageFailed) {
-      for (const entry of consistencyRing.splice(0)) {
-        consistencyFinalize(entry);
-      }
+      queueVoting(voting.drain());
       if (pendingConsistency.length) {
         try {
           await this.commitRows(pendingConsistency);
@@ -1962,6 +1615,8 @@ export class Engine {
         }
       }
     }
+    voting.free();
+    this.voting = undefined;
     this.processed = solved;
     this.events.progress({ phase: 'optimizing', fraction: 0, frames: solved, time: 0, message: '优化磁盘中的位置图，校正回环漂移。' });
     // pose-graph.ts only persists relaxed positions once optimize() finishes its loop; a stop mid-relaxation
@@ -2029,22 +1684,6 @@ export class Engine {
     }
     return shift;
   }
-  private consistencyAnalysisCoordinates(width: number, height: number): { x: Int32Array; y: Int32Array } {
-    if (
-      this.consistencyAnalysisWidth !== width || this.consistencyAnalysisHeight !== height ||
-      this.consistencyAnalysisFactor !== this.factor
-    ) {
-      const x = new Int32Array(width), y = new Int32Array(height), f = this.factor;
-      for (let i = 0; i < width; i++) x[i] = Math.floor(i / f);
-      for (let i = 0; i < height; i++) y[i] = Math.floor(i / f);
-      this.consistencyAnalysisX = x;
-      this.consistencyAnalysisY = y;
-      this.consistencyAnalysisWidth = width;
-      this.consistencyAnalysisHeight = height;
-      this.consistencyAnalysisFactor = f;
-    }
-    return { x: this.consistencyAnalysisX, y: this.consistencyAnalysisY };
-  }
   /** World-consistency mask for one moving-region placement (docs/ARCHITECTURE.md §七): per screen pixel inside
    *  `region.rect`, decides whether the content this observation shows there can be trusted as page content at
    *  the world position it is about to be written to (screen pixel + this frame's resolved `pose`). Two kinds of
@@ -2109,106 +1748,22 @@ export class Engine {
     next?: { image: RGBA; x: number; y: number; canvasId: string; occlusions?: Rect[]; voting?: ConsistencyVote },
     voting?: ConsistencyVote,
   ): Uint8Array {
-    const W = image.width,
-      H = image.height,
-      out = new Uint8Array(W * H).fill(1),
-      currentRaster = resolveRasterPose(pose.x, pose.y);
-    const labels = atlas.labels, imageData = image.data;
-    const rx0 = Math.max(0, Math.floor(region.rect.x)), ry0 = Math.max(0, Math.floor(region.rect.y));
-    const rx1 = Math.min(W, Math.ceil(region.rect.x + region.rect.width)), ry1 = Math.min(H, Math.ceil(region.rect.y + region.rect.height));
-    const coordinates = this.consistencyAnalysisCoordinates(W, H), analysisX = coordinates.x, analysisY = coordinates.y;
-    // −1 inconsistent, +1 confidently consistent, 0 no verdict. The box is the region's own, identical for
-    // every frame of the run, so a neighbour's verdict is read at the NEIGHBOUR's screen position in the very
-    // same box — which is the same world position, by construction of the lookup below.
-    const verdict = (v: ConsistencyVote | undefined, x: number, y: number): number => {
-      if (!v) {
-        return 0;
-      }
-      const lx = analysisX[x] - v.x0, ly = analysisY[y] - v.y0;
-      if (lx < 0 || ly < 0 || lx >= v.w || ly >= v.h) {
-        return 0;
-      }
-      const i = ly * v.w + lx, bit = 1 << (i & 7);
-      return v.bits[i >> 3] & bit ? -1 : v.clean[i >> 3] & bit ? 1 : 0;
-    };
-    const neighbours: {
-      data: Uint8ClampedArray;
-      rasterX: number;
-      rasterY: number;
-      occlusions?: Rect[];
-      voting?: ConsistencyVote;
-    }[] = [];
-    for (const neighbour of [prev, next]) {
-      if (neighbour && neighbour.canvasId === canvasId) {
-        const raster = resolveRasterPose(neighbour.x, neighbour.y);
-        neighbours.push({
-          data: neighbour.image.data,
-          rasterX: raster.rasterX,
-          rasterY: raster.rasterY,
-          occlusions: neighbour.occlusions,
-          voting: neighbour.voting,
-        });
-      }
-    }
-    const currentRasterX = currentRaster.rasterX, currentRasterY = currentRaster.rasterY;
-    for (let sy = ry0; sy < ry1; sy++) {
-      let src = sy * W + rx0;
-      for (let sx = rx0; sx < rx1; sx++) {
-        if (labels[src] !== code) {
-          src++;
-          continue;
-        }
-        const k = src * 4;
-        if (verdict(voting, sx, sy) < 0) {
-          out[src] = 0;
-          src++;
-          continue;
-        }
-        let checked = 0, condemned = 0, excused = 0;
-        const r = imageData[k], g = imageData[k + 1], b = imageData[k + 2];
-        for (let n = 0; n < neighbours.length; n++) {
-          const neighbour = neighbours[n];
-          // The compositor rasterizes each placement before writing it. Match that exact integer pose here;
-          // rounding the combined difference would disagree around opposing fractional corrections.
-          const ix = sx + currentRasterX - neighbour.rasterX, iy = sy + currentRasterY - neighbour.rasterY;
-          if (ix < 0 || iy < 0 || ix >= W || iy >= H || labels[iy * W + ix] !== code) {
-            continue;
-          }
-          const occlusions = neighbour.occlusions;
-          if (occlusions) {
-            let occluded = false;
-            for (let i = 0; i < occlusions.length; i++) {
-              const occlusion = occlusions[i];
-              if (ix >= occlusion.x && iy >= occlusion.y && ix < occlusion.x + occlusion.width && iy < occlusion.y + occlusion.height) {
-                occluded = true;
-                break;
-              }
-            }
-            if (occluded) continue;
-          }
-          checked++;
-          const j = (iy * W + ix) * 4, neighbourData = neighbour.data;
-          if (
-            r === neighbourData[j] && g === neighbourData[j + 1] && b === neighbourData[j + 2]
-          ) continue;
-          const diff = (Math.abs(r - neighbourData[j]) + Math.abs(g - neighbourData[j + 1]) + Math.abs(b - neighbourData[j + 2])) / 3;
-          if (diff <= this.noise) {
-            continue;
-          }
-          if (verdict(neighbour.voting, ix, iy) < 0) {
-            excused++;
-          } else {
-            condemned++;
-            break;
-          }
-        }
-        if (condemned || excused && checked >= 2) {
-          out[src] = 0;
-        }
-        src++;
-      }
-    }
-    return out;
+    // The mask itself is computed by the Rust core (rust/core/src/consistency.rs); this keeps the
+    // canvas-identity gate (a neighbour only counts when its placement resolved to the same canvas) here.
+    const neighbour = (n: typeof prev) =>
+      n && n.canvasId === canvasId ? { image: n.image, x: n.x, y: n.y, occlusions: n.occlusions, voting: n.voting } : undefined;
+    return core().consistencyMask({
+      image,
+      labels: atlas.labels,
+      region: region.rect,
+      code,
+      pose,
+      prev: neighbour(prev),
+      next: neighbour(next),
+      voting,
+      factor: this.factor,
+      noise: this.noise,
+    });
   }
   private async render(): Promise<void> {
     this.phase = 'rendering';

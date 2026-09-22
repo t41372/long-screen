@@ -1,4 +1,5 @@
 import type { Gray, Rect, RGBA } from '../types.ts';
+import { core } from './wasm.ts';
 
 /** The floating-point pose remains diagnostic data; every native raster operation uses this integer origin. */
 export interface RasterPose {
@@ -16,28 +17,12 @@ export function resolveRasterPose(x: number, y: number): RasterPose {
 export function analysisFactor(width: number, height: number, analysisSize: number): number {
   return Math.max(1, Math.ceil(Math.max(width, height) / Math.max(1, analysisSize)));
 }
-/** Box-filtered luma at an integer factor. Deterministic in every runtime; no canvas resampling is involved. */
+/** Box-filtered luma at an integer factor (Rust core). Deterministic in every runtime; no canvas resampling. */
 export function downscaleGray(image: RGBA, factor: number): Gray {
   if (!Number.isInteger(factor) || factor < 1) {
     throw new Error(`Invalid analysis factor ${factor}.`);
   }
-  const width = Math.max(1, Math.ceil(image.width / factor)), height = Math.max(1, Math.ceil(image.height / factor));
-  const data = new Uint8Array(width * height), src = image.data;
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      // Clamp the sampled box to the image: a dimension forced up to 1 by the max(1, …) above can be smaller than `factor`.
-      const bh = Math.min(factor, image.height - y * factor), bw = Math.min(factor, image.width - x * factor);
-      let sum = 0;
-      for (let j = 0; j < bh; j++) {
-        let i = ((y * factor + j) * image.width + x * factor) * 4;
-        for (let k = 0; k < bw; k++, i += 4) {
-          sum += src[i] * 77 + src[i + 1] * 150 + src[i + 2] * 29;
-        }
-      }
-      data[y * width + x] = (sum / (bw * bh)) >> 8;
-    }
-  }
-  return { width, height, data };
+  return core().downscaleGray(image, factor);
 }
 export function cropRGBA(image: RGBA, r: Rect): RGBA {
   const x = Math.round(r.x), y = Math.round(r.y), width = Math.round(r.width), height = Math.round(r.height);
@@ -82,37 +67,9 @@ export function downscaleRGBA(image: RGBA, factor: number): RGBA {
 export function thumbnail(image: RGBA, maxWidth: number): RGBA {
   return downscaleRGBA(image, Math.max(1, Math.ceil(image.width / maxWidth)));
 }
-/** 2:1 preview reduction with alpha weighting, so unobserved (transparent) neighbours never darken observed pixels. */
+/** 2:1 preview reduction with alpha weighting (Rust core), so unobserved (transparent) neighbours never darken observed pixels. */
 export function halveRGBA(image: RGBA): RGBA {
-  const width = Math.max(1, image.width >> 1),
-    height = Math.max(1, image.height >> 1),
-    data = new Uint8ClampedArray(width * height * 4),
-    src = image.data;
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      let r = 0, g = 0, b = 0, a = 0;
-      for (let j = 0; j < 2; j++) {
-        for (let k = 0; k < 2; k++) {
-          const sx = Math.min(image.width - 1, x * 2 + k),
-            sy = Math.min(image.height - 1, y * 2 + j),
-            i = (sy * image.width + sx) * 4,
-            w = src[i + 3];
-          r += src[i] * w;
-          g += src[i + 1] * w;
-          b += src[i + 2] * w;
-          a += w;
-        }
-      }
-      const o = (y * width + x) * 4;
-      if (a) {
-        data[o] = r / a;
-        data[o + 1] = g / a;
-        data[o + 2] = b / a;
-        data[o + 3] = a / 4;
-      }
-    }
-  }
-  return { width, height, data };
+  return core().halveRGBA(image);
 }
 export function meanAbsoluteDifference(a: RGBA, b: RGBA): number {
   if (a.width !== b.width || a.height !== b.height) {

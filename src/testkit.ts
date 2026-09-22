@@ -17,6 +17,9 @@ import { matchRegion, verifyFixed, verifyLayer } from './synthetic/verify.ts';
 import { exportCanvas, exportProject } from './export/project.ts';
 import { decodePNG, encodePNG, encodeRGBA } from './codec/png.ts';
 import { ZipWriter } from './export/zip.ts';
+import { coreURL, loadCore } from './core/wasm.ts';
+// Browser tests and the pipeline profiler drive Engine directly, so the core is loaded before the kit is exposed.
+await loadCore(fetch(coreURL()));
 const kit = {
   Engine,
   Database,

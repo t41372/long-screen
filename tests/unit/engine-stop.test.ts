@@ -1,3 +1,4 @@
+import '../support/core.ts';
 import { assert, assertEquals } from '@std/assert';
 import { Engine, type EngineEvents } from '../../src/pipeline/engine.ts';
 import { iterate, MemoryKV } from '../../src/storage/db.ts';

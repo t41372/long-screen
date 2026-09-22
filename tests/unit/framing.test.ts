@@ -1,3 +1,4 @@
+import '../support/core.ts';
 import { assert, assertEquals } from '@std/assert';
 import { buildFramedCanvas, frameCoordinate, frameLayout } from '../../src/core/framing.ts';
 import { encodeRGBA } from '../../src/codec/png.ts';

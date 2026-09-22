@@ -1,9 +1,10 @@
 import type { CanvasMeta, Diagnostic, Placement, Rect, Region, RGBA } from '../types.ts';
 import type { KV } from '../storage/db.ts';
 import { iterate } from '../storage/db.ts';
-import { clearProvisional, covered, markCovered, markProvisional, provisional, QUALITY_BLOCK, type TileStore } from '../storage/tiles.ts';
+import { clearProvisional, covered, markCovered, provisional, QUALITY_BLOCK, type TileStore } from '../storage/tiles.ts';
+import { core } from './wasm.ts';
 import type { RegionAtlas } from './layers.ts';
-import { intersect, pad, popcount, union } from './math.ts';
+import { intersect, pad, union } from './math.ts';
 import { resolveRasterPose } from './raster.ts';
 /** Native-screen occluder membership, native-frame coordinates. Occlusions are always full-width bands, so rect containment on (sx, sy) matches the row-rule used before. */
 function occluded(occlusions: Rect[] | undefined, sx: number, sy: number): boolean {
@@ -80,13 +81,10 @@ export class Compositor {
     }
     const code = this.atlas.code(region),
       labels = this.atlas.labels,
-      W = image.width,
-      H = image.height,
       rectangular = this.rectangular.has(region.id);
     const world = { x: region.rect.x + ox, y: region.rect.y + oy, width: region.rect.width, height: region.rect.height };
     const stats: CompositeStats = { added: 0, conflicts: 0, uncertain: 0, tiles: 0, bounds: world, provisionalPixels: 0 };
     const conflictBlocks = new Set<string>();
-    const source32 = new Uint32Array(image.data.buffer, image.data.byteOffset, image.data.length / 4);
     const x0 = Math.floor(world.x / size),
       x1 = Math.floor((world.x + world.width - 1) / size),
       y0 = Math.floor(world.y / size),
@@ -101,193 +99,25 @@ export class Compositor {
     const cold = tileOrder.filter(({ tx, ty }) => !this.tiles.isResident(p.canvasId, tx, ty));
     // A footprint just larger than the cache otherwise turns every frame into a full cyclic scan. Touching the
     // resident set first keeps those tiles together while the few cold loads evict only the oldest residents.
+    // One frame copy into the core per placement; each tile then round-trips its own buffers only.
+    const prepared = core().prepareObservation({
+      image,
+      mask: rectangular ? undefined : { labels, code },
+      occlusions: p.occlusions,
+      consistent,
+      confidence: p.confidence,
+      uncertain: !!p.uncertain,
+      frame,
+    }, size);
     for (const { tx, ty } of resident.concat(cold)) {
       const tile = await this.tiles.get(p.canvasId, tx, ty), wasNew = !tile.existed && !tile.coverage.some((x) => x !== 0);
-      let changed = false;
-      const pixels32 = new Uint32Array(tile.pixels.buffer, tile.pixels.byteOffset, tile.pixels.length / 4);
-      const patch = intersect(world, { x: tx * size, y: ty * size, width: size, height: size });
-      const bx0 = Math.floor((patch.x - tx * size) / B),
-        by0 = Math.floor((patch.y - ty * size) / B),
-        bx1 = Math.ceil((patch.x + patch.width - tx * size) / B),
-        by1 = Math.ceil((patch.y + patch.height - ty * size) / B);
-      for (let by = by0; by < by1; by++) {
-        for (let bx = bx0; bx < bx1; bx++) {
-          const q = by * blocks + bx;
-          let mismatch = 0, overlap = 0, sharpness = 0, count = 0, identical = 0;
-          const sy0 = Math.ceil(Math.max(by * B, world.y - ty * size)),
-            sy1 = Math.ceil(Math.min((by + 1) * B, world.y + world.height - ty * size));
-          const sx0 = Math.ceil(Math.max(bx * B, world.x - tx * size)),
-            sx1 = Math.ceil(Math.min((bx + 1) * B, world.x + world.width - tx * size));
-          for (let y = sy0; y < sy1; y++) {
-            const sy = ty * size + y - oy;
-            if (sy < 0 || sy >= H) {
-              continue;
-            }
-            for (let x = sx0; x < sx1; x++) {
-              const sx = tx * size + x - ox;
-              if (sx < 0 || sx >= W || occluded(p.occlusions, sx, sy)) {
-                continue;
-              }
-              const src = sy * W + sx;
-              if (!rectangular && labels[src] !== code) {
-                continue;
-              }
-              const dst = y * size + x, i = dst * 4, j = src * 4;
-              count++;
-              if (covered(tile, dst)) {
-                overlap++;
-                if (pixels32[dst] === source32[src]) {
-                  identical++;
-                  continue;
-                }
-                const diff = (Math.abs(tile.pixels[i] - image.data[j]) + Math.abs(tile.pixels[i + 1] - image.data[j + 1]) +
-                  Math.abs(tile.pixels[i + 2] - image.data[j + 2])) / 3;
-                if (diff > 25) {
-                  mismatch++;
-                }
-              }
-            }
-          }
-          if (!count) continue;
-          // A block is "complete" once this observation rewrites every pixel of it that was ever covered before —
-          // not just when this observation happened to touch all 256 of its pixels. Otherwise any block that is
-          // partly outside the region mask, the world rect, a narrow pane, or an occluded row can never replace.
-          let coveredInBlock = 0, provisionalInBlock = 0;
-          for (let row = 0; row < B; row++) {
-            const i = ((by * B + row) * size + bx * B) >> 3;
-            coveredInBlock += popcount(tile.coverage[i]) + popcount(tile.coverage[i + 1]);
-            provisionalInBlock += popcount(tile.provisional[i]) + popcount(tile.provisional[i + 1]);
-          }
-          // Exact native-pixel equality, not a similarity threshold. Preserve ownership and skip all writes —
-          // UNLESS the block still carries provisional bits. A pixel flagged transient carries the same value a
-          // later, better-corroborated observation shows (that is the normal case when the flag was wrong: the
-          // content was right all along), so "nothing to write" and "nothing to clear" are different questions.
-          // Skipping on identity alone left those flags standing for the rest of the run, which both capped the
-          // block's quality score and kept the pixel counted as unhealed for no reason. An observation that
-          // reproduces the WHOLE block exactly is corroborating evidence even when the mask rejected it, so
-          // the demotion below deliberately does not reach here: it is for blocks this observation genuinely
-          // disagrees with somewhere, not for ones it reproduces verbatim.
-          if (identical === count && !provisionalInBlock) continue;
-          const conflict = overlap >= 12 && mismatch / overlap > .16;
-          const complete = overlap === coveredInBlock;
-          const edge = Math.min(
-            (tx * size + bx * B) - world.x,
-            (ty * size + by * B) - world.y,
-            world.x + world.width - (tx * size + (bx + 1) * B),
-            world.y + world.height - (ty * size + (by + 1) * B),
-          );
-          if ((!conflict && !tile.frozen[q] && complete) || !tile.owner[q]) {
-            for (let y = sy0; y < sy1; y++) {
-              const sy = ty * size + y - oy;
-              if (sy < 0 || sy >= H) {
-                continue;
-              }
-              for (let x = sx0; x < sx1; x++) {
-                const sx = tx * size + x - ox;
-                if (sx <= 0 || sx >= W - 1 || occluded(p.occlusions, sx, sy)) {
-                  continue;
-                }
-                const src = sy * W + sx, j = src * 4;
-                if (rectangular || labels[src] === code) sharpness += Math.abs(image.data[j - 4] - image.data[j + 4]);
-              }
-            }
-          }
-          const hadProvisional = provisionalInBlock > 0;
-          const score = p.confidence * 100 + Math.min(12, sharpness / count * .15) + Math.min(6, Math.max(0, edge) / 40);
-          const replace = complete && !conflict && !tile.frozen[q] && score > tile.score[q] + 4;
-          if (conflict) {
-            tile.conflicts[q] = 1;
-            conflictBlocks.add(`${tx * blocks + bx},${ty * blocks + by}`);
-            stats.conflicts += mismatch;
-            changed = true;
-          }
-          // A provisional bit standing in this block is a standing invitation for a consistent observation to
-          // heal it, independent of `replace`/`frozen` — frozen protects a chosen moment from being re-picked,
-          // not screen-chrome burn-in from being fixed (see docs/ARCHITECTURE.md §七) — so the block must be
-          // walked even when neither `replace` nor a fresh pixel would otherwise justify entering it.
-          if (replace || overlap < count || provisionalInBlock) {
-            for (let y = sy0; y < sy1; y++) {
-              const sy = ty * size + y - oy;
-              if (sy < 0 || sy >= H) {
-                continue;
-              }
-              for (let x = sx0; x < sx1; x++) {
-                const sx = tx * size + x - ox;
-                if (sx < 0 || sx >= W || occluded(p.occlusions, sx, sy)) {
-                  continue;
-                }
-                const dst = y * size + x, src = sy * W + sx;
-                if (!rectangular && labels[src] !== code) continue;
-                const fresh = !covered(tile, dst), bad = !!consistent && !consistent[src], wasProvisional = provisional(tile, dst);
-                // Priority: a fresh pixel is always written (a hole would be worse than a guess); an
-                // inconsistent observation never overwrites already-covered content, provisional or not;
-                // a covered provisional pixel is healed by any consistent observation regardless of
-                // `replace`; otherwise the ordinary replace gate governs consistent-vs-consistent choices.
-                const write = fresh ? true : bad ? false : wasProvisional ? true : replace;
-                if (!write) {
-                  // A rejected observation that shows what is ALREADY stored condemns the stored pixel
-                  // too. A screen overlay's very first look at a world position is often the one that
-                  // paints it (nothing is covered yet, and the ±1-frame check has nothing to compare
-                  // against at a leading edge, or agrees because the neighbour is under the same
-                  // overlay); the flag only arrives one or two frames later, by which time the write is
-                  // blocked by the rule above and the artefact is burned in silently. Matching values
-                  // mean the covered pixel is no better evidence than the observation just rejected, so
-                  // it is demoted to provisional — not overwritten, just marked open for healing by a
-                  // later consistent look. Genuine page content is only ever demoted when a clean frame
-                  // was itself falsely flagged, and the very next consistent observation clears it again.
-                  // BIT-IDENTICAL, deliberately, and not the mask's own tolerance (which is the source's
-                  // declared decode noise, MediaInfo.noise): that tolerance also covers "genuinely
-                  // different content, but not by much", which is precisely what the block-level
-                  // conflict logic above exists to arbitrate.
-                  if (bad && !wasProvisional && pixels32[dst] === source32[src]) {
-                    markProvisional(tile, dst);
-                    stats.provisionalPixels++;
-                    provisionalInBlock++;
-                    changed = true;
-                  }
-                  continue;
-                }
-                pixels32[dst] = source32[src];
-                if (fresh) {
-                  markCovered(tile, dst);
-                  stats.added++;
-                  if (p.uncertain) stats.uncertain++;
-                }
-                if (bad) {
-                  if (!wasProvisional) {
-                    markProvisional(tile, dst);
-                    stats.provisionalPixels++;
-                    provisionalInBlock++;
-                  }
-                } else if (wasProvisional) {
-                  clearProvisional(tile, dst);
-                  stats.provisionalPixels--;
-                  provisionalInBlock--;
-                }
-                changed = true;
-              }
-            }
-          }
-          if (replace || !tile.owner[q]) {
-            tile.quality[q] = Math.round(p.confidence * 255);
-            tile.owner[q] = frame + 1;
-            tile.score[q] = score;
-          } else if (p.uncertain) {
-            tile.quality[q] = tile.owner[q] ? Math.min(tile.quality[q], Math.round(p.confidence * 255)) : Math.round(p.confidence * 255);
-          }
-          // The provisional cap is intentionally lossy. Once the last bit is healed by a corroborated,
-          // non-uncertain observation, restore the quality evidence instead of leaving the block at 64 forever.
-          if (hadProvisional && !provisionalInBlock && !p.uncertain) {
-            tile.quality[q] = Math.max(tile.quality[q], Math.round(p.confidence * 255));
-          }
-          // A block still carrying any unhealed provisional pixel never reports a healthy quality score,
-          // so the quality overlay (src/ui/viewer.ts) keeps flagging it until a consistent observation heals it.
-          if (provisionalInBlock) {
-            tile.quality[q] = Math.min(tile.quality[q], 64);
-          }
-        }
-      }
-      if (changed) {
+      const result = prepared.compositeTile(tile, world, ox, oy, tx, ty);
+      stats.added += result.added;
+      stats.conflicts += result.conflicts;
+      stats.uncertain += result.uncertain;
+      stats.provisionalPixels += result.provisionalPixels;
+      for (const [bx, by] of result.conflictBlocks) conflictBlocks.add(`${tx * blocks + bx},${ty * blocks + by}`);
+      if (result.changed) {
         tile.dirty = true;
         if (wasNew) {
           stats.tiles++;

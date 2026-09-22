@@ -17,6 +17,7 @@ interface Options {
   output: string;
   analysisSize: number;
   verifyTiles: boolean;
+  allowPartial: boolean;
 }
 
 interface PhaseTimes {
@@ -110,6 +111,7 @@ Options:
   --passes N             full pipeline passes per root (default: 1)
   --analysis-size N      analysis long-edge limit (default: 640)
   --verify-tiles         hash tile PNG/evidence bytes after timing; fail on differences across runs
+  --allow-partial        accept a partial run (a stream-copied prefix whose container count exceeds its frames)
   --output DIR           JSON/profile directory (default: test-results/benchmark-pipeline)
 `;
 
@@ -128,7 +130,8 @@ function parseArgs(args: string[]): Options {
     passes = 1,
     output = join(Deno.cwd(), 'test-results/benchmark-pipeline'),
     analysisSize = 640,
-    verifyTiles = false;
+    verifyTiles = false,
+    allowPartial = false;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--input') {
@@ -145,6 +148,8 @@ function parseArgs(args: string[]): Options {
       output = resolve(valueAfter(args, i++, arg));
     } else if (arg === '--verify-tiles') {
       verifyTiles = true;
+    } else if (arg === '--allow-partial') {
+      allowPartial = true;
     } else if (arg === '--help' || arg === '-h') {
       console.log(usage);
       Deno.exit(0);
@@ -158,7 +163,7 @@ function parseArgs(args: string[]): Options {
   if (!Deno.statSync(input).isFile) throw new Error(`Input is not a file: ${input}`);
   if (!Deno.statSync(root).isDirectory) throw new Error(`Repository root is not a directory: ${root}`);
   if (baselineRoot && !Deno.statSync(baselineRoot).isDirectory) throw new Error(`Baseline root is not a directory: ${baselineRoot}`);
-  return { input, root, baselineRoot, passes, output, analysisSize, verifyTiles };
+  return { input, root, baselineRoot, passes, output, analysisSize, verifyTiles, allowPartial };
 }
 
 async function runBuild(root: string): Promise<void> {
@@ -529,7 +534,9 @@ async function benchmarkRoot(options: Options, root: string, label: string): Pro
         memory: result.memory.stats,
         errors: result.browserErrors.length + result.failedRequests.length,
       }));
-      if (result.status !== 'complete') throw new Error(`${label} pass ${pass} ended ${result.status}: ${result.error || 'unknown error'}`);
+      // A stream-copied prefix legitimately ends `partial` (container frame count ≠ decodable frames); only fail on error.
+      const acceptable = result.status === 'complete' || (options.allowPartial && result.status === 'partial');
+      if (!acceptable) throw new Error(`${label} pass ${pass} ended ${result.status}: ${result.error || 'unknown error'}`);
     }
     const report: BenchmarkReport = {
       generatedAt: new Date().toISOString(),

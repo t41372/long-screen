@@ -1,3 +1,4 @@
+import '../support/core.ts';
 import { assert, assertEquals } from '@std/assert';
 import { Compositor } from '../../src/core/compositor.ts';
 import { RegionAtlas } from '../../src/core/layers.ts';

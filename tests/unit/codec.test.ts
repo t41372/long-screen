@@ -1,3 +1,4 @@
+import '../support/core.ts';
 import { assert, assertEquals, assertRejects } from '@std/assert';
 import { decodePNG, encodePNG, encodeRGBA } from '../../src/codec/png.ts';
 import { CRC32, crc32, utf8 } from '../../src/export/crc.ts';

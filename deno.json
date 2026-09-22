@@ -3,6 +3,7 @@
   "version": "2.0.0",
   "exports": "./main.ts",
   "tasks": {
+    "build:core": "bash scripts/build-core.sh",
     "build": "deno run --allow-read --allow-write --allow-run --allow-env scripts/build.ts",
     "start": "deno run --allow-read --allow-net --allow-run --allow-env --allow-write main.ts",
     "dev": "deno task build && deno task start",

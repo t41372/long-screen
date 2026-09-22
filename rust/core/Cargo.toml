@@ -1,0 +1,11 @@
+[package]
+name = "long-screen-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Long Screen reconstruction core compiled to WebAssembly"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]

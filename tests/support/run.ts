@@ -1,3 +1,4 @@
+import '../support/core.ts';
 import type { CanvasMeta, Diagnostic, Project, Region, Settings } from '../../src/types.ts';
 import { DEFAULT_SETTINGS } from '../../src/types.ts';
 import { Engine, type EngineEvents } from '../../src/pipeline/engine.ts';

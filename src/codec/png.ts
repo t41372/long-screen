@@ -1,5 +1,6 @@
 import { CRC32, utf8 } from '../export/crc.ts';
 import type { RGBA } from '../types.ts';
+import { core } from '../core/wasm.ts';
 function chunk(type: string, body: Uint8Array): Uint8Array {
   const name = utf8(type), out = new Uint8Array(body.length + 12), view = new DataView(out.buffer);
   view.setUint32(0, body.length);
@@ -44,10 +45,8 @@ export async function* encodePNG(
       let batch = new Uint8Array(stride * batchRows), used = 0;
       for await (const row of rows) {
         if (row.length !== width * 4) throw new Error('PNG row has incorrect byte length.');
-        const offset = used * stride;
-        batch[offset] = 1;
-        batch.set(row.subarray(0, 4), offset + 1);
-        for (let i = 4; i < row.length; i++) batch[offset + i + 1] = (row[i] - row[i - 4]) & 255;
+        // Sub-filtered in the Rust core; one row per call keeps memory bounded by the batch, not the image.
+        batch.set(core().pngFilterSub(row, width, 1), used * stride);
         used++;
         count++;
         // One native compression write per ~64 KiB, not per scanline. Bounded memory, same PNG predictor.
@@ -137,10 +136,6 @@ async function inflate(data: Uint8Array<ArrayBuffer>): Promise<Uint8Array> {
   }
   return out;
 }
-const paeth = (a: number, b: number, c: number): number => {
-  const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
-  return pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
-};
 /** Decodes 8-bit non-interlaced PNG (grey, grey+alpha, RGB, RGBA) into RGBA. Palette, 16-bit and interlaced images are rejected explicitly. */
 export async function decodePNG(bytes: Uint8Array): Promise<RGBA> {
   if (bytes.length < 8 || SIGNATURE.some((b, i) => bytes[i] !== b)) {
@@ -192,52 +187,7 @@ export async function decodePNG(bytes: Uint8Array): Promise<RGBA> {
   if (raw.length !== (stride + 1) * height) {
     throw new Error(`PNG data has ${raw.length} bytes; expected ${(stride + 1) * height}.`);
   }
-  const out = new Uint8ClampedArray(width * height * 4);
-  let line = new Uint8Array(stride), previous = new Uint8Array(stride);
-  for (let y = 0; y < height; y++) {
-    const filter = raw[y * (stride + 1)], src = raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1));
-    switch (filter) {
-      case 0:
-        line.set(src);
-        break;
-      case 1:
-        line.set(src.subarray(0, channels));
-        for (let i = channels; i < stride; i++) line[i] = src[i] + line[i - channels];
-        break;
-      case 2:
-        for (let i = 0; i < stride; i++) line[i] = src[i] + previous[i];
-        break;
-      case 3:
-        for (let i = 0; i < stride; i++) line[i] = src[i] + (((i >= channels ? line[i - channels] : 0) + previous[i]) >> 1);
-        break;
-      case 4:
-        for (let i = 0; i < stride; i++) {
-          line[i] = src[i] + paeth(i >= channels ? line[i - channels] : 0, previous[i], i >= channels ? previous[i - channels] : 0);
-        }
-        break;
-      default:
-        throw new Error(`Invalid PNG filter ${filter}.`);
-    }
-    // Tile PNGs are already RGBA: preserve bytes directly, including transparent RGB.
-    if (channels === 4) {
-      out.set(line, y * stride);
-    } else {
-      for (let x = 0; x < width; x++) {
-        const o = (y * width + x) * 4, i = x * channels;
-        if (channels >= 3) {
-          out[o] = line[i];
-          out[o + 1] = line[i + 1];
-          out[o + 2] = line[i + 2];
-          out[o + 3] = 255;
-        } else {
-          out[o] = out[o + 1] = out[o + 2] = line[i];
-          out[o + 3] = channels === 2 ? line[i + 1] : 255;
-        }
-      }
-    }
-    const scratch = previous;
-    previous = line;
-    line = scratch;
-  }
+  // Scanline reconstruction (all five PNG filters, any colour type → RGBA) runs in the Rust core.
+  const out = core().pngUnfilter(raw, width, height, channels);
   return { width, height, data: out };
 }

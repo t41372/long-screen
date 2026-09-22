@@ -1,3 +1,4 @@
+import '../support/core.ts';
 import { assert, assertEquals, assertRejects } from '@std/assert';
 import { iterate, MemoryKV } from '../../src/storage/db.ts';
 import { countCovered, covered, provisional, QUALITY_BLOCK, type StoredTile, type TileIndex, TileStore } from '../../src/storage/tiles.ts';

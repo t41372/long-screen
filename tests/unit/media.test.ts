@@ -1,3 +1,4 @@
+import '../support/core.ts';
 import { assert, assertEquals, assertRejects } from '@std/assert';
 import { BlobReader, type Packet } from '../../src/media/reader.ts';
 import { av01CodecString, MP4Demuxer } from '../../src/media/mp4.ts';

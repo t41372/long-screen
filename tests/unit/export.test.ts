@@ -1,3 +1,4 @@
+import '../support/core.ts';
 import { assert, assertEquals, assertRejects } from '@std/assert';
 import { MemoryKV, Namespace } from '../../src/storage/db.ts';
 import { markCovered, TileStore } from '../../src/storage/tiles.ts';

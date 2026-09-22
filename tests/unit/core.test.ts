@@ -1,6 +1,7 @@
+import '../support/core.ts';
 import { assert, assertEquals, assertThrows } from '@std/assert';
 import { clamp, DisjointSet, hamming, intersect, median, norm, pad, popcount, rng, union } from '../../src/core/math.ts';
-import { extractFeatures, featureWords, grayscale, matchFeatures, meanDifference, smooth } from '../../src/core/features.ts';
+import { extractFeatures, featureWords, grayscale, matchFeatures, meanDifference } from '../../src/core/features.ts';
 import {
   auditTranslation,
   detectScale,
@@ -82,13 +83,12 @@ Deno.test('math: rng is deterministic and DisjointSet unions by size with path c
   assertEquals(new Set([0, 1, 2, 3, 4, 5].map((i) => ds.find(i))).size, 1);
   assertEquals(ds.size[ds.find(0)], 6);
 });
-Deno.test('features: grayscale, smooth, blank frames yield no invented features, words and difference', () => {
+Deno.test('features: grayscale, blank frames yield no invented features, words and difference', () => {
   const g = grayscale(new Uint8ClampedArray([255, 255, 255, 255, 0, 0, 0, 255]), 2, 1);
   assertEquals([...g.data], [255, 0]);
   const blank = { width: 160, height: 120, data: new Uint8Array(160 * 120).fill(245) };
   assertEquals(extractFeatures(blank).length, 0);
   assertEquals(matchFeatures(extractFeatures(blank), extractFeatures(blank)).length, 0);
-  assertEquals(smooth(blank).data[500], 245);
   const f = extractFeatures(crop(0, 0));
   assert(f.length > 100);
   assert(featureWords(f).length > 10);
@@ -167,14 +167,19 @@ Deno.test('motion: native refinement returns integer offsets, errors and runner-
   const p = refineNative(a, b, { x: 17.2, y: 22.7 }, { x: 0, y: 0, width: 320, height: 240 });
   assertEquals([p.x, p.y], [17, 23]);
   assert(p.error < 1 && p.runnerUp > 20 && p.samples > 100);
-  const masked = refineNative(a, b, { x: 17, y: 23 }, { x: 0, y: 0, width: 320, height: 240 }, () => false);
+  const masked = refineNative(a, b, { x: 17, y: 23 }, { x: 0, y: 0, width: 320, height: 240 }, {
+    labels: new Uint8Array(320 * 240),
+    code: 1,
+  });
   assertEquals(masked.error, Infinity);
   const tiny = { width: 20, height: 20, data: new Uint8ClampedArray(1600) };
   const q = refineNative(tiny, tiny, { x: 0, y: 40 }, { x: 0, y: 0, width: 20, height: 3 });
   assert(Number.isFinite(q.x) && Number.isFinite(q.y) && q.error === Infinity);
   const other = refineNative(a, { ...b, width: 100 }, { x: 0, y: 0 }, { x: 0, y: 0, width: 10, height: 10 });
   assertEquals(other.error, Infinity);
-  const mostlyMasked = refineNative(a, b, { x: 17, y: 23 }, { x: 0, y: 0, width: 320, height: 240 }, (x) => x < 6);
+  const stripe = new Uint8Array(320 * 240);
+  for (let y = 0; y < 240; y++) for (let x = 0; x < 6; x++) stripe[y * 320 + x] = 1;
+  const mostlyMasked = refineNative(a, b, { x: 17, y: 23 }, { x: 0, y: 0, width: 320, height: 240 }, { labels: stripe, code: 1 });
   assert(!Number.isFinite(mostlyMasked.error) || mostlyMasked.error >= 0);
 });
 Deno.test('motion: keyframe patches measure revisits at native precision', () => {

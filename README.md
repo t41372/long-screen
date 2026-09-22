@@ -8,7 +8,7 @@
 
 ## 运行
 
-需要 [Deno](https://deno.com) 2.x。没有 `npm install`、没有 API key、不需要互联网。
+需要 [Deno](https://deno.com) 2.x 和 [rustup](https://rustup.rs)。没有 `npm install`、没有 API key，运行时不需要互联网。构建会编译 Rust 核心：`rust/rust-toolchain.toml` 固定了 Rust 版本、wasm32 目标和所需组件，第一次构建时由 rustup 自动下载安装。
 
 ```sh
 deno task start      # 缺少 dist/ 时自动构建，然后在 4173 提供静态文件
@@ -58,6 +58,8 @@ File / Blob（分段随机读取，8 × 256KiB 页面）
 ```
 
 解码之后的每一步都是纯 TypeScript，接收 `RGBA` 而不是 canvas，因此 Deno 测试跑的就是浏览器里跑的那份代码。详见 [架构文档](docs/ARCHITECTURE.md)。
+
+这描述的是**当前实现**，尚不满足用户明确要求的“薄前端 + Rust/WebAssembly 核心”。目标边界、性能证据与迁移验收见 [Rust/Wasm 评估](docs/RUST-WASM-ASSESSMENT.md)；隔离的评估原型不代表应用已经迁移。
 
 ## 目录
 

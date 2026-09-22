@@ -1,3 +1,4 @@
+import '../support/core.ts';
 import { assert, assertEquals, assertRejects } from '@std/assert';
 import { AnalysisComputer, BOX_LUMA_WGSL, type GPUProvider } from '../../src/core/compute.ts';
 import { downscaleGray, equalRGBA } from '../../src/core/raster.ts';

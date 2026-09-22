@@ -1,3 +1,4 @@
+import '../support/core.ts';
 import { assert, assertEquals, assertRejects, assertThrows } from '@std/assert';
 import { deletePrefix, iterate, type KV, MemoryKV, Namespace } from '../../src/storage/db.ts';
 import {
