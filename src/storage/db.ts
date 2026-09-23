@@ -14,9 +14,64 @@ export interface KV {
     reverse?: boolean;
   }): Promise<Row<T>[]>;
 }
+/** How a Blob is kept where IndexedDB will not store Blobs (see `Database.storesBlobs`). */
+interface StoredBlob {
+  __longScreenBlob: true;
+  type: string;
+  bytes: ArrayBuffer;
+}
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === Object.prototype;
+const isStoredBlob = (value: unknown): value is StoredBlob => isPlainObject(value) && value.__longScreenBlob === true;
+async function blobToStored(blob: Blob): Promise<StoredBlob> {
+  return { __longScreenBlob: true, type: blob.type, bytes: await blob.arrayBuffer() };
+}
+/** Blobs are only ever the value itself or a top-level field of a plain-object value (tiles, frame references). */
+async function toStorable(value: unknown): Promise<unknown> {
+  if (value instanceof Blob) return await blobToStored(value);
+  if (!isPlainObject(value) || !Object.values(value).some((v) => v instanceof Blob)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) out[k] = v instanceof Blob ? await blobToStored(v) : v;
+  return out;
+}
+function fromStored(value: unknown): unknown {
+  if (isStoredBlob(value)) return new Blob([value.bytes], { type: value.type });
+  if (!isPlainObject(value) || !Object.values(value).some(isStoredBlob)) return value;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value)) out[k] = isStoredBlob(v) ? new Blob([v.bytes], { type: v.type }) : v;
+  return out;
+}
+/** WebKit's ephemeral sessions (Safari Private Browsing) reject every Blob with "Error preparing Blob/File data to be
+ *  stored in object store" while accepting plain bytes. The probe's transaction never commits. */
+function probeBlobStorage(db: IDBDatabase): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction('records', 'readwrite');
+      const request = tx.objectStore('records').put({ key: '\u0000blob-probe', value: new Blob([new Uint8Array(1)]) });
+      request.onsuccess = () => {
+        resolve(true);
+        tx.abort();
+      };
+      request.onerror = (event) => {
+        event.preventDefault();
+        resolve(false);
+        tx.abort();
+      };
+      tx.onerror = (event) => event.preventDefault();
+    } catch {
+      resolve(false);
+    }
+  });
+}
+/** The specific error of a failed transaction: a failing request's error reaches `tx.onerror` before `tx.error` is set. */
+const transactionError = (event: Event, tx: IDBTransaction, fallback: string) =>
+  (event.target as IDBRequest | IDBTransaction | null)?.error ?? tx.error ?? new Error(fallback);
 /** Transactions are acknowledged on commit, not merely when individual requests succeed. */
 export class Database implements KV {
-  private constructor(private db: IDBDatabase) {}
+  /** False in sessions whose IndexedDB cannot hold Blobs (Safari Private Browsing): Blob values are then kept as
+   *  bytes plus MIME type and handed back as Blobs, so callers never see the difference. Such a session keeps
+   *  IndexedDB in memory and discards it when the window closes. */
+  private constructor(private db: IDBDatabase, readonly storesBlobs: boolean) {}
   static async open(): Promise<Database> {
     const request = indexedDB.open('long-screen-local', 1);
     request.onupgradeneeded = () => request.result.createObjectStore('records', { keyPath: 'key' });
@@ -27,12 +82,12 @@ export class Database implements KV {
         reject(new Error('Local database upgrade is blocked by another Long Screen tab. Close that tab and retry.'));
     });
     db.onversionchange = () => db.close();
-    return new Database(db);
+    return new Database(db, await probeBlobStorage(db));
   }
   async get<T>(key: string): Promise<T | undefined> {
     const tx = this.db.transaction('records', 'readonly'), r = tx.objectStore('records').get(key);
     return new Promise((resolve, reject) => {
-      r.onsuccess = () => resolve(r.result?.value as T | undefined);
+      r.onsuccess = () => resolve((this.storesBlobs ? r.result?.value : fromStored(r.result?.value)) as T | undefined);
       r.onerror = () => reject(r.error);
     });
   }
@@ -43,10 +98,12 @@ export class Database implements KV {
     if (!rows.length) {
       return;
     }
+    // Converted before the transaction opens: awaiting inside it would let it auto-commit.
+    if (!this.storesBlobs) rows = await Promise.all(rows.map(async (row) => ({ key: row.key, value: await toStorable(row.value) })));
     const tx = this.db.transaction('records', 'readwrite'), store = tx.objectStore('records');
     const done = new Promise<void>((resolve, reject) => {
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error || new Error('Local storage transaction failed.'));
+      tx.onerror = (event) => reject(transactionError(event, tx, 'Local storage transaction failed.'));
       tx.onabort = () => reject(tx.error || new Error('Local storage transaction aborted.'));
     });
     for (const row of rows) {
@@ -64,8 +121,8 @@ export class Database implements KV {
     const tx = this.db.transaction('records', 'readwrite'), store = tx.objectStore('records');
     const done = new Promise<void>((resolve, reject) => {
       tx.oncomplete = () => resolve();
-      tx.onabort = () => reject(tx.error);
-      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error('Local storage transaction aborted.'));
+      tx.onerror = (event) => reject(transactionError(event, tx, 'Local storage transaction failed.'));
     });
     for (const key of keys) {
       store.delete(key);
@@ -91,7 +148,8 @@ export class Database implements KV {
           resolve(rows);
           return;
         }
-        rows.push(cursor.value as Row<T>);
+        const row = cursor.value as Row<T>;
+        rows.push(this.storesBlobs ? row : { key: row.key, value: fromStored(row.value) as T });
         if (rows.length >= limit) {
           resolve(rows);
         } else {

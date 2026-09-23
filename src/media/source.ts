@@ -2,18 +2,21 @@ import type { FrameImage, FrameSource, MediaInfo, MediaNotice, RGBA } from '../t
 import type { Demuxer } from './reader.ts';
 import { MP4Demuxer } from './mp4.ts';
 import { WebMDemuxer } from './webm.ts';
+import { core } from '../core/wasm.ts';
 /** Converts one decoded VideoFrame into plain RGBA (applying container rotation). Injected so the decoding pipeline is testable without a canvas. */
 export type FrameConverter = ((frame: VideoFrame, info: MediaInfo) => RGBA | Promise<RGBA>) & {
   /** Conversions run off the calling thread, so the source may start the next decoded frame's early. */
   prefetch?: boolean;
   dispose?(): void;
+  /** Which conversion this converter has settled on so far, for diagnostics. */
+  describe?(): string;
 };
 const RGBA_COPY = { format: 'RGBA' as VideoPixelFormat, colorSpace: 'srgb' as PredefinedColorSpace };
 /** Worst case for one conversion before the worker is written off (the frame then converts in-thread). */
 const WORKER_CONVERSION_TIMEOUT = 10000;
 export function canvasConverter(): FrameConverter {
   let canvas: OffscreenCanvas | undefined, ctx: OffscreenCanvasRenderingContext2D | null = null;
-  return (frame, info) => {
+  const convert = (frame: VideoFrame, info: MediaInfo): RGBA => {
     if (!canvas || canvas.width !== info.width || canvas.height !== info.height) {
       canvas = new OffscreenCanvas(info.width, info.height);
       ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -30,14 +33,15 @@ export function canvasConverter(): FrameConverter {
     c.restore();
     return { width: canvas.width, height: canvas.height, data: c.getImageData(0, 0, canvas.width, canvas.height).data };
   };
+  return Object.assign(convert, { describe: () => '2D canvas drawImage + getImageData' });
 }
 /** Direct `VideoFrame.copyTo({ format: 'RGBA' })`: the browser converts YUV→sRGB into a plain buffer, skipping the
  *  2D-canvas draw + `getImageData` readback that dominated decode-side CPU time. Capability is probed once on the
  *  first frame (Safari/Chrome versions differ in RGB conversion support); a throwing or wrong-sized probe falls back
  *  to the canvas path permanently for this source. Rotated containers always use the canvas, which already rotates. */
-export function directConverter(fallback: FrameConverter = canvasConverter()): FrameConverter {
+export function directConverter(fallback: FrameConverter = planarConverter()): FrameConverter {
   let direct: boolean | undefined;
-  return async (frame, info) => {
+  const convert = async (frame: VideoFrame, info: MediaInfo): Promise<RGBA> => {
     if (info.rotation !== 0 || direct === false || typeof frame.copyTo !== 'function') {
       return fallback(frame, info);
     }
@@ -63,6 +67,95 @@ export function directConverter(fallback: FrameConverter = canvasConverter()): F
       return fallback(frame, info);
     }
   };
+  return Object.assign(convert, {
+    describe: () => direct ? 'copyTo(RGBA)' : direct === false ? fallback.describe?.() ?? 'fallback' : 'undecided',
+  });
+}
+/** Codes of rust/core/src/yuv.rs `Format::from_code`. */
+const FRAME_FORMATS: Record<string, number> = { I420: 0, I422: 1, I444: 2, NV12: 3 };
+/** Index into rust/core/src/yuv.rs `MATRICES`, or undefined for BT.2020 (its gamut conversion to sRGB is left to
+ *  the canvas). An untagged frame is taken as BT.709 when HD and BT.601 otherwise. */
+function matrixCode(colorSpace: VideoColorSpace | undefined, height: number): number | undefined {
+  const matrix: string = colorSpace?.matrix ?? (height >= 720 ? 'bt709' : 'smpte170m');
+  if (matrix === 'bt2020-ncl' || matrix === 'bt2020-cl') return undefined;
+  return (matrix === 'bt709' ? 0 : 2) + (colorSpace?.fullRange ? 1 : 0);
+}
+/** How far the first planar frame may be from the same frame through the canvas: both are conversions of one
+ *  decoded surface, differing by rounding, chroma filtering and (on Safari) colour management — a few levels on
+ *  average. A misplaced plane is tens of levels off (WebKit's GStreamer copyTo was measured at a mean of 67 on a
+ *  cropped H.264 frame). */
+const PLANAR_MAX_MEAN = 8, PLANAR_FAR = 48, PLANAR_MAX_FAR_SHARE = 0.01;
+export interface PlanarCheck {
+  meanDiff: number;
+  farShare: number;
+}
+function agreement(a: Uint8ClampedArray, b: Uint8ClampedArray): PlanarCheck {
+  let sum = 0, far = 0, n = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    for (let c = 0; c < 3; c++) {
+      const d = Math.abs(a[i + c] - b[i + c]);
+      sum += d;
+      if (d > PLANAR_FAR) far++;
+      n++;
+    }
+  }
+  return { meanDiff: sum / n, farShare: far / n };
+}
+/** `VideoFrame.copyTo` in the frame's own YUV layout (I420, I422, I444, NV12) plus the core's conversion to RGBA — libyuv's
+ *  integer math, which is what Chrome's `copyTo({ format: 'RGBA' })` computes for a software-decoded frame — for
+ *  browsers whose copyTo cannot convert to RGB (Safari through at least 27). It replaces a 2D-canvas drawImage +
+ *  getImageData readback per frame, which is slower and on Safari routes every frame through a GPU-process
+ *  conversion. The first frame is also converted by `fallback` and the planar path is only taken for the run when
+ *  the two agree (a browser's native-layout copyTo can misplace planes); the choice is made before any frame is
+ *  returned and never changes afterwards, so a run never mixes two conversions. Rotated containers keep the canvas. */
+export function planarConverter(
+  fallback: FrameConverter = canvasConverter(),
+): FrameConverter & { readonly planar?: boolean; readonly check?: PlanarCheck } {
+  // One reused buffer for the planes; a conversion that starts while another is still copying (a prefetched frame
+  // the source then skipped) gets its own, so two copies never land in the same bytes.
+  let scratch: ArrayBuffer | undefined, busy = false, planar: boolean | undefined, check: PlanarCheck | undefined;
+  const convert = async (frame: VideoFrame, info: MediaInfo): Promise<RGBA> => {
+    const format = frame.format ? FRAME_FORMATS[frame.format] : undefined, width = info.codedWidth, height = info.codedHeight;
+    const matrix = matrixCode(frame.colorSpace ?? undefined, height);
+    if (planar === false || info.rotation !== 0 || format === undefined || matrix === undefined || typeof frame.copyTo !== 'function') {
+      if (planar) throw new Error(`planar conversion cannot take a ${frame.format} frame after taking earlier ones`);
+      planar = false;
+      return fallback(frame, info);
+    }
+    const own = !busy;
+    let data: Uint8ClampedArray;
+    try {
+      const rect = frame.visibleRect;
+      if (rect && (rect.width !== width || rect.height !== height)) {
+        throw new Error(`visible ${rect.width}×${rect.height} ≠ ${width}×${height}`);
+      }
+      const size = frame.allocationSize();
+      if (own && (!scratch || scratch.byteLength < size)) scratch = new ArrayBuffer(size);
+      busy = true;
+      const planes = own ? new Uint8Array(scratch!, 0, size) : new Uint8Array(size), layout = await frame.copyTo(planes);
+      data = core().frameToRGBA(planes, format, layout, width, height, matrix);
+    } catch (error) {
+      if (planar) throw error;
+      planar = false;
+      return fallback(frame, info);
+    } finally {
+      if (own) busy = false;
+    }
+    if (planar === undefined) {
+      const reference = await fallback(frame, info);
+      check = agreement(reference.data, data);
+      planar = check.meanDiff <= PLANAR_MAX_MEAN && check.farShare <= PLANAR_MAX_FAR_SHARE;
+      if (!planar) return reference;
+    }
+    return { width, height, data };
+  };
+  const describe = () =>
+    planar
+      ? `planar copyTo + core YUV→RGBA (first frame ${check!.meanDiff.toFixed(2)} from canvas)`
+      : planar === false
+      ? `${fallback.describe?.() ?? 'fallback'}${check ? ` (planar rejected: ${check.meanDiff.toFixed(1)} from canvas)` : ''}`
+      : 'undecided';
+  return Object.defineProperties(Object.assign(convert, { describe }), { planar: { get: () => planar }, check: { get: () => check } });
 }
 /** Frames converted per path by a `workerConverter`, and why the worker path was abandoned, if it was. */
 export interface WorkerConversionCounts {
@@ -165,7 +258,11 @@ export function workerConverter(
       clearTimeout(timer);
     }
   };
-  return Object.assign(convert, { prefetch: true, counts, dispose: () => retire('disposed') });
+  const describe = () =>
+    counts.worker
+      ? `copyTo(RGBA) in a worker (${counts.worker} frames, ${counts.inThread} in-thread)`
+      : fallback.describe?.() ?? 'fallback';
+  return Object.assign(convert, { prefetch: true, counts, describe, dispose: () => retire('disposed') });
 }
 export async function openDemuxer(file: Blob): Promise<Demuxer> {
   const header = new Uint8Array(await file.slice(0, 16).arrayBuffer());
@@ -256,6 +353,10 @@ export class PreciseSource implements FrameSource {
     this.cancelled = true;
     this.demux.reader.clear();
     this.convert.dispose?.();
+  }
+  /** How decoded frames are being turned into RGBA, for diagnostics. */
+  conversion(): string {
+    return this.convert.describe?.() ?? 'custom converter';
   }
   private notice(code: string, message: string): void {
     const list = this.info.notices ??= [];

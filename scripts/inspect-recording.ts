@@ -1,5 +1,7 @@
 /** Offline layer inspection for a real recording: streams native frames from ffmpeg, runs the scan pass, prints the learned regions.
- *  Usage: deno run --allow-read --allow-run --allow-write scripts/inspect-recording.ts test_case/c.mov [everyNth=4] [analysisSize=640] */
+ *  Usage: deno run --allow-read --allow-run --allow-write --allow-env scripts/inspect-recording.ts test_case/c.mov [everyNth=4] [analysisSize=640] */
+// Every kernel below runs in the Rust core; this loads the workspace build the tests use.
+import '../tests/support/core.ts';
 import { analysisFactor, downscaleGray } from '../src/core/raster.ts';
 import { extractFeatures } from '../src/core/features.ts';
 import { estimateMotion } from '../src/core/motion.ts';

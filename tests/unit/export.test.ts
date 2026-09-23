@@ -289,6 +289,20 @@ Deno.test('export: canvases beyond the compatible sheet size are split into over
   );
   assertEquals((await store.scan('sheet-export/', { limit: 10 })).length, 0);
 });
+// "Download image" must give one PNG of the whole canvas whatever its size: a canvas the automatic layout splits into
+// sheets (wider than the sheet width) comes out as a single image with every pixel where the sheets would have put it.
+// Failure modes: a ZIP despite the single layout, a wrong size (sheet-sized, or overlap added), shifted rows, lost edges.
+Deno.test('export: the single layout writes one PNG of the whole canvas even where the automatic layout splits it', async () => {
+  const { p, store, meta } = await project(5000, 24), target = fakeHandle();
+  const result = await exportCanvas(store, p, meta, () => {}, target.handle, 'single');
+  assert(result.name.endsWith('.png') && result.message.includes('5000 × 24'), `${result.name}: ${result.message}`);
+  const image = await decodePNG(target.bytes());
+  assertEquals([image.width, image.height], [5000, 24]);
+  for (const [x, y] of [[-3, -2], [4996, 21], [2500, 10], [4095, 5], [4096, 6]]) {
+    const i = ((y + 2) * image.width + x + 3) * 4, hole = (x + y) % 5 === 0;
+    assertEquals([...image.data.subarray(i, i + 4)], hole ? [0, 0, 0, 0] : [(x + 10) & 255, (y + 10) & 255, 7, 255], `pixel ${x},${y}`);
+  }
+});
 Deno.test('export: fractional sheet bounds preserve absolute edge pixels and overlap coordinates', async () => {
   const { p, store, meta } = await project(5001, 31), target = fakeHandle();
   meta.bounds = { x: -2.4, y: -1.6, width: 5000, height: 30 };
@@ -322,8 +336,24 @@ Deno.test('export: rasterRows streams rows of exact width from tiles', async () 
   }
   assertEquals(rows, 30);
 });
-Deno.test('export: targets without a file handle need OPFS and say so; cleanup needs OPFS too', async () => {
-  await assertRejects(() => createTarget('x.zip'), Error, 'DISK_EXPORT_UNAVAILABLE');
+// Without a file handle or OPFS (Safari Private Browsing, and Deno here) the export is assembled in memory up to a
+// limit. Failure modes: bytes reordered or aliased when the writer reuses its buffer, a result handed out before the
+// export is closed, the limit silently ignored or failing without saying why.
+Deno.test('export: without a file handle or OPFS the export is kept in memory up to a limit; cleanup needs OPFS', async () => {
+  const memory = await createTarget('x.png', undefined, 8), chunk = new Uint8Array([1, 2, 3]);
+  await memory.sink.write(chunk);
+  chunk.set([7, 8, 9]);
+  await memory.sink.write(chunk);
+  await assertRejects(() => memory.result(), Error, 'not committed');
+  await memory.sink.close();
+  const { blob, name, temporary } = await memory.result();
+  assertEquals([name, temporary, blob!.type], ['x.png', undefined, 'image/png']);
+  assertEquals([...new Uint8Array(await blob!.arrayBuffer())], [1, 2, 3, 7, 8, 9]);
+  const over = await createTarget('x.zip', undefined, 8);
+  await over.sink.write(new Uint8Array(5));
+  await assertRejects(() => over.sink.write(new Uint8Array(5)), Error, 'DISK_EXPORT_UNAVAILABLE');
+  await assertRejects(() => over.sink.close(), Error, 'closed');
+  await assertRejects(() => over.result(), Error, 'not committed');
   await assertRejects(() => cleanupExport('key'), Error);
   const target = fakeHandle(), t = await createTarget('name.png', target.handle);
   await t.sink.write(new Uint8Array([1]));

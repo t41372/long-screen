@@ -68,6 +68,76 @@ e.mov scan 51.5→50.6 / solve 69→51 / render 118→86 / framing 19→17；1.m
 - 同类“条件修改未标脏”排查：TS 侧写瓦片证据的路径（`overwritePatch`、framing）都会标脏/显式保存；未发现新的同类缺陷。
   framing 对“有 coverage 但像素全透明”的瓦片不保存——录屏像素不透明，不会发生，记在这里。
 
+## Safari 崩溃与“超级慢”评估（用户在 M5 Max / Safari 上跑类似 e 的项目时崩溃；附件 d.mov）
+
+**d.mov**：HEVC（hvc1）1920×1240，1152 帧，21.4 s，VFR（120 fps 时基，平均 54 fps），音轨在前。Mac 上 Chrome/Safari 都走 VideoToolbox。
+Chrome 测时用 ffmpeg 转的 H.264 同几何/同时间戳副本 `d264.mov`（像素不同，只用于测时/内存）。
+
+| 浏览器与输入 | 结果 | 阶段（s） |
+| --- | --- | --- |
+| Chrome 154，d264 | 157 s 完成 | scan 40 / solve 49 / opt 6 / render 53 / framing 5 / pyramid 4 |
+| Playwright WebKit（JSC + WebKit WebCodecs，UA Safari 26），d.mov 原片，canvas 转换 | **184 s 完成，不崩** | 34 / 64 / 11 / 63 / 9 / 4 |
+| 同上，planar 转换（本轮） | 175 s 完成 | 32 / 62 / 10 / 61 / 6 / 4 |
+
+WebKit 内存平稳：WebProcess 基线 ~550 MB（空页面就这么大），跑完峰值 +~450 MB；Wasm 峰值 102–120 MB。→ **JSC 里核心、线程池、IndexedDB 本身
+都能跑完 d.mov**；崩溃取决于 macOS Safari 特有的东西。
+
+**Safari 特有的两件事（证据）**
+
+1. **Safari 不支持 `VideoFrame.copyTo({format:'RGBA'})`**（caniuse：Safari ≤ 27.2 均不支持；Playwright WebKit 同样）。之前每一帧都落到
+   `canvasConverter`：OffscreenCanvas `drawImage(VideoFrame)` + `getImageData`，在引擎线程同步执行、每帧新分配整帧 RGBA，三趟
+   （scan/solve/render）各一次 → d.mov 3,456 次，类似 e 的 3456×2234 每次 30 MB。macOS Safari 的 VideoFrame 在 GPU 进程里，
+   这条路径每帧要在 GPU 进程转换再跨进程传回；WebKit 有这条路径 OOM / GPU 进程崩溃的历史（bug 256366 / PR 17808：pixel conformer
+   缓冲池只在低内存时释放）。我在 worker 里做的 copyTo 转换对 Safari 完全无效（worker 0 帧）。
+2. **WebKit 的内存回收阈值**（`Source/WTF/wtf/MemoryPressureHandler.cpp`，每 30 s 检查）：内存 > 16 GB 的 Mac 上，页面可见时
+   footprint ≥ 15 GB + 1 GB × 标签数才杀；**页面不可见（切到别的标签/应用、最小化）时只有 3 GB + 1 GB × 标签数**。
+   几分钟的处理放在后台，~4 GB 就会被回收（“此网页因占用大量内存已重新载入”）。
+
+**本轮改动**
+
+- `planarConverter`（`src/media/source.ts` + `rust/core/src/yuv.rs`）：不支持 copyTo(RGBA) 的浏览器改为 `copyTo()` 取原生 YUV 布局
+  （I420/I422/I444/NV12，1.5 B/像素，无转换），再由核心按 **libyuv 的整数公式与常数**转成 RGBA（行按线程池切分）。
+  在 Chrome 上对真实解码帧（夹具、e.mov、1.mov）以及奇数尺寸的 I420/NV12/I422/I444 × BT.709/BT.601 × limited/full 与 Chrome
+  自己的 `copyTo(RGBA)` **逐字节相同**；BT.2020（浏览器还做色域转换）、RGB/alpha 布局、旋转容器交给 canvas。
+  **首帧同时走 canvas 比对**（均差 ≤ 8、>48 的通道 ≤ 1%）才对整趟启用；决定在任何帧返回前做出，一趟内不混用。
+  这道检查是必须的：**Linux WebKit（GStreamer）的原生 copyTo 对行有填充的帧报告紧凑 stride 却按填充 stride（320→384）拷贝**，
+  320 宽夹具均差 50–67；检查拦下后用 canvas，结果正确。新夹具 `scroll-384.mp4`（同内容右侧补黑到 384）在 WebKit 走 planar，
+  离真值 1.02（WebKit canvas 2.59）。macOS Safari 的 copyTo 是另一套实现（CVPixelBuffer），尚未验证——所以检查必须保留。
+  WebKit 上 d.mov 用 planar 后诊断计数与 canvas 版略有不同（输入像素不同；冲突类警告略少），这是转换来源不同，不是算法变化。
+- 崩溃记录器（`src/ui/flight.ts`）：页面线程每秒把阶段/帧/已用时间/核心内存/转换路径/后台时长写进 localStorage；页面被回收或崩溃后，
+  下次打开在诊断里给出 `PREVIOUS_RUN_INTERRUPTED`（含可复制的详情），并提示长时间处理保持前台。
+- `scripts/inspect-recording.ts` 自迁移起就坏了（没加载核心），已修。
+
+**为什么“超级慢”（结构性，非本轮能消除）**
+
+Chrome d264 主线程 profile：Rust 核心 37%、空闲等待（解码/转换/IndexedDB）29%、JS 胶水 10%、IndexedDB 7%、JS↔Wasm 复制 5%、GC 4%。
+- 每帧在三趟里各解码 + 转成全分辨率 RGBA 一次（d.mov 3,456 次）；solve 趟其实大多只需要分析分辨率的灰度，原生帧只在关键帧/补丁时用。
+- render 每帧对整帧做一致性掩码 + 合成进所有覆盖的瓦片；60–120 fps 的录屏相邻帧几乎相同，仍逐帧全量处理。
+- 编排是单个 JS 线程串行：解码、IndexedDB、PNG、framing/pyramid 都不在线程池里。
+Rust 把计算 kernel 提速 3–16×，但端到端受这些结构限制（纯 TS→现在是 3.7–5.1×）。要做到“接近录屏时长”需要改流水线：
+(a) scan 趟保存分析灰度，solve 不再解码全部原生帧；(b) render 对与上一帧像素相同/仅平移的区域跳过重复合成；(c) 存储批量化；
+每项都会改变“逐帧全量”的执行方式，必须先定义输出等价的验收（真值场景 + 真实录屏逐瓦片指纹）再动。
+
+**需要用户提供**：崩溃时的确切提示文字、Safari 版本、当时标签页是否在后台、本地测试录屏的分辨率/编码/时长；更新后再跑一次，
+若再中断，重新打开页面后诊断里的 `PREVIOUS_RUN_INTERRUPTED` 详情。
+
+## Safari 隐私浏览（用户报 “Local storage transaction failed.”）
+
+**原因（已在 WebKit 临时会话复现）**：隐私浏览的 IndexedDB 在内存里，**接受字节但拒绝一切 Blob**
+（`UnknownError: Error preparing Blob/File data to be stored in object store`）。瓦片（PNG Blob）与帧参照都是 Blob，第一次瓦片
+flush 就失败，运行以 `partial` 结束。报错含糊是因为请求错误冒泡到 `tx.onerror` 时 `tx.error` 还是 null。测试 harness 早就写着
+“WebKit ephemeral context cannot store IndexedDB Blobs”，但用持久 profile 绕过了而不是修。另外隐私浏览没有 OPFS
+（`getDirectory()` 拒绝），Safari 也没有保存对话框，导出原来会直接报 `DISK_EXPORT_UNAVAILABLE`。
+
+**修复**
+- `Database.open()` 探测一次能否存 Blob（探测事务总是回滚，不留数据）。不能时，Blob 值（值本身或普通对象的顶层字段）
+  以字节 + MIME 存，读出时还原为 Blob；上层代码不变。事务失败时报告失败请求的真实错误。
+- 无文件句柄且无 OPFS 时导出在内存中组装（上限 1 GB，超出给出明确错误），UI 已有的 Blob 下载链接接手。
+- 隐私浏览时提示“项目只保存在这个窗口的内存里，关闭窗口后即消失”。
+- `tests/browser/private.test.ts`：WebKit 临时会话里跑演示 → complete、瓦片经 worker 读回可解码为 PNG、PNG 与 ZIP 导出下载成功、
+  刷新后项目仍可打开。去掉写入转换会以真实错误（不再是笼统的 transaction failed）失败。
+  d.mov 在 WebKit 临时会话：169 s 完成；内存数据库使网络进程多 ~160 MB。
+
 ## 与纯 TypeScript 版本对比（迁移前最后一个纯 TS 版本；同一次调用内先后跑）
 
 | 录屏 | 纯 TS | 现在 | 输出 |
@@ -228,6 +298,8 @@ Rust `downscale_gray` 4.1 s；`computeBoxGray` 3.4 s；`addNative` 2.9 s；`extr
    那样在真 Chrome WebGPU 上的逐字节对照，并且保留 `auto` 的首帧校验 + 计时门槛。
 5. coi-serviceworker（静态托管也能跨源隔离从而用上 threads 构建）；iPhone Safari / macOS Safari 真机验证 threads 构建。
 6. 同类缺陷排查：凡是“条件性修改常驻/瓦片状态”的路径都要确认同时标脏（quality 那次就是这类）。
-7. **motion.rs 的 exp/hypot 逐位对齐 V8**（见“与纯 TypeScript 版本对比”一节），并收紧 parity 测试的浮点容差。
+7. **Safari**：拿到用户的 `PREVIOUS_RUN_INTERRUPTED` 详情再定；若 planar 在真机上被首帧检查拒绝，查 macOS copyTo 布局。
+8. **流水线结构**（见“Safari 崩溃与超级慢评估”）：solve 不重解码原生帧、render 跳过重复合成、存储批量化——先定义等价验收。
+9. **motion.rs 的 exp/hypot 逐位对齐 V8**（见“与纯 TypeScript 版本对比”一节），并收紧 parity 测试的浮点容差。
 
 每一步：先冻结 TS 版本为 parity oracle → Rust 实现 → byte-exact 对照 + 全部场景测试 → 真实录屏基准 → 提交。

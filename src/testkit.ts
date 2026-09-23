@@ -11,6 +11,7 @@ import {
   directConverter,
   openDemuxer,
   openMedia,
+  planarConverter,
   PreciseSource,
   workerConverter,
 } from './media/source.ts';
@@ -53,6 +54,7 @@ const kit = {
   openDemuxer,
   canvasConverter,
   directConverter,
+  planarConverter,
   workerConverter,
   PreciseSource,
   CompatibilitySource,

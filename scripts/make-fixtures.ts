@@ -209,6 +209,31 @@ await ensure(out('negative-cts-v0.mov'), async () => {
   }
   await Deno.writeFile(out('negative-cts-v0.mov'), bytes);
 });
+// The same frames padded with black on the right to 384 px: a width whose decoded rows have no padding in WebKit's
+// GStreamer decoder, whose native-layout copyTo drops a padded buffer's stride (every 320-wide fixture above hits
+// that). Browser tests use it to show the planar conversion path being taken where copyTo is trustworthy.
+await ensure(
+  out('scroll-384.mp4'),
+  () =>
+    ffmpeg([
+      ...rawInput,
+      '-vf',
+      'pad=384:240:0:0:black',
+      '-c:v',
+      'libx264',
+      '-crf',
+      '16',
+      '-pix_fmt',
+      'yuv420p',
+      '-bf',
+      '2',
+      '-g',
+      '30',
+      '-movflags',
+      '+faststart',
+      out('scroll-384.mp4'),
+    ], raw),
+);
 await ensure(out('truth.json'), async () => {
   const truth = {
     width,

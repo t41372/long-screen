@@ -9,6 +9,8 @@ import {
   type Severity,
 } from '../types.ts';
 import { TiledViewer } from './viewer.ts';
+import { flightEnd, flightProgress, flightStart, takeInterruptedFlight } from './flight.ts';
+import { MEMORY_EXPORT_LIMIT } from '../export/target.ts';
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
 const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
 let requestId = 0;
@@ -36,7 +38,9 @@ let project: Project | undefined,
 // Defensive: dedupe history pages by project id, since a legacy/index pagination edge case on the worker side
 // could otherwise still hand back a project this session already rendered a row for.
 let historyIds = new Set<string>();
-let capabilities: { offscreen: boolean; webcodecs: boolean; opfs: boolean; compression: boolean; webgpu: boolean } | undefined;
+let capabilities:
+  | { offscreen: boolean; webcodecs: boolean; opfs: boolean; compression: boolean; webgpu: boolean; privateStorage: boolean }
+  | undefined;
 let manualRegions: Region[] = [],
   draftRegions: Region[] = [],
   draftStart: {
@@ -121,6 +125,7 @@ function setBusy(value: boolean): void {
   $('status-dot').classList.toggle('running', value);
   $<HTMLButtonElement>('export-project').disabled = value || !project?.renderedFrames;
   $<HTMLButtonElement>('export-png').disabled = value || !viewer.current?.tileCount;
+  $<HTMLButtonElement>('copy-png').disabled = value || !viewer.current?.tileCount;
 }
 async function storageInfo(): Promise<void> {
   if (typeof navigator.storage?.estimate !== 'function') {
@@ -366,6 +371,7 @@ async function start(demo?: string): Promise<void> {
       regions: demo ? [] : manualRegions,
     };
     project = await rpc<Project>('start', { file: selectedFile, demo, settings, info: mediaInfo });
+    flightStart(demo ? undefined : selectedFile ?? undefined);
     if (!demo && selectedFile) {
       const hash = await selectedFileHash;
       if (hash) {
@@ -508,6 +514,7 @@ function selectCanvas(fit = true): void {
     c.kind === 'presentation' ? '带框呈现 · 延伸背景非观察证据' : c.kind === 'fixed' ? '固定 / 观察层' : '二维内容层'
   } · ${c.tileCount} 原图瓦片${c.fragment ? ' · 片段间关系未证实' : ''}`;
   $<HTMLButtonElement>('export-png').disabled = busy || !c.tileCount;
+  $<HTMLButtonElement>('copy-png').disabled = busy || !c.tileCount;
 }
 function addDiagnostic(d: Diagnostic): void {
   diagnosticRows.push(d);
@@ -745,21 +752,30 @@ function regionPoint(e: PointerEvent): {
     y: Math.round(Math.max(0, Math.min(firstBitmap!.height, (e.clientY - rect.top) * firstBitmap!.height / rect.height))),
   };
 }
+interface ExportReply {
+  blob?: Blob;
+  name: string;
+  temporary?: string;
+  message: string;
+}
+/** File name for the downloaded image: the recording's name, not a generic one. */
+function imageFileName(): string {
+  const stem = (project?.name || '').replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]+/g, '_').trim();
+  return `${stem || 'long-screen'}-长图.png`;
+}
+function cleanupTemporary(key?: string): void {
+  if (key) void rpc('cleanup-export', { key }).then(() => storageInfo()).catch(() => {});
+}
+/** "下载长图" saves the current canvas as one native-size PNG; "导出完整项目" is the archival ZIP. */
 async function doExport(format: 'project' | 'png'): Promise<void> {
   if (!project || busy) {
     return;
   }
   let handle: FileSystemFileHandle | undefined;
-  const c = viewer.current;
+  const c = viewer.current, name = format === 'png' ? imageFileName() : 'long-screen-project.zip';
   setBusy(true);
   $('run-controls').hidden = true;
   try {
-    const width = Math.min(
-        4096,
-        Math.max(512, Math.floor(project.settings.memoryMB * 1024 * 1024 * .20 / (project.settings.tileSize * 4) / 512) * 512),
-      ),
-      single = c && c.bounds.width <= width && c.bounds.height <= 32767 && c.bounds.width * c.bounds.height <= 100000000;
-    const name = format === 'project' ? 'long-screen-project.zip' : single ? 'long-screen.png' : 'long-screen-sheets.zip';
     if ('showSaveFilePicker' in window) {
       try {
         handle = await (window as unknown as {
@@ -767,48 +783,60 @@ async function doExport(format: 'project' | 'png'): Promise<void> {
         }).showSaveFilePicker({
           suggestedName: name,
           types: [{
-            description: name.endsWith('.png') ? 'PNG image' : 'ZIP64 archive',
-            accept: { [name.endsWith('.png') ? 'image/png' : 'application/zip']: [name.endsWith('.png') ? '.png' : '.zip'] },
+            description: format === 'png' ? 'PNG image' : 'ZIP64 archive',
+            accept: { [format === 'png' ? 'image/png' : 'application/zip']: [format === 'png' ? '.png' : '.zip'] },
           }],
         });
       } catch (error) {
         if ((error as DOMException).name === 'AbortError') {
           return;
         }
-        toast(`直接保存不可用，改用本地磁盘临时文件：${String(error)}`);
+        toast(`直接保存不可用，改用浏览器下载：${String(error)}`);
       }
     }
     $<HTMLButtonElement>('export-project').disabled = true;
     $<HTMLButtonElement>('export-png').disabled = true;
-    const result = await rpc('export', { projectId: project.id, canvasId: c?.id, format, handle });
+    $<HTMLButtonElement>('copy-png').disabled = true;
+    const result = await rpc<ExportReply>('export', { projectId: project.id, canvasId: c?.id, format, layout: 'single', handle });
     toast(result.message);
     if (result.blob) {
       if (downloadURL) {
         URL.revokeObjectURL(downloadURL);
       }
+      const fileName = format === 'png' ? name : result.name;
       downloadURL = URL.createObjectURL(result.blob);
-      const a = document.createElement('a');
+      const row = document.createElement('div'), a = document.createElement('a');
+      row.className = 'export-download-row';
       a.href = downloadURL;
-      a.download = result.name;
-      a.textContent = `保存 ${result.name} · ${humanBytes(result.blob.size)}`;
+      a.download = fileName;
+      a.textContent = `保存 ${fileName} · ${humanBytes(result.blob.size)}`;
       a.className = 'export-link';
-      $('export-download').replaceChildren(a);
-      a.click();
+      row.append(a);
+      // On phones a download lands in Files; sharing is how an image reaches Photos. A fresh tap is required.
+      const file = format === 'png' ? new File([result.blob], fileName, { type: 'image/png' }) : undefined;
+      if (file && navigator.canShare?.({ files: [file] })) {
+        const share = document.createElement('button');
+        share.className = 'secondary';
+        share.textContent = '分享 / 存到照片';
+        share.onclick = () =>
+          void navigator.share({ files: [file] }).catch((error) => {
+            if ((error as DOMException).name !== 'AbortError') toast(`分享失败：${String(error)}`, true);
+          });
+        row.append(share);
+      }
       if (result.temporary) {
         const cleanup = document.createElement('button');
         cleanup.className = 'quiet';
         cleanup.textContent = '保存后清理临时副本';
         cleanup.onclick = () => {
-          void rpc('cleanup-export', { key: result.temporary }).then(() => {
-            if (downloadURL) {
-              URL.revokeObjectURL(downloadURL);
-            }
-            $('export-download').replaceChildren();
-            void storageInfo();
-          }).catch((e) => toast(String(e), true));
+          cleanupTemporary(result.temporary);
+          if (downloadURL) URL.revokeObjectURL(downloadURL);
+          $('export-download').replaceChildren();
         };
-        $('export-download').append(cleanup);
+        row.append(cleanup);
       }
+      $('export-download').replaceChildren(row);
+      a.click();
     }
     $('progress-message').textContent = result.message;
     await storageInfo();
@@ -823,6 +851,40 @@ async function doExport(format: 'project' | 'png'): Promise<void> {
   } finally {
     setBusy(false);
   }
+}
+/** Copies the current canvas as one PNG. The clipboard write starts synchronously inside the click (Safari refuses
+ *  clipboard writes started later) with the image as a promise, which the worker fulfils once it is encoded. */
+function doCopy(): void {
+  const c = viewer.current;
+  if (!project || busy || !c) return;
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    toast('这个浏览器不支持复制图片；请用“下载长图”。', true);
+    return;
+  }
+  setBusy(true);
+  $('run-controls').hidden = true;
+  let temporary: string | undefined;
+  const png = rpc<ExportReply>('export', { projectId: project.id, canvasId: c.id, format: 'png', layout: 'single' }).then((r) => {
+    temporary = r.temporary;
+    if (!r.blob) throw new Error('没有生成图片');
+    return new Blob([r.blob], { type: 'image/png' });
+  });
+  let item: ClipboardItem;
+  try {
+    item = new ClipboardItem({ 'image/png': png });
+  } catch (error) {
+    png.then((b) => b, () => undefined).finally(() => cleanupTemporary(temporary));
+    setBusy(false);
+    toast(`复制失败：${String(error)}。请改用“下载长图”。`, true);
+    return;
+  }
+  navigator.clipboard.write([item])
+    .then(() => toast(`已复制 ${Math.round(c.bounds.width)} × ${Math.round(c.bounds.height)} 长图，可直接粘贴。`))
+    .catch((error) => toast(`复制失败：${String(error)}。图片可能超出系统剪贴板的限制，请改用“下载长图”。`, true))
+    .finally(() => {
+      void png.catch(() => {}).finally(() => cleanupTemporary(temporary));
+      setBusy(false);
+    });
 }
 worker.onmessage = (event) => {
   const m = event.data;
@@ -847,11 +909,13 @@ worker.onmessage = (event) => {
   }
   if (m.event === 'progress') {
     progress(m.data);
+    flightProgress(m.data);
   } else if (m.event === 'project') {
     updateProject(m.data);
   } else if (m.event === 'diagnostic') {
     addDiagnostic(m.data);
   } else if (m.event === 'finished') {
+    flightEnd();
     updateProject(m.data);
     setBusy(false);
     void refreshCanvases(true).then(() => viewer.fit());
@@ -862,6 +926,7 @@ worker.onmessage = (event) => {
       toast(m.data.error, true);
     }
   } else if (m.event === 'fatal') {
+    flightEnd();
     setBusy(false);
     toast(m.error, true);
     addDiagnostic({ code: 'WORKER_ERROR', severity: 'error', message: m.error });
@@ -873,6 +938,7 @@ worker.onmessage = (event) => {
   }
 };
 worker.onerror = (event) => {
+  flightEnd();
   for (const pending of requests.values()) {
     pending.reject(new Error(event.message));
   }
@@ -1008,6 +1074,7 @@ $('save-regions').onclick = () => {
 };
 $('export-project').onclick = () => void doExport('project');
 $('export-png').onclick = () => void doExport('png');
+$('copy-png').onclick = () => doCopy();
 globalThis.addEventListener('beforeunload', (e) => {
   if (busy) {
     e.preventDefault();
@@ -1025,11 +1092,35 @@ void rpc('capabilities').then((c) => {
   if (!c.compression) {
     toast('当前浏览器缺少 CompressionStream；每张原尺寸瓦片都靠它编码为 PNG，无法开始重建。', true);
   }
-  if (!c.opfs && !('showSaveFilePicker' in window)) {
-    toast('当前浏览器既没有 OPFS 也没有文件保存对话框；重建仍可进行，但导出会失败。');
+  if (c.privateStorage) {
+    toast('隐私浏览：项目只保存在这个窗口的内存里，关闭窗口后即消失；需要保留请在关闭前导出。');
+  } else if (!c.opfs && !('showSaveFilePicker' in window)) {
+    toast(`当前浏览器既没有 OPFS 也没有文件保存对话框；导出会在内存中生成（上限 ${Math.round(MEMORY_EXPORT_LIMIT / 1048576)} MB）。`);
   }
 }).catch((error) => toast(`无法打开本地数据库：${String(error)}`, true));
 void storageInfo();
+const interrupted = takeInterruptedFlight();
+if (interrupted) {
+  const where = interrupted.phase
+    ? `「${phaseNames[interrupted.phase] || interrupted.phase}」第 ${interrupted.frames ?? 0} 帧`
+    : '开始阶段';
+  const hidden = interrupted.hiddenS
+    ? `页面在后台约 ${interrupted.hiddenS} 秒${interrupted.hiddenNow ? '（中断时仍在后台）' : ''}`
+    : '页面一直在前台';
+  addDiagnostic({
+    code: 'PREVIOUS_RUN_INTERRUPTED',
+    severity: 'warning',
+    message: `上一次重建在${where}中断，页面没有收到结束信号（浏览器回收或崩溃了这个页面）。已运行 ${interrupted.elapsedS} 秒，核心内存 ${
+      interrupted.peakMemoryMB ?? '?'
+    } MB，${hidden}，帧转换：${interrupted.conversion ?? '未知'}，${interrupted.cores} 核${
+      interrupted.crossOriginIsolated ? '' : '（未跨源隔离，单线程）'
+    }。`,
+    action: 'Safari 会在页面转入后台时以低得多的内存上限回收它：长时间处理请保持该标签页在前台。完整记录已写入浏览器控制台。',
+    detail: interrupted,
+  });
+  console.warn('PREVIOUS_RUN_INTERRUPTED', JSON.stringify(interrupted));
+  toast(`上一次重建在${where}中断（${hidden}）。详情见诊断。`, true);
+}
 // Stable debugging API exposes state, not a hidden server or cloud path.
 (globalThis as unknown as {
   longScreen: unknown;

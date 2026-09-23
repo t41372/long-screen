@@ -46,7 +46,14 @@ export async function rebuildIfStale(): Promise<void> {
 }
 /** Serves dist/ (built on demand) plus fixtures and optional real recordings, and launches the system Chrome, which has H.264/HEVC decoders. */
 export async function harness(
-  options: { viewport?: { width: number; height: number }; browser?: 'chromium' | 'webkit'; hostname?: string; webgpu?: boolean } = {},
+  options: {
+    viewport?: { width: number; height: number };
+    browser?: 'chromium' | 'webkit';
+    hostname?: string;
+    webgpu?: boolean;
+    /** WebKit only: an ephemeral session, i.e. Safari Private Browsing (in-memory IndexedDB that rejects Blobs, no OPFS). */
+    ephemeral?: boolean;
+  } = {},
 ): Promise<Harness> {
   await rebuildIfStale();
   const server = Deno.serve(
@@ -57,8 +64,11 @@ export async function harness(
   const contextOptions = { viewport: options.viewport || { width: 1440, height: 1000 }, acceptDownloads: true };
   let browser: Browser, context: BrowserContext, profile: string | undefined;
   try {
-    if (options.browser === 'webkit') {
-      // WebKit's ephemeral context cannot store IndexedDB Blobs; test normal Safari storage with an isolated profile.
+    if (options.browser === 'webkit' && options.ephemeral) {
+      browser = await webkit.launch({ headless: true });
+      context = await browser.newContext(contextOptions);
+    } else if (options.browser === 'webkit') {
+      // A persistent profile is normal Safari storage; `ephemeral` gives the Private Browsing kind.
       profile = await Deno.makeTempDir({ prefix: 'long-screen-webkit-' });
       context = await webkit.launchPersistentContext(profile, { ...contextOptions, headless: true });
       browser = context.browser()!;

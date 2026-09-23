@@ -29,15 +29,9 @@ for (const browser of ['chromium', 'webkit'] as const) {
         assertEquals(await page.evaluate('typeof crypto.randomUUID'), 'undefined');
         await page.waitForFunction('!document.querySelector("#export-png").disabled');
         await page.evaluate("Object.defineProperty(window, 'showSaveFilePicker', { value: undefined, configurable: true })");
-        const { opfs } = await page.evaluate<{ opfs: boolean }>('longScreen.rpc("capabilities")');
-        if (opfs) {
-          const [download] = await Promise.all([page.waitForEvent('download', { timeout: 120000 }), page.click('#export-png')]);
-          assertEquals(await download.failure(), null);
-        } else {
-          await page.click('#export-png');
-          await page.waitForFunction('document.querySelector("#toast").textContent.includes("DISK_EXPORT_UNAVAILABLE")');
-          assertEquals(await page.evaluate('longScreen.getProject().status'), 'complete');
-        }
+        // With OPFS the export goes through a temporary disk file; without it (Safari Private Browsing) through memory.
+        const [download] = await Promise.all([page.waitForEvent('download', { timeout: 120000 }), page.click('#export-png')]);
+        assertEquals(await download.failure(), null);
         assertEquals(await page.evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
         await page.screenshot({ path: `${root}test-results/compatibility-${browser}.png`, fullPage: true });
         assertEquals(h.errors, []);

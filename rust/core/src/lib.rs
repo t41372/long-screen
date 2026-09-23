@@ -20,3 +20,4 @@ pub mod pool;
 pub mod raster;
 pub mod region;
 pub mod voting;
+pub mod yuv;

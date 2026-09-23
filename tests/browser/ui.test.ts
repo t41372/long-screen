@@ -92,6 +92,7 @@ Deno.test({
       };
       assertEquals(project.status, 'complete');
       assert(project.diagnostics.UNPLACED_FRAGMENT === 1, JSON.stringify(project.diagnostics));
+      await page.click('.export-advanced summary');
       await page.waitForFunction('!document.querySelector("#export-project").disabled', null, { timeout: 30000 });
       await page.evaluate("Object.defineProperty(window, 'showSaveFilePicker', { value: undefined, configurable: true })");
       const [download] = await Promise.all([page.waitForEvent('download', { timeout: 180000 }), page.click('#export-project')]);

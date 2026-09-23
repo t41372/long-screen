@@ -1,12 +1,12 @@
 import { type CanvasMeta, DEFAULT_SETTINGS, type Diagnostic, type MediaInfo, type Project, type Settings } from './types.ts';
 import { Database, deletePrefix, iterate, Namespace } from './storage/db.ts';
 import { Engine } from './pipeline/engine.ts';
-import { CompatibilitySource, openMedia } from './media/source.ts';
+import { CompatibilitySource, openMedia, PreciseSource } from './media/source.ts';
 import { DemoSource } from './media/demo.ts';
 import type { StoredTile } from './storage/tiles.ts';
 import { exportCanvas, exportProject } from './export/project.ts';
 import { cleanupExport } from './export/target.ts';
-import { coreLoaded, loadPlannedCore, planCore } from './core/wasm.ts';
+import { core, coreLoaded, loadPlannedCore, planCore } from './core/wasm.ts';
 const scope = globalThis as unknown as {
   postMessage: (message: unknown, transfer?: Transferable[]) => void;
   onmessage: ((e: MessageEvent) => void) | null;
@@ -53,6 +53,7 @@ async function dispatch(type: string, payload: Record<string, any>): Promise<unk
       opfs: !!navigator.storage?.getDirectory,
       compression: typeof CompressionStream !== 'undefined',
       webgpu: !!(navigator as unknown as { gpu?: unknown }).gpu,
+      privateStorage: !database.storesBlobs,
     };
   }
   if (type === 'projects') {
@@ -151,7 +152,16 @@ async function dispatch(type: string, payload: Record<string, any>): Promise<unk
         }
       }
       const engine = new Engine(database, source, settings, {
-        progress: (p) => post({ event: 'progress', data: p }),
+        // Memory and conversion path ride along for the page's crash recorder (src/ui/flight.ts).
+        progress: (p) =>
+          post({
+            event: 'progress',
+            data: {
+              ...p,
+              memoryMB: Math.round(core().memoryBytes / 1048576),
+              conversion: source instanceof PreciseSource ? source.conversion() : 'native seek',
+            },
+          }),
         diagnostic: (d) => post({ event: 'diagnostic', data: d }),
         project: (p) => post({ event: 'project', data: p }),
       });
@@ -249,7 +259,7 @@ async function dispatch(type: string, payload: Record<string, any>): Promise<unk
       if (!meta || !meta.tileCount) {
         throw new Error('This canvas has no committed pixels.');
       }
-      return await exportCanvas(store, project, meta, progress, payload.handle);
+      return await exportCanvas(store, project, meta, progress, payload.handle, payload.layout === 'single' ? 'single' : 'auto');
     } finally {
       exporting = false;
     }

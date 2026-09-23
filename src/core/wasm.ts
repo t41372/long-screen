@@ -52,6 +52,16 @@ interface CoreExports {
     rh: number,
     code: number,
   ): number;
+  ls_frame_to_rgba(
+    src: number,
+    srcLen: number,
+    format: number,
+    width: number,
+    height: number,
+    planes: number,
+    matrix: number,
+    dst: number,
+  ): number;
   __tls_size?: WebAssembly.Global;
   __tls_align?: WebAssembly.Global;
   ls_free(ptr: number, size: number): void;
@@ -655,6 +665,10 @@ export class Core {
     this.featureBytes = exports.ls_feature_bytes();
     this.matchBytes = exports.ls_match_bytes();
   }
+  /** Current size of the core's linear memory (it only grows), for diagnostics. */
+  get memoryBytes(): number {
+    return this.exports.memory.buffer.byteLength;
+  }
   /** Threads computing inside kernels: the calling thread plus parked pool helpers. */
   get threads(): number {
     return this.exports.ls_pool_helpers() + 1;
@@ -834,7 +848,9 @@ export class Core {
   }
   /** Full-resolution luma of a resident frame, written into a resident plane without leaving core memory. */
   grayscaleInto(frame: ResidentFrame, out: ResidentGray): ResidentGray {
-    if (out.width !== frame.width || out.height !== frame.height) throw new Error('CORE_BAD_ARGUMENT: luma plane does not match the frame.');
+    if (out.width !== frame.width || out.height !== frame.height) {
+      throw new Error('CORE_BAD_ARGUMENT: luma plane does not match the frame.');
+    }
     this.check(this.exports.ls_grayscale(frame.ptr, frame.width, frame.height, out.ptr), 'grayscale');
     return out;
   }
@@ -853,6 +869,23 @@ export class Core {
     this.write(input, image.data);
     this.check(this.exports.ls_halve_rgba(input, image.width, image.height, output), 'halveRGBA');
     return { width, height, data: new Uint8ClampedArray(this.read(output, width * height * 4).buffer) };
+  }
+  /** RGBA of a decoded frame given in its `VideoFrame.copyTo` layout (see rust/core/src/yuv.rs for the codes). */
+  frameToRGBA(
+    src: Uint8Array,
+    format: number,
+    layout: { offset: number; stride: number }[],
+    width: number,
+    height: number,
+    matrix: number,
+  ): Uint8ClampedArray {
+    const [input, planes, output] = this.arena.plan([src.byteLength, 32, width * height * 4]);
+    this.write(input, src);
+    const table = new Uint32Array(8);
+    layout.slice(0, 4).forEach((p, i) => table.set([p.offset, p.stride], i * 2));
+    this.write(planes, table);
+    this.check(this.exports.ls_frame_to_rgba(input, src.byteLength, format, width, height, planes, matrix, output), 'frameToRGBA');
+    return new Uint8ClampedArray(this.read(output, width * height * 4).buffer);
   }
   extractFeatures(image: Gray, maxFeatures: number, roi?: Rect): Feature[] {
     const [input, rect, output] = this.arena.plan([image.data.byteLength, 32, maxFeatures * this.featureBytes]);
@@ -926,7 +959,16 @@ export class Core {
   }
   /** Refreshes a fixed region's resident saved pixels (`rw × rh` RGBA from `(x0, y0)`) from a resident frame and
    *  labels; true when a pixel the region owns changed. */
-  fixedUpdate(saved: Resident, frame: ResidentFrame, labels: Resident, x0: number, y0: number, rw: number, rh: number, code: number): boolean {
+  fixedUpdate(
+    saved: Resident,
+    frame: ResidentFrame,
+    labels: Resident,
+    x0: number,
+    y0: number,
+    rw: number,
+    rh: number,
+    code: number,
+  ): boolean {
     if (saved.length !== rw * rh * 4 || labels.length !== frame.width * frame.height) {
       throw new Error('CORE_BAD_ARGUMENT: fixed region buffers do not match.');
     }

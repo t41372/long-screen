@@ -19,7 +19,44 @@ export interface ExportTarget {
     temporary?: string;
   }>;
 }
-export async function createTarget(name: string, handle?: FileSystemFileHandle): Promise<ExportTarget> {
+/** Largest export assembled in memory where there is no disk to write to (Safari Private Browsing: no OPFS, no save
+ *  picker). Such a session already holds the whole project in memory; past this the export stops with a clear error
+ *  instead of risking the tab. */
+export const MEMORY_EXPORT_LIMIT = 1024 * 1024 * 1024;
+function memoryTarget(name: string, limit: number): ExportTarget {
+  let parts: Uint8Array<ArrayBuffer>[] | undefined = [], size = 0, blob: Blob | undefined;
+  return {
+    sink: {
+      write: async (data) => {
+        if (!parts) throw new Error('Export is already closed.');
+        size += data.byteLength;
+        if (size > limit) {
+          parts = undefined;
+          throw new Error(
+            `DISK_EXPORT_UNAVAILABLE: this browser offers no file to write to (no save picker, no OPFS — e.g. Safari Private Browsing), and the export exceeds the ${
+              Math.round(limit / 1048576)
+            } MB in-memory limit. Open the page in a normal window to export it.`,
+          );
+        }
+        // Copied: writers may reuse their buffers after write() resolves.
+        parts.push(data.slice() as Uint8Array<ArrayBuffer>);
+      },
+      close: async () => {
+        if (!parts) throw new Error('Export is already closed.');
+        blob = new Blob(parts, { type: name.endsWith('.png') ? 'image/png' : 'application/zip' });
+        parts = undefined;
+      },
+      abort: async () => {
+        parts = undefined;
+      },
+    },
+    result: async () => {
+      if (!blob) throw new Error('Export is not committed.');
+      return { blob, name };
+    },
+  };
+}
+export async function createTarget(name: string, handle?: FileSystemFileHandle, memoryLimit = MEMORY_EXPORT_LIMIT): Promise<ExportTarget> {
   if (handle) {
     const writable = await handle.createWritable();
     return {
@@ -33,13 +70,10 @@ export async function createTarget(name: string, handle?: FileSystemFileHandle):
       result: async () => ({ name }),
     };
   }
-  if (!navigator.storage?.getDirectory) {
-    throw new Error(
-      'DISK_EXPORT_UNAVAILABLE: This browser has neither an export file handle nor OPFS. The project remains in IndexedDB for viewing in this browser; no unbounded in-memory export was attempted.',
-    );
-  }
-  const root = await navigator.storage.getDirectory(),
-    dir = await root.getDirectoryHandle('long-screen-exports', { create: true }),
+  // Safari Private Browsing defines getDirectory() but rejects it; either way there is no disk, only memory.
+  const root = await navigator.storage?.getDirectory?.().catch(() => undefined);
+  if (!root) return memoryTarget(name, memoryLimit);
+  const dir = await root.getDirectoryHandle('long-screen-exports', { create: true }),
     key = `${createId()}-${name}`,
     file = await dir.getFileHandle(key, { create: true }) as Handle;
   let closed = false;
