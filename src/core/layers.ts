@@ -16,6 +16,8 @@ export class LayerLearner {
   private handle?: LearnerHandle;
   private snapshot?: LearnerAccumulators;
   private reference?: RGBA;
+  /** Core-resident copy of the latest reference frame when the scan pass keeps frames in the core. */
+  private residentReference?: ResidentFrame;
   constructor(readonly width: number, readonly height: number) {
     this.cols = Math.ceil(width / this.cell);
     this.rows = Math.ceil(height / this.cell);
@@ -77,17 +79,32 @@ export class LayerLearner {
     if (
       informative && prevNative && currentNative && prevNative.width === currentNative.width && prevNative.height === currentNative.height
     ) {
-      // finish() samples the last native frame for appearance evidence; a resident frame is read back once here
-      // only when it replaces the previous reference, which is what the historical code held too.
-      this.reference = currentNative instanceof ResidentFrame
-        ? { width: currentNative.width, height: currentNative.height, data: new Uint8ClampedArray(currentNative.bytes().buffer) }
-        : currentNative;
+      // finish() samples the last informative native frame for appearance evidence. A resident frame is copied
+      // inside core memory (its ring slot will be reused) and read out once, by finish().
+      if (currentNative instanceof ResidentFrame) {
+        if (
+          this.residentReference &&
+          (this.residentReference.width !== currentNative.width || this.residentReference.height !== currentNative.height)
+        ) {
+          this.residentReference.free();
+          this.residentReference = undefined;
+        }
+        this.residentReference ??= core().frame(currentNative.width, currentNative.height);
+        this.residentReference.copyFrom(currentNative);
+        this.reference = undefined;
+      } else {
+        this.residentReference?.free();
+        this.residentReference = undefined;
+        this.reference = currentNative;
+      }
     }
   }
   /** Releases the core-resident accumulators without finishing (a run that stops before regions are built). */
   dispose(): void {
     this.handle?.free();
     this.handle = undefined;
+    this.residentReference?.free();
+    this.residentReference = undefined;
   }
   /** Locates a stationary/moving edge on native rows near the analysis estimate; falls back to the scaled estimate. */
   private nativeEdge(
@@ -119,6 +136,12 @@ export class LayerLearner {
     return Math.abs(edge - guess) <= window ? edge : guess;
   }
   finish(nativeWidth: number, nativeHeight: number, manual: Region[] = [], factor = 1): Region[] {
+    if (this.residentReference) {
+      const frame = this.residentReference;
+      this.reference = { width: frame.width, height: frame.height, data: new Uint8ClampedArray(frame.bytes().buffer) };
+      frame.free();
+      this.residentReference = undefined;
+    }
     if (manual.length) {
       const regions = manual.map((r, i) => ({
         ...r,

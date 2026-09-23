@@ -85,6 +85,11 @@ export function createHandler(options: ServerOptions): (request: Request) => Pro
       'cache-control': 'no-cache',
       'x-content-type-options': 'nosniff',
       'accept-ranges': 'bytes',
+      // Cross-origin isolation grants SharedArrayBuffer, which the threaded core needs (src/core/wasm.ts::planCore).
+      // Everything the app loads is same-origin, so these cost nothing; without them the single-thread core runs.
+      'cross-origin-opener-policy': 'same-origin',
+      'cross-origin-embedder-policy': 'require-corp',
+      'cross-origin-resource-policy': 'same-origin',
     });
     const range = request.headers.get('range')?.match(/^bytes=(\d*)-(\d*)$/);
     let start = 0, end = info.size - 1;

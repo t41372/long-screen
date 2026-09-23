@@ -18,6 +18,8 @@ interface Options {
   analysisSize: number;
   verifyTiles: boolean;
   allowPartial: boolean;
+  /** Tile keys matching this pattern also get their raw evidence arrays written (diagnosing a hash difference). */
+  dumpEvidence?: string;
 }
 
 interface PhaseTimes {
@@ -30,6 +32,9 @@ interface BrowserMetricSet {
 
 interface PassReport {
   pass: number;
+  /** Core build the page actually ran (undefined for trees that predate the threaded core). */
+  core?: { variant: string; threads: number; reason: string };
+  crossOriginIsolated?: boolean;
   status: string;
   error?: string;
   source: {
@@ -85,7 +90,9 @@ interface PassReport {
   failedRequests: string[];
   externalRequests: string[];
   cpuProfile?: string;
-  storedTiles?: { count: number; sha256: string; seconds: number };
+  /** `sha256` covers every stored PNG and evidence row; `pixelsSha256` the decoded pixels only. Per-tile hashes are
+   *  written next to the report as `<label>-pass-<n>.tiles.json`. */
+  storedTiles?: { count: number; sha256: string; pixelsSha256?: string; seconds: number };
 }
 
 interface BenchmarkReport {
@@ -111,6 +118,7 @@ Options:
   --passes N             full pipeline passes per root (default: 1)
   --analysis-size N      analysis long-edge limit (default: 640)
   --verify-tiles         hash tile PNG/evidence bytes after timing; fail on differences across runs
+  --dump-evidence REGEX  with --verify-tiles, also write raw evidence arrays of matching tile keys
   --allow-partial        accept a partial run (a stream-copied prefix whose container count exceeds its frames)
   --output DIR           JSON/profile directory (default: test-results/benchmark-pipeline)
 `;
@@ -132,6 +140,7 @@ function parseArgs(args: string[]): Options {
     analysisSize = 640,
     verifyTiles = false,
     allowPartial = false;
+  let dumpEvidence: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === '--input') {
@@ -148,6 +157,8 @@ function parseArgs(args: string[]): Options {
       output = resolve(valueAfter(args, i++, arg));
     } else if (arg === '--verify-tiles') {
       verifyTiles = true;
+    } else if (arg === '--dump-evidence') {
+      dumpEvidence = valueAfter(args, i++, arg);
     } else if (arg === '--allow-partial') {
       allowPartial = true;
     } else if (arg === '--help' || arg === '-h') {
@@ -163,7 +174,7 @@ function parseArgs(args: string[]): Options {
   if (!Deno.statSync(input).isFile) throw new Error(`Input is not a file: ${input}`);
   if (!Deno.statSync(root).isDirectory) throw new Error(`Repository root is not a directory: ${root}`);
   if (baselineRoot && !Deno.statSync(baselineRoot).isDirectory) throw new Error(`Baseline root is not a directory: ${baselineRoot}`);
-  return { input, root, baselineRoot, passes, output, analysisSize, verifyTiles, allowPartial };
+  return { input, root, baselineRoot, passes, output, analysisSize, verifyTiles, allowPartial, dumpEvidence };
 }
 
 async function runBuild(root: string): Promise<void> {
@@ -213,6 +224,7 @@ async function runPass(
   output: string,
   label: string,
   verifyTiles: boolean,
+  dumpEvidence?: string,
 ): Promise<PassReport> {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await context.newPage();
@@ -334,6 +346,8 @@ async function runPass(
       if (verify) (globalThis as any).benchmarkStore = engine.store;
       return {
         pass: 0,
+        core: kit.corePlan ? { variant: kit.corePlan.variant, threads: kit.coreThreads(), reason: kit.corePlan.reason } : undefined,
+        crossOriginIsolated: (globalThis as any).crossOriginIsolated,
         status: project.status,
         error: project.error,
         source: {
@@ -434,28 +448,44 @@ async function runPass(
     report.cpuProfile = profilePath;
   }
   if (verifyTiles) {
-    report.storedTiles = await page.evaluate(async () => {
+    report.storedTiles = await page.evaluate(async (dump: string | undefined) => {
       const started = performance.now(), kit = (globalThis as any).longScreenKit;
       const digest = async (bytes: ArrayBuffer): Promise<string> => {
         const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
         return Array.from(hash, (byte) => byte.toString(16).padStart(2, '0')).join('');
       };
-      const rows: unknown[] = [];
+      const rows: unknown[] = [], tiles: unknown[] = [];
       for await (const { key, value } of kit.iterate((globalThis as any).benchmarkStore, 'tile/')) {
-        const hashes: Record<string, string> = { png: await digest(await value.blob.arrayBuffer()) };
+        const png = await value.blob.arrayBuffer();
+        const hashes: Record<string, string> = { png: await digest(png) };
         for (const field of ['coverage', 'provisional', 'quality', 'conflicts', 'owner', 'score', 'frozen']) {
           const data = value[field] as ArrayBufferView | undefined;
           if (data) hashes[field] = await digest(new Uint8Array(data.buffer, data.byteOffset, data.byteLength).slice().buffer);
         }
         rows.push({ key, hashes });
+        // Decoded pixels too, so a PNG-encoder change can be told apart from a pixel change.
+        const image = await kit.decodePNG(new Uint8Array(png));
+        const evidence = dump && new RegExp(dump).test(key)
+          ? Object.fromEntries(
+            ['coverage', 'provisional', 'quality', 'conflicts', 'owner', 'score', 'frozen']
+              .filter((f) => value[f])
+              .map((f) => [f, Array.from(value[f] as ArrayLike<number>)]),
+          )
+          : undefined;
+        tiles.push({ key, hashes: { ...hashes, pixels: await digest(image.data.slice().buffer) }, evidence });
       }
       delete (globalThis as any).benchmarkStore;
       return {
         count: rows.length,
         sha256: await digest(new TextEncoder().encode(JSON.stringify(rows)).buffer),
+        pixelsSha256: await digest(new TextEncoder().encode(JSON.stringify(tiles.map((t: any) => [t.key, t.hashes.pixels]))).buffer),
+        tiles,
         seconds: (performance.now() - started) / 1000,
       };
-    });
+    }, dumpEvidence);
+    const { tiles, ...summary } = report.storedTiles as PassReport['storedTiles'] & { tiles: unknown[] };
+    await Deno.writeTextFile(join(output, `${label}-pass-${pass}.tiles.json`), JSON.stringify(tiles));
+    report.storedTiles = summary;
   }
   await context.close();
   return report;
@@ -511,7 +541,17 @@ async function benchmarkRoot(options: Options, root: string, label: string): Pro
       });
       let result: PassReport;
       try {
-        result = await runPass(browser, server.base, options.input, options.analysisSize, pass, options.output, label, options.verifyTiles);
+        result = await runPass(
+          browser,
+          server.base,
+          options.input,
+          options.analysisSize,
+          pass,
+          options.output,
+          label,
+          options.verifyTiles,
+          options.dumpEvidence,
+        );
       } catch (error) {
         try {
           await Deno.stat(failurePath);

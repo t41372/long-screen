@@ -2,14 +2,17 @@
  *  into dist/. No npm, no CDN, no runtime dependencies. Builds into a staging directory and swaps it in on
  *  success, so a failed build never deletes a working dist/. */
 import { copy, ensureDir } from '@std/fs';
-const entries: [string, string][] = [['src/ui/main.ts', 'assets/main.js'], ['src/worker.ts', 'assets/worker.js'], [
-  'src/testkit.ts',
-  'assets/testkit.js',
-]];
+const entries: [string, string][] = [
+  ['src/ui/main.ts', 'assets/main.js'],
+  ['src/worker.ts', 'assets/worker.js'],
+  ['src/testkit.ts', 'assets/testkit.js'],
+  ['src/core/helper.ts', 'assets/core-helper.js'],
+];
 const minify = Deno.args.includes('--minify');
 const CORE_WASM: [string, string][] = [
   ['rust/target/scalar/wasm32-unknown-unknown/release/long_screen_core.wasm', 'assets/core.wasm'],
   ['rust/target/simd/wasm32-unknown-unknown/release/long_screen_core.wasm', 'assets/core.simd.wasm'],
+  ['rust/target/threads/wasm32-unknown-unknown/release/long_screen_core.wasm', 'assets/core.threads.wasm'],
 ];
 const staging = 'dist.build';
 await Deno.remove(staging, { recursive: true }).catch(() => {});

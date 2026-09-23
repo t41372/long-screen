@@ -136,6 +136,130 @@ Deno.test('consistency mask: optimized raster loop is byte-exact against the fro
   }
 });
 
+/** A neighbour frame that really shows the current frame's content at the rounded pose delta — the case real
+ *  recordings are made of — with sparse edits that each target one way a vectorised "everything agrees" fast path
+ *  could go wrong: RGB just inside / just outside the source noise, alpha-only differences, exact copies. */
+function nearNeighbourImage(random: () => number, current: RGBA, dx: number, dy: number, noise: number): RGBA {
+  const { width, height } = current, data = new Uint8ClampedArray(width * height * 4);
+  const limit = Math.floor(noise * 3);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const o = (y * width + x) * 4, sx = x - dx, sy = y - dy;
+      if (sx < 0 || sy < 0 || sx >= width || sy >= height) {
+        for (let c = 0; c < 4; c++) data[o + c] = consistencyRandomInt(random, 256);
+        continue;
+      }
+      const s = (sy * width + sx) * 4;
+      for (let c = 0; c < 4; c++) data[o + c] = current.data[s + c];
+      const roll = random();
+      if (roll < .06) {
+        // Channel sum exactly at, or one above, the largest sum the noise admits.
+        let budget = Math.min(765, limit + (random() < .5 ? 0 : 1));
+        for (let c = 0; c < 3 && budget > 0; c++) {
+          const v = data[o + c], up = Math.min(255 - v, budget), down = Math.min(v, budget);
+          const step = up >= down ? up : -down;
+          data[o + c] = v + step;
+          budget -= Math.abs(step);
+        }
+      } else if (roll < .09) {
+        data[o + 3] = consistencyRandomInt(random, 256);
+      } else if (roll < .12) {
+        for (let c = 0; c < 3; c++) data[o + c] = consistencyRandomInt(random, 256);
+      }
+    }
+  }
+  return { width, height, data };
+}
+
+// The same frozen oracle, on the input shape of real recordings: neighbours that mostly agree with this frame.
+// Ways an optimised kernel could diverge here, each covered by the generator below: an off-by-one noise threshold
+// (integer, fractional and zero noise; sums at and just past the limit), alpha differences counted as colour,
+// block fast paths straddling a neighbour's valid x-range or the region/atlas edge, widths that are not a
+// multiple of the vector width, negative vote cells inside an otherwise agreeing block (any factor, any box
+// offset), occlusions covering part of a row, and row-chunk boundaries of the parallel split.
+Deno.test('consistency mask: agreeing neighbours with sparse edge cases stay byte-exact against the frozen implementation', () => {
+  const random = consistencyRandom(0x0c0ffee5);
+  const source = new ScenarioSource(buildScenario('fixture'));
+  for (const noise of [3, 2.5, 0, DECODED_VIDEO_NOISE]) {
+    source.info.noise = noise;
+    const engine = new Engine(new MemoryKV(), source, DEFAULT_SETTINGS, {
+      progress: () => {},
+      diagnostic: () => {},
+      preview: () => {},
+      project: () => {},
+    });
+    const mask = (engine as unknown as { consistencyMask: (...args: unknown[]) => Uint8Array }).consistencyMask.bind(engine);
+    for (let trial = 0; trial < 40; trial++) {
+      // The first trials are large enough for the threaded core to split rows across several pool chunks.
+      const large = trial < 2;
+      const width = large ? 700 + consistencyRandomInt(random, 9) : 1 + consistencyRandomInt(random, 211),
+        height = large ? 500 + consistencyRandomInt(random, 7) : 1 + consistencyRandomInt(random, 97),
+        factor = 1 + consistencyRandomInt(random, 4);
+      const inset = consistencyRandomInt(random, 3);
+      const region = {
+        id: 'body',
+        name: 'body',
+        kind: 'moving' as const,
+        rect: inset === 0 ? { x: 0, y: 0, width, height } : {
+          x: consistencyRandomInt(random, 9) - 2 + (inset === 2 ? .5 : 0),
+          y: consistencyRandomInt(random, 9) - 2,
+          width: Math.max(1, width - consistencyRandomInt(random, 12)),
+          height: Math.max(1, height - consistencyRandomInt(random, 12)),
+        },
+      };
+      const atlas = new RegionAtlas([region], width, height), code = atlas.code(region);
+      const current = randomConsistencyImage(random, width, height);
+      const pose = {
+        x: consistencyRandomInt(random, 13) - 6 + (random() < .5 ? -.49 : .49),
+        y: consistencyRandomInt(random, 13) - 6 + (random() < .5 ? -.49 : .49),
+      };
+      const neighbour = (): ConsistencyReferenceNeighbour | undefined => {
+        if (consistencyRandomInt(random, 6) === 0) return undefined;
+        const x = pose.x + consistencyRandomInt(random, 9) - 4 + (random() < .5 ? -.49 : .49);
+        const y = pose.y + consistencyRandomInt(random, 9) - 4 + (random() < .5 ? -.49 : .49);
+        const dx = Math.round(pose.x) - Math.round(x), dy = Math.round(pose.y) - Math.round(y);
+        const occlusions = consistencyRandomInt(random, 4) === 0
+          ? Array.from({ length: 1 + consistencyRandomInt(random, 2) }, () => ({
+            x: consistencyRandomInt(random, width + 5) - 2 + (random() < .3 ? .5 : 0),
+            y: consistencyRandomInt(random, height + 5) - 2,
+            width: random() < .5 ? width + 8 : consistencyRandomInt(random, 24),
+            height: consistencyRandomInt(random, 12),
+          }))
+          : undefined;
+        return {
+          // The kernel compares current (sx, sy) with this neighbour's (sx + dx, sy + dy).
+          image: nearNeighbourImage(random, current, dx, dy, noise),
+          x,
+          y,
+          canvasId: consistencyRandomInt(random, 8) === 0 ? 'other' : 'canvas',
+          occlusions,
+          voting: consistencyRandomInt(random, 3) === 0 ? randomConsistencyVote(random, width, height, factor) : undefined,
+        };
+      };
+      const prev = neighbour(), next = neighbour();
+      const voting = consistencyRandomInt(random, 3) === 0 ? randomConsistencyVote(random, width, height, factor) : undefined;
+      (engine as unknown as { factor: number }).factor = factor;
+      const actual = mask(current, atlas, region, code, pose, 'canvas', prev, next, voting);
+      const expected = consistencyMaskReference(current, atlas, region, code, pose, 'canvas', prev, next, voting, factor, noise);
+      assertEquals(actual.length, expected.length);
+      let inside = 0, agreeing = 0;
+      for (let i = 0; i < actual.length; i++) {
+        if (actual[i] !== expected[i]) {
+          throw new Error(`consistency mask diverged (noise ${noise}, trial ${trial}) at pixel ${i} (${actual[i]} !== ${expected[i]})`);
+        }
+        if (atlas.labels[i] === code) {
+          inside++;
+          agreeing += expected[i];
+        }
+      }
+      // The fixture is only meaningful if most in-region pixels take the agreeing path.
+      if (inside >= 400 && prev?.canvasId === 'canvas' && next?.canvasId === 'canvas' && !prev.voting && !next.voting && !voting) {
+        assert(agreeing > inside / 2, `fixture too random (noise ${noise}, trial ${trial}: ${agreeing}/${inside})`);
+      }
+    }
+  }
+});
+
 // Displacement-spread consistency voting (docs/ARCHITECTURE.md §七, Engine.solve()'s consistencyRing/consistencyCompare/
 // consistencyFinalize). Fixture: a scrolling photo-like page under a screen-fixed, uniformly-coloured blob taller
 // (40px) than the per-frame scroll displacement (8px) — exactly the geometry a ±1-frame comparison alone cannot

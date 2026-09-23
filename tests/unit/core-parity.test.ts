@@ -106,6 +106,7 @@ Deno.test('core parity: PNG scanline reconstruction and Sub filtering are byte-e
 
 import * as motionReference from '../support/reference/motion.ts';
 import { RegionAtlas } from '../../src/core/layers.ts';
+import { extractPatches } from '../../src/core/motion.ts';
 import { rgbaOf, textureGray } from '../support/parity-fixtures.ts';
 
 const sameNumber = (a: number, b: number, what: string) => {
@@ -209,6 +210,27 @@ Deno.test('core parity: motion hypotheses, audits, refinement and per-cell field
       core.refinePatches([], native, region, { x: 1.6, y: -1.6 }, 3),
       motionReference.refinePatches([], native, region, { x: 1.6, y: -1.6 }, 3),
     );
+    // The solve pass keeps the frame and its luma plane in core memory. Ways that path could diverge from the JS
+    // plane: a plane computed from the wrong frame or geometry, patch windows read at a wrong offset or stride
+    // (the region origin is fractional here), a stale plane, or refinement reading from the wrong pointer.
+    const frame = core.frame(w, h), plane = core.gray(w, h);
+    try {
+      frame.write(rb.data);
+      core.grayscaleInto(frame, plane);
+      assertEquals(plane.bytes(), native.data);
+      const residentPatches = extractPatches(plane, region, fb.slice(0, 40), 1);
+      assertEquals(residentPatches, motionReference.extractPatches(native, region, fb.slice(0, 40), 1));
+      for (const guess of [{ x: -dx + .2, y: -dy }, { x: 5, y: -5 }]) {
+        assertEquals(core.refinePatches(patches, plane, region, guess, 3), core.refinePatches(patches, native, region, guess, 3));
+      }
+      // Recomputed in place for the next frame, the plane follows it.
+      frame.write(ra.data);
+      core.grayscaleInto(frame, plane);
+      assertEquals(plane.bytes(), reference.grayscale(ra.data, w, h).data);
+    } finally {
+      frame.free();
+      plane.free();
+    }
     for (const scale of [1.1, 1 / 1.25, 2, .5]) assertEquals(core.resampleGray(a, scale), motionReference.resampleGray(a, scale));
   }
 });
@@ -313,6 +335,97 @@ Deno.test('core parity: Compositor.add matches the frozen TS compositor across m
 });
 
 import { ReferenceVotingRing } from '../support/reference/voting.ts';
+
+/** Failure modes of a vectorised / parallel per-tile compositor that the small-tile parity above cannot reach:
+ *  channel sums exactly at and one past the mismatch limit (75 vs 76), alpha-only differences (must never count),
+ *  whole 16-pixel block rows next to rows clipped by the frame edge or cut by an occlusion band, label-masked
+ *  lanes inside an otherwise full row, and tiles large enough that the threaded core splits block rows across
+ *  pool chunks (conflict-block order and summed stats must not depend on the split). */
+Deno.test('core parity: Compositor.add on large tiles with threshold-exact colour sums matches the frozen TS compositor', async () => {
+  await ensureCore();
+  const { RegionAtlas } = await import('../../src/core/layers.ts');
+  const [width, height] = [420, 300];
+  const region: Region = {
+    id: 'r',
+    name: 'r',
+    kind: 'moving',
+    rect: { x: 2, y: 3, width: width - 4, height: height - 6 },
+    exclusions: [{ x: 200, y: 100, width: 37, height: 21 }],
+  };
+  const atlas = new RegionAtlas([region], width, height);
+  const make = (Ctor: typeof Compositor | typeof ReferenceCompositor) => {
+    const db = new MemoryKV(), tiles = new TileStore(db, 256, 64), diagnostics: Diagnostic[] = [];
+    const meta = {
+      id: 'c',
+      kind: 'moving',
+      bounds: { x: 0, y: 0, width: 0, height: 0 },
+      tileCount: 0,
+      observedPixels: 0,
+      conflictPixels: 0,
+      uncertainPixels: 0,
+      provisionalPixels: 0,
+      frames: 0,
+      regionId: 'r',
+    } as unknown as CanvasMeta;
+    return { db, tiles, meta, diagnostics, compositor: new Ctor(db, tiles, 'stable', async (d) => void diagnostics.push(d), atlas) };
+  };
+  const actual = make(Compositor), expected = make(ReferenceCompositor);
+  const seed = rng(0xb10c);
+  const page = (x: number, y: number) => [(x * 3 + y * 7) & 255, (x ^ y) & 255, (x * y) & 255];
+  for (let frame = 0; frame < 8; frame++) {
+    const px = frame < 4 ? 40 - 13 * frame : -3 + frame, py = 20 - 9 * frame + (frame & 1) * .6;
+    const data = new Uint8ClampedArray(width * height * 4), consistent = new Uint8Array(width * height).fill(1);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const p = y * width + x, rgb = page(x + Math.round(px), y + Math.round(py)), roll = seed();
+        let alpha = 255;
+        if (frame > 0 && roll < .05) {
+          // Spread exactly 75 or 76 over the channels, away from saturation.
+          let budget = seed() < .5 ? 75 : 76;
+          for (let c = 0; c < 3; c++) {
+            const step = Math.min(budget, rgb[c] < 128 ? 255 - rgb[c] : rgb[c]);
+            rgb[c] += rgb[c] < 128 ? step : -step;
+            budget -= step;
+          }
+        } else if (roll < .08) {
+          alpha = Math.floor(seed() * 256);
+        } else if (frame >= 5 && x > 250 && y > 150 && roll < .7) {
+          rgb[0] ^= 0x80;
+        }
+        data.set([rgb[0], rgb[1], rgb[2], alpha], p * 4);
+        if (frame === 3 && (x + y) % 11 === 0) consistent[p] = 0;
+      }
+    }
+    const placement = {
+      x: px,
+      y: py,
+      confidence: .5 + .06 * frame,
+      time: frame / 30,
+      canvasId: 'c',
+      node: frame,
+      uncertain: frame === 6,
+      occlusions: frame === 2 ? [{ x: 0, y: 40, width, height: 10 }, { x: 100.5, y: 70, width: 60, height: 5 }] : undefined,
+    } as unknown as Placement;
+    const image = { width, height, data };
+    const a = await actual.compositor.add(image, region, placement, frame, actual.meta, frame === 7 ? undefined : consistent);
+    const e = await expected.compositor.add(image, region, placement, frame, expected.meta, frame === 7 ? undefined : consistent);
+    assertEquals(a, e, `frame ${frame} stats`);
+    assertEquals(actual.meta, expected.meta, `frame ${frame} meta`);
+    assertEquals(actual.diagnostics, expected.diagnostics, `frame ${frame} diagnostics`);
+  }
+  await (actual.compositor as Compositor).flush();
+  await actual.tiles.flush();
+  await expected.tiles.flush();
+  const dump = async (db: MemoryKV) => {
+    const rows: unknown[] = [];
+    for (const [key, value] of [...db.data].sort(([a], [b]) => a.localeCompare(b))) {
+      const v = value as { blob?: Blob };
+      rows.push({ key, value: v.blob ? { ...v, blob: [...new Uint8Array(await v.blob.arrayBuffer())] } : value });
+    }
+    return rows;
+  };
+  assertEquals(await dump(actual.db), await dump(expected.db), 'persisted tiles, evidence and temporal records');
+});
 
 /** Failure modes the voting-ring parity must catch: `Math.hypot` vs libm hypot changing the dmin gate or the
  *  displacement sort; `Math.round` on negative half-cells; box-gray rounding (`Math.round(sum / 9)`); region masks

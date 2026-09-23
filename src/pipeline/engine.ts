@@ -41,7 +41,16 @@ import { type Keyframe, KeyframeIndex } from '../core/keyframes.ts';
 import { Compositor } from '../core/compositor.ts';
 import { pad } from '../core/math.ts';
 import { analysisFactor, equalRGBA } from '../core/raster.ts';
-import { core, type FrameRing, type Resident, type ResidentFrame, type VotingRecord, type VotingRing } from '../core/wasm.ts';
+import {
+  core,
+  coreBuild,
+  type FrameRing,
+  type Resident,
+  ResidentFrame,
+  type ResidentGray,
+  type VotingRecord,
+  type VotingRing,
+} from '../core/wasm.ts';
 import { encodeRGBA } from '../codec/png.ts';
 import { buildFramedCanvas } from '../core/framing.ts';
 import { AnalysisComputer } from '../core/compute.ts';
@@ -163,12 +172,19 @@ export class Engine {
   private residentMask?: Resident;
   /** Core-resident layer-learning accumulators of the scan pass; finish() releases them, run()'s finally otherwise. */
   private learner?: LayerLearner;
+  /** Core-resident full-resolution luma plane of the solve pass. */
+  private nativePlane?: ResidentGray;
+  /** Core-resident last-seen pixels of each fixed region during rendering (duplicate-paint detection). */
+  private fixedPixels = new Map<string, Resident>();
   private releaseResidentRenderState(compositor?: { dispose(): void }): void {
     compositor?.dispose();
     this.frames?.free();
     this.residentLabels?.free();
     this.residentMask?.free();
-    this.frames = this.residentLabels = this.residentMask = undefined;
+    this.nativePlane?.free();
+    this.frames = this.residentLabels = this.residentMask = this.nativePlane = undefined;
+    for (const saved of this.fixedPixels.values()) saved.free();
+    this.fixedPixels.clear();
   }
   private pauseWaiters: (() => void)[] = [];
   private processed = 0;
@@ -645,8 +661,9 @@ export class Engine {
             await this.diagnostics.emit({
               code: 'COMPUTE_BACKEND',
               severity: 'info',
-              message: `${this.computer.stats.backend} — ${this.computer.stats.reason}。匹配、位置图与像素合成仍在 CPU。`,
-              detail: this.computer.stats,
+              message:
+                `${this.computer.stats.backend} — ${this.computer.stats.reason}。Rust 核心：${coreBuild().variant} 构建，${coreBuild().threads} 个计算线程（${coreBuild().reason}）。`,
+              detail: { ...this.computer.stats, core: coreBuild() },
             });
             if (this.project.settings.framing === 'context') {
               // Presentation-only: buildFramedCanvas already skips framing when this row is missing, so an
@@ -891,11 +908,18 @@ export class Engine {
       weak: false,
       started: false,
     }));
-    let previous: RGBA | undefined,
+    let previous: RGBA | ResidentFrame | undefined,
       previousGray: Gray | undefined,
       previousFeaturesAll: Feature[] | undefined,
       previousPlan: FramePlan | undefined,
       solved = 0;
+    // Native frames (previous, current) and the atlas label plane enter core memory once per frame / once per
+    // pass; native refinement, sticky-band detection and the downscale all read them there. Released in this
+    // pass's finally (run()'s finally covers abnormal exits through the same fields).
+    const solveFrames = this.frames = core().frameRing(2, this.source.info.width, this.source.info.height);
+    const residentLabels = this.residentLabels = core().upload(atlas.labels);
+    // Full-resolution luma of the current frame, recomputed in place on first use each frame.
+    const nativePlane = this.nativePlane = core().gray(this.source.info.width, this.source.info.height);
     const pending: { key: string; value: FramePlan }[] = [];
     let endedNaturally = false;
     let missingScan = false;
@@ -1013,18 +1037,29 @@ export class Engine {
             if (solved >= this.project.frames) break;
             continue;
           }
-          const image = frame.image, g = scan.duplicate && previousGray ? previousGray : await this.gray(image);
+          const image = frame.image;
+          // A frame whose geometry differs from the run's stays in JS; gray() rejects it with the historical message.
+          const current = image.width === solveFrames.width && image.height === solveFrames.height
+            ? solveFrames.upload(frame.index, image)
+            : image;
+          const g = scan.duplicate && previousGray ? previousGray : await this.gray(current);
           const storedFeatures = scan.duplicate ? undefined : await this.store.get<CompactFeatures>(`scan-features/${pad(frame.index)}`);
           const features = (storedFeatures && decodeFeatures(storedFeatures)) || (scan.duplicate ? previousFeaturesAll : undefined) ||
             extractFeatures(g);
-          const native = grayscale(image.data, image.width, image.height);
+          // Full-resolution luma is only needed for keyframe patches, revisit search and anchor re-acquisition,
+          // which most frames never reach; it is computed on first use.
+          let nativeGray: Gray | ResidentGray | undefined;
+          const native = (): Gray | ResidentGray =>
+            nativeGray ??= current instanceof ResidentFrame
+              ? core().grayscaleInto(current, nativePlane)
+              : grayscale(image.data, image.width, image.height);
           const placements: Placement[] = [];
           let votingUploaded = false, votingObserved = false;
           for (const state of states) {
             const r = state.region,
               code = state.code,
               roi = { x: r.rect.x / f, y: r.rect.y / f, width: r.rect.width / f, height: r.rect.height / f };
-            const mask = { labels: atlas.labels, code };
+            const mask = { labels: residentLabels, code };
             const ownFeatures = features.filter((p) => regionContains(r, p.x * f, p.y * f, image.width, image.height));
             const textured = ownFeatures.length >= 8;
             // A frame-global zoom gate fires for every pane at once, so one pane's pinch fragments every other pane too.
@@ -1083,7 +1118,7 @@ export class Engine {
                   Math.min(a.audit.error, a.audit.agreeingError) + prior(a.m) - Math.min(b.audit.error, b.audit.agreeingError) - prior(b.m)
                 );
               const refined = scored.slice(0, 6).map((v) => {
-                const n = refineNative(previous!, image, { x: v.m.x * f, y: v.m.y * f }, r.rect, mask, radius);
+                const n = refineNative(previous!, current, { x: v.m.x * f, y: v.m.y * f }, r.rect, mask, radius);
                 return { ...v, n, key: n.error + .02 * Math.hypot(n.x - state.velocity.x, n.y - state.velocity.y) };
               }).filter((v) => Number.isFinite(v.n.error)).sort((a, b) => a.key - b.key);
               const best = refined[0];
@@ -1131,7 +1166,7 @@ export class Engine {
                 models = translationHypotheses(matches, 8).filter((m) => m.support >= 6);
               const options = models.slice(0, 4).map((m) => ({
                 m,
-                n: refinePatches(state.anchor!.patches, native, r.rect, { x: m.x * f, y: m.y * f }, radius),
+                n: refinePatches(state.anchor!.patches, native(), r.rect, { x: m.x * f, y: m.y * f }, radius),
               })).filter((v) => v.n.error < 12).sort((a, b) => a.n.error - b.n.error);
               const top = options[0];
               if (
@@ -1155,7 +1190,7 @@ export class Engine {
                   // Drift control: re-measure the pose against the anchor keyframe's native patches whenever they are still in view.
                   if (state.anchor && scan.field.difference >= .12) {
                     const expected = { x: state.pose.x - state.anchor.x, y: state.pose.y - state.anchor.y };
-                    const n = refinePatches(state.anchor.patches, native, r.rect, expected, radius);
+                    const n = refinePatches(state.anchor.patches, native(), r.rect, expected, radius);
                     if (n.error < 12 && n.runnerUp > n.error + 1.5) {
                       state.pose = { x: state.anchor.x + n.x, y: state.anchor.y + n.y };
                       confidence = Math.max(confidence, .96 * Math.exp(-n.error / 20));
@@ -1484,7 +1519,7 @@ export class Engine {
                   scaleX: f,
                   scaleY: f,
                   patches: r.kind === 'moving'
-                    ? extractPatches(native, r.rect, ownFeatures.map((p) => ({ x: p.x - roi.x, y: p.y - roi.y })), f)
+                    ? extractPatches(native(), r.rect, ownFeatures.map((p) => ({ x: p.x - roi.x, y: p.y - roi.y })), f)
                     : [],
                 };
                 state.anchor = k;
@@ -1504,7 +1539,7 @@ export class Engine {
             const occlusions = previous && r.kind === 'moving' && (decision === 'tracked' || decision === 'static')
               ? stickyOcclusions(
                 previous,
-                image,
+                current,
                 r,
                 delta,
                 previousPlan?.placements.find((p) => p.layer === r.id && p.canvasId === state.canvasId)?.occlusions,
@@ -1554,7 +1589,7 @@ export class Engine {
           if (pending.length >= 24) {
             await this.commitRows(pending);
           }
-          previous = image;
+          previous = current;
           previousGray = g;
           solved = frame.index + 1;
           await this.report(solved, frame.time, '原像素精修、历史重定位与二维回环约束。', solved / this.project.frames);
@@ -1599,6 +1634,10 @@ export class Engine {
       try {
         await it.return(undefined);
       } catch { /* already unwinding */ }
+      solveFrames.free();
+      residentLabels.free();
+      nativePlane.free();
+      this.frames = this.residentLabels = this.nativePlane = undefined;
     }
     if (pending.length && !storageFailed) {
       try {
@@ -1819,7 +1858,7 @@ export class Engine {
     const frames = this.frames = core().frameRing(3, frameW, frameH);
     const residentLabels = this.residentLabels = core().upload(this.atlas!.labels);
     const residentMask = this.residentMask = core().alloc(frameW * frameH);
-    const fixedPixels = new Map<string, Uint32Array>(), previousPlacements = new Map<string, Placement>();
+    const fixedPixels = this.fixedPixels, previousPlacements = new Map<string, Placement>();
     const fixedBytes = this.regions.filter((r) => r.kind === 'fixed').reduce(
       (n, r) => n + Math.ceil(r.rect.width) * Math.ceil(r.rect.height) * 4,
       0,
@@ -1964,22 +2003,12 @@ export class Engine {
           const last = previousPlacements.get(p.layer);
           let unchanged = !!plan.duplicate && !!last && last.canvasId === p.canvasId && last.x === p.x && last.y === p.y;
           if (region.kind === 'fixed' && !unchanged) {
+            // The saved copy lives in the core; pixels the region does not own are never compared or written.
             const rect = region.rect, rw = Math.ceil(rect.width), rh = Math.ceil(rect.height), code = this.atlas!.code(region);
-            const old = fixedPixels.get(region.id), saved = old || new Uint32Array(rw * rh);
-            const src = new Uint32Array(image.data.buffer, image.data.byteOffset, image.data.length / 4);
-            unchanged = !!old;
-            for (let y = 0; y < rh; y++) {
-              for (let x = 0; x < rw; x++) {
-                const nx = Math.floor(rect.x) + x, ny = Math.floor(rect.y) + y;
-                if (!this.atlas!.contains(code, nx, ny)) continue;
-                const i = ny * image.width + nx, j = y * rw + x;
-                if (saved[j] !== src[i]) {
-                  saved[j] = src[i];
-                  unchanged = false;
-                }
-              }
-            }
+            const old = fixedPixels.get(region.id), saved = old || core().alloc(rw * rh * 4);
             fixedPixels.set(region.id, saved);
+            const changed = core().fixedUpdate(saved, frames.upload(frame.index, image), residentLabels, Math.floor(rect.x), Math.floor(rect.y), rw, rh, code);
+            unchanged = !!old && !changed;
           }
           previousPlacements.set(p.layer, p);
           if (unchanged) {

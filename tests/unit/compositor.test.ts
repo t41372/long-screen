@@ -407,3 +407,29 @@ Deno.test('compositor: a rejected observation that is bit-identical to the cover
   }
   assertEquals(stats.provisionalPixels, -256, 'the heal is reported as a net decrease');
 });
+// Evidence must reach storage whenever it changes in memory. An uncertain observation that agrees with the stored
+// pixels (no conflict, no replacement, no pixel write) still lowers the block quality; if that alone does not mark
+// the tile dirty, whether the lower quality is ever persisted depends on whether some later write happens to dirty
+// the tile before a checkpoint flush or eviction — i.e. on timing. (Found as a run-to-run difference in the stored
+// quality of the same two e.mov tiles.)
+Deno.test('compositor: a quality-only change marks the tile dirty, so flushed evidence always matches memory', async () => {
+  const region = makeRegion({ x: 0, y: 0, width: 32, height: 32 });
+  const { db, tiles, compositor } = setup([region], 32, 32, 32);
+  const meta = makeMeta();
+  const page = solid(32, 32, [120, 60, 30, 255]);
+  for (let i = 0; i < 32 * 32; i += 3) page.data[i * 4] = 200;
+  await compositor.add(page, region, place(0, 0, 0.9), 0, meta);
+  await tiles.flush();
+  const stored = async () => (await db.get<StoredTile>('tile/c/0/0_0'))!.quality!;
+  assertEquals((await stored())[0], Math.round(0.9 * 255));
+  // Same content with sub-threshold noise, seen uncertainly and with less confidence: no conflict, no replacement.
+  const noisy = { ...page, data: page.data.slice() };
+  for (let i = 0; i < 32 * 32; i++) noisy.data[i * 4 + 1] += 4;
+  const stats = await compositor.add(noisy, region, place(0, 0, 0.3, { uncertain: true }), 1, meta);
+  assertEquals([stats.added, stats.conflicts], [0, 0]);
+  const tile = await tiles.get('c', 0, 0);
+  assertEquals(tile.quality[0], Math.round(0.3 * 255), 'the uncertain observation lowers quality in memory');
+  assertEquals(tile.owner[0], 1, 'and does not take ownership');
+  await tiles.flush();
+  assertEquals((await stored())[0], tile.quality[0], 'the flushed quality is the in-memory quality');
+});

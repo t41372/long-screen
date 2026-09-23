@@ -1,7 +1,7 @@
 import type { Feature, Gray, Match, Motion, MotionField, Point, Rect, RGBA } from '../types.ts';
 import { clamp } from './math.ts';
 import { extractFeatures, matchFeatures } from './features.ts';
-import { type AuditResult, core, type LabelMask, type RefinementResult } from './wasm.ts';
+import { type AuditResult, core, type LabelMask, type RefinementResult, type ResidentFrame, ResidentGray } from './wasm.ts';
 /** Motion evidence on analysis and native images. Every kernel runs in the Rust core (rust/core/src/motion.rs);
  *  this module keeps the pipeline-facing call shape and the pure orchestration (`probeScale`). */
 export function translationHypotheses(matches: Match[], max = 6): Motion[] {
@@ -40,7 +40,14 @@ export function estimateMotion(a: Gray, b: Gray, _previous?: MotionField, af?: F
 export type NativeRefinement = RefinementResult;
 /** Native-pixel refinement and verification. No frame resizing and no averaging of text at the seam.
  * `mask` restricts both frames to one region's atlas membership. */
-export function refineNative(a: RGBA, b: RGBA, guess: Point, region: Rect, mask?: LabelMask, radius = 3): NativeRefinement {
+export function refineNative(
+  a: RGBA | ResidentFrame,
+  b: RGBA | ResidentFrame,
+  guess: Point,
+  region: Rect,
+  mask?: LabelMask,
+  radius = 3,
+): NativeRefinement {
   return core().refineNative(a, b, guess, region, mask, radius);
 }
 export interface Patch {
@@ -51,7 +58,7 @@ export interface Patch {
   data: Uint8Array;
 }
 /** Native-resolution texture samples kept with a keyframe (a few KB) so revisits and loop edges are measured in native pixels, not analysis pixels. */
-export function extractPatches(native: Gray, region: Rect, features: Point[], factor: number, count = 24, size = 32): Patch[] {
+export function extractPatches(native: Gray | ResidentGray, region: Rect, features: Point[], factor: number, count = 24, size = 32): Patch[] {
   const out: Patch[] = [],
     rx = Math.round(region.x),
     ry = Math.round(region.y),
@@ -70,16 +77,20 @@ export function extractPatches(native: Gray, region: Rect, features: Point[], fa
       continue;
     }
     taken.push({ x, y });
-    const data = new Uint8Array(size * size);
-    for (let row = 0; row < size; row++) {
-      data.set(native.data.subarray((ry + y + row) * native.width + rx + x, (ry + y + row) * native.width + rx + x + size), row * size);
+    let data: Uint8Array;
+    if (native instanceof ResidentGray) data = native.window(rx + x, ry + y, size, size);
+    else {
+      data = new Uint8Array(size * size);
+      for (let row = 0; row < size; row++) {
+        data.set(native.data.subarray((ry + y + row) * native.width + rx + x, (ry + y + row) * native.width + rx + x + size), row * size);
+      }
     }
     out.push({ x, y, size, data });
   }
   return out;
 }
 /** Measures how well keyframe patches (region-local, in the keyframe's frame) align in the current native frame at `guess` (current → keyframe), refining on the native raster. */
-export function refinePatches(patches: Patch[], native: Gray, region: Rect, guess: Point, radius = 3): NativeRefinement {
+export function refinePatches(patches: Patch[], native: Gray | ResidentGray, region: Rect, guess: Point, radius = 3): NativeRefinement {
   return core().refinePatches(patches, native, region, guess, radius);
 }
 /** Bilinear resample of an analysis image by a scale factor (probe only; output pixels are never resampled). */

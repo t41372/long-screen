@@ -6,6 +6,7 @@
 //! `Math.hypot` for motion norms) so the accumulators match bit-for-bit.
 
 use crate::geometry::js_hypot;
+use crate::pool::SyncPtr;
 
 pub struct FieldMotion {
     pub x: f64,
@@ -131,18 +132,26 @@ impl Learner {
             }
             self.row_change[y] += sum / (n.max(1) as f64);
         }
-        for x in 0..width {
-            let (mut change, mut mean, mut n) = (0.0f64, 0.0f64, 0u32);
-            let mut y = 0;
-            while y < height {
-                let i = y * width + x;
-                change += (prev[i] as i32 - current[i] as i32).abs() as f64;
-                mean += current[i] as f64;
-                n += 1;
-                y += 3;
+        // Column sums walk the sampled rows in order with one accumulator per column: each column still adds
+        // its samples top to bottom, so every float sum is the historical one, without a strided column walk.
+        let (mut change, mut mean) = (vec![0.0f64; width], vec![0.0f64; width]);
+        let mut n = 0u32;
+        let mut y = 0;
+        while y < height {
+            let (p, c) = (
+                &prev[y * width..(y + 1) * width],
+                &current[y * width..(y + 1) * width],
+            );
+            for x in 0..width {
+                change[x] += (p[x] as i32 - c[x] as i32).abs() as f64;
+                mean[x] += c[x] as f64;
             }
-            self.col_change[x] += change / n as f64;
-            self.col_mean[x] += mean / n as f64;
+            n += 1;
+            y += 3;
+        }
+        for x in 0..width {
+            self.col_change[x] += change[x] / n as f64;
+            self.col_mean[x] += mean[x] / n as f64;
         }
         let models = field.motions.len();
         let mut columns = vec![0.0f64; cols * models];
@@ -253,36 +262,60 @@ impl Learner {
         }
         self.native_frames += 1;
         let step = (w / 480).max(1);
-        for y in 0..h {
-            let (mut sum, mut n) = (0.0f64, 0u32);
-            let mut x = 0;
-            while x < w {
-                let i = (y * w + x) * 4;
-                sum += ((a[i] as i32 - b[i] as i32).abs()
-                    + (a[i + 1] as i32 - b[i + 1] as i32).abs()
-                    + (a[i + 2] as i32 - b[i + 2] as i32).abs()) as f64
-                    / 3.0;
-                n += 1;
-                x += step;
-            }
-            self.native_row_change[y] += sum / (n.max(1) as f64);
-        }
         let vstep = (h / 300).max(1);
-        for x in 0..w {
-            let (mut change, mut mean, mut n) = (0.0f64, 0.0f64, 0u32);
+        // Rows and columns are independent accumulators, so both passes are split across the pool; within a row
+        // or column the samples are added in the historical order, so every float sum is unchanged.
+        let sample = |i: usize| {
+            ((a[i] as i32 - b[i] as i32).abs()
+                + (a[i + 1] as i32 - b[i + 1] as i32).abs()
+                + (a[i + 2] as i32 - b[i + 2] as i32).abs()) as f64
+                / 3.0
+        };
+        let rows_out = SyncPtr(self.native_row_change.as_mut_ptr());
+        let chunks = crate::pool::chunks_for(h * w.div_ceil(step), 32 * 1024);
+        crate::pool::par_for(chunks, |c| {
+            for y in crate::pool::split(h, chunks, c)..crate::pool::split(h, chunks, c + 1) {
+                let (mut sum, mut n) = (0.0f64, 0u32);
+                let mut x = 0;
+                while x < w {
+                    sum += sample((y * w + x) * 4);
+                    n += 1;
+                    x += step;
+                }
+                // SAFETY: row `y` belongs to this chunk alone.
+                unsafe { *rows_out.get().add(y) += sum / (n.max(1) as f64) };
+            }
+        });
+        let samples = h.div_ceil(vstep);
+        let (mut change, mut mean) = (vec![0.0f64; w], vec![0.0f64; w]);
+        let (change_out, mean_out) = (SyncPtr(change.as_mut_ptr()), SyncPtr(mean.as_mut_ptr()));
+        let chunks = crate::pool::chunks_for(w * samples, 32 * 1024);
+        crate::pool::par_for(chunks, |c| {
+            let (x0, x1) = (
+                crate::pool::split(w, chunks, c),
+                crate::pool::split(w, chunks, c + 1),
+            );
+            // SAFETY: columns `x0..x1` belong to this chunk alone.
+            let (change, mean) = unsafe {
+                (
+                    std::slice::from_raw_parts_mut(change_out.get().add(x0), x1 - x0),
+                    std::slice::from_raw_parts_mut(mean_out.get().add(x0), x1 - x0),
+                )
+            };
             let mut y = 0;
             while y < h {
-                let i = (y * w + x) * 4;
-                change += ((a[i] as i32 - b[i] as i32).abs()
-                    + (a[i + 1] as i32 - b[i + 1] as i32).abs()
-                    + (a[i + 2] as i32 - b[i + 2] as i32).abs()) as f64
-                    / 3.0;
-                mean += (b[i] as f64 + b[i + 1] as f64 + b[i + 2] as f64) / 3.0;
-                n += 1;
+                for x in x0..x1 {
+                    let i = (y * w + x) * 4;
+                    change[x - x0] += sample(i);
+                    mean[x - x0] += (b[i] as f64 + b[i + 1] as f64 + b[i + 2] as f64) / 3.0;
+                }
                 y += vstep;
             }
-            self.native_col_change[x] += change / (n.max(1) as f64);
-            self.native_col_mean[x] += mean / (n.max(1) as f64);
+        });
+        let n = samples.max(1) as f64;
+        for x in 0..w {
+            self.native_col_change[x] += change[x] / n;
+            self.native_col_mean[x] += mean[x] / n;
         }
     }
 }

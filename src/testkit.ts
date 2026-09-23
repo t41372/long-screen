@@ -17,10 +17,12 @@ import { matchRegion, verifyFixed, verifyLayer } from './synthetic/verify.ts';
 import { exportCanvas, exportProject } from './export/project.ts';
 import { decodePNG, encodePNG, encodeRGBA } from './codec/png.ts';
 import { ZipWriter } from './export/zip.ts';
-import { coreURL, loadCore } from './core/wasm.ts';
+import { core, loadPlannedCore, planCore } from './core/wasm.ts';
 // Browser tests and the pipeline profiler drive Engine directly, so the core is loaded before the kit is exposed.
-await loadCore(fetch(coreURL()));
+const corePlan = await loadPlannedCore(planCore(), new URL('./core-helper.js', import.meta.url));
 const kit = {
+  corePlan,
+  coreThreads: () => core().threads,
   Engine,
   Database,
   Namespace,

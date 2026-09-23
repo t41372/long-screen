@@ -17,7 +17,9 @@ use crate::motion::{
     MatchPoints, Motion, NativeRefinement, Patch, Point,
 };
 use crate::png::{filter_sub_rgba, unfilter_to_rgba};
-use crate::raster::{downscale_gray, downscaled_size, grayscale, halve_rgba, mean_difference};
+use crate::raster::{
+    downscale_gray, downscaled_size, fixed_update, grayscale, halve_rgba, mean_difference,
+};
 use crate::region::{Mask as RegionMask, Region as RegionDef};
 use crate::voting::{Finalized, Ring};
 use std::alloc::{alloc, dealloc, Layout};
@@ -582,6 +584,48 @@ pub extern "C" fn ls_free(ptr: u32, size: u32) {
         // SAFETY: pointers only come from ls_alloc with the same size.
         unsafe { dealloc(ptr as *mut u8, layout) }
     }
+}
+
+/// Refreshes a fixed region's saved pixels (`rw × rh` RGBA from origin `(x0, y0)`) from `rgba`; returns 1 when a
+/// region pixel changed, 0 when none did, or a negative status on a bad argument.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn ls_fixed_update(
+    saved: u32,
+    rgba: u32,
+    labels: u32,
+    width: u32,
+    height: u32,
+    x0: i32,
+    y0: i32,
+    rw: u32,
+    rh: u32,
+    code: u32,
+) -> i32 {
+    let (w, h, rw, rh) = (width as usize, height as usize, rw as usize, rh as usize);
+    // SAFETY: adapter-owned buffers, bounds checked; `saved` never aliases the frame or labels.
+    let (Some(saved), Some(rgba), Some(labels)) = (
+        unsafe { slice_mut(saved, rw * rh * 4) },
+        unsafe { slice(rgba, w * h * 4) },
+        unsafe { slice(labels, w * h) },
+    ) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    fixed_update(
+        saved, rgba, labels, w, h, x0 as i64, y0 as i64, rw, rh, code as u8,
+    ) as i32
+}
+
+/// Parks the calling helper instance in the shared-memory pool; only valid in the threaded build.
+#[no_mangle]
+pub extern "C" fn ls_pool_worker() {
+    crate::pool::worker_loop()
+}
+
+/// Helper threads currently parked in the pool.
+#[no_mangle]
+pub extern "C" fn ls_pool_helpers() -> u32 {
+    crate::pool::helpers() as u32
 }
 
 #[no_mangle]

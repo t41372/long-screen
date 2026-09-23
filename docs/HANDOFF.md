@@ -8,19 +8,63 @@
 工具安装见 README 的「运行」一节。
 
 ```sh
-deno task build            # 先编 rust/core → dist/assets/core.wasm，再打包 TS
-deno task test             # 219 个 Deno 测试（含 23 个真值场景与 Rust/TS byte-exact parity）
+deno task build            # rust/core → core.wasm / core.simd.wasm / core.threads.wasm，再打包 TS（含 core-helper.js）
+deno task test             # 默认 SIMD 核心；LONGSCREEN_CORE=scalar|threads 切换构建（threads 默认 3 个 helper）
 ```
 
 真实录屏基准需要真正的 Google Chrome（Playwright 自带 Chromium 不含 H.264）：
 
 ```sh
-LONGSCREEN_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" deno run --allow-all scripts/benchmark-pipeline.ts \
-  --input 1.mov --passes 1 --allow-partial --output test-results/bench
+LONGSCREEN_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" bash scripts/e2e-recordings.sh [--baseline] 1.mov
 ```
 
 用户提供的测试视频（私有，不入库）：`e.mov` 3456×2234 H.264 936 帧 20.4 s；`1.mov` 1418×1590 H.264 391 帧 8.6 s。
 两者都以 `NEGATIVE_TIMESTAMP_SKIPPED` 结束为 `partial`（容器帧数 ≠ 可展示帧数），基准用 `--allow-partial`。
+
+## 多线程（2026-09-23 接手后新增）
+
+- `rust/core/src/pool.rs`：共享内存线程池。seqlock 发布 job、原子计数领取 chunk、helper 停在 `memory.atomic.wait32`；
+  **调用方从不阻塞**（自己跑 chunk，最后自旋），所以引擎可以跑在浏览器主线程（benchmark harness 就是）。
+  chunk 体内**禁止分配内存和加锁**（主线程不能 wait；分配器锁若被 helper 持有会死锁/陷阱）。
+- `core.threads.wasm`：SIMD128 + atomics，`RUSTC_BOOTSTRAP=1 -Zbuild-std` 在固定的 1.94.0 上重建 std；内存由 JS 创建并导入
+  （`--initial-memory=32MiB`，`--max-memory=2GiB`，与 `src/core/wasm.ts` 的 `THREADS_*_PAGES` 必须一致）。
+- `planCore()`：页面 `crossOriginIsolated` 且支持 SIMD、有 Worker、≥2 CPU 时选 threads（helper = min(CPU−1, 7)），
+  否则 simd/scalar；原因写进 `COMPUTE_BACKEND` 诊断的 `detail.core`。开发服务器现在发 COOP/COEP/CORP。
+  **GitHub Pages 等无法设响应头的静态托管不会跨源隔离，会退回单线程**（可后续加 coi-serviceworker；LAN HTTP 没有 SW，只能单线程）。
+- 输出与线程数无关：chunk 写不相交区间，归约是整数和或按 chunk 顺序折叠。每个并行化的 kernel 都在三种构建上跑 oracle/parity。
+
+## 本轮进度（接手后，均在 Chrome 154 headless 下测得）
+
+| 阶段 | 1.mov 总时长 | e.mov 总时长 | 输出对照（vs 接手时） |
+| --- | ---: | ---: | --- |
+| 接手时（重测） | 76 s | 459 / 479 s | — |
+| threads + consistency 快路径 + composite 向量化/并行 | 58 s | — | 1.mov 瓦片 SHA-256 相同 |
+| + scan/solve kernel 并行、solve 帧/标签常驻 | 47 s | 257 s | 1.mov 相同；e.mov 见下 |
+| + 固定区域比较与 native 亮度常驻（Rust） | 45 s | 243 s | 1.mov 相同；e.mov 见下 |
+| + quality 脏标记修复（当前） | **47 s** | **253 s** | 1.mov 瓦片 SHA-256（PNG+全部证据）相同；e.mov 见下 |
+
+单次测量，同一棵树连跑有 ±5% 抖动（45 vs 47 s、243 vs 253 s）。e.mov 当前阶段：scan 49 / solve 62 / optimize 4 /
+render 110 / framing 16 / pyramid 12。
+
+### e.mov 的不确定性（已定位并修复）
+
+同一棵树（接手时的版本）在 e.mov 上连跑两次，瓦片哈希不同；逐瓦片对比只有 `layer-0-part-0/0/2_7` 的 `quality` 数组不同
+（像素、coverage、provisional、conflicts、owner、score、frozen 全部相同）。原因：`composite_tile`（以及它移植自的 TS 版本）
+在“不确定、无冲突、不替换”的观察把块的 `quality` 降低时**不标记瓦片已修改**，于是这次降低能否落盘取决于之后是否恰好有别的写入
+在按时间触发的 checkpoint flush 或淘汰之前把瓦片弄脏——即取决于时序。修复：块的 quality/owner/score 任何变化都标记瓦片已修改；
+`tests/unit/compositor.test.ts` 新增用例先复现（持久化值 ≠ 内存值）后通过。这个修复会让 e.mov 的持久化 quality 与旧基线不同
+（旧基线丢失的更新现在会写入），像素与其他证据不变；对照方式改为逐瓦片逐字段哈希（`*.tiles.json`，含解码后像素哈希）。
+
+修复后的验证（e.mov）：与接手时相比只有 68 块瓦片的 `quality` 不同，解码像素、coverage、provisional、conflicts、owner、
+score、frozen、4 个画布的计数与全部诊断计数都相同；两次运行（一次与测试套件争用 CPU、一次独占，时序不同）856 块瓦片逐字段完全相同。
+1.mov 不受影响（瓦片 SHA-256 与接手时相同）。
+
+### 工具
+
+- `scripts/benchmark-pipeline.ts --verify-tiles` 现在另写 `<label>-pass-N.tiles.json`（每块瓦片的 PNG / 各证据数组 / 解码像素哈希），
+  `--dump-evidence REGEX` 额外写出匹配瓦片的原始证据数组，用于定位差异。
+- `deno run --allow-read scripts/compare-tiles.ts a.tiles.json b.tiles.json`：逐瓦片逐字段对比两次运行，列出不同的字段与瓦片。
+  以接手时的版本为基准时，e.mov 的 `identicalTiles` 会是 false（上面的 quality 修复），要看 `pixelsSha256` 与这个逐字段对比。
 
 ## 已在 Rust 核心中（`rust/core/src`）
 
@@ -32,14 +76,16 @@ compositor（单瓦片合成：块级冲突/替换、coverage、provisional、qu
 **chrome（stationaryBoundary、stickyOcclusions）**、region（regionContains）、geometry（JS 精确的 round/hypot）。
 每一项都有 `tests/unit/core-parity.test.ts` 的 byte-exact 对照（冻结的 TS 版本在 `tests/support/reference/`）。
 
-核心以两种构建交付：`core.wasm`（scalar）与 `core.simd.wasm`（SIMD128），`coreURL()` 用 31 字节 v128 模块探测后选择；
-Deno 测试默认加载 SIMD 版（`LONGSCREEN_CORE=scalar` 强制基线）。
+核心以三种构建交付：`core.wasm`（scalar）、`core.simd.wasm`（SIMD128）、`core.threads.wasm`（SIMD128 + atomics，见上文多线程），
+`planCore()` 按能力选择；Deno 测试默认加载 SIMD 版（`LONGSCREEN_CORE=scalar|threads` 切换）。
 
 ### 核心内存中的常驻状态
 
-- 渲染：`FrameRing`（3 槽原生帧，按帧号 upload 一次）、atlas 标签平面（每趟一次）、一致性掩码缓冲（核心写、compositor 直接读）。
+- 渲染：`FrameRing`（3 槽原生帧，按帧号 upload 一次）、atlas 标签平面（每趟一次）、一致性掩码缓冲（核心写、compositor 直接读）、
+  每个 fixed 区域上次看到的像素（`ls_fixed_update` 比较并刷新）。
 - 扫描：`FrameRing`（2 槽，首帧后按实际几何创建）；降采样与 LayerLearner 直接读常驻帧。
-- 求解：`VotingRing`（每帧一次灰度上传，每个移动区域一次 observe）。
+- 求解：`VotingRing`（每帧一次灰度上传，每个移动区域一次 observe）；原生帧 `FrameRing`（2 槽）与标签平面；
+  全分辨率亮度平面 `ResidentGray`（每帧首次需要时由常驻帧就地计算；纹理片按 32×32 窗口读出，精修直接读平面）。
 - 指针跨内存增长有效；JS 视图不跨调用持有。全部在各趟 finally 与 `run()` finally 释放。
 
 ## 仍在 TypeScript 中的算法
@@ -97,12 +143,20 @@ Rust `downscale_gray` 4.1 s；`computeBoxGray` 3.4 s；`addNative` 2.9 s；`extr
 
 ## 下一步
 
-1. 重跑 e.mov 基准（含 temporal 常驻集合的版本），并用 `--baseline` 跑一次 1.mov 取得基准/当前的瓦片哈希对照。
-2. LayerLearner / RegionAtlas / stickyOcclusions / stationaryBoundary → Rust（scan 阶段热点）。
-3. Rust deflate（miniz_oxide 或自写）让 PNG 编码在核心内一次完成，去掉 CompressionStream 的异步与逐块复制。
-4. 帧常驻扩展到 scan/solve（降采样、灰度、特征直接读常驻帧）。
-5. WebGPU：目前只有 box-luma 降采样（`compute.ts`）；评估 consistency/composite 是否值得搬到 GPU（数据往返成本高，先测）。
-6. 多线程：SharedArrayBuffer 需跨源隔离；GitHub Pages 不能假设；先做可转移缓冲的解码/编码 Worker 并行。
-7. iPhone Safari 真机验证。
+按 e.mov profile（253 s 那棵树）排序：
+
+1. VideoFrame→RGBA（`copyTo`，Chrome 内部 YUV→RGB）仍是最大单项。不能自己在 Rust 里做 YUV→RGB：
+   转换矩阵/舍入与浏览器不同就不再逐字节相同，且 Safari 与 Chrome 本来就不同。可做的是减少分配与复制（见下方微基准结论）。
+   **微基准**（e.mov 前 150 帧，3456×2234，Chrome 154 headless，只解码+转换）：每帧新分配 `Uint8ClampedArray` 再 `copyTo`
+   **37.6 / 41.0 ms/帧**（两次）；复用缓冲（6 个轮转）12.4；SharedArrayBuffer 视图 11.4；原生格式（I420）拷贝 13.7。
+   差额几乎全是 30 MB 新内存的缺页/清零与 GC，不是转换本身。三趟各解码一遍，e.mov 约 2,800 次转换 → 预计可省 ~70 s。
+   做法必须是**显式归还**的缓冲池（消费方处理完一帧后 release，未归还的缓冲永不复用，最坏情况退化为现在的每帧新分配），
+   不能用“固定 N 个轮转”——任何保留 `image.data` 超过预期的调用方都会被静默改写像素。先逐趟列出 `image.data` 的所有持有者。
+2. `buildFramedCanvas`（framing 16 s）、PNG encode/decode（各 ~13 s）、存储写入（~20 s）：framing 与 pyramid 目前单线程 TS。
+3. JS 胶水：`voting.observe` 外层、`learner.add` 包装、每帧的小数组分配。
+4. WebGPU：headless Chrome `requestAdapter()` 返回 null，无法验证也无法测收益；`compute.ts` 现有的 box-luma 路径与
+   校准回退保持不动。任何新 GPU kernel 都必须先有真机（Mac/iPhone）上的逐字节对照手段，否则不做。
+5. coi-serviceworker（静态托管也能跨源隔离从而用上 threads 构建）；iPhone Safari / macOS Safari 真机验证 threads 构建。
+6. 同类缺陷排查：凡是“条件性修改常驻/瓦片状态”的路径都要确认同时标脏（quality 那次就是这类）。
 
 每一步：先冻结 TS 版本为 parity oracle → Rust 实现 → byte-exact 对照 + 全部场景测试 → 真实录屏基准 → 提交。

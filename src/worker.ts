@@ -6,7 +6,7 @@ import { DemoSource } from './media/demo.ts';
 import type { StoredTile } from './storage/tiles.ts';
 import { exportCanvas, exportProject } from './export/project.ts';
 import { cleanupExport } from './export/target.ts';
-import { coreLoaded, coreURL, loadCore } from './core/wasm.ts';
+import { coreLoaded, loadPlannedCore, planCore } from './core/wasm.ts';
 const scope = globalThis as unknown as {
   postMessage: (message: unknown, transfer?: Transferable[]) => void;
   onmessage: ((e: MessageEvent) => void) | null;
@@ -22,10 +22,15 @@ const db = () => database ??= Database.open();
 // The Rust core is fetched once, next to this bundle. Every command waits for it: there is no TS fallback,
 // so a load failure surfaces as an explicit error on the first command instead of a silently slower run.
 let coreReady: Promise<void> | undefined;
-const ensureCore = () => coreReady ??= coreLoaded() ? Promise.resolve() : loadCore(fetch(coreURL())).then(() => {}, (error) => {
-  coreReady = undefined;
-  throw new Error(`CORE_UNAVAILABLE: the reconstruction core (core.wasm) failed to load: ${error instanceof Error ? error.message : String(error)}`);
-});
+const ensureCore = () =>
+  coreReady ??= coreLoaded()
+    ? Promise.resolve()
+    : loadPlannedCore(planCore(), new URL('./core-helper.js', import.meta.url)).then(() => {}, (error) => {
+      coreReady = undefined;
+      throw new Error(
+        `CORE_UNAVAILABLE: the reconstruction core (core.wasm) failed to load: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    });
 function requestFrame(time: number): Promise<ImageBitmap> {
   return new Promise((resolve, reject) => {
     const id = ++frameId;

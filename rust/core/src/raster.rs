@@ -1,5 +1,7 @@
 //! Native-frame raster kernels: luma, box-filter analysis downscale, preview halving.
 
+use crate::pool::SyncPtr;
+
 /// BT.601-style integer luma `(77r + 150g + 29b) >> 8`, identical to the analysis path.
 #[inline]
 pub fn luma(r: u8, g: u8, b: u8) -> u8 {
@@ -7,8 +9,57 @@ pub fn luma(r: u8, g: u8, b: u8) -> u8 {
 }
 
 pub fn grayscale(rgba: &[u8], out: &mut [u8]) {
-    for (px, o) in rgba.chunks_exact(4).zip(out.iter_mut()) {
-        *o = luma(px[0], px[1], px[2]);
+    let n = out.len().min(rgba.len() / 4);
+    let chunks = crate::pool::chunks_for(n, 256 * 1024);
+    let dst = SyncPtr(out.as_mut_ptr());
+    crate::pool::par_for(chunks, |c| {
+        let (a, b) = (
+            crate::pool::split(n, chunks, c),
+            crate::pool::split(n, chunks, c + 1),
+        );
+        // SAFETY: pixels `a..b` belong to this chunk alone.
+        let out = unsafe { std::slice::from_raw_parts_mut(dst.get().add(a), b - a) };
+        let mut sums = [0u32; 64];
+        let mut i = a;
+        while i < b {
+            let m = (b - i).min(64);
+            weighted_luma(&rgba[i * 4..(i + m) * 4], &mut sums[..m]);
+            for (o, s) in out[i - a..i - a + m].iter_mut().zip(&sums[..m]) {
+                *o = (s >> 8) as u8;
+            }
+            i += m;
+        }
+    });
+}
+
+/// `77r + 150g + 29b` per pixel (the luma numerator before `>> 8`).
+#[inline]
+pub fn weighted_luma(rgba: &[u8], out: &mut [u32]) {
+    let n = out.len();
+    #[allow(unused_mut)]
+    let mut i = 0;
+    #[cfg(target_feature = "simd128")]
+    {
+        use core::arch::wasm32::*;
+        // i16 lanes (r, g, b, a) · (77, 150, 29, 0), pairwise summed: (77r + 150g, 29b) per pixel, then added.
+        let weights = i16x8(77, 150, 29, 0, 77, 150, 29, 0);
+        while i + 4 <= n {
+            // SAFETY: four pixels (16 bytes) at `i` are in bounds.
+            let v = unsafe { v128_load(rgba.as_ptr().add(i * 4) as *const v128) };
+            let lo = i32x4_dot_i16x8(u16x8_extend_low_u8x16(v), weights);
+            let hi = i32x4_dot_i16x8(u16x8_extend_high_u8x16(v), weights);
+            let sums = i32x4_add(
+                i32x4_shuffle::<0, 2, 4, 6>(lo, hi),
+                i32x4_shuffle::<1, 3, 5, 7>(lo, hi),
+            );
+            // SAFETY: `out[i..i + 4]` is in bounds; unaligned store.
+            unsafe { v128_store(out.as_mut_ptr().add(i) as *mut v128, sums) };
+            i += 4;
+        }
+    }
+    for k in i..n {
+        let p = &rgba[k * 4..k * 4 + 3];
+        out[k] = p[0] as u32 * 77 + p[1] as u32 * 150 + p[2] as u32 * 29;
     }
 }
 
@@ -33,39 +84,46 @@ pub fn downscale_gray(rgba: &[u8], width: usize, height: usize, factor: usize, o
         grayscale(&rgba[..width * height * 4], &mut out[..width * height]);
         return;
     }
-    let mut acc = vec![0u64; ow];
-    for y in 0..oh {
-        let bh = factor.min(height - y * factor);
-        acc.fill(0);
-        for row in 0..bh {
-            let start = (y * factor + row) * width * 4;
-            let line = &rgba[start..start + width * 4];
-            // Whole boxes first (a fixed-trip-count inner loop the compiler can unroll), then the partial one.
-            let full = width / factor;
-            for (bx, cell) in line[..full * factor * 4]
-                .chunks_exact(factor * 4)
-                .enumerate()
-            {
-                let mut sum = 0u32;
-                for px in cell.chunks_exact(4) {
-                    sum += px[0] as u32 * 77 + px[1] as u32 * 150 + px[2] as u32 * 29;
+    // Output rows are independent; each chunk sweeps its own input rows with its own accumulator and luma row,
+    // allocated here because chunk bodies may not allocate.
+    let chunks = crate::pool::chunks_for(oh * width * factor, 128 * 1024);
+    let mut scratch = vec![0u64; chunks * ow];
+    let mut sums = vec![0u32; chunks * width];
+    let (acc_ptr, sum_ptr, dst) = (
+        SyncPtr(scratch.as_mut_ptr()),
+        SyncPtr(sums.as_mut_ptr()),
+        SyncPtr(out.as_mut_ptr()),
+    );
+    crate::pool::par_for(chunks, |c| {
+        // SAFETY: scratch slot `c` and output rows `y0..y1` belong to this chunk alone.
+        let (acc, line) = unsafe {
+            (
+                std::slice::from_raw_parts_mut(acc_ptr.get().add(c * ow), ow),
+                std::slice::from_raw_parts_mut(sum_ptr.get().add(c * width), width),
+            )
+        };
+        let full = width / factor;
+        for y in crate::pool::split(oh, chunks, c)..crate::pool::split(oh, chunks, c + 1) {
+            let bh = factor.min(height - y * factor);
+            acc.fill(0);
+            for row in 0..bh {
+                let start = (y * factor + row) * width * 4;
+                weighted_luma(&rgba[start..start + width * 4], line);
+                // Whole boxes first, then the partial one; integer sums, so grouping cannot change them.
+                for (bx, cell) in line[..full * factor].chunks_exact(factor).enumerate() {
+                    acc[bx] += cell.iter().sum::<u32>() as u64;
                 }
-                acc[bx] += sum as u64;
+                if full < ow {
+                    acc[full] += line[full * factor..].iter().sum::<u32>() as u64;
+                }
             }
-            if full < ow {
-                let mut sum = 0u32;
-                for px in line[full * factor * 4..].chunks_exact(4) {
-                    sum += px[0] as u32 * 77 + px[1] as u32 * 150 + px[2] as u32 * 29;
-                }
-                acc[full] += sum as u64;
+            let out_row = unsafe { std::slice::from_raw_parts_mut(dst.get().add(y * ow), ow) };
+            for (x, o) in out_row.iter_mut().enumerate() {
+                let bw = factor.min(width - x * factor);
+                *o = ((acc[x] / (bw * bh) as u64) >> 8) as u8;
             }
         }
-        let out_row = &mut out[y * ow..y * ow + ow];
-        for (x, o) in out_row.iter_mut().enumerate() {
-            let bw = factor.min(width - x * factor);
-            *o = ((acc[x] / (bw * bh) as u64) >> 8) as u8;
-        }
-    }
+    });
 }
 
 /// `Uint8ClampedArray` assignment: clamp to 0..=255 and round halves to even.
@@ -151,4 +209,57 @@ mod tests {
         assert_eq!(clamp_u8(2.5), 2);
         assert_eq!(clamp_u8(300.0), 255);
     }
+}
+
+/// Refreshes the saved pixels of a fixed (screen-anchored) region from `rgba` and reports whether any pixel the
+/// region owns changed. `saved` is `rw × rh` RGBA laid out from the region's floored origin `(x0, y0)`; pixels
+/// outside the frame or not labelled `code` are neither compared nor written. Rows are split across the pool.
+#[allow(clippy::too_many_arguments)]
+pub fn fixed_update(
+    saved: &mut [u8],
+    rgba: &[u8],
+    labels: &[u8],
+    width: usize,
+    height: usize,
+    x0: i64,
+    y0: i64,
+    rw: usize,
+    rh: usize,
+    code: u8,
+) -> bool {
+    let (w, h) = (width as i64, height as i64);
+    let (lo, hi) = (x0.max(0), (x0 + rw as i64).min(w));
+    if hi <= lo {
+        return false;
+    }
+    let chunks = crate::pool::chunks_for(rh * rw, 64 * 1024);
+    let mut changed = vec![false; chunks];
+    let (dst, flags) = (SyncPtr(saved.as_mut_ptr()), SyncPtr(changed.as_mut_ptr()));
+    crate::pool::par_for(chunks, |c| {
+        let mut any = false;
+        for y in crate::pool::split(rh, chunks, c)..crate::pool::split(rh, chunks, c + 1) {
+            let ny = y0 + y as i64;
+            if ny < 0 || ny >= h {
+                continue;
+            }
+            // SAFETY: saved row `y` belongs to this chunk alone.
+            let row = unsafe { std::slice::from_raw_parts_mut(dst.get().add(y * rw * 4), rw * 4) };
+            let base = ny as usize * width;
+            for nx in lo..hi {
+                let i = base + nx as usize;
+                if labels[i] != code {
+                    continue;
+                }
+                let j = (nx - x0) as usize * 4;
+                let src = &rgba[i * 4..i * 4 + 4];
+                if row[j..j + 4] != *src {
+                    row[j..j + 4].copy_from_slice(src);
+                    any = true;
+                }
+            }
+        }
+        // SAFETY: one flag per chunk.
+        unsafe { *flags.get().add(c) = any };
+    });
+    changed.iter().any(|&c| c)
 }

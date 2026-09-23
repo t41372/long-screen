@@ -29,15 +29,31 @@ export interface PatchInput {
   size: number;
   data: Uint8Array;
 }
-/** Region-membership mask for native refinement: a pixel counts when `labels[y*w+x] === code`. */
+/** Region-membership mask for native refinement: a pixel counts when `labels[y*w+x] === code`. The labels may
+ *  already be resident in the core (the solve pass uploads the atlas plane once). */
 export interface LabelMask {
-  labels: Uint8Array;
+  labels: Uint8Array | Resident;
   code: number;
 }
 
 interface CoreExports {
   memory: WebAssembly.Memory;
   ls_alloc(size: number): number;
+  ls_pool_helpers(): number;
+  ls_fixed_update(
+    saved: number,
+    rgba: number,
+    labels: number,
+    width: number,
+    height: number,
+    x0: number,
+    y0: number,
+    rw: number,
+    rh: number,
+    code: number,
+  ): number;
+  __tls_size?: WebAssembly.Global;
+  __tls_align?: WebAssembly.Global;
   ls_free(ptr: number, size: number): void;
   ls_feature_bytes(): number;
   ls_match_bytes(): number;
@@ -325,10 +341,17 @@ export class LearnerHandle {
  *  place); only JS views do not, so nothing here holds a view — `bytes()` re-derives one on demand. */
 export class Resident {
   private freed = false;
-  constructor(private readonly exports: CoreExports, readonly ptr: number, readonly length: number) {}
+  constructor(protected readonly exports: CoreExports, readonly ptr: number, readonly length: number) {}
   /** Copy of the current contents. */
   bytes(): Uint8Array<ArrayBuffer> {
     return new Uint8Array(this.exports.memory.buffer).slice(this.ptr, this.ptr + this.length) as Uint8Array<ArrayBuffer>;
+  }
+  /** Copies another resident buffer of the same length into this one without leaving core memory. */
+  copyFrom(source: Resident): void {
+    if (source.length !== this.length) {
+      throw new Error(`CORE_BAD_ARGUMENT: resident buffer holds ${this.length} bytes, not ${source.length}.`);
+    }
+    new Uint8Array(this.exports.memory.buffer).copyWithin(this.ptr, source.ptr, source.ptr + source.length);
   }
   write(bytes: ArrayBufferView): void {
     if (bytes.byteLength !== this.length) {
@@ -379,6 +402,22 @@ export class FrameRing {
   }
   free(): void {
     for (const slot of this.slots.splice(0)) slot.frame.free();
+  }
+}
+/** A full-resolution luma plane resident in the core (the solve pass reuses one per run). Small windows are read
+ *  out with `window()`; the plane itself never leaves core memory. */
+export class ResidentGray extends Resident {
+  constructor(exports: CoreExports, ptr: number, readonly width: number, readonly height: number) {
+    super(exports, ptr, width * height);
+  }
+  /** Copy of the `w × h` window at (x, y), row-major; the caller keeps it inside the plane. */
+  window(x: number, y: number, w: number, h: number): Uint8Array {
+    const memory = new Uint8Array(this.exports.memory.buffer), out = new Uint8Array(w * h);
+    for (let row = 0; row < h; row++) {
+      const start = this.ptr + (y + row) * this.width + x;
+      out.set(memory.subarray(start, start + w), row * w);
+    }
+    return out;
   }
 }
 /** Either a JS image or one already resident in the core. */
@@ -603,18 +642,87 @@ export class Core {
   private readonly frameArena: Arena;
   readonly featureBytes: number;
   readonly matchBytes: number;
+  /** Pool helper workers sharing this instance's memory (threaded build only); see rust/core/src/pool.rs. */
+  private helpers: Worker[] = [];
   private constructor(private readonly exports: CoreExports) {
     this.arena = new Arena(exports);
     this.frameArena = new Arena(exports);
     this.featureBytes = exports.ls_feature_bytes();
     this.matchBytes = exports.ls_match_bytes();
   }
-  static async instantiate(bytes: BufferSource | Response | Promise<Response>): Promise<Core> {
+  /** Threads computing inside kernels: the calling thread plus parked pool helpers. */
+  get threads(): number {
+    return this.exports.ls_pool_helpers() + 1;
+  }
+  static async instantiate(bytes: BufferSource | Response | Promise<Response>, threads?: CoreThreads): Promise<Core> {
     const source = bytes instanceof Promise ? await bytes : bytes;
+    if (threads) return await Core.instantiateShared(source, threads);
     const result = source instanceof Response
       ? await WebAssembly.instantiateStreaming(source, {}).catch(async () => WebAssembly.instantiate(await source.arrayBuffer(), {}))
       : await WebAssembly.instantiate(source, {});
     return new Core(result.instance.exports as unknown as CoreExports);
+  }
+  /** Threaded build: one shared memory, this instance plus `helpers` workers parked in the pool. Throws (and
+   *  terminates any helper already started) when the engine refuses shared memory or a helper fails. */
+  private static async instantiateShared(source: BufferSource | Response, threads: CoreThreads): Promise<Core> {
+    const module = source instanceof Response ? await WebAssembly.compile(await source.arrayBuffer()) : await WebAssembly.compile(source);
+    let memory: WebAssembly.Memory | undefined, failure: unknown;
+    // Mobile engines may refuse to reserve a large shared maximum up front; smaller reservations still fit a run.
+    for (const maximum of [THREADS_MAX_PAGES, THREADS_MAX_PAGES / 2, THREADS_MAX_PAGES / 4]) {
+      try {
+        memory = new WebAssembly.Memory({ initial: THREADS_INITIAL_PAGES, maximum, shared: true } as WebAssembly.MemoryDescriptor);
+        break;
+      } catch (error) {
+        failure = error;
+      }
+    }
+    if (!memory) throw new Error(`shared memory unavailable: ${failure instanceof Error ? failure.message : String(failure)}`);
+    const instance = await WebAssembly.instantiate(module, { env: { memory } });
+    // The threaded build imports its memory instead of exporting it; the adapter reads it from `exports`.
+    const core = new Core({ ...instance.exports, memory } as unknown as CoreExports);
+    try {
+      const exports = core.exports,
+        tlsSize = Number(exports.__tls_size?.value ?? 0),
+        tlsAlign = Math.max(8, Number(exports.__tls_align?.value ?? 8));
+      const started = [];
+      for (let i = 0; i < threads.helpers; i++) {
+        const stack = exports.ls_alloc(HELPER_STACK_BYTES), tls = tlsSize ? exports.ls_alloc(tlsSize + tlsAlign) : 0;
+        if (!stack || (tlsSize && !tls)) throw new Error('CORE_OUT_OF_MEMORY: pool helper stack.');
+        const worker = new Worker(threads.helperURL, { type: 'module' });
+        core.helpers.push(worker);
+        started.push(
+          new Promise<void>((resolve, reject) => {
+            worker.onmessage = (e: MessageEvent<{ ready: boolean; error?: string }>) =>
+              e.data.ready ? resolve() : reject(new Error(`pool helper failed: ${e.data.error}`));
+            worker.onerror = (e) => {
+              e.preventDefault();
+              reject(new Error(`pool helper failed to start: ${e.message}`));
+            };
+          }),
+        );
+        worker.postMessage({
+          module,
+          memory,
+          stackTop: (stack + HELPER_STACK_BYTES) & ~15,
+          tls: tls ? Math.ceil(tls / tlsAlign) * tlsAlign : 0,
+        });
+      }
+      await Promise.all(started);
+      // `ready` is posted just before a helper enters ls_pool_worker; wait until every one is actually parked.
+      const deadline = performance.now() + 5000;
+      while (exports.ls_pool_helpers() < threads.helpers) {
+        if (performance.now() > deadline) throw new Error(`only ${exports.ls_pool_helpers()} of ${threads.helpers} pool helpers parked.`);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+    } catch (error) {
+      core.dispose();
+      throw error;
+    }
+    return core;
+  }
+  /** Stops the pool helpers. The instance itself is garbage once unreferenced. */
+  dispose(): void {
+    for (const worker of this.helpers.splice(0)) worker.terminate();
   }
   private get memory(): Uint8Array {
     return new Uint8Array(this.exports.memory.buffer);
@@ -713,6 +821,18 @@ export class Core {
     this.check(this.exports.ls_grayscale(input, width, height, output), 'grayscale');
     return { width, height, data: this.read(output, n) };
   }
+  /** Resident luma plane for resident frames of `width × height` (uninitialised until `grayscaleInto`). */
+  gray(width: number, height: number): ResidentGray {
+    const ptr = this.exports.ls_alloc(width * height);
+    if (!ptr) throw new Error('CORE_OUT_OF_MEMORY: resident luma plane.');
+    return new ResidentGray(this.exports, ptr, width, height);
+  }
+  /** Full-resolution luma of a resident frame, written into a resident plane without leaving core memory. */
+  grayscaleInto(frame: ResidentFrame, out: ResidentGray): ResidentGray {
+    if (out.width !== frame.width || out.height !== frame.height) throw new Error('CORE_BAD_ARGUMENT: luma plane does not match the frame.');
+    this.check(this.exports.ls_grayscale(frame.ptr, frame.width, frame.height, out.ptr), 'grayscale');
+    return out;
+  }
   downscaleGray(image: FrameInput, factor: number): Gray {
     const width = Math.max(1, Math.ceil(image.width / factor)), height = Math.max(1, Math.ceil(image.height / factor));
     const resident = image instanceof ResidentFrame;
@@ -798,6 +918,23 @@ export class Core {
     const resident = this.alloc(bytes.byteLength);
     resident.write(bytes);
     return resident;
+  }
+  /** Refreshes a fixed region's resident saved pixels (`rw × rh` RGBA from `(x0, y0)`) from a resident frame and
+   *  labels; true when a pixel the region owns changed. */
+  fixedUpdate(saved: Resident, frame: ResidentFrame, labels: Resident, x0: number, y0: number, rw: number, rh: number, code: number): boolean {
+    if (saved.length !== rw * rh * 4 || labels.length !== frame.width * frame.height) {
+      throw new Error('CORE_BAD_ARGUMENT: fixed region buffers do not match.');
+    }
+    return this.check(
+      this.exports.ls_fixed_update(saved.ptr, frame.ptr, labels.ptr, frame.width, frame.height, x0, y0, rw, rh, code),
+      'fixedUpdate',
+    ) === 1;
+  }
+  /** One resident native frame buffer (uninitialised), e.g. a reference copy another slot is copied into. */
+  frame(width: number, height: number): ResidentFrame {
+    const ptr = this.exports.ls_alloc(width * height * 4);
+    if (!ptr) throw new Error('CORE_OUT_OF_MEMORY: resident frame.');
+    return new ResidentFrame(this.exports, ptr, width, height);
   }
   frameRing(capacity: number, width: number, height: number): FrameRing {
     return new FrameRing(this.exports, capacity, width, height);
@@ -1120,8 +1257,8 @@ export class Core {
     };
   }
   refineNative(
-    a: RGBA,
-    b: RGBA,
+    a: FrameInput,
+    b: FrameInput,
     guess: { x: number; y: number },
     region: Rect,
     mask: LabelMask | undefined,
@@ -1130,33 +1267,51 @@ export class Core {
     if (a.width !== b.width || a.height !== b.height) {
       return { x: Math.round(guess.x), y: Math.round(guess.y), error: Infinity, samples: 0, runnerUp: Infinity };
     }
-    const [pa, pb, rect, labels, output] = this.arena.plan([
-      a.data.byteLength,
-      b.data.byteLength,
+    const frameBytes = (f: FrameInput) => f instanceof ResidentFrame ? 0 : f.data.byteLength;
+    const residentLabels = mask?.labels instanceof Resident ? mask.labels : undefined;
+    if (residentLabels && residentLabels.length !== a.width * a.height) {
+      throw new Error('CORE_BAD_ARGUMENT: resident labels do not match the frame.');
+    }
+    const [pa, pb, rect, scratchLabels, output] = this.arena.plan([
+      frameBytes(a),
+      frameBytes(b),
       32,
-      mask ? mask.labels.byteLength : 0,
+      mask && !residentLabels ? (mask.labels as Uint8Array).byteLength : 0,
       REFINEMENT_BYTES,
     ]);
-    this.write(pa, a.data);
-    this.write(pb, b.data);
+    const ra = this.placeFrame(a, pa), rb = this.placeFrame(b, pb);
     this.writeRect(rect, region);
-    if (mask) this.write(labels, mask.labels);
+    let labels = 0;
+    if (residentLabels) labels = residentLabels.ptr;
+    else if (mask) {
+      this.write(scratchLabels, mask.labels as Uint8Array);
+      labels = scratchLabels;
+    }
     this.check(
-      this.exports.ls_refine_native(pa, pb, a.width, a.height, guess.x, guess.y, rect, mask ? labels : 0, mask?.code ?? 0, radius, output),
+      this.exports.ls_refine_native(ra, rb, a.width, a.height, guess.x, guess.y, rect, labels, mask?.code ?? 0, radius, output),
       'refineNative',
     );
     return this.readRefinement(output);
   }
-  refinePatches(patches: PatchInput[], native: Gray, region: Rect, guess: { x: number; y: number }, radius: number): RefinementResult {
+  refinePatches(
+    patches: PatchInput[],
+    native: Gray | ResidentGray,
+    region: Rect,
+    guess: { x: number; y: number },
+    radius: number,
+  ): RefinementResult {
+    const resident = native instanceof ResidentGray;
     const ptr = this.arena.plan([
-      native.data.byteLength,
+      resident ? 0 : (native as Gray).data.byteLength,
       32,
       patches.length * PATCH_BYTES,
       REFINEMENT_BYTES,
       ...patches.map((p) => p.data.byteLength),
     ]);
-    const [pn, rect, list, output] = ptr;
-    this.write(pn, native.data);
+    const [scratch, rect, list, output] = ptr;
+    let pn = scratch;
+    if (native instanceof ResidentGray) pn = native.ptr;
+    else this.write(scratch, native.data);
     this.writeRect(rect, region);
     const view = new DataView(this.exports.memory.buffer, list, Math.max(1, patches.length * PATCH_BYTES));
     patches.forEach((p, i) => {
@@ -1299,9 +1454,83 @@ export function core(): Core {
 export function coreLoaded(): boolean {
   return !!active;
 }
-export async function loadCore(source: BufferSource | Response | Promise<Response>): Promise<Core> {
-  active = await Core.instantiate(source);
+export interface CoreThreads {
+  /** Pool helper workers to start next to the calling thread. */
+  helpers: number;
+  /** The helper entry: `assets/core-helper.js` in the bundle, `src/core/helper.ts` under Deno. */
+  helperURL: URL;
+}
+/** Linked into core.threads.wasm by scripts/build-core.sh (`--initial-memory` / `--max-memory`, 64 KiB pages). */
+const THREADS_INITIAL_PAGES = 512, THREADS_MAX_PAGES = 32768;
+const HELPER_STACK_BYTES = 1024 * 1024;
+export async function loadCore(source: BufferSource | Response | Promise<Response>, threads?: CoreThreads): Promise<Core> {
+  active?.dispose();
+  active = await Core.instantiate(source, threads);
   return active;
+}
+/** Which core build this engine should run and why. The threaded build needs shared memory, which browsers
+ *  only grant to cross-origin-isolated pages (COOP/COEP); without it the SIMD or scalar single-thread build
+ *  runs and `reason` says why, so the choice is reported rather than silent. */
+export interface CorePlan {
+  url: URL;
+  variant: 'threads' | 'simd' | 'scalar';
+  helpers: number;
+  reason: string;
+}
+export function planCore(base: string | URL = import.meta.url): CorePlan {
+  const simd = simdSupported();
+  const g = globalThis as { crossOriginIsolated?: boolean; navigator?: { hardwareConcurrency?: number } };
+  const cores = g.navigator?.hardwareConcurrency || 1;
+  const single = (reason: string): CorePlan => ({
+    url: new URL(simd ? './core.simd.wasm' : './core.wasm', base),
+    variant: simd ? 'simd' : 'scalar',
+    helpers: 0,
+    reason,
+  });
+  if (!simd) return single('WebAssembly SIMD128 unavailable');
+  if (typeof SharedArrayBuffer === 'undefined' || g.crossOriginIsolated === false) {
+    return single('page is not cross-origin isolated, so shared memory (threads) is unavailable');
+  }
+  if (typeof Worker === 'undefined') return single('Workers unavailable in this context');
+  if (cores < 2) return single('a single logical CPU');
+  // The calling thread computes too; cap the pool where dispatch and memory bandwidth stop paying.
+  const helpers = Math.min(cores - 1, 7);
+  return {
+    url: new URL('./core.threads.wasm', base),
+    variant: 'threads',
+    helpers,
+    reason: `${helpers + 1} threads (${cores} logical CPUs)`,
+  };
+}
+/** Loads the planned core, falling back to the single-thread build (with the failure recorded in the returned
+ *  plan's reason) when the threaded build cannot start. */
+export async function loadPlannedCore(plan: CorePlan, helperURL: URL): Promise<CorePlan> {
+  if (plan.variant === 'threads') {
+    try {
+      await loadCore(fetch(plan.url), { helpers: plan.helpers, helperURL });
+      return loadedPlan = plan;
+    } catch (error) {
+      const fallback = new URL('./core.simd.wasm', plan.url);
+      await loadCore(fetch(fallback));
+      return loadedPlan = {
+        url: fallback,
+        variant: 'simd',
+        helpers: 0,
+        reason: `threaded core failed to start (${error instanceof Error ? error.message : String(error)})`,
+      };
+    }
+  }
+  await loadCore(fetch(plan.url));
+  return loadedPlan = plan;
+}
+let loadedPlan: CorePlan | undefined;
+/** The build the running core came from, for diagnostics; undefined when a caller loaded bytes directly. */
+export function coreBuild(): { variant: string; threads: number; reason: string } {
+  return {
+    variant: loadedPlan?.variant ?? (active && active.threads > 1 ? 'threads' : 'direct'),
+    threads: active?.threads ?? 0,
+    reason: loadedPlan?.reason ?? 'loaded directly',
+  };
 }
 /** True when this engine validates a module using v128 (SIMD128): Chrome 91+, Safari 16.4+, Firefox 89+. */
 export function simdSupported(): boolean {

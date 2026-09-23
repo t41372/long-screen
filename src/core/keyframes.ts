@@ -3,6 +3,7 @@ import type { KV } from '../storage/db.ts';
 import { featureWords, matchFeatures } from './features.ts';
 import { auditTranslation, type Patch, refinePatches, translationHypotheses } from './motion.ts';
 import { pad } from './math.ts';
+import type { ResidentGray } from './wasm.ts';
 export interface Keyframe extends Point {
   id: string;
   node: string;
@@ -31,7 +32,8 @@ export interface Relocalization {
 export interface RelocalizationQuery {
   features: Feature[];
   gray: Gray;
-  native: Gray;
+  /** Full-resolution luma of the query frame, computed on first use (only candidates that pass the analysis audit need it). */
+  native: Gray | ResidentGray | (() => Gray | ResidentGray);
   layer: string;
   frame: number;
   roi: Rect;
@@ -125,7 +127,10 @@ export class KeyframeIndex {
         if (audit.overlap < .22 || !Number.isFinite(audit.error) || (audit.mismatch > .12 && audit.agreement < .5)) {
           continue;
         }
-        const refined = refinePatches(k.patches, native, region, { x: m.x * factor, y: m.y * factor }, radius);
+        const refined = refinePatches(k.patches, typeof native === 'function' ? native() : native, region, {
+          x: m.x * factor,
+          y: m.y * factor,
+        }, radius);
         if (!Number.isFinite(refined.error) || refined.error > 12) {
           continue;
         }

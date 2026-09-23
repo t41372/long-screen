@@ -9,6 +9,7 @@
 //! ARCHITECTURE.md §十 before changing any of them.
 
 use crate::geometry::{js_ceil, js_floor, js_hypot, js_round};
+use crate::pool::SyncPtr;
 use crate::region::Region;
 
 pub const PARTNERS: usize = 6;
@@ -374,38 +375,67 @@ impl Ring {
         let bw = b.w as usize;
         // The integer x-shift is the same for every cell in a row only when dx is; js_round(lx + dx) is
         // evaluated per cell exactly as before so half-cell displacements round identically.
+        //
+        // The window search (the expensive part) is order-independent, so rows are split across the pool into a
+        // per-cell verdict; the saturating counters are then updated in the historical (ly, lx) order, because
+        // saturation makes the partner-side updates order-dependent if two cells ever meet one partner cell.
+        let rows = b.h.max(0) as usize;
+        let mut verdicts = vec![0u8; b.cells()];
+        let chunks = crate::pool::chunks_for(b.cells() * 4, 8 * 1024);
+        let out = SyncPtr(verdicts.as_mut_ptr());
+        let (tg, sg) = (&t.box_gray, &s.box_gray);
+        crate::pool::par_for(chunks, |c| {
+            for ly in crate::pool::split(rows, chunks, c) as i32
+                ..crate::pool::split(rows, chunks, c + 1) as i32
+            {
+                let sy_row = js_round(ly as f64 + dy);
+                if sy_row < 0 || sy_row >= b.h {
+                    continue;
+                }
+                let py_lo = (sy_row - radius).max(0);
+                let py_hi = (sy_row + radius).min(b.h - 1);
+                let row_i = ly as usize * bw;
+                let row_s = sy_row as usize * bw;
+                // SAFETY: row `ly` of `verdicts` belongs to this chunk alone.
+                let verdict_row =
+                    unsafe { std::slice::from_raw_parts_mut(out.get().add(row_i), bw) };
+                for lx in 0..b.w {
+                    let i = row_i + lx as usize;
+                    if interior[i] == 0 {
+                        continue;
+                    }
+                    let sx = js_round(lx as f64 + dx);
+                    if sx < 0 || sx >= b.w || interior[row_s + sx as usize] == 0 {
+                        continue;
+                    }
+                    let value = tg[i];
+                    let x_lo = (sx - radius).max(0) as usize;
+                    let count = ((sx + radius).min(b.w - 1) as usize + 1) - x_lo;
+                    // The matching row is by far the likeliest to agree, so it is tried first.
+                    let agree = tau == 255
+                        || window_agrees(sg, sy_row as usize * bw + x_lo, count, value, tau)
+                        || (py_lo..=py_hi).any(|py| {
+                            py != sy_row
+                                && window_agrees(sg, py as usize * bw + x_lo, count, value, tau)
+                        });
+                    verdict_row[lx as usize] = if agree { 1 } else { 2 };
+                }
+            }
+        });
         for ly in 0..b.h {
             let sy_row = js_round(ly as f64 + dy);
             if sy_row < 0 || sy_row >= b.h {
                 continue;
             }
-            let py_lo = (sy_row - radius).max(0);
-            let py_hi = (sy_row + radius).min(b.h - 1);
             let row_i = ly as usize * bw;
             let row_s = sy_row as usize * bw;
             for lx in 0..b.w {
                 let i = row_i + lx as usize;
-                if interior[i] == 0 {
+                if verdicts[i] == 0 {
                     continue;
                 }
-                let sx = js_round(lx as f64 + dx);
-                if sx < 0 || sx >= b.w {
-                    continue;
-                }
-                let si = row_s + sx as usize;
-                if interior[si] == 0 {
-                    continue;
-                }
-                let value = t.box_gray[i];
-                let x_lo = (sx - radius).max(0) as usize;
-                let count = ((sx + radius).min(b.w - 1) as usize + 1) - x_lo;
-                let mut agree = tau == 255;
-                let mut py = py_lo;
-                while !agree && py <= py_hi {
-                    agree = window_agrees(&s.box_gray, py as usize * bw + x_lo, count, value, tau);
-                    py += 1;
-                }
-                let delta: i8 = if agree { 1 } else { -1 };
+                let si = row_s + js_round(lx as f64 + dx) as usize;
+                let delta: i8 = if verdicts[i] == 1 { 1 } else { -1 };
                 t.comparisons[i] = t.comparisons[i].saturating_add(1);
                 t.score[i] = t.score[i].saturating_add(delta);
                 s.comparisons[si] = s.comparisons[si].saturating_add(1);
