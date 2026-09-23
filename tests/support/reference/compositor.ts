@@ -2,7 +2,15 @@
 import type { CanvasMeta, Diagnostic, Placement, Rect, Region, RGBA } from '../../../src/types.ts';
 import type { KV } from '../../../src/storage/db.ts';
 import { iterate } from '../../../src/storage/db.ts';
-import { clearProvisional, covered, markCovered, markProvisional, provisional, QUALITY_BLOCK, type TileStore } from '../../../src/storage/tiles.ts';
+import {
+  clearProvisional,
+  covered,
+  markCovered,
+  markProvisional,
+  provisional,
+  QUALITY_BLOCK,
+  type TileStore,
+} from '../../../src/storage/tiles.ts';
 import type { RegionAtlas } from '../../../src/core/layers.ts';
 import { intersect, pad, popcount, union } from '../../../src/core/math.ts';
 import { resolveRasterPose } from '../../../src/core/raster.ts';

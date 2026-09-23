@@ -182,7 +182,11 @@ export class Engine {
     this.residentLabels?.free();
     this.residentMask?.free();
     this.nativePlane?.free();
-    this.frames = this.residentLabels = this.residentMask = this.nativePlane = undefined;
+    this.frames =
+      this.residentLabels =
+      this.residentMask =
+      this.nativePlane =
+        undefined;
     for (const saved of this.fixedPixels.values()) saved.free();
     this.fixedPixels.clear();
   }
@@ -2007,7 +2011,16 @@ export class Engine {
             const rect = region.rect, rw = Math.ceil(rect.width), rh = Math.ceil(rect.height), code = this.atlas!.code(region);
             const old = fixedPixels.get(region.id), saved = old || core().alloc(rw * rh * 4);
             fixedPixels.set(region.id, saved);
-            const changed = core().fixedUpdate(saved, frames.upload(frame.index, image), residentLabels, Math.floor(rect.x), Math.floor(rect.y), rw, rh, code);
+            const changed = core().fixedUpdate(
+              saved,
+              frames.upload(frame.index, image),
+              residentLabels,
+              Math.floor(rect.x),
+              Math.floor(rect.y),
+              rw,
+              rh,
+              code,
+            );
             unchanged = !!old && !changed;
           }
           previousPlacements.set(p.layer, p);

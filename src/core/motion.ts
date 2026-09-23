@@ -58,7 +58,14 @@ export interface Patch {
   data: Uint8Array;
 }
 /** Native-resolution texture samples kept with a keyframe (a few KB) so revisits and loop edges are measured in native pixels, not analysis pixels. */
-export function extractPatches(native: Gray | ResidentGray, region: Rect, features: Point[], factor: number, count = 24, size = 32): Patch[] {
+export function extractPatches(
+  native: Gray | ResidentGray,
+  region: Rect,
+  features: Point[],
+  factor: number,
+  count = 24,
+  size = 32,
+): Patch[] {
   const out: Patch[] = [],
     rx = Math.round(region.x),
     ry = Math.round(region.y),
