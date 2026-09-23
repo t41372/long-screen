@@ -7,6 +7,8 @@ const entries: [string, string][] = [
   ['src/worker.ts', 'assets/worker.js'],
   ['src/testkit.ts', 'assets/testkit.js'],
   ['src/core/helper.ts', 'assets/core-helper.js'],
+  ['src/media/convert-worker.ts', 'assets/convert-worker.js'],
+  ['src/device-check.ts', 'assets/device-check.js'],
 ];
 const minify = Deno.args.includes('--minify');
 const CORE_WASM: [string, string][] = [

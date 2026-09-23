@@ -1,6 +1,8 @@
 import { assert, assertEquals } from '@std/assert';
 import { harness } from './support.ts';
 import { decodePNG } from '../../src/codec/png.ts';
+// decodePNG runs its scanline filters in the Rust core, so this Deno process loads it too (as the unit tests do).
+import '../support/core.ts';
 const results = new URL('../../test-results/', import.meta.url).pathname;
 await Deno.mkdir(results, { recursive: true });
 Deno.test({

@@ -218,10 +218,11 @@ export class Compositor {
       });
       const components = this.components(new Set(orderedConflictBlocks), B);
       let patchedPixels = 0, patchedTiles = 0, patchedConflictPixels = 0, patchedProvisional = 0;
-      // The pixel-level completeness walk below needs the mask in JS; a resident mask is read back once per frame.
-      const maskBytes = consistent instanceof Resident ? consistent.bytes() : consistent;
+      // Only the pixel-level completeness walk in resolveTemporal reads the mask, and only for a component it may
+      // rewrite; it takes a view of a resident mask right before that synchronous walk instead of a per-frame copy.
+      const mask = consistent instanceof Resident ? () => consistent.view() : consistent && (() => consistent);
       for (const component of components) {
-        const result = await this.resolveTemporal(image, region, p, frame, component.bounds, component.blocks, world, maskBytes);
+        const result = await this.resolveTemporal(image, region, p, frame, component.bounds, component.blocks, world, mask);
         patchedPixels += result.added;
         patchedTiles += result.newTiles;
         // A pixel count now (F8/F12 fix); this used to fold in a block count instead, understating conflict
@@ -297,7 +298,7 @@ export class Compositor {
     compBounds: Rect,
     compBlocks: Set<number>,
     visible: Rect,
-    consistent?: Uint8Array,
+    consistentMask?: () => Uint8Array,
   ): Promise<PatchResult> {
     const B = QUALITY_BLOCK;
     const index = await this.temporalIndex(p.canvasId), olds: ResidentTemporal[] = [];
@@ -359,7 +360,8 @@ export class Compositor {
       // region, so a consistency failure here refuses the patch exactly like a mask hole does. A block can
       // also contain an unknown mask hole.
       let maskComplete = true;
-      const { rasterX: ox, rasterY: oy } = resolveRasterPose(p.x, p.y), code = this.atlas.code(region);
+      // No core call happens between taking the view and the end of this synchronous walk.
+      const { rasterX: ox, rasterY: oy } = resolveRasterPose(p.x, p.y), code = this.atlas.code(region), consistent = consistentMask?.();
       for (let k = 0; k < writeBlocks.length && maskComplete; k++) {
         const [bx, by] = writeBlocks[k];
         for (let y = by * B; y < by * B + B && maskComplete; y++) {

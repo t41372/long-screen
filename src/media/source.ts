@@ -3,7 +3,14 @@ import type { Demuxer } from './reader.ts';
 import { MP4Demuxer } from './mp4.ts';
 import { WebMDemuxer } from './webm.ts';
 /** Converts one decoded VideoFrame into plain RGBA (applying container rotation). Injected so the decoding pipeline is testable without a canvas. */
-export type FrameConverter = (frame: VideoFrame, info: MediaInfo) => RGBA | Promise<RGBA>;
+export type FrameConverter = ((frame: VideoFrame, info: MediaInfo) => RGBA | Promise<RGBA>) & {
+  /** Conversions run off the calling thread, so the source may start the next decoded frame's early. */
+  prefetch?: boolean;
+  dispose?(): void;
+};
+const RGBA_COPY = { format: 'RGBA' as VideoPixelFormat, colorSpace: 'srgb' as PredefinedColorSpace };
+/** Worst case for one conversion before the worker is written off (the frame then converts in-thread). */
+const WORKER_CONVERSION_TIMEOUT = 10000;
 export function canvasConverter(): FrameConverter {
   let canvas: OffscreenCanvas | undefined, ctx: OffscreenCanvasRenderingContext2D | null = null;
   return (frame, info) => {
@@ -57,6 +64,109 @@ export function directConverter(fallback: FrameConverter = canvasConverter()): F
     }
   };
 }
+/** Frames converted per path by a `workerConverter`, and why the worker path was abandoned, if it was. */
+export interface WorkerConversionCounts {
+  worker: number;
+  inThread: number;
+  reason?: string;
+}
+/** `copyTo({ format: 'RGBA' })` in a dedicated worker (src/media/convert-worker.ts): the same browser conversion as
+ *  `directConverter`, so the same pixels, but off the pipeline thread, which lets PreciseSource convert the next
+ *  decoded frame while the pipeline works on the current one. Frames the worker cannot take (rotated containers, no
+ *  RGBA copy, a size the run does not expect) and every worker failure (no Worker, a frame that cannot be
+ *  transferred, a failed or timed-out conversion) convert in-thread instead, and a failure retires the worker for
+ *  this source. Until the worker has produced a frame the in-thread path is `fallback` (which may choose the canvas);
+ *  afterwards it is the plain in-thread `copyTo`, never the canvas, so one run never mixes two YUV→RGB conversions. */
+export function workerConverter(
+  url: URL,
+  fallback: FrameConverter = directConverter(),
+): FrameConverter & { counts: WorkerConversionCounts } {
+  const counts: WorkerConversionCounts = { worker: 0, inThread: 0 };
+  const waiting = new Map<number, { resolve(buffer: ArrayBuffer): void; reject(error: Error): void }>();
+  let worker: Worker | undefined, retired = typeof Worker === 'undefined', succeeded = false, sequence = 0;
+  if (retired) counts.reason = 'Worker unavailable';
+  const retire = (reason: string) => {
+    if (!retired) counts.reason = reason;
+    retired = true;
+    worker?.terminate();
+    worker = undefined;
+    for (const pending of waiting.values()) pending.reject(new Error(reason));
+    waiting.clear();
+  };
+  const inThread = async (frame: VideoFrame, info: MediaInfo): Promise<RGBA> => {
+    counts.inThread++;
+    if (!succeeded) return fallback(frame, info);
+    const width = info.codedWidth, height = info.codedHeight, data = new Uint8ClampedArray(width * height * 4);
+    const layout = await frame.copyTo(data, RGBA_COPY);
+    if (layout.length !== 1 || layout[0].offset !== 0 || layout[0].stride !== width * 4) {
+      throw new Error(`unexpected RGBA layout ${JSON.stringify(layout)}`);
+    }
+    return { width, height, data };
+  };
+  const takes = (frame: VideoFrame, info: MediaInfo): boolean => {
+    if (retired || info.rotation !== 0 || typeof frame.copyTo !== 'function' || typeof frame.clone !== 'function') return false;
+    try {
+      return frame.allocationSize(RGBA_COPY) === info.codedWidth * info.codedHeight * 4;
+    } catch {
+      return false;
+    }
+  };
+  const start = (): Worker | undefined => {
+    try {
+      const w = new Worker(url, { type: 'module' });
+      w.onmessage = ({ data }: MessageEvent<{ id: number; buffer?: ArrayBuffer; error?: string }>) => {
+        const pending = waiting.get(data.id);
+        waiting.delete(data.id);
+        if (data.buffer) pending?.resolve(data.buffer);
+        else pending?.reject(new Error(data.error || 'no pixels'));
+      };
+      w.onerror = (event: ErrorEvent) => {
+        event.preventDefault();
+        retire(`conversion worker failed: ${event.message || 'script error'}`);
+      };
+      w.onmessageerror = () => retire('conversion worker reply could not be deserialized');
+      return w;
+    } catch (error) {
+      retire(`conversion worker unavailable: ${error instanceof Error ? error.message : String(error)}`);
+      return undefined;
+    }
+  };
+  const convert = async (frame: VideoFrame, info: MediaInfo): Promise<RGBA> => {
+    if (!takes(frame, info)) return inThread(frame, info);
+    const target = worker ??= start();
+    if (!target) return inThread(frame, info);
+    const width = info.codedWidth, height = info.codedHeight, id = sequence++;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const reply = new Promise<ArrayBuffer>((resolve, reject) => {
+      waiting.set(id, { resolve, reject });
+      timer = setTimeout(() => retire('conversion worker timed out'), WORKER_CONVERSION_TIMEOUT);
+    });
+    // The worker gets its own reference; `frame` stays open here so a failed attempt can still convert in-thread.
+    const clone = frame.clone();
+    try {
+      target.postMessage({ id, frame: clone, width, height }, [clone as unknown as Transferable]);
+    } catch (error) {
+      clearTimeout(timer);
+      clone.close();
+      waiting.delete(id);
+      retire(`VideoFrame could not be transferred: ${error instanceof Error ? error.message : String(error)}`);
+      return inThread(frame, info);
+    }
+    try {
+      const buffer = await reply;
+      if (buffer.byteLength !== width * height * 4) throw new Error(`conversion worker returned ${buffer.byteLength} bytes`);
+      succeeded = true;
+      counts.worker++;
+      return { width, height, data: new Uint8ClampedArray(buffer) };
+    } catch (error) {
+      retire(error instanceof Error ? error.message : String(error));
+      return inThread(frame, info);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+  return Object.assign(convert, { prefetch: true, counts, dispose: () => retire('disposed') });
+}
 export async function openDemuxer(file: Blob): Promise<Demuxer> {
   const header = new Uint8Array(await file.slice(0, 16).arrayBuffer());
   if (header[0] === 0x1a && header[1] === 0x45 && header[2] === 0xdf && header[3] === 0xa3) {
@@ -64,7 +174,10 @@ export async function openDemuxer(file: Blob): Promise<Demuxer> {
   }
   return await new MP4Demuxer(file).init();
 }
-export async function openMedia(file: File, convert: FrameConverter = directConverter()): Promise<FrameSource> {
+export async function openMedia(
+  file: File,
+  convert: FrameConverter = workerConverter(new URL('./convert-worker.js', import.meta.url)),
+): Promise<FrameSource> {
   if (typeof VideoDecoder === 'undefined') {
     throw new Error(
       'WEBCODECS_UNAVAILABLE: This browser cannot provide frame-accurate decoding. Select the explicitly labelled compatibility mode, or use a browser with WebCodecs.',
@@ -142,6 +255,7 @@ export class PreciseSource implements FrameSource {
   dispose(): void {
     this.cancelled = true;
     this.demux.reader.clear();
+    this.convert.dispose?.();
   }
   private notice(code: string, message: string): void {
     const list = this.info.notices ??= [];
@@ -239,6 +353,10 @@ export class PreciseSource implements FrameSource {
       }
     })();
     let index = 0, lastTimestamp = -Infinity;
+    // An off-thread converter is handed the next decoded frame while the pipeline works on the current one. This is
+    // speculative only: that frame's checks below still run, in order, when it is taken, and a frame they skip or
+    // reject just drops its early conversion.
+    let ahead: { frame: VideoFrame; image: Promise<RGBA> } | undefined;
     try {
       while (!producerDone || queue.length) {
         if (failure) {
@@ -258,6 +376,8 @@ export class PreciseSource implements FrameSource {
           continue;
         }
         const frame = queue.shift()!;
+        const early = ahead?.frame === frame ? ahead.image : undefined;
+        ahead = undefined;
         signal.notify();
         try {
           if (frame.timestamp < 0) {
@@ -305,7 +425,12 @@ export class PreciseSource implements FrameSource {
               `该录屏声明非方形像素长宽比（显示尺寸 ${frame.displayWidth}×${frame.displayHeight}，存储尺寸 ${bitstreamWidth}×${bitstreamHeight}）；保留原始存储像素，不做缩放。`,
             );
           }
-          const image = await this.convert(frame, info), time = frame.timestamp / 1e6, duration = (frame.duration || 0) / 1e6;
+          const image = await (early ?? this.convert(frame, info)), time = frame.timestamp / 1e6, duration = (frame.duration || 0) / 1e6;
+          if (this.convert.prefetch && queue.length && !this.cancelled) {
+            const next = queue[0];
+            ahead = { frame: next, image: (async () => await this.convert(next, info))() };
+            ahead.image.catch(() => {});
+          }
           frame.close();
           yield { image, time, duration, index: index++ };
         } finally {
@@ -325,6 +450,9 @@ export class PreciseSource implements FrameSource {
         frame.close();
       }
       queue.length = 0;
+      // Bounded by the converter's own timeout; a stopped pass leaves no conversion running into the next one.
+      await ahead?.image.catch(() => {});
+      ahead = undefined;
       await producer;
     }
   }

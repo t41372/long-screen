@@ -346,6 +346,11 @@ export class Resident {
   bytes(): Uint8Array<ArrayBuffer> {
     return new Uint8Array(this.exports.memory.buffer).slice(this.ptr, this.ptr + this.length) as Uint8Array<ArrayBuffer>;
   }
+  /** Zero-copy view of the current contents. Only valid until the next core call (which may grow memory and detach
+   *  it), so it must be used synchronously and never stored. */
+  view(): Uint8Array {
+    return new Uint8Array(this.exports.memory.buffer, this.ptr, this.length);
+  }
   /** Copies another resident buffer of the same length into this one without leaving core memory. */
   copyFrom(source: Resident): void {
     if (source.length !== this.length) {

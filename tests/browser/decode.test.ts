@@ -99,6 +99,91 @@ Deno.test({
 });
 Deno.test({
   name:
+    'browser: off-thread conversion yields byte-identical frames in the same order, falls back in-thread on a broken worker, and survives a stopped pass',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const h = await harness();
+    try {
+      await h.page.goto(h.base + '/harness.html');
+      await h.page.waitForFunction('!!window.longScreenKit');
+      const r = await h.page.evaluate(async () => {
+        const kit = (window as any).longScreenKit;
+        type Frame = { index: number; time: number; image: { width: number; height: number; data: Uint8ClampedArray } };
+        const collect = async (source: any, limit = Infinity) => {
+          const out: Frame[] = [];
+          for await (const f of source.frames()) {
+            out.push(f);
+            if (out.length >= limit) break;
+          }
+          return out;
+        };
+        const digest = async (frames: Frame[]) => {
+          const parts: string[] = [];
+          for (const f of frames) {
+            const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', f.image.data.slice().buffer));
+            parts.push(`${f.index}@${f.time}:${f.image.width}x${f.image.height}:${Array.from(hash.slice(0, 8)).join('.')}`);
+          }
+          return parts;
+        };
+        const results: Record<string, unknown> = {};
+        // negative-cts.mov starts with frames the source skips (negative timestamps): the frame converted ahead of
+        // them is dropped, never yielded in their place.
+        for (const name of ['scroll.mp4', 'negative-cts.mov']) {
+          const blob = await (await fetch('/fixtures/' + name)).blob(),
+            open = (convert: unknown) => kit.openMedia(new File([blob], name), convert);
+          const direct = await open(kit.directConverter());
+          const reference = await digest(await collect(direct));
+          const referenceNotices = direct.info.notices;
+          direct.dispose();
+          const worker = kit.workerConverter(new URL('./assets/convert-worker.js', location.href));
+          const source = await open(worker);
+          const first = await digest(await collect(source));
+          const firstNotices = source.info.notices;
+          // A pass stopped after three frames (with the next frame's conversion in flight) must leave the
+          // converter usable, and the next full pass on the same source must be identical again.
+          const stopped = await digest(await collect(source, 3));
+          const second = await digest(await collect(source));
+          const counts = { ...worker.counts };
+          source.dispose();
+          const broken = kit.workerConverter(new URL('./assets/missing-convert-worker.js', location.href));
+          const fallbackSource = await open(broken);
+          const fallback = await digest(await collect(fallbackSource));
+          fallbackSource.dispose();
+          results[name] = {
+            frames: reference.length,
+            sameAsDirect: JSON.stringify(first) === JSON.stringify(reference),
+            sameNotices: JSON.stringify(firstNotices) === JSON.stringify(referenceNotices),
+            stoppedPrefix: JSON.stringify(stopped) === JSON.stringify(reference.slice(0, 3)),
+            secondPass: JSON.stringify(second) === JSON.stringify(reference),
+            counts,
+            fallbackSame: JSON.stringify(fallback) === JSON.stringify(reference),
+            fallbackCounts: { ...broken.counts },
+          };
+        }
+        return results;
+      });
+      for (const [name, v] of Object.entries(r) as [string, any][]) {
+        assertEquals(v.frames, truth.frames, name);
+        assert(v.sameAsDirect, `${name}: worker frames differ from in-thread copyTo`);
+        assert(v.sameNotices, `${name}: notices differ`);
+        assert(v.stoppedPrefix && v.secondPass, `${name}: stopped pass or following pass differs`);
+        // Every yielded frame of the three passes came from the worker (skipped frames may add early conversions).
+        assert(v.counts.worker >= 2 * truth.frames + 3, `${name}: worker path not taken (${JSON.stringify(v.counts)})`);
+        assertEquals(v.counts.inThread, 0, `${name}: in-thread conversions`);
+        assertEquals(v.counts.reason, undefined, name);
+        assert(v.fallbackSame, `${name}: in-thread fallback frames differ`);
+        assertEquals(v.fallbackCounts.worker, 0, name);
+        assert(/conversion worker/.test(v.fallbackCounts.reason), `${name}: fallback reason ${v.fallbackCounts.reason}`);
+      }
+      assertEquals(h.errors, []);
+    } finally {
+      await h.close();
+    }
+  },
+});
+Deno.test({
+  name:
     'browser: F18 — a container that declares rotation 90 (tkhd matrix, no pixel transposed) is rotated by canvasConverter with the stored pixels intact',
   sanitizeOps: false,
   sanitizeResources: false,

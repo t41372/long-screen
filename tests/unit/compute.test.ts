@@ -84,7 +84,8 @@ function fakeGPU(options: { corrupt?: boolean; delayMS?: number; lost?: Promise<
   const run = () => {
     if (!bound) return;
     const [width, height, factor, outWidth, outHeight] = new Uint32Array(bound.params.bytes.buffer);
-    const src = new Uint32Array(bound.input.bytes.buffer), dst = new Uint32Array(bound.output.bytes.buffer);
+    // The kernel packs four gray bytes per u32 little-endian, i.e. the output buffer holds the gray image bytes in order.
+    const src = new Uint32Array(bound.input.bytes.buffer), dst = bound.output.bytes;
     for (let y = 0; y < outHeight; y++) {
       for (let x = 0; x < outWidth; x++) {
         const bw = Math.min(factor, width - x * factor), bh = Math.min(factor, height - y * factor);

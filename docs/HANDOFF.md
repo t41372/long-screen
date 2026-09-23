@@ -42,9 +42,77 @@ LONGSCREEN_CHROME="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
 | + scan/solve kernel 并行、solve 帧/标签常驻 | 47 s | 257 s | 1.mov 相同；e.mov 见下 |
 | + 固定区域比较与 native 亮度常驻（Rust） | 45 s | 243 s | 1.mov 相同；e.mov 见下 |
 | + quality 脏标记修复（当前） | **47 s** | **253 s** | 1.mov 瓦片 SHA-256（PNG+全部证据）相同；e.mov 见下 |
+| + 掩码零复制 + 解码帧在 worker 中提前一帧转换 | **44 s** | **221 s** | A/B（vs 上一版本：47 / 276 s）瓦片 SHA-256、画布、诊断全部相同 |
 
 单次测量，同一棵树连跑有 ±5% 抖动（45 vs 47 s、243 vs 253 s）。e.mov 当前阶段：scan 49 / solve 62 / optimize 4 /
 render 110 / framing 16 / pyramid 12。
+
+**测时方法改为 A/B**：`git worktree add .baseline <上一提交>`，
+然后 `benchmark-pipeline.ts --baseline-root .baseline --verify-tiles`（同一次调用里先后跑基准与当前）。解码帧转换移到 worker 那次：
+e.mov scan 51.5→50.6 / solve 69→51 / render 118→86 / framing 19→17；1.mov 47→44 s。
+
+### 解码帧转换移出流水线线程
+
+`workerConverter`（`src/media/source.ts` + `src/media/convert-worker.ts`）：同一个 `copyTo({format:'RGBA'})` 在专用 worker 里做
+（传过去的是帧的 clone），`PreciseSource` 在流水线处理当前帧时把下一帧交给它（推测性：那一帧的检查仍在取用时按原顺序执行，
+被跳过/拒绝的帧只是丢掉提前的转换）。任何失败都回到线程内：worker 出过帧之后只用线程内 `copyTo`，绝不切到 canvas，
+所以一次运行不会混用两种 YUV→RGB。浏览器测试逐字节对照线程内 `copyTo`（含负 ctts 夹具、停止后的下一趟、坏 worker URL 回退）。
+缓冲池（每帧仍新分配 30 MB，只是在 worker 里）未做：见下一步。
+
+### 验证状态
+
+- `deno task test`：225 通过 / 0 失败。`deno task test:browser`（真 Chrome 154，H.264，含 WebGPU/SwiftShader 用例）：**20 / 20**。
+- 浏览器套件里 `ui.test.ts` 的真实容器用例从 PNG filter 移入 Rust 核心起就一直失败（Deno 端 `decodePNG` 依赖 Rust 核心而测试进程没加载；
+  在上一版本上复现同样的 `CORE_NOT_LOADED`）——之前只跑了 decode 子集，没跑整个浏览器套件。已修（测试进程加载核心）。
+  **以后每次都跑整个 `test:browser`，不要只跑子集。**
+- 同类“条件修改未标脏”排查：TS 侧写瓦片证据的路径（`overwritePatch`、framing）都会标脏/显式保存；未发现新的同类缺陷。
+  framing 对“有 coverage 但像素全透明”的瓦片不保存——录屏像素不透明，不会发生，记在这里。
+
+## 与纯 TypeScript 版本对比（迁移前最后一个纯 TS 版本；同一次调用内先后跑）
+
+| 录屏 | 纯 TS | 现在 | 输出 |
+| --- | ---: | ---: | --- |
+| 1.mov 1418×1590 × 381 帧 | 161 s（scan 32 / solve 56 / render 69） | **43 s**（12 / 16 / 12），3.7× | 瓦片 SHA-256（PNG + 全部证据）、画布、诊断**完全相同** |
+| e.mov 前 4.9 s（247 帧，ffmpeg 流复制） | 386 s（33 / 49 / render 280） | **76 s**（13 / 12 / 31），5.1× | 解码像素、画布相同；85/609 块瓦片只有 `quality` 不同（quality 脏标记修复）；多一条 info 级 `MEMORY_BUDGET_RAISED` |
+
+完整 e.mov 的纯 TS 本轮没重跑（上一轮接手时测过 8,549 s，那时已部分是 Rust；现在 221 s）。
+render 的提升里有相当一部分来自 TS 侧的结构性修复（temporal 常驻索引、瓦片缓存 ≥ 单帧覆盖），不全是 Rust。
+
+同输入逐 kernel（`scripts/benchmark-ts-vs-rust.ts`，冻结的 TS 实现 vs Rust，Deno V8，Rust 计时含拷入/拷出 Wasm 内存，
+真实解码帧）：grayscale 1.8–2.1×、downscale 2.0–2.5×、extractFeatures 3.2–4.6×、matchFeatures 4.2–5.6×、
+estimateMotion 2.1–2.9×、voting observe 4.5–5.3×、PNG Sub filter 3.7–10.7×、PNG unfilter ~1×；consistency mask 4.8–15.8×
+（但参照是 hoist 之前的 TS，实际发货的 TS 更快，这一行偏高）。
+
+### 发现：motion.rs 的浮点并非逐位等于 V8
+
+`rust/core/src/motion.rs` 用 Rust libm 的 `exp`（3 处：平移假设置信度、误差衰减、逐格置信度）和 `f64::hypot`（1 处），
+TS 用的是 V8 的 `Math.exp` / `Math.hypot`。两者最后一位可能不同：真实帧上 motion confidence 最大相对差 2.4e-16（≈1 ULP）；
+逐格 confidence/labels/dynamic 字节、特征、匹配全部相同，端到端瓦片也相同，但阈值比较（如 `confidence > .6`）理论上可能被这 1 ULP 翻转。
+parity 测试用 1e-9 相对容差掩盖了它。修法：`geometry.rs` 已有逐位模仿 V8 的 `js_hypot`，motion 改用它；`exp` 移植 V8 用的
+fdlibm `ieee754::exp`，然后把 parity 测试对这些字段改为逐位相等。（Safari 的 JSC 用系统 libm，TS 版在 Chrome 与 Safari 之间本来就可能差 1 ULP；
+Rust 版移植后在所有浏览器上逐位一致，等于 TS-on-Chrome。）
+
+## WebGPU（本轮评估，结论要点）
+
+- **之前的结论是错的**：headless Linux Chrome 加 `--enable-unsafe-webgpu` 有 SwiftShader 适配器（真 Dawn/Tint 栈），
+  “requestAdapter 返回 null” 是在非安全上下文（about:blank）上测的。整数 kernel 可以在 SwiftShader 上逐字节验证；**性能不可参考**
+  （软件 GPU）。`harness({ webgpu: true })` 打开它。
+- 发货的 GPU kernel 仍只有一个：扫描趟的分析降采样（box-luma，`src/core/compute.ts`；`auto` = 首帧逐字节校验 + 计时，
+  GPU 不快于 CPU 的 90% 就整趟留在 CPU）。本轮修正了它对 GPU 不公平的地方：常驻帧直接从核心内存视图上传
+  （Chrome 接受 threads 构建的共享内存视图）、4 像素打包读回、bind group 复用、各 3 次中位数校准。
+  `tests/browser/compute.test.ts` 在真 Chrome WebGPU 上逐字节对照核心（3 个变异都被抓到）。
+- **为什么没有把 consistency / composite 搬到 GPU**：逐字节一致要求 GPU 的输入必须是 `copyTo` 得到的同一份 RGBA，
+  所以每帧都要上传 30 MB（e.mov）再读回结果；这些 kernel 每字节只有几条整数运算，在 Apple Silicon 统一内存上 GPU 与 CPU
+  共享同一带宽，上传 + 读回本身的内存流量就与 kernel 相当。按 profile 外推，e.mov 上 consistency + composite 在
+  8 核 Mac 上合计只有约 5 s 墙钟，GPU 最多省下其中一部分；分析降采样每帧 2–5 ms，就算 GPU 免费也只省 ~5 s。
+  真正的大头是串行部分（帧转换、JS↔Wasm 复制、IndexedDB/PNG、framing、pyramid），GPU 帮不上。
+  若 GPU 直接吃 VideoFrame（`importExternalTexture`）可免上传，但它自己的 YUV→RGB 与 `copyTo` 不逐字节相同，会改变输出。
+- **真机验证**：`device-check.html`（`tests/browser/device-check.test.ts` 在 SwiftShader 上端到端跑过；1.mov 手动跑：
+  CPU 与强制 WebGPU 的完整流程 97 块瓦片指纹相同）。报告里有：适配器、跨源隔离与核心构建、一帧 RGBA 上传/读回耗时、
+  分析降采样 GPU vs CPU（逐字节 + 中位数）、可选完整流程 A/B。Mac：`deno task dev` 后打开
+  `http://localhost:4173/device-check.html`（localhost 是安全上下文，且开发服务器发 COOP/COEP → threads 构建）。
+  iPhone：WebGPU 需要安全上下文，局域网 HTTP 不行，需要 HTTPS（GitHub Pages 可用但无跨源隔离 → 单线程核心；或 HTTPS 隧道）。
+  若真机数据显示上传 + kernel + 读回明显快于 CPU，第一个值得移植的是 consistency_mask（纯逐像素函数、整数可精确）。
 
 ### e.mov 的不确定性（已定位并修复）
 
@@ -147,6 +215,8 @@ Rust `downscale_gray` 4.1 s；`computeBoxGray` 3.4 s；`addNative` 2.9 s；`extr
 
 1. VideoFrame→RGBA（`copyTo`，Chrome 内部 YUV→RGB）仍是最大单项。不能自己在 Rust 里做 YUV→RGB：
    转换矩阵/舍入与浏览器不同就不再逐字节相同，且 Safari 与 Chrome 本来就不同。可做的是减少分配与复制（见下方微基准结论）。
+   **已做一半**：转换移到 worker 并提前一帧，主线程不再等它。仍未做：缓冲复用（worker 每帧新分配 30 MB）。
+   做法：流水线用完一帧后把 `image.data.buffer` 转移回 worker（transfer 后原视图变 0 长，误用会大声失败而不是静默改像素）。
    **微基准**（e.mov 前 150 帧，3456×2234，Chrome 154 headless，只解码+转换）：每帧新分配 `Uint8ClampedArray` 再 `copyTo`
    **37.6 / 41.0 ms/帧**（两次）；复用缓冲（6 个轮转）12.4；SharedArrayBuffer 视图 11.4；原生格式（I420）拷贝 13.7。
    差额几乎全是 30 MB 新内存的缺页/清零与 GC，不是转换本身。三趟各解码一遍，e.mov 约 2,800 次转换 → 预计可省 ~70 s。
@@ -154,9 +224,10 @@ Rust `downscale_gray` 4.1 s；`computeBoxGray` 3.4 s；`addNative` 2.9 s；`extr
    不能用“固定 N 个轮转”——任何保留 `image.data` 超过预期的调用方都会被静默改写像素。先逐趟列出 `image.data` 的所有持有者。
 2. `buildFramedCanvas`（framing 16 s）、PNG encode/decode（各 ~13 s）、存储写入（~20 s）：framing 与 pyramid 目前单线程 TS。
 3. JS 胶水：`voting.observe` 外层、`learner.add` 包装、每帧的小数组分配。
-4. WebGPU：headless Chrome `requestAdapter()` 返回 null，无法验证也无法测收益；`compute.ts` 现有的 box-luma 路径与
-   校准回退保持不动。任何新 GPU kernel 都必须先有真机（Mac/iPhone）上的逐字节对照手段，否则不做。
+4. WebGPU：先拿到真机 `device-check.html` 的报告再决定（见上文“WebGPU”一节）；新 GPU kernel 必须有 `tests/browser/compute.test.ts`
+   那样在真 Chrome WebGPU 上的逐字节对照，并且保留 `auto` 的首帧校验 + 计时门槛。
 5. coi-serviceworker（静态托管也能跨源隔离从而用上 threads 构建）；iPhone Safari / macOS Safari 真机验证 threads 构建。
 6. 同类缺陷排查：凡是“条件性修改常驻/瓦片状态”的路径都要确认同时标脏（quality 那次就是这类）。
+7. **motion.rs 的 exp/hypot 逐位对齐 V8**（见“与纯 TypeScript 版本对比”一节），并收紧 parity 测试的浮点容差。
 
 每一步：先冻结 TS 版本为 parity oracle → Rust 实现 → byte-exact 对照 + 全部场景测试 → 真实录屏基准 → 提交。

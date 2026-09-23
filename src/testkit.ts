@@ -5,7 +5,15 @@ import { PoseGraph } from './core/pose-graph.ts';
 import { RegionAtlas } from './core/layers.ts';
 import { covered, markCovered, pngTileCodec, TileStore } from './storage/tiles.ts';
 import { DemoSource } from './media/demo.ts';
-import { canvasConverter, CompatibilitySource, directConverter, openDemuxer, openMedia, PreciseSource } from './media/source.ts';
+import {
+  canvasConverter,
+  CompatibilitySource,
+  directConverter,
+  openDemuxer,
+  openMedia,
+  PreciseSource,
+  workerConverter,
+} from './media/source.ts';
 import { MP4Demuxer } from './media/mp4.ts';
 import { WebMDemuxer } from './media/webm.ts';
 import { BlobReader } from './media/reader.ts';
@@ -18,11 +26,17 @@ import { exportCanvas, exportProject } from './export/project.ts';
 import { decodePNG, encodePNG, encodeRGBA } from './codec/png.ts';
 import { ZipWriter } from './export/zip.ts';
 import { core, loadPlannedCore, planCore } from './core/wasm.ts';
+import { AnalysisComputer } from './core/compute.ts';
+import { analysisFactor, downscaleGray } from './core/raster.ts';
 // Browser tests and the pipeline profiler drive Engine directly, so the core is loaded before the kit is exposed.
 const corePlan = await loadPlannedCore(planCore(), new URL('./core-helper.js', import.meta.url));
 const kit = {
   corePlan,
   coreThreads: () => core().threads,
+  core,
+  AnalysisComputer,
+  analysisFactor,
+  downscaleGray,
   Engine,
   Database,
   Namespace,
@@ -39,6 +53,7 @@ const kit = {
   openDemuxer,
   canvasConverter,
   directConverter,
+  workerConverter,
   PreciseSource,
   CompatibilitySource,
   MP4Demuxer,

@@ -46,7 +46,7 @@ export async function rebuildIfStale(): Promise<void> {
 }
 /** Serves dist/ (built on demand) plus fixtures and optional real recordings, and launches the system Chrome, which has H.264/HEVC decoders. */
 export async function harness(
-  options: { viewport?: { width: number; height: number }; browser?: 'chromium' | 'webkit'; hostname?: string } = {},
+  options: { viewport?: { width: number; height: number }; browser?: 'chromium' | 'webkit'; hostname?: string; webgpu?: boolean } = {},
 ): Promise<Harness> {
   await rebuildIfStale();
   const server = Deno.serve(
@@ -67,6 +67,9 @@ export async function harness(
         channel: Deno.env.get('LONGSCREEN_CHANNEL') || 'chrome',
         headless: true,
         executablePath: Deno.env.get('LONGSCREEN_CHROME') || undefined,
+        // Headless Linux Chrome only exposes WebGPU behind this flag; without a GPU it provides the SwiftShader
+        // (software Vulkan) adapter, which runs the real Dawn/Tint stack: exact for integer kernels, not for timing.
+        args: options.webgpu ? ['--enable-unsafe-webgpu'] : [],
       });
       context = await browser.newContext(contextOptions);
     }
