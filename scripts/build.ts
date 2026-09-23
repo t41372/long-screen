@@ -7,7 +7,10 @@ const entries: [string, string][] = [['src/ui/main.ts', 'assets/main.js'], ['src
   'assets/testkit.js',
 ]];
 const minify = Deno.args.includes('--minify');
-const CORE_WASM = 'rust/target/wasm32-unknown-unknown/release/long_screen_core.wasm';
+const CORE_WASM: [string, string][] = [
+  ['rust/target/scalar/wasm32-unknown-unknown/release/long_screen_core.wasm', 'assets/core.wasm'],
+  ['rust/target/simd/wasm32-unknown-unknown/release/long_screen_core.wasm', 'assets/core.simd.wasm'],
+];
 const staging = 'dist.build';
 await Deno.remove(staging, { recursive: true }).catch(() => {});
 await ensureDir(`${staging}/assets`);
@@ -20,8 +23,10 @@ try {
       Deno.exit(core.code);
     }
   }
-  await Deno.copyFile(CORE_WASM, `${staging}/assets/core.wasm`);
-  console.log(`rust/core → dist/assets/core.wasm (${((await Deno.stat(CORE_WASM)).size / 1024).toFixed(1)} KB)`);
+  for (const [source, output] of CORE_WASM) {
+    await Deno.copyFile(source, `${staging}/${output}`);
+    console.log(`rust/core → dist/${output} (${((await Deno.stat(source)).size / 1024).toFixed(1)} KB)`);
+  }
   for (const [input, output] of entries) {
     const target = `${staging}/${output}`;
     const args = ['bundle', '--platform', 'browser', '--sourcemap=linked', '--quiet', ...(minify ? ['--minify'] : []), '-o', target, input];

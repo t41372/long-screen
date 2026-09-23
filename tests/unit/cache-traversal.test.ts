@@ -187,7 +187,10 @@ for (const policy of ['stable', 'latest'] as const) {
       assertEquals(cached.canvas, raster.canvas, `frame ${frame} canvas`);
       assertEquals(cached.diagnostics, raster.diagnostics, `frame ${frame} temporal decisions`);
     }
-    for (const result of [cached, raster]) await result.tiles.flush();
+    for (const result of [cached, raster]) {
+      await result.compositor.flush();
+      await result.tiles.flush();
+    }
     const rows = async (db: MemoryKV) => {
       const result = [];
       for (const [key, value] of [...db.data].sort(([a], [b]) => a.localeCompare(b))) {

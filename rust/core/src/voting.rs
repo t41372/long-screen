@@ -48,6 +48,9 @@ pub struct RegionSlot {
     pub dmin: f64,
     /// 1 where the cell and its eight blur taps are inside the region and the search window fits the box.
     pub interior: Vec<u8>,
+    /// 1 where the box cell maps to an in-frame analysis cell inside the region (the blur-tap test), constant
+    /// for the run; `box_gray` reads this instead of re-evaluating region membership nine times per cell.
+    pub inside: Vec<u8>,
 }
 
 /// One region's voting state in one ring frame.
@@ -108,6 +111,30 @@ fn threshold(comparisons: u32) -> i32 {
     comparisons as i32 - 2 * ((comparisons as f64 * 0.75).ceil() as i32)
 }
 
+/// True when some `gray[start..start+count]` is within `tau` of `value` (count ≤ 2·radius+1 ≤ 16 lanes).
+#[inline]
+fn window_agrees(gray: &[u8], start: usize, count: usize, value: u8, tau: u8) -> bool {
+    #[cfg(target_feature = "simd128")]
+    {
+        use core::arch::wasm32::*;
+        if count <= 16 && start + 16 <= gray.len() {
+            // SAFETY: the 16-byte load is bounds-checked above; lanes past `count` are masked out.
+            let a = unsafe { v128_load(gray.as_ptr().add(start) as *const v128) };
+            let v = u8x16_splat(value);
+            let diff = v128_or(u8x16_sub_sat(a, v), u8x16_sub_sat(v, a));
+            let within = u8x16_le(diff, u8x16_splat(tau));
+            let lanes = u8x16_lt(
+                u8x16(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15),
+                u8x16_splat(count as u8),
+            );
+            return v128_any_true(v128_and(within, lanes));
+        }
+    }
+    gray[start..start + count]
+        .iter()
+        .any(|&g| (value as i32 - g as i32).unsigned_abs() <= tau as u32)
+}
+
 impl Ring {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -131,6 +158,19 @@ impl Ring {
             .map(|region| {
                 let box_ = Box::of(&region.rect, factor);
                 let dmin = (0.25 * region.rect.width.min(region.rect.height)).max(64.0);
+                let (gw, gh) = (analysis_width as i32, analysis_height as i32);
+                let mut inside = vec![0u8; box_.cells()];
+                for ly in 0..box_.h {
+                    for lx in 0..box_.w {
+                        let (ax, ay) = (box_.x0 + lx, box_.y0 + ly);
+                        let ok = ax >= 0
+                            && ay >= 0
+                            && ax < gw
+                            && ay < gh
+                            && region.contains((ax * factor) as f64, (ay * factor) as f64, nw, nh);
+                        inside[(ly * box_.w + lx) as usize] = ok as u8;
+                    }
+                }
                 let mut interior = vec![0u8; box_.cells()];
                 for ly in 0..box_.h {
                     for lx in 0..box_.w {
@@ -160,6 +200,7 @@ impl Ring {
                     box_,
                     dmin,
                     interior,
+                    inside,
                 }
             })
             .collect::<Vec<_>>();
@@ -196,44 +237,53 @@ impl Ring {
     fn box_gray(&self, slot: &RegionSlot, gray: &[u8]) -> Vec<u8> {
         let b = slot.box_;
         let (gw, gh) = (self.analysis_width as i32, self.analysis_height as i32);
-        let f = self.factor;
+        let bw = b.w as usize;
         let mut out = vec![0u8; b.cells()];
         for ly in 0..b.h {
             let ay = b.y0 + ly;
+            if ay < 0 || ay >= gh {
+                continue;
+            }
+            let row = ly as usize * bw;
+            let gray_row = (ay * gw) as usize;
+            if self.factor == 1 {
+                let lx0 = (-b.x0).clamp(0, b.w);
+                let lx1 = (gw - b.x0).clamp(0, b.w);
+                if lx1 > lx0 {
+                    let ax0 = (b.x0 + lx0) as usize;
+                    out[row + lx0 as usize..row + lx1 as usize].copy_from_slice(
+                        &gray[gray_row + ax0..gray_row + ax0 + (lx1 - lx0) as usize],
+                    );
+                }
+                continue;
+            }
             for lx in 0..b.w {
                 let ax = b.x0 + lx;
-                if ax < 0 || ay < 0 || ax >= gw || ay >= gh {
+                if ax < 0 || ax >= gw {
                     continue;
                 }
-                let centre = gray[(ay * gw + ax) as usize] as u32;
-                if f == 1 {
-                    out[(ly * b.w + lx) as usize] = centre as u8;
-                    continue;
-                }
+                let centre = gray[gray_row + ax as usize] as u32;
                 let mut sum = 0u32;
                 for oy in -1..=1 {
-                    let ty = ay + oy;
+                    let tly = ly + oy;
+                    let tap_row = ((ay + oy) * gw) as isize;
                     for ox in -1..=1 {
-                        let tx = ax + ox;
-                        let inside = tx >= 0
-                            && ty >= 0
-                            && tx < gw
-                            && ty < gh
-                            && slot.region.contains(
-                                (tx * f) as f64,
-                                (ty * f) as f64,
-                                self.native_width,
-                                self.native_height,
-                            );
+                        let tlx = lx + ox;
+                        // A tap outside the box is outside the region too: the box bounds the rect with a margin.
+                        let inside = tlx >= 0
+                            && tly >= 0
+                            && tlx < b.w
+                            && tly < b.h
+                            && slot.inside[tly as usize * bw + tlx as usize] != 0;
                         sum += if inside {
-                            gray[(ty * gw + tx) as usize] as u32
+                            gray[(tap_row + (ax + ox) as isize) as usize] as u32
                         } else {
                             centre
                         };
                     }
                 }
                 // Math.round(sum / 9) for non-negative sum: floor(sum / 9 + 0.5) == (2·sum + 9) / 18.
-                out[(ly * b.w + lx) as usize] = ((2 * sum + 9) / 18) as u8;
+                out[row + lx as usize] = ((2 * sum + 9) / 18) as u8;
             }
         }
         out
@@ -317,42 +367,45 @@ impl Ring {
         let dy = (t.pose_y - s.pose_y) / f;
         t.pairs += 1;
         s.pairs += 1;
-        let (tau, radius) = (self.tau, self.radius);
+        let radius = self.radius;
+        // "best ≤ tau" over the window is "some tap within tau": rows can stop as soon as one is found, in any
+        // order, without changing the verdict. tau ≥ 255 means every tap agrees.
+        let tau = self.tau.clamp(0, 255) as u8;
+        let bw = b.w as usize;
+        // The integer x-shift is the same for every cell in a row only when dx is; js_round(lx + dx) is
+        // evaluated per cell exactly as before so half-cell displacements round identically.
         for ly in 0..b.h {
+            let sy_row = js_round(ly as f64 + dy);
+            if sy_row < 0 || sy_row >= b.h {
+                continue;
+            }
+            let py_lo = (sy_row - radius).max(0);
+            let py_hi = (sy_row + radius).min(b.h - 1);
+            let row_i = ly as usize * bw;
+            let row_s = sy_row as usize * bw;
             for lx in 0..b.w {
-                let i = (ly * b.w + lx) as usize;
+                let i = row_i + lx as usize;
                 if interior[i] == 0 {
                     continue;
                 }
                 let sx = js_round(lx as f64 + dx);
-                let sy = js_round(ly as f64 + dy);
-                if sx < 0 || sy < 0 || sx >= b.w || sy >= b.h {
+                if sx < 0 || sx >= b.w {
                     continue;
                 }
-                let si = (sy * b.w + sx) as usize;
+                let si = row_s + sx as usize;
                 if interior[si] == 0 {
                     continue;
                 }
-                let value = t.box_gray[i] as i32;
-                let mut best = 255i32;
-                let mut oy = -radius;
-                while oy <= radius && best > tau {
-                    let py = sy + oy;
-                    oy += 1;
-                    if py < 0 || py >= b.h {
-                        continue;
-                    }
-                    let row = (py * b.w) as usize;
-                    let x_lo = (sx - radius).max(0);
-                    let x_hi = (sx + radius).min(b.w - 1);
-                    for px in x_lo..=x_hi {
-                        let diff = (value - s.box_gray[row + px as usize] as i32).abs();
-                        if diff < best {
-                            best = diff;
-                        }
-                    }
+                let value = t.box_gray[i];
+                let x_lo = (sx - radius).max(0) as usize;
+                let count = ((sx + radius).min(b.w - 1) as usize + 1) - x_lo;
+                let mut agree = tau == 255;
+                let mut py = py_lo;
+                while !agree && py <= py_hi {
+                    agree = window_agrees(&s.box_gray, py as usize * bw + x_lo, count, value, tau);
+                    py += 1;
                 }
-                let delta: i8 = if best <= tau { 1 } else { -1 };
+                let delta: i8 = if agree { 1 } else { -1 };
                 t.comparisons[i] = t.comparisons[i].saturating_add(1);
                 t.score[i] = t.score[i].saturating_add(delta);
                 s.comparisons[si] = s.comparisons[si].saturating_add(1);

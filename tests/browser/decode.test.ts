@@ -43,6 +43,62 @@ Deno.test({
 });
 Deno.test({
   name:
+    'browser: the direct copyTo(RGBA) converter is taken (no silent canvas fallback) and agrees with the canvas path within decoder noise',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const h = await harness();
+    try {
+      await h.page.goto(h.base + '/harness.html');
+      await h.page.waitForFunction('!!window.longScreenKit');
+      const r = await h.page.evaluate(async () => {
+        const kit = (window as any).longScreenKit, blob = await (await fetch('/fixtures/scroll.mp4')).blob();
+        // A fallback that records being called: the direct path must never reach it for a plain H.264 recording.
+        let fallbacks = 0;
+        const canvas = kit.canvasConverter();
+        const direct = kit.directConverter((frame: VideoFrame, info: unknown) => {
+          fallbacks++;
+          return canvas(frame, info);
+        });
+        const decode = async (convert: unknown) => {
+          const source = await kit.openMedia(new File([blob], 'scroll.mp4'), convert);
+          const frames: { width: number; height: number; data: Uint8ClampedArray }[] = [];
+          for await (const f of source.frames()) frames.push(f.image);
+          source.dispose();
+          return frames;
+        };
+        const a = await decode(direct), b = await decode(kit.canvasConverter());
+        let maxDiff = 0, sum = 0, n = 0, opaque = true;
+        for (let i = 0; i < a.length; i++) {
+          if (a[i].width !== b[i].width || a[i].height !== b[i].height) throw new Error('geometry differs between converters');
+          const x = a[i].data, y = b[i].data;
+          for (let k = 0; k < x.length; k += 4) {
+            if (x[k + 3] !== 255) opaque = false;
+            for (let c = 0; c < 3; c++) {
+              const d = Math.abs(x[k + c] - y[k + c]);
+              if (d > maxDiff) maxDiff = d;
+              sum += d;
+              n++;
+            }
+          }
+        }
+        return { frames: a.length, fallbacks, maxDiff, meanDiff: sum / n, opaque };
+      });
+      assertEquals(r.frames, truth.frames);
+      assertEquals(r.fallbacks, 0, 'direct copyTo path was not taken');
+      assert(r.opaque, 'RGBA copy must be opaque');
+      // Both paths are browser YUV→sRGB conversions of the same decoded surface; they may differ by rounding but
+      // never by content. DECODED_VIDEO_NOISE (10) is the pipeline's own tolerance for exactly this class of difference.
+      assert(r.meanDiff <= 1, `mean channel difference ${r.meanDiff}`);
+      assert(r.maxDiff <= 10, `max channel difference ${r.maxDiff}`);
+      assertEquals(h.errors, []);
+    } finally {
+      await h.close();
+    }
+  },
+});
+Deno.test({
+  name:
     'browser: F18 — a container that declares rotation 90 (tkhd matrix, no pixel transposed) is rotated by canvasConverter with the stored pixels intact',
   sanitizeOps: false,
   sanitizeResources: false,

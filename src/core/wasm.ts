@@ -152,10 +152,239 @@ interface CoreExports {
   ls_voting_peek(handle: number, out: number): number;
   ls_voting_read(handle: number, which: number, bits: number, clean: number): number;
   ls_voting_pop(handle: number): number;
+  ls_learner_new(width: number, height: number): number;
+  ls_learner_free(handle: number): void;
+  ls_learner_add(
+    handle: number,
+    field: number,
+    prev: number,
+    current: number,
+    prevNative: number,
+    currentNative: number,
+    nativeWidth: number,
+    nativeHeight: number,
+  ): number;
+  ls_learner_len(handle: number, which: number): number;
+  ls_learner_read(handle: number, which: number, out: number): number;
+  ls_stationary_boundary(
+    rgba: number,
+    width: number,
+    height: number,
+    axis: number,
+    from: number,
+    to: number,
+    crossFrom: number,
+    crossTo: number,
+    choose: number,
+  ): number;
+  ls_sticky_occlusions(
+    previous: number,
+    current: number,
+    width: number,
+    height: number,
+    region: number,
+    motionX: number,
+    motionY: number,
+    carry: number,
+    carryCount: number,
+    out: number,
+  ): number;
 }
 
 const MATCH_POINT_BYTES = 40, MOTION_BYTES = 48, MOTION_FIELD_HEADER = 40, REFINEMENT_BYTES = 32, PATCH_BYTES = 16, MOTION_CELL = 24;
-const COMPOSITE_HEADER = 24, VOTING_REGION_BYTES = 64;
+const COMPOSITE_HEADER = 24, VOTING_REGION_BYTES = 64, LEARNER_MOTION_BYTES = 32, LEARNER_FIELD_BYTES = 40;
+
+/** Accumulators of the core-resident layer learner, read back once for `LayerLearner.finish()`. */
+export interface LearnerAccumulators {
+  split: Float64Array;
+  evidence: Float64Array;
+  activity: Float64Array;
+  observations: Float64Array;
+  rowFixed: Float64Array;
+  rowMoving: Float64Array;
+  rowChange: Float64Array;
+  colChange: Float64Array;
+  colMean: Float64Array;
+  colGain: Float64Array;
+  horizontalGain: Float64Array;
+  nativeRowChange?: Float64Array;
+  nativeColChange?: Float64Array;
+  nativeColMean?: Float64Array;
+  informativeFrames: number;
+  nativeFrames: number;
+}
+const LEARNER_ARRAYS = [
+  'split',
+  'evidence',
+  'activity',
+  'observations',
+  'rowFixed',
+  'rowMoving',
+  'rowChange',
+  'colChange',
+  'colMean',
+  'colGain',
+  'horizontalGain',
+  'nativeRowChange',
+  'nativeColChange',
+  'nativeColMean',
+] as const;
+
+/** Core-resident layer-learning accumulators (rust/core/src/layers.rs): one `add()` per informative motion field
+ *  during the scan pass, `read()` once for `finish()`, `free()` always. */
+export class LearnerHandle {
+  private freed = false;
+  constructor(
+    private readonly core: Core,
+    private readonly exports: CoreExports,
+    private handle: number,
+    readonly width: number,
+    readonly height: number,
+  ) {}
+  /** Returns whether the field was informative (and therefore accumulated). Native frames are optional and may
+   *  already be resident in the core. */
+  add(field: MotionField, prev: Gray, current: Gray, prevNative?: FrameInput, currentNative?: FrameInput): boolean {
+    const pixels = this.width * this.height, cells = field.cols * field.rows;
+    if (prev.data.byteLength !== pixels || current.data.byteLength !== pixels) {
+      throw new Error('CORE_BAD_ARGUMENT: analysis frame size differs from the layer learner.');
+    }
+    const native = prevNative && currentNative && prevNative.width === currentNative.width && prevNative.height === currentNative.height
+      ? { width: prevNative.width, height: prevNative.height }
+      : undefined;
+    const nativeBytes = native ? native.width * native.height * 4 : 0;
+    const [desc, motions, labels, confidence, dynamic, pPrev, pCur, pPrevNative, pCurNative] = this.core.scratch([
+      LEARNER_FIELD_BYTES,
+      field.motions.length * LEARNER_MOTION_BYTES,
+      cells,
+      cells,
+      cells,
+      pixels,
+      pixels,
+      native && !(prevNative instanceof ResidentFrame) ? nativeBytes : 0,
+      native && !(currentNative instanceof ResidentFrame) ? nativeBytes : 0,
+    ]);
+    const view = new DataView(this.exports.memory.buffer);
+    field.motions.forEach((m, i) => {
+      const o = motions + i * LEARNER_MOTION_BYTES;
+      view.setFloat64(o, m.x, true);
+      view.setFloat64(o + 8, m.y, true);
+      view.setUint32(o + 16, m.support, true);
+      view.setUint32(o + 20, 0, true);
+      view.setFloat64(o + 24, m.confidence, true);
+    });
+    this.core.writeBytes(labels, field.labels);
+    this.core.writeBytes(confidence, field.confidence);
+    this.core.writeBytes(dynamic, field.dynamic);
+    this.core.writeBytes(pPrev, prev.data);
+    this.core.writeBytes(pCur, current.data);
+    const place = (frame: FrameInput | undefined, scratch: number): number => {
+      if (!native || !frame) return 0;
+      if (frame instanceof ResidentFrame) return frame.ptr;
+      this.core.writeBytes(scratch, frame.data);
+      return scratch;
+    };
+    const nPrev = place(prevNative, pPrevNative), nCur = place(currentNative, pCurNative);
+    view.setUint32(desc, motions, true);
+    view.setUint32(desc + 4, field.motions.length, true);
+    view.setUint32(desc + 8, labels, true);
+    view.setUint32(desc + 12, confidence, true);
+    view.setUint32(desc + 16, dynamic, true);
+    view.setUint32(desc + 20, field.cols, true);
+    view.setUint32(desc + 24, field.rows, true);
+    view.setUint32(desc + 28, field.unknown ? 1 : 0, true);
+    view.setFloat64(desc + 32, field.difference, true);
+    return this.core.check(
+      this.exports.ls_learner_add(this.handle, desc, pPrev, pCur, nPrev, nCur, native?.width ?? 0, native?.height ?? 0),
+      'learner add',
+    ) === 1;
+  }
+  read(): LearnerAccumulators {
+    const out: Record<string, Float64Array | number> = {};
+    const array = (which: number): Float64Array => {
+      const length = this.core.check(this.exports.ls_learner_len(this.handle, which), 'learner length');
+      const [ptr] = this.core.scratch([length * 8]);
+      this.core.check(this.exports.ls_learner_read(this.handle, which, ptr), 'learner read');
+      return new Float64Array(this.core.readBytes(ptr, length * 8).buffer);
+    };
+    LEARNER_ARRAYS.forEach((name, which) => {
+      const values = array(which);
+      if (values.length || which < 11) out[name] = values;
+    });
+    const counts = array(14);
+    return { ...out, informativeFrames: counts[0], nativeFrames: counts[1] } as unknown as LearnerAccumulators;
+  }
+  free(): void {
+    if (this.freed) return;
+    this.freed = true;
+    this.exports.ls_learner_free(this.handle);
+    this.handle = 0;
+  }
+}
+
+/** Bytes that stay in core memory across kernel calls. Pointers survive memory growth (linear memory grows in
+ *  place); only JS views do not, so nothing here holds a view — `bytes()` re-derives one on demand. */
+export class Resident {
+  private freed = false;
+  constructor(private readonly exports: CoreExports, readonly ptr: number, readonly length: number) {}
+  /** Copy of the current contents. */
+  bytes(): Uint8Array<ArrayBuffer> {
+    return new Uint8Array(this.exports.memory.buffer).slice(this.ptr, this.ptr + this.length) as Uint8Array<ArrayBuffer>;
+  }
+  write(bytes: ArrayBufferView): void {
+    if (bytes.byteLength !== this.length) {
+      throw new Error(`CORE_BAD_ARGUMENT: resident buffer holds ${this.length} bytes, not ${bytes.byteLength}.`);
+    }
+    new Uint8Array(this.exports.memory.buffer).set(new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength), this.ptr);
+  }
+  free(): void {
+    if (this.freed) return;
+    this.freed = true;
+    this.exports.ls_free(this.ptr, this.length);
+  }
+}
+/** A native RGBA frame resident in core memory. */
+export class ResidentFrame extends Resident {
+  constructor(exports: CoreExports, ptr: number, readonly width: number, readonly height: number) {
+    super(exports, ptr, width * height * 4);
+  }
+}
+/** A fixed number of resident frame slots keyed by frame index; the slot uploaded longest ago is replaced first.
+ *  Frames arrive in index order, so with two slots the previous frame always survives the next upload and with
+ *  three (render: previous, current, lookahead) each decoded frame enters core memory exactly once. `get()` is a
+ *  pure lookup and never reorders slots. */
+export class FrameRing {
+  private readonly slots: { frame: ResidentFrame; index: number; used: number }[] = [];
+  private tick = 0;
+  constructor(private readonly exports: CoreExports, readonly capacity: number, readonly width: number, readonly height: number) {}
+  get(index: number): ResidentFrame | undefined {
+    return this.slots.find((s) => s.index === index)?.frame;
+  }
+  upload(index: number, image: RGBA): ResidentFrame {
+    if (image.width !== this.width || image.height !== this.height) {
+      throw new Error(`CORE_BAD_ARGUMENT: frame ${image.width}×${image.height} does not fit a ${this.width}×${this.height} ring.`);
+    }
+    const existing = this.get(index);
+    if (existing) return existing;
+    let slot = this.slots.length < this.capacity ? undefined : this.slots.reduce((a, b) => a.used < b.used ? a : b);
+    if (!slot) {
+      const ptr = this.exports.ls_alloc(this.width * this.height * 4);
+      if (!ptr) throw new Error('CORE_OUT_OF_MEMORY: resident frame slot.');
+      slot = { frame: new ResidentFrame(this.exports, ptr, this.width, this.height), index, used: 0 };
+      this.slots.push(slot);
+    }
+    slot.index = index;
+    slot.used = ++this.tick;
+    slot.frame.write(image.data);
+    return slot.frame;
+  }
+  free(): void {
+    for (const slot of this.slots.splice(0)) slot.frame.free();
+  }
+}
+/** Either a JS image or one already resident in the core. */
+export type FrameInput = RGBA | ResidentFrame;
+/** Either JS bytes or bytes already resident in the core. */
+export type BytesInput = Uint8Array | Resident;
 
 /** Analysis-resolution voting box of one moving region, in that region's own local cell coordinates. */
 export interface VotingBox {
@@ -282,11 +511,11 @@ export interface CompositeTile {
   frozen: Uint8Array;
 }
 export interface CompositeObservation {
-  image: RGBA;
+  image: FrameInput;
   /** Atlas labels and this region's code; omitted for a rectangular region that owns its whole rect. */
-  mask?: LabelMask;
+  mask?: { labels: BytesInput; code: number };
   occlusions?: Rect[];
-  consistent?: Uint8Array;
+  consistent?: BytesInput;
   confidence: number;
   uncertain: boolean;
   frame: number;
@@ -315,15 +544,15 @@ export interface ConsistencyVoteInput {
   clean: Uint8Array;
 }
 export interface ConsistencyNeighbourInput {
-  image: RGBA;
+  image: FrameInput;
   x: number;
   y: number;
   occlusions?: Rect[];
   voting?: ConsistencyVoteInput;
 }
 export interface ConsistencyMaskInput {
-  image: RGBA;
-  labels: Uint8Array;
+  image: FrameInput;
+  labels: BytesInput;
   region: Rect;
   code: number;
   pose: { x: number; y: number };
@@ -484,10 +713,12 @@ export class Core {
     this.check(this.exports.ls_grayscale(input, width, height, output), 'grayscale');
     return { width, height, data: this.read(output, n) };
   }
-  downscaleGray(image: RGBA, factor: number): Gray {
+  downscaleGray(image: FrameInput, factor: number): Gray {
     const width = Math.max(1, Math.ceil(image.width / factor)), height = Math.max(1, Math.ceil(image.height / factor));
-    const [input, output] = this.arena.plan([image.data.byteLength, width * height]);
-    this.write(input, image.data);
+    const resident = image instanceof ResidentFrame;
+    const [scratch, output] = this.arena.plan([resident ? 0 : image.width * image.height * 4, width * height]);
+    const input = resident ? image.ptr : scratch;
+    if (!resident) this.write(input, image.data);
     this.check(this.exports.ls_downscale_gray(input, image.width, image.height, factor, output), 'downscaleGray');
     return { width, height, data: this.read(output, width * height) };
   }
@@ -556,25 +787,143 @@ export class Core {
     const count = this.check(this.exports.ls_feature_words(input, features.length, output), 'featureWords');
     return [...new Uint32Array(this.read(output, count * 4).buffer)];
   }
-  consistencyMask(input: ConsistencyMaskInput): Uint8Array {
+  /** Persistent core buffer of `length` bytes (zeroed by the allocator only on first growth; write before read). */
+  alloc(length: number): Resident {
+    const ptr = this.exports.ls_alloc(length);
+    if (!ptr) throw new Error(`CORE_OUT_OF_MEMORY: the reconstruction core could not reserve ${length} resident bytes.`);
+    return new Resident(this.exports, ptr, length);
+  }
+  /** Copies `bytes` into a new persistent core buffer. */
+  upload(bytes: ArrayBufferView): Resident {
+    const resident = this.alloc(bytes.byteLength);
+    resident.write(bytes);
+    return resident;
+  }
+  frameRing(capacity: number, width: number, height: number): FrameRing {
+    return new FrameRing(this.exports, capacity, width, height);
+  }
+  learner(width: number, height: number): LearnerHandle {
+    const handle = this.check(this.exports.ls_learner_new(width, height), 'layer learner');
+    return new LearnerHandle(this, this.exports, handle, width, height);
+  }
+  /** Plans arena space for a JS-side frame (none for a resident one) and returns its pointer after writing. */
+  private placeFrame(frame: FrameInput, scratch: number): number {
+    if (frame instanceof ResidentFrame) return frame.ptr;
+    this.write(scratch, frame.data);
+    return scratch;
+  }
+  stationaryBoundary(
+    image: FrameInput,
+    axis: 'x' | 'y',
+    from: number,
+    to: number,
+    crossFrom: number,
+    crossTo: number,
+    choose: 'first' | 'last',
+  ): number | undefined {
+    const [scratch] = this.arena.plan([image instanceof ResidentFrame ? 0 : image.width * image.height * 4]);
+    const rgba = this.placeFrame(image, scratch);
+    const result = this.exports.ls_stationary_boundary(
+      rgba,
+      image.width,
+      image.height,
+      axis === 'x' ? 0 : 1,
+      from,
+      to,
+      crossFrom,
+      crossTo,
+      choose === 'first' ? 0 : 1,
+    );
+    if (result <= -2) this.check(-1, 'stationaryBoundary');
+    return result < 0 ? undefined : result;
+  }
+  stickyOcclusions(previous: FrameInput, current: FrameInput, region: Rect, motion: Point, carry: Rect[]): Rect[] {
+    const bytes = current.width * current.height * 4, capacity = Math.max(carry.length, 1);
+    const [pPrev, pCur, pRegion, pCarry, out] = this.arena.plan([
+      previous instanceof ResidentFrame ? 0 : bytes,
+      current instanceof ResidentFrame ? 0 : bytes,
+      32,
+      carry.length * 32,
+      capacity * 32,
+    ]);
+    const prev = this.placeFrame(previous, pPrev), cur = this.placeFrame(current, pCur);
+    this.writeRect(pRegion, region);
+    carry.forEach((r, i) => this.writeRect(pCarry + i * 32, r));
+    const count = this.check(
+      this.exports.ls_sticky_occlusions(prev, cur, current.width, current.height, pRegion, motion.x, motion.y, pCarry, carry.length, out),
+      'stickyOcclusions',
+    );
+    const view = new DataView(this.exports.memory.buffer, out, count * 32);
+    return Array.from({ length: count }, (_, i) => ({
+      x: view.getFloat64(i * 32, true),
+      y: view.getFloat64(i * 32 + 8, true),
+      width: view.getFloat64(i * 32 + 16, true),
+      height: view.getFloat64(i * 32 + 24, true),
+    }));
+  }
+
+  consistencyMask(input: ConsistencyMaskInput): Uint8Array<ArrayBuffer> {
+    const { width, height } = input.image;
+    const output = this.runConsistencyMask(input);
+    return this.read(output, width * height);
+  }
+  /** Same kernel, written into a resident buffer so the compositor can consume it without a round trip. */
+  consistencyMaskInto(input: ConsistencyMaskInput, output: Resident): void {
+    if (output.length !== input.image.width * input.image.height) {
+      throw new Error('CORE_BAD_ARGUMENT: mask buffer does not match the frame.');
+    }
+    this.runConsistencyMask(input, output);
+  }
+  /** Plans arena space in one shot for every JS-side input (resident inputs stay in place) plus a transient output
+   *  when no resident one is given, and runs the kernel. Returns the output pointer. */
+  private runConsistencyMask(input: ConsistencyMaskInput, resident?: Resident): number {
     const { width, height } = input.image, pixels = width * height;
     const voteBytes = (v?: ConsistencyVoteInput) => v ? Math.ceil(v.w * v.h / 8) : 0;
+    const residentImage = input.image instanceof ResidentFrame, residentLabels = input.labels instanceof Resident;
     const neighbourSizes = (n?: ConsistencyNeighbourInput) =>
-      n ? [pixels * 4, 48, (n.occlusions?.length || 0) * 32, 24, voteBytes(n.voting), voteBytes(n.voting)] : [0, 0, 0, 0, 0, 0];
+      n
+        ? [
+          n.image instanceof ResidentFrame ? 0 : pixels * 4,
+          48,
+          (n.occlusions?.length || 0) * 32,
+          24,
+          voteBytes(n.voting),
+          voteBytes(n.voting),
+        ]
+        : [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+        ];
     const ptr = this.arena.plan([
-      pixels * 4,
-      pixels,
+      residentImage ? 0 : pixels * 4,
+      residentLabels ? 0 : pixels,
       32,
-      pixels,
       24,
       voteBytes(input.voting),
       voteBytes(input.voting),
       ...neighbourSizes(input.prev),
       ...neighbourSizes(input.next),
+      resident ? 0 : pixels,
     ]);
-    const [rgba, labels, region, output, voteDesc, voteBits, voteClean] = ptr;
-    this.write(rgba, input.image.data);
-    this.write(labels, input.labels);
+    const [rgbaScratch, labelsScratch, region, voteDesc, voteBits, voteClean] = ptr, output = resident ? resident.ptr : ptr[ptr.length - 1];
+    let rgba: number, labels: number;
+    if (input.image instanceof ResidentFrame) {
+      rgba = input.image.ptr;
+    } else {
+      rgba = rgbaScratch;
+      this.write(rgba, input.image.data);
+    }
+    if (input.labels instanceof Resident) {
+      if (input.labels.length !== pixels) throw new Error('CORE_BAD_ARGUMENT: resident labels do not match the frame.');
+      labels = input.labels.ptr;
+    } else {
+      labels = labelsScratch;
+      this.write(labels, input.labels);
+    }
     this.writeRect(region, input.region);
     const writeVote = (desc: number, bits: number, clean: number, v?: ConsistencyVoteInput): number => {
       if (!v) return 0;
@@ -594,9 +943,15 @@ export class Core {
     const vote = writeVote(voteDesc, voteBits, voteClean, input.voting);
     const writeNeighbour = (offset: number, n?: ConsistencyNeighbourInput): number => {
       if (!n) return 0;
-      const [image, desc, occlusions, nVoteDesc, nBits, nClean] = ptr.slice(offset, offset + 6);
+      const [imageScratch, desc, occlusions, nVoteDesc, nBits, nClean] = ptr.slice(offset, offset + 6);
       if (n.image.width !== width || n.image.height !== height) throw new Error('CORE_BAD_ARGUMENT: neighbour frame size differs.');
-      this.write(image, n.image.data);
+      let image: number;
+      if (n.image instanceof ResidentFrame) {
+        image = n.image.ptr;
+      } else {
+        image = imageScratch;
+        this.write(image, n.image.data);
+      }
       (n.occlusions || []).forEach((r, i) => this.writeRect(occlusions + i * 32, r));
       const view = new DataView(this.exports.memory.buffer, desc, 48);
       view.setUint32(0, image, true);
@@ -607,7 +962,7 @@ export class Core {
       view.setUint32(32, writeVote(nVoteDesc, nBits, nClean, n.voting), true);
       return desc;
     };
-    const prev = writeNeighbour(7, input.prev), next = writeNeighbour(13, input.next);
+    const prev = writeNeighbour(6, input.prev), next = writeNeighbour(12, input.next);
     this.check(
       this.exports.ls_consistency_mask(
         rgba,
@@ -627,7 +982,7 @@ export class Core {
       ),
       'consistencyMask',
     );
-    return this.read(output, pixels);
+    return output;
   }
   pngUnfilter(raw: Uint8Array, width: number, height: number, channels: number): Uint8ClampedArray {
     const [input, output] = this.arena.plan([raw.byteLength, width * height * 4]);
@@ -635,7 +990,7 @@ export class Core {
     this.check(this.exports.ls_png_unfilter(input, width, height, channels, output), 'PNG scanline reconstruction');
     return new Uint8ClampedArray(this.read(output, width * height * 4).buffer);
   }
-  pngFilterSub(rgba: Uint8Array, width: number, height: number): Uint8Array {
+  pngFilterSub(rgba: Uint8Array, width: number, height: number): Uint8Array<ArrayBuffer> {
     const [input, output] = this.arena.plan([rgba.byteLength, (width * 4 + 1) * height]);
     this.write(input, rgba);
     this.check(this.exports.ls_png_filter_sub(input, width, height, output), 'PNG filtering');
@@ -829,11 +1184,17 @@ export class Core {
   prepareObservation(obs: CompositeObservation, tileSize: number): PreparedObservation {
     const { width, height } = obs.image, pixels = width * height, n = tileSize * tileSize, blocks = (tileSize / 16) ** 2;
     const occlusions = obs.occlusions || [];
+    const residentImage = obs.image instanceof ResidentFrame ? obs.image : undefined;
+    const residentLabels = obs.mask?.labels instanceof Resident ? obs.mask.labels : undefined;
+    const residentConsistent = obs.consistent instanceof Resident ? obs.consistent : undefined;
+    for (const [what, r] of [['labels', residentLabels], ['consistency mask', residentConsistent]] as const) {
+      if (r && r.length !== pixels) throw new Error(`CORE_BAD_ARGUMENT: resident ${what} do not match the frame.`);
+    }
     const ptr = this.frameArena.plan([
-      pixels * 4,
-      obs.mask ? pixels : 0,
+      residentImage ? 0 : pixels * 4,
+      obs.mask && !residentLabels ? pixels : 0,
       occlusions.length * 32,
-      obs.consistent ? pixels : 0,
+      obs.consistent && !residentConsistent ? pixels : 0,
       64,
       32,
       COMPOSITE_HEADER + 8 * blocks,
@@ -848,10 +1209,10 @@ export class Core {
       blocks,
     ]);
     const [
-      rgba,
-      labels,
+      rgbaScratch,
+      labelsScratch,
       occ,
-      consistent,
+      consistentScratch,
       desc,
       world,
       output,
@@ -865,10 +1226,13 @@ export class Core {
       tScore,
       tFrozen,
     ] = ptr;
-    this.write(rgba, obs.image.data);
-    if (obs.mask) this.write(labels, obs.mask.labels);
+    const rgba = residentImage ? residentImage.ptr : rgbaScratch;
+    if (!residentImage) this.write(rgba, (obs.image as RGBA).data);
+    const labels = residentLabels ? residentLabels.ptr : labelsScratch;
+    if (obs.mask && !residentLabels) this.write(labels, obs.mask.labels as Uint8Array);
     occlusions.forEach((r, i) => this.writeRect(occ + i * 32, r));
-    if (obs.consistent) this.write(consistent, obs.consistent);
+    const consistent = residentConsistent ? residentConsistent.ptr : consistentScratch;
+    if (obs.consistent && !residentConsistent) this.write(consistent, obs.consistent as Uint8Array);
     const view = new DataView(this.exports.memory.buffer, desc, 64);
     view.setUint32(0, rgba, true);
     view.setUint32(4, width, true);
@@ -939,7 +1303,19 @@ export async function loadCore(source: BufferSource | Response | Promise<Respons
   active = await Core.instantiate(source);
   return active;
 }
-/** Locates `core.wasm` next to the running bundle (browser) or the build output (Deno). */
+/** True when this engine validates a module using v128 (SIMD128): Chrome 91+, Safari 16.4+, Firefox 89+. */
+export function simdSupported(): boolean {
+  try {
+    // (module (func (result v128) v128.const i32x4 0 0 0 0 drop ...)) — the smallest module that needs SIMD.
+    return WebAssembly.validate(
+      new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]),
+    );
+  } catch {
+    return false;
+  }
+}
+/** Locates the core module next to the running bundle (browser) or the build output (Deno): the SIMD128 build
+ *  when the engine accepts it, otherwise the scalar baseline. Both are built from the same source. */
 export function coreURL(): URL {
-  return new URL('./core.wasm', import.meta.url);
+  return new URL(simdSupported() ? './core.simd.wasm' : './core.wasm', import.meta.url);
 }

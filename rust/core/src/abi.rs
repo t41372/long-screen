@@ -5,10 +5,12 @@
 //! retain pointers between calls. Every pointer is validated against linear memory before use; an
 //! invalid request returns a negative status instead of trapping.
 
+use crate::chrome::{stationary_boundary, sticky_occlusions, Axis, Choose};
 use crate::compositor::{composite_tile, Observation, TileBuffers, QUALITY_BLOCK};
 use crate::consistency::{consistency_mask, MaskInput, Neighbour, Vote};
 use crate::features::{extract_features, feature_words, match_features, Feature, DESCRIPTOR_WORDS};
 use crate::geometry::Rect;
+use crate::layers::{Field as LearnerField, FieldMotion, Learner};
 use crate::motion::{
     audit_translation, detect_scale, estimate_motion, refine_native, refine_patches,
     refine_translation, resample_gray, translation_hypotheses, verify_translation, Gray,
@@ -45,6 +47,275 @@ pub const COMPOSITE_HEADER_BYTES: usize = 24;
 /// Serialised voting region (`ls_voting_new`): 32-byte rect, u32 exclusion ptr, u32 exclusion count,
 /// u32 crop ptr (0 = none), u32 solid, u32 mask ptr (0 = none), u32 mask width, u32 mask height, u32 mask factor.
 pub const VOTING_REGION_BYTES: usize = 64;
+/// Serialised learner field motion: f64 x, f64 y, u32 support, u32 padding, f64 confidence.
+pub const LEARNER_MOTION_BYTES: usize = 32;
+/// Learner field descriptor: u32 motions ptr, u32 motion count, u32 labels ptr, u32 confidence ptr,
+/// u32 dynamic ptr, u32 cols, u32 rows, u32 unknown, f64 difference.
+pub const LEARNER_FIELD_BYTES: usize = 40;
+
+/// Persistent appearance edge in `rgba` (width×height) along `axis` (0 = x, 1 = y) between `from` and `to`,
+/// sampling cross coordinates `cross_from..cross_to`; `choose` 0 = first, 1 = last. Returns the coordinate
+/// (≥ 1), −1 when none, or −2 on a bad argument.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn ls_stationary_boundary(
+    rgba: u32,
+    width: u32,
+    height: u32,
+    axis: u32,
+    from: f64,
+    to: f64,
+    cross_from: f64,
+    cross_to: f64,
+    choose: u32,
+) -> f64 {
+    let (w, h) = (width as usize, height as usize);
+    if w == 0 || h == 0 {
+        return -2.0;
+    }
+    // SAFETY: adapter-owned frame, bounds checked.
+    let Some(rgba) = (unsafe { slice(rgba, w * h * 4) }) else {
+        return -2.0;
+    };
+    let axis = if axis == 0 { Axis::X } else { Axis::Y };
+    let choose = if choose == 0 {
+        Choose::First
+    } else {
+        Choose::Last
+    };
+    stationary_boundary(rgba, w, h, axis, from, to, cross_from, cross_to, choose).unwrap_or(-1.0)
+}
+
+/// Sticky bands for one observation. `region` is one 32-byte rect (the region's crop or rect), `carry` holds
+/// `carry_count` previous bands, `out` has room for `max(carry_count, 1)` rects. Returns the band count.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn ls_sticky_occlusions(
+    previous: u32,
+    current: u32,
+    width: u32,
+    height: u32,
+    region: u32,
+    motion_x: f64,
+    motion_y: f64,
+    carry: u32,
+    carry_count: u32,
+    out: u32,
+) -> i32 {
+    let (w, h) = (width as usize, height as usize);
+    if w == 0 || h == 0 {
+        return STATUS_BAD_ARGUMENT;
+    }
+    let capacity = (carry_count as usize).max(1);
+    // SAFETY: adapter-owned buffers, bounds checked.
+    let (Some(previous), Some(current), Some(region), Some(carry), Some(dst)) = (
+        unsafe { slice(previous, w * h * 4) },
+        unsafe { slice(current, w * h * 4) },
+        unsafe { slice(region, 32) },
+        unsafe { slice(carry, carry_count as usize * 32) },
+        unsafe { slice_mut(out, capacity * 32) },
+    ) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let bands = sticky_occlusions(
+        previous,
+        current,
+        w,
+        h,
+        read_rect(region),
+        motion_x,
+        motion_y,
+        &read_rects(carry),
+    );
+    for (b, d) in bands.iter().zip(dst.chunks_exact_mut(32)) {
+        d[0..8].copy_from_slice(&b.x.to_le_bytes());
+        d[8..16].copy_from_slice(&b.y.to_le_bytes());
+        d[16..24].copy_from_slice(&b.width.to_le_bytes());
+        d[24..32].copy_from_slice(&b.height.to_le_bytes());
+    }
+    bands.len() as i32
+}
+
+static mut LEARNERS: Vec<Option<Box<Learner>>> = Vec::new();
+
+fn learner_handles() -> &'static mut Vec<Option<Box<Learner>>> {
+    // SAFETY: single-threaded module; handles are only touched through the exported entry points.
+    unsafe { &mut *std::ptr::addr_of_mut!(LEARNERS) }
+}
+
+fn learner(handle: u32) -> Option<&'static mut Learner> {
+    learner_handles()
+        .get_mut(handle.wrapping_sub(1) as usize)
+        .and_then(|h| h.as_deref_mut())
+}
+
+/// Creates a layer learner over an `width × height` analysis grid. Returns a handle (> 0).
+#[no_mangle]
+pub extern "C" fn ls_learner_new(width: u32, height: u32) -> i32 {
+    if width == 0 || height == 0 {
+        return STATUS_BAD_ARGUMENT;
+    }
+    let handles = learner_handles();
+    let handle = Box::new(Learner::new(width as usize, height as usize));
+    if let Some(free) = handles.iter().position(|h| h.is_none()) {
+        handles[free] = Some(handle);
+        return free as i32 + 1;
+    }
+    handles.push(Some(handle));
+    handles.len() as i32
+}
+
+#[no_mangle]
+pub extern "C" fn ls_learner_free(handle: u32) {
+    if let Some(slot) = learner_handles().get_mut(handle.wrapping_sub(1) as usize) {
+        *slot = None;
+    }
+}
+
+/// Accumulates one field. `prev`/`current` are analysis grays; `prev_native`/`current_native` are RGBA frames
+/// of `native_width × native_height` (zero pointers skip the native statistics). Returns 1 when the field was
+/// informative and accumulated, 0 when ignored, negative on a bad argument.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn ls_learner_add(
+    handle: u32,
+    field: u32,
+    prev: u32,
+    current: u32,
+    prev_native: u32,
+    current_native: u32,
+    native_width: u32,
+    native_height: u32,
+) -> i32 {
+    let Some(l) = learner(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let pixels = l.width * l.height;
+    // SAFETY: adapter-owned buffers, bounds checked.
+    let (Some(d), Some(prev), Some(current)) = (
+        unsafe { slice(field, LEARNER_FIELD_BYTES) },
+        unsafe { slice(prev, pixels) },
+        unsafe { slice(current, pixels) },
+    ) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let u = |i: usize| u32::from_le_bytes(d[i..i + 4].try_into().unwrap());
+    let (cols, rows, count) = (u(20) as usize, u(24) as usize, u(4) as usize);
+    if cols != l.cols || rows != l.rows || count == 0 {
+        return STATUS_BAD_ARGUMENT;
+    }
+    let cells = cols * rows;
+    // SAFETY: as above.
+    let (Some(motions), Some(labels), Some(confidence), Some(dynamic)) = (
+        unsafe { slice(u(0), count * LEARNER_MOTION_BYTES) },
+        unsafe { slice(u(8), cells) },
+        unsafe { slice(u(12), cells) },
+        unsafe { slice(u(16), cells) },
+    ) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    if labels.iter().any(|&label| label as usize >= count) {
+        return STATUS_BAD_ARGUMENT;
+    }
+    let motions: Vec<FieldMotion> = motions
+        .chunks_exact(LEARNER_MOTION_BYTES)
+        .map(|c| FieldMotion {
+            x: f64::from_le_bytes(c[0..8].try_into().unwrap()),
+            y: f64::from_le_bytes(c[8..16].try_into().unwrap()),
+            support: u32::from_le_bytes(c[16..20].try_into().unwrap()),
+            confidence: f64::from_le_bytes(c[24..32].try_into().unwrap()),
+        })
+        .collect();
+    let native = if prev_native == 0 || current_native == 0 {
+        None
+    } else {
+        let n = native_width as usize * native_height as usize * 4;
+        // SAFETY: as above.
+        match (unsafe { slice(prev_native, n) }, unsafe {
+            slice(current_native, n)
+        }) {
+            (Some(a), Some(b)) => Some((a, b, native_width as usize, native_height as usize)),
+            _ => return STATUS_BAD_ARGUMENT,
+        }
+    };
+    let field = LearnerField {
+        motions: &motions,
+        labels,
+        confidence,
+        dynamic,
+        cols,
+        rows,
+        difference: f64::from_le_bytes(d[32..40].try_into().unwrap()),
+        unknown: u(28) != 0,
+    };
+    l.add(&field, prev, current, native) as i32
+}
+
+/// Accumulator selectors for `ls_learner_len`/`ls_learner_read`, in the adapter's field order; 14 = counts
+/// (informative frames, native frames, native width, native height).
+fn learner_array(l: &Learner, which: u32) -> Option<&[f64]> {
+    Some(match which {
+        0 => &l.split,
+        1 => &l.evidence,
+        2 => &l.activity,
+        3 => &l.observations,
+        4 => &l.row_fixed,
+        5 => &l.row_moving,
+        6 => &l.row_change,
+        7 => &l.col_change,
+        8 => &l.col_mean,
+        9 => &l.col_gain,
+        10 => &l.horizontal_gain,
+        11 => &l.native_row_change,
+        12 => &l.native_col_change,
+        13 => &l.native_col_mean,
+        _ => return None,
+    })
+}
+
+/// Length in f64 of accumulator `which`.
+#[no_mangle]
+pub extern "C" fn ls_learner_len(handle: u32, which: u32) -> i32 {
+    let Some(l) = learner(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    if which == 14 {
+        return 4;
+    }
+    match learner_array(l, which) {
+        Some(a) => a.len() as i32,
+        None => STATUS_BAD_ARGUMENT,
+    }
+}
+
+/// Copies accumulator `which` (f64 little-endian) into `out`, sized from `ls_learner_len`.
+#[no_mangle]
+pub extern "C" fn ls_learner_read(handle: u32, which: u32, out: u32) -> i32 {
+    let Some(l) = learner(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let values: Vec<f64> = if which == 14 {
+        vec![
+            l.informative_frames as f64,
+            l.native_frames as f64,
+            l.native_width as f64,
+            l.native_height as f64,
+        ]
+    } else {
+        match learner_array(l, which) {
+            Some(a) => a.to_vec(),
+            None => return STATUS_BAD_ARGUMENT,
+        }
+    };
+    // SAFETY: adapter-owned output.
+    let Some(dst) = (unsafe { slice_mut(out, values.len() * 8) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    for (v, d) in values.iter().zip(dst.chunks_exact_mut(8)) {
+        d.copy_from_slice(&v.to_le_bytes());
+    }
+    STATUS_OK
+}
 
 /// Finalised voting records waiting to be read by the adapter, oldest first.
 struct VotingHandle {

@@ -3,7 +3,7 @@ import type { Demuxer } from './reader.ts';
 import { MP4Demuxer } from './mp4.ts';
 import { WebMDemuxer } from './webm.ts';
 /** Converts one decoded VideoFrame into plain RGBA (applying container rotation). Injected so the decoding pipeline is testable without a canvas. */
-export type FrameConverter = (frame: VideoFrame, info: MediaInfo) => RGBA;
+export type FrameConverter = (frame: VideoFrame, info: MediaInfo) => RGBA | Promise<RGBA>;
 export function canvasConverter(): FrameConverter {
   let canvas: OffscreenCanvas | undefined, ctx: OffscreenCanvasRenderingContext2D | null = null;
   return (frame, info) => {
@@ -24,6 +24,39 @@ export function canvasConverter(): FrameConverter {
     return { width: canvas.width, height: canvas.height, data: c.getImageData(0, 0, canvas.width, canvas.height).data };
   };
 }
+/** Direct `VideoFrame.copyTo({ format: 'RGBA' })`: the browser converts YUV→sRGB into a plain buffer, skipping the
+ *  2D-canvas draw + `getImageData` readback that dominated decode-side CPU time. Capability is probed once on the
+ *  first frame (Safari/Chrome versions differ in RGB conversion support); a throwing or wrong-sized probe falls back
+ *  to the canvas path permanently for this source. Rotated containers always use the canvas, which already rotates. */
+export function directConverter(fallback: FrameConverter = canvasConverter()): FrameConverter {
+  let direct: boolean | undefined;
+  return async (frame, info) => {
+    if (info.rotation !== 0 || direct === false || typeof frame.copyTo !== 'function') {
+      return fallback(frame, info);
+    }
+    const width = info.codedWidth, height = info.codedHeight;
+    try {
+      const options = { format: 'RGBA' as VideoPixelFormat, colorSpace: 'srgb' as PredefinedColorSpace };
+      if (direct === undefined) {
+        // Probe: a browser that ignores `format` reports the native (e.g. I420) size instead, and a frame with a
+        // null format throws. Both mean "no direct path", not "corrupt frame".
+        const size = frame.allocationSize(options);
+        if (size !== width * height * 4) throw new Error(`allocationSize ${size} ≠ ${width * height * 4}`);
+      }
+      const data = new Uint8ClampedArray(width * height * 4);
+      const layout = await frame.copyTo(data, options);
+      if (layout.length !== 1 || layout[0].offset !== 0 || layout[0].stride !== width * 4) {
+        throw new Error(`unexpected RGBA layout ${JSON.stringify(layout)}`);
+      }
+      direct = true;
+      return { width, height, data };
+    } catch (error) {
+      if (direct === true) throw error;
+      direct = false;
+      return fallback(frame, info);
+    }
+  };
+}
 export async function openDemuxer(file: Blob): Promise<Demuxer> {
   const header = new Uint8Array(await file.slice(0, 16).arrayBuffer());
   if (header[0] === 0x1a && header[1] === 0x45 && header[2] === 0xdf && header[3] === 0xa3) {
@@ -31,7 +64,7 @@ export async function openDemuxer(file: Blob): Promise<Demuxer> {
   }
   return await new MP4Demuxer(file).init();
 }
-export async function openMedia(file: File, convert: FrameConverter = canvasConverter()): Promise<FrameSource> {
+export async function openMedia(file: File, convert: FrameConverter = directConverter()): Promise<FrameSource> {
   if (typeof VideoDecoder === 'undefined') {
     throw new Error(
       'WEBCODECS_UNAVAILABLE: This browser cannot provide frame-accurate decoding. Select the explicitly labelled compatibility mode, or use a browser with WebCodecs.',
@@ -272,7 +305,7 @@ export class PreciseSource implements FrameSource {
               `该录屏声明非方形像素长宽比（显示尺寸 ${frame.displayWidth}×${frame.displayHeight}，存储尺寸 ${bitstreamWidth}×${bitstreamHeight}）；保留原始存储像素，不做缩放。`,
             );
           }
-          const image = this.convert(frame, info), time = frame.timestamp / 1e6, duration = (frame.duration || 0) / 1e6;
+          const image = await this.convert(frame, info), time = frame.timestamp / 1e6, duration = (frame.duration || 0) / 1e6;
           frame.close();
           yield { image, time, duration, index: index++ };
         } finally {

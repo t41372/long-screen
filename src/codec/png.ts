@@ -42,21 +42,23 @@ export async function* encodePNG(
     try {
       let count = 0;
       const stride = width * 4 + 1, batchRows = Math.max(1, Math.floor(65536 / stride));
-      let batch = new Uint8Array(stride * batchRows), used = 0;
+      // Rows are gathered raw and Sub-filtered in the Rust core one batch at a time: the filter has no
+      // inter-row dependency, so the bytes equal a per-row filter while the core is entered ~30× less often.
+      const raw = new Uint8Array(width * 4 * batchRows);
+      let used = 0;
+      const flush = async () => {
+        await writer.write(core().pngFilterSub(raw.subarray(0, used * width * 4), width, used));
+        used = 0;
+      };
       for await (const row of rows) {
         if (row.length !== width * 4) throw new Error('PNG row has incorrect byte length.');
-        // Sub-filtered in the Rust core; one row per call keeps memory bounded by the batch, not the image.
-        batch.set(core().pngFilterSub(row, width, 1), used * stride);
+        raw.set(row, used * width * 4);
         used++;
         count++;
         // One native compression write per ~64 KiB, not per scanline. Bounded memory, same PNG predictor.
-        if (used === batchRows) {
-          await writer.write(batch);
-          batch = new Uint8Array(stride * batchRows);
-          used = 0;
-        }
+        if (used === batchRows) await flush();
       }
-      if (used) await writer.write(batch.subarray(0, used * stride));
+      if (used) await flush();
       if (count !== height) {
         throw new Error(`Expected ${height} PNG rows, received ${count}.`);
       }

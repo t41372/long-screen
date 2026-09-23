@@ -2,7 +2,7 @@ import type { CanvasMeta, Diagnostic, Placement, Rect, Region, RGBA } from '../t
 import type { KV } from '../storage/db.ts';
 import { iterate } from '../storage/db.ts';
 import { clearProvisional, covered, markCovered, provisional, QUALITY_BLOCK, type TileStore } from '../storage/tiles.ts';
-import { core } from './wasm.ts';
+import { core, Resident, type ResidentFrame } from './wasm.ts';
 import type { RegionAtlas } from './layers.ts';
 import { intersect, pad, union } from './math.ts';
 import { resolveRasterPose } from './raster.ts';
@@ -27,6 +27,34 @@ export function sameBlockSet(a: [number, number][], b: [number, number][]): bool
   if (a.length !== b.length) return false;
   const keys = new Set(a.map(([x, y]) => `${x},${y}`));
   return keys.size === b.length && b.every(([x, y]) => keys.has(`${x},${y}`));
+}
+/** Integer key for an absolute 16px block: row-major, so ascending keys are (by, bx) order. Blocks within
+ *  ±2^25 (±537 M native pixels) pack exactly into a double. */
+const BLOCK_OFFSET = 1 << 25, BLOCK_STRIDE = 1 << 26;
+export function blockKey(bx: number, by: number): number {
+  if (bx < -BLOCK_OFFSET || bx >= BLOCK_OFFSET || by < -BLOCK_OFFSET || by >= BLOCK_OFFSET) {
+    throw new Error(`Block (${bx}, ${by}) is outside the addressable canvas.`);
+  }
+  return (by + BLOCK_OFFSET) * BLOCK_STRIDE + (bx + BLOCK_OFFSET);
+}
+export function blockOf(key: number): [number, number] {
+  const by = Math.floor(key / BLOCK_STRIDE);
+  return [key - by * BLOCK_STRIDE - BLOCK_OFFSET, by - BLOCK_OFFSET];
+}
+/** Temporal records of one canvas, resident for the pass. Persisted rows are written by flush(), so a run that is
+ *  interrupted mid-pass leaves rows as of the last flush — the same durability the tile cache already has. */
+/** In-memory form of a temporal record: the block membership is a resident integer-key set (records on a
+ *  long-scrolling canvas grow to tens of thousands of blocks and are touched by every conflict component that
+ *  overlaps them), and the persisted `blocks` array is derived from it only when a record is written. */
+type ResidentTemporal = Omit<TemporalRegion, 'blocks'> & { keys: Set<number> };
+interface TemporalIndex {
+  records: Map<string, ResidentTemporal>;
+  dirty: Set<string>;
+  deleted: Set<string>;
+}
+/** Persisted block order: ascending integer keys are (by, bx) row-major. */
+function persistedBlocks(keys: Set<number>): [number, number][] {
+  return [...keys].sort((a, b) => a - b).map(blockOf);
 }
 export interface CompositeStats {
   added: number;
@@ -55,6 +83,9 @@ interface PatchResult {
 export class Compositor {
   private temporalSequence = 0;
   private rectangular = new Set<string>();
+  /** Atlas labels uploaded once per compositor so masked regions never copy the label plane per frame. */
+  private labels?: Resident;
+  private temporal = new Map<string, TemporalIndex>();
   constructor(
     private db: KV,
     readonly tiles: TileStore,
@@ -69,22 +100,67 @@ export class Compositor {
       ) this.rectangular.add(region.id);
     }
   }
+  /** Persists temporal records changed since the last flush (one batch, deletions first). */
+  async flush(): Promise<void> {
+    for (const [canvasId, index] of this.temporal) {
+      for (const id of index.deleted) await this.db.delete(`temporal/${canvasId}/${id}`);
+      index.deleted.clear();
+      if (index.dirty.size) {
+        await this.db.putMany([...index.dirty].map((id) => {
+          const { keys, ...record } = index.records.get(id)!;
+          return { key: `temporal/${canvasId}/${id}`, value: { ...record, blocks: persistedBlocks(keys) } satisfies TemporalRegion };
+        }));
+        index.dirty.clear();
+      }
+    }
+  }
+  /** Loads a canvas's persisted temporal records once; afterwards the in-memory index is authoritative. */
+  private async temporalIndex(canvasId: string): Promise<TemporalIndex> {
+    let index = this.temporal.get(canvasId);
+    if (!index) {
+      index = { records: new Map(), dirty: new Set(), deleted: new Set() };
+      for await (const { value } of iterate<TemporalRegion>(this.db, `temporal/${canvasId}/`)) {
+        const { blocks, ...record } = value;
+        index.records.set(value.id, { ...record, keys: new Set(blocks.map(([x, y]) => blockKey(x, y))) });
+      }
+      this.temporal.set(canvasId, index);
+    }
+    return index;
+  }
+  /** Releases the core-resident label plane; the compositor is unusable afterwards. */
+  dispose(): void {
+    this.labels?.free();
+    this.labels = undefined;
+  }
   /** `consistent`, when given, is a per-native-pixel (image-sized, one byte per pixel, indexed like `labels`) world-consistency
    *  mask computed by the render pass's one-frame lookahead: 0 means this pixel's placement here could be checked against a
    *  neighbouring frame and disagreed with every such check (CONSISTENT-BY-DEFAULT and genuinely-consistent pixels are both
    *  1). Omitted for fixed regions and skipped/duplicate frames, where every pixel is treated as consistent (unchanged
-   *  behaviour). See docs/ARCHITECTURE.md §七. */
-  async add(image: RGBA, region: Region, p: Placement, frame: number, meta: CanvasMeta, consistent?: Uint8Array): Promise<CompositeStats> {
+   *  behaviour). See docs/ARCHITECTURE.md §七. A mask already resident in the core is consumed in place and only read
+   *  back when a temporal conflict needs the pixel-level check. `residentFrame`, when given, is `image` already in core
+   *  memory, so the frame is not copied again for compositing. */
+  async add(
+    image: RGBA,
+    region: Region,
+    p: Placement,
+    frame: number,
+    meta: CanvasMeta,
+    consistent?: Uint8Array | Resident,
+    residentFrame?: ResidentFrame,
+  ): Promise<CompositeStats> {
     const size = this.tiles.size, B = QUALITY_BLOCK, blocks = size / B, { rasterX: ox, rasterY: oy } = resolveRasterPose(p.x, p.y);
     if (image.width !== this.atlas.width || image.height !== this.atlas.height) {
       throw new Error(`Frame is ${image.width}×${image.height} but the region atlas is ${this.atlas.width}×${this.atlas.height}.`);
     }
+    if (residentFrame && (residentFrame.width !== image.width || residentFrame.height !== image.height)) {
+      throw new Error('Resident frame does not match the observation.');
+    }
     const code = this.atlas.code(region),
-      labels = this.atlas.labels,
+      labels = this.labels ??= core().upload(this.atlas.labels),
       rectangular = this.rectangular.has(region.id);
     const world = { x: region.rect.x + ox, y: region.rect.y + oy, width: region.rect.width, height: region.rect.height };
     const stats: CompositeStats = { added: 0, conflicts: 0, uncertain: 0, tiles: 0, bounds: world, provisionalPixels: 0 };
-    const conflictBlocks = new Set<string>();
+    const conflictBlocks = new Set<number>();
     const x0 = Math.floor(world.x / size),
       x1 = Math.floor((world.x + world.width - 1) / size),
       y0 = Math.floor(world.y / size),
@@ -101,7 +177,7 @@ export class Compositor {
     // resident set first keeps those tiles together while the few cold loads evict only the oldest residents.
     // One frame copy into the core per placement; each tile then round-trips its own buffers only.
     const prepared = core().prepareObservation({
-      image,
+      image: residentFrame ?? image,
       mask: rectangular ? undefined : { labels, code },
       occlusions: p.occlusions,
       consistent,
@@ -116,9 +192,10 @@ export class Compositor {
       stats.conflicts += result.conflicts;
       stats.uncertain += result.uncertain;
       stats.provisionalPixels += result.provisionalPixels;
-      for (const [bx, by] of result.conflictBlocks) conflictBlocks.add(`${tx * blocks + bx},${ty * blocks + by}`);
+      for (const [bx, by] of result.conflictBlocks) conflictBlocks.add(blockKey(tx * blocks + bx, ty * blocks + by));
       if (result.changed) {
         tile.dirty = true;
+        tile.touched = performance.now();
         if (wasNew) {
           stats.tiles++;
         }
@@ -131,8 +208,8 @@ export class Compositor {
       // Keep the temporal component order identical to the former raster traversal. Tile loading order is now
       // cache-aware, but component order must not become an accidental cross-tile temporal mutation.
       const orderedConflictBlocks = [...conflictBlocks].sort((a, b) => {
-        const [ax, ay] = a.split(',').map(Number),
-          [bx, by] = b.split(',').map(Number),
+        const [ax, ay] = blockOf(a),
+          [bx, by] = blockOf(b),
           atx = Math.floor(ax / blocks),
           btx = Math.floor(bx / blocks),
           aty = Math.floor(ay / blocks),
@@ -141,8 +218,10 @@ export class Compositor {
       });
       const components = this.components(new Set(orderedConflictBlocks), B);
       let patchedPixels = 0, patchedTiles = 0, patchedConflictPixels = 0, patchedProvisional = 0;
+      // The pixel-level completeness walk below needs the mask in JS; a resident mask is read back once per frame.
+      const maskBytes = consistent instanceof Resident ? consistent.bytes() : consistent;
       for (const component of components) {
-        const result = await this.resolveTemporal(image, region, p, frame, component.bounds, component.blocks, world, consistent);
+        const result = await this.resolveTemporal(image, region, p, frame, component.bounds, component.blocks, world, maskBytes);
         patchedPixels += result.added;
         patchedTiles += result.newTiles;
         // A pixel count now (F8/F12 fix); this used to fold in a block count instead, understating conflict
@@ -184,21 +263,21 @@ export class Compositor {
   }
   /** 8-connected components of conflicting 16px blocks. Each component keeps its own block set, never just a bounding rect — a
    * concave (e.g. L-shaped) conflict must not drag pixel-identical blocks in its bounding box into the patch. */
-  private components(cells: Set<string>, size: number): { bounds: Rect; blocks: Set<string> }[] {
-    const out: { bounds: Rect; blocks: Set<string> }[] = [];
+  private components(cells: Set<number>, size: number): { bounds: Rect; blocks: Set<number> }[] {
+    const out: { bounds: Rect; blocks: Set<number> }[] = [];
     while (cells.size) {
-      const first = cells.values().next().value!, queue = [first], comp = new Set<string>([first]);
+      const first = cells.values().next().value!, queue = [first], comp = new Set<number>([first]);
       cells.delete(first);
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (let i = 0; i < queue.length; i++) {
-        const [x, y] = queue[i].split(',').map(Number);
+        const [x, y] = blockOf(queue[i]);
         x0 = Math.min(x0, x);
         x1 = Math.max(x1, x);
         y0 = Math.min(y0, y);
         y1 = Math.max(y1, y);
         for (let dy = -1; dy <= 1; dy++) {
           for (let dx = -1; dx <= 1; dx++) {
-            const key = `${x + dx},${y + dy}`;
+            const key = queue[i] + dy * BLOCK_STRIDE + dx;
             if (cells.delete(key)) {
               queue.push(key);
               comp.add(key);
@@ -216,49 +295,47 @@ export class Compositor {
     p: Placement,
     frame: number,
     compBounds: Rect,
-    compBlocks: Set<string>,
+    compBlocks: Set<number>,
     visible: Rect,
     consistent?: Uint8Array,
   ): Promise<PatchResult> {
     const B = QUALITY_BLOCK;
-    const olds: TemporalRegion[] = [];
-    for await (const { value: t } of iterate<TemporalRegion>(this.db, `temporal/${p.canvasId}/`)) {
+    const index = await this.temporalIndex(p.canvasId), olds: ResidentTemporal[] = [];
+    for (const t of index.records.values()) {
       const expanded = { x: t.rect.x - 16, y: t.rect.y - 16, width: t.rect.width + 32, height: t.rect.height + 32 };
       const ix = intersect(expanded, compBounds);
       if (ix.width > 0 && ix.height > 0) {
         olds.push(t);
       }
     }
-    const mask = new Set<string>(compBlocks), previousMask = new Set<string>();
-    let rect = compBounds;
+    // Records never share a block (a record's blocks lie inside its rect, and a record is only ever created from a
+    // component that misses every existing record's expanded rect), so the previous membership is the plain sum
+    // of the overlapping records' sizes and the union grows by exactly the component blocks none of them holds.
+    // The union is built in the LARGEST overlapping set to avoid re-hashing tens of thousands of keys per component.
+    const old = olds[0];
+    let rect = compBounds, previousSize = 0, largest: ResidentTemporal | undefined;
     for (const o of olds) {
       rect = union(rect, o.rect);
-      for (const [x, y] of o.blocks) {
-        const key = `${x},${y}`;
-        mask.add(key);
-        previousMask.add(key);
-      }
+      previousSize += o.keys.size;
+      if (!largest || o.keys.size > largest.keys.size) largest = o;
     }
-    const old = olds[0];
-    const maskBlocks: [number, number][] = [...mask].map((k) => {
-      const [x, y] = k.split(',').map(Number);
-      return [x, y] as [number, number];
-    }).sort(([ax, ay], [bx, by]) => ay - by || ax - bx);
-    const previousBlocks: [number, number][] = [...previousMask].map((k) => {
-      const [x, y] = k.split(',').map(Number);
-      return [x, y] as [number, number];
-    });
+    const mask = largest ? largest.keys : new Set<number>();
+    for (const o of olds) {
+      if (o !== largest) { for (const key of o.keys) mask.add(key); }
+    }
+    for (const key of compBlocks) mask.add(key);
     const geometryChanged = !old || rect.x !== old.rect.x || rect.y !== old.rect.y || rect.width !== old.rect.width ||
       rect.height !== old.rect.height;
     // `olds` can contain multiple nearby records. Compare against their union, not just `olds[0]`, and compare
-    // actual membership so equal bboxes/cardinalities cannot preserve a stale complete=true state.
-    const membershipChanged = !old || !sameBlockSet(maskBlocks, previousBlocks);
+    // actual membership so equal bboxes/cardinalities cannot preserve a stale complete=true state. The union
+    // contains every previous block by construction, so membership differs exactly when the size grew.
+    const membershipChanged = !old || mask.size !== previousSize;
     const expanded = geometryChanged || membershipChanged;
-    const record: TemporalRegion = old ? { ...old, rect, blocks: maskBlocks } : {
+    const record: ResidentTemporal = old ? { ...old, rect, keys: mask } : {
       id: pad(this.temporalSequence++),
       canvasId: p.canvasId,
       rect,
-      blocks: maskBlocks,
+      keys: mask,
       chosenFrame: frame,
       chosenTime: p.time,
       complete: false,
@@ -267,18 +344,13 @@ export class Compositor {
     if (expanded) {
       record.complete = false;
     }
-    // Ensure the entire tracked patch is visible this frame. Evaluated over the block mask, not the bounding rect,
-    // so a stable pixel-identical corner block in a concave conflict never gates or gets rewritten.
-    let complete = true;
-    const writeBlocks: [number, number][] = [];
-    for (const [bx, by] of maskBlocks) {
-      const ix = intersect({ x: bx * B, y: by * B, width: B, height: B }, visible);
-      if (ix.width === B && ix.height === B) {
-        writeBlocks.push([bx, by]);
-      } else {
-        complete = false;
-      }
-    }
+    // Ensure the entire tracked patch is visible this frame. `rect` is exactly the bounding box of the mask blocks
+    // (component bounds and record rects are block bounding boxes, and union preserves that), and every block
+    // lies inside `visible` iff their bounding box does, so this is the per-block test in O(1). The write set is
+    // still the block MASK, not the rect, so a stable pixel-identical corner block in a concave conflict is never
+    // rewritten.
+    const complete = intersect(rect, visible).width === rect.width && intersect(rect, visible).height === rect.height;
+    const writeBlocks: [number, number][] = complete ? persistedBlocks(mask) : [];
     const choose = complete && (!old || !old.complete || expanded || this.policy === 'latest');
     let result: PatchResult = { added: 0, conflictPixels: 0, newTiles: 0, provisionalPixels: 0 };
     if (choose) {
@@ -310,10 +382,14 @@ export class Compositor {
         record.revisions++;
       }
     }
-    await this.db.put(`temporal/${p.canvasId}/${record.id}`, record);
+    index.records.set(record.id, record);
+    index.dirty.add(record.id);
+    index.deleted.delete(record.id);
     for (const o of olds) {
       if (o.id !== record.id) {
-        await this.db.delete(`temporal/${p.canvasId}/${o.id}`);
+        index.records.delete(o.id);
+        index.dirty.delete(o.id);
+        index.deleted.add(o.id);
       }
     }
     if (!record.complete && (!old || expanded)) {
@@ -387,6 +463,7 @@ export class Compositor {
       // sits on is therefore never new here, so there is no newTiles bookkeeping to do.
       if (changed) {
         tile.dirty = true;
+        tile.touched = performance.now();
       }
     }
     return { added, conflictPixels, newTiles: 0, provisionalPixels };

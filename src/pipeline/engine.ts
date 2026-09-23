@@ -41,7 +41,7 @@ import { type Keyframe, KeyframeIndex } from '../core/keyframes.ts';
 import { Compositor } from '../core/compositor.ts';
 import { pad } from '../core/math.ts';
 import { analysisFactor, equalRGBA } from '../core/raster.ts';
-import { core, type VotingRecord, type VotingRing } from '../core/wasm.ts';
+import { core, type FrameRing, type Resident, type ResidentFrame, type VotingRecord, type VotingRing } from '../core/wasm.ts';
 import { encodeRGBA } from '../codec/png.ts';
 import { buildFramedCanvas } from '../core/framing.ts';
 import { AnalysisComputer } from '../core/compute.ts';
@@ -157,6 +157,19 @@ export class Engine {
   private consistencyThinLayers = 0;
   /** Core-resident voting ring of the running solve pass; released in run()'s finally on every exit path. */
   private voting?: VotingRing;
+  /** Core-resident render state (frame ring, label plane, consistency mask); released with the render pass. */
+  private frames?: FrameRing;
+  private residentLabels?: Resident;
+  private residentMask?: Resident;
+  /** Core-resident layer-learning accumulators of the scan pass; finish() releases them, run()'s finally otherwise. */
+  private learner?: LayerLearner;
+  private releaseResidentRenderState(compositor?: { dispose(): void }): void {
+    compositor?.dispose();
+    this.frames?.free();
+    this.residentLabels?.free();
+    this.residentMask?.free();
+    this.frames = this.residentLabels = this.residentMask = undefined;
+  }
   private pauseWaiters: (() => void)[] = [];
   private processed = 0;
   private regions: Region[] = [];
@@ -226,7 +239,7 @@ export class Engine {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
   }
-  private async gray(image: RGBA): Promise<Gray> {
+  private async gray(image: RGBA | ResidentFrame): Promise<Gray> {
     if (image.width !== this.source.info.width || image.height !== this.source.info.height) {
       throw new Error(
         `FRAME_GEOMETRY_CHANGED: observation is ${image.width}×${image.height}; the run is ${this.source.info.width}×${this.source.info.height}.`,
@@ -510,6 +523,9 @@ export class Engine {
     } finally {
       this.voting?.free();
       this.voting = undefined;
+      this.learner?.dispose();
+      this.learner = undefined;
+      this.releaseResidentRenderState();
       this.computer.dispose();
       this.source.dispose();
       // The `stopped` latch (unlike `stopRequested`) is deliberately left set across the whole run, from
@@ -533,6 +549,9 @@ export class Engine {
     // Mixed scan/ (ScanRecord) and scan-features/ (CompactFeatures) rows batched together; both are scratch that
     // solve() consumes once and this run deletes afterwards, so one flush cadence for both is enough.
     const pending: { key: string; value: unknown }[] = [];
+    // Two resident native frames (previous, current) so each decoded frame is copied into the core once. Sized on
+    // the first frame, like `factor`: a CONTAINER_SIZE_MISMATCH notice on that frame may rewrite source.info.
+    let scanFrames: FrameRing | undefined;
     const it = this.source.frames();
     let storageFailed = false;
     let endedNaturally = false;
@@ -569,10 +588,16 @@ export class Engine {
             // rewritten source.info.width/height, so the factor is derived only after that can no longer change.
             this.factor = analysisFactor(this.source.info.width, this.source.info.height, this.project.settings.analysisSize);
             this.refineRadius = Math.max(3, Math.ceil(this.factor / 2) + 1);
+            scanFrames = this.frames = core().frameRing(2, this.source.info.width, this.source.info.height);
           }
           const duplicate = !!previousImage && equalRGBA(previousImage, frame.image);
-          const g = duplicate ? previous! : await this.gray(frame.image), features = duplicate ? previousFeatures! : extractFeatures(g);
-          learner ??= new LayerLearner(g.width, g.height);
+          // The native frame enters core memory once here; the downscale and the layer learner both read it there.
+          // A frame whose geometry differs from the run's is rejected by gray() below with the historical message.
+          const current = frame.image.width === scanFrames!.width && frame.image.height === scanFrames!.height
+            ? scanFrames!.upload(frame.index, frame.image)
+            : frame.image;
+          const g = duplicate ? previous! : await this.gray(current), features = duplicate ? previousFeatures! : extractFeatures(g);
+          learner ??= this.learner = new LayerLearner(g.width, g.height);
           let field: MotionField;
           if (duplicate && lastField) {
             this.duplicates++;
@@ -588,14 +613,14 @@ export class Engine {
           } else if (previous) {
             field = estimateMotion(previous, g, lastField, previousFeatures, features);
             if (informativeField(field)) {
-              learner.add(field, previous, g, previousImage, frame.image);
+              learner.add(field, previous, g, scanFrames!.get(frame.index - 1) ?? previousImage, current);
               baseline = { gray: g, image: frame.image, features, index: frame.index };
             } else if (baseline && frame.index - baseline.index >= 4) {
               // The same displacement measured over more frames crosses the analysis-pixel evidence threshold
               // that a single sub-pixel step cannot; this is the only extra estimateMotion call, and only here.
               const longField = estimateMotion(baseline.gray, g, undefined, baseline.features, features);
               if (informativeField(longField)) {
-                learner.add(longField, baseline.gray, g, baseline.image, frame.image);
+                learner.add(longField, baseline.gray, g, scanFrames!.get(baseline.index) ?? baseline.image, current);
                 baseline = { gray: g, image: frame.image, features, index: frame.index };
               } else if (frame.index - baseline.index > 24) {
                 baseline = { gray: g, image: frame.image, features, index: frame.index };
@@ -745,6 +770,8 @@ export class Engine {
       try {
         await it.return(undefined);
       } catch { /* already unwinding */ }
+      scanFrames?.free();
+      this.frames = undefined;
     }
     if (pending.length && !storageFailed) {
       // Routed through storagePutMany (not a bare store.putMany) so a quota/transaction failure on this
@@ -1738,23 +1765,24 @@ export class Engine {
    *  default 1 and are never read by the compositor (it already gates on region membership before consulting
    *  this mask). */
   private consistencyMask(
-    image: RGBA,
-    atlas: RegionAtlas,
+    image: RGBA | ResidentFrame,
+    atlas: RegionAtlas | Uint8Array | Resident,
     region: Region,
     code: number,
     pose: Point,
     canvasId: string,
-    prev?: { image: RGBA; x: number; y: number; canvasId: string; occlusions?: Rect[]; voting?: ConsistencyVote },
-    next?: { image: RGBA; x: number; y: number; canvasId: string; occlusions?: Rect[]; voting?: ConsistencyVote },
+    prev?: { image: RGBA | ResidentFrame; x: number; y: number; canvasId: string; occlusions?: Rect[]; voting?: ConsistencyVote },
+    next?: { image: RGBA | ResidentFrame; x: number; y: number; canvasId: string; occlusions?: Rect[]; voting?: ConsistencyVote },
     voting?: ConsistencyVote,
-  ): Uint8Array {
+    output?: Resident,
+  ): Uint8Array | Resident {
     // The mask itself is computed by the Rust core (rust/core/src/consistency.rs); this keeps the
     // canvas-identity gate (a neighbour only counts when its placement resolved to the same canvas) here.
     const neighbour = (n: typeof prev) =>
       n && n.canvasId === canvasId ? { image: n.image, x: n.x, y: n.y, occlusions: n.occlusions, voting: n.voting } : undefined;
-    return core().consistencyMask({
+    const input = {
       image,
-      labels: atlas.labels,
+      labels: atlas instanceof RegionAtlas ? atlas.labels : atlas,
       region: region.rect,
       code,
       pose,
@@ -1763,7 +1791,10 @@ export class Engine {
       voting,
       factor: this.factor,
       noise: this.noise,
-    });
+    };
+    if (!output) return core().consistencyMask(input);
+    core().consistencyMaskInto(input, output);
+    return output;
   }
   private async render(): Promise<void> {
     this.phase = 'rendering';
@@ -1781,6 +1812,13 @@ export class Engine {
     for await (const { value } of iterate<Attachment>(this.store, 'attach/')) {
       attachments.set(value.id, value);
     }
+    // Core-resident render state: each decoded native frame enters core memory once (three slots: previous,
+    // current, lookahead), the atlas label plane once per pass, and the consistency mask is produced and consumed
+    // inside the core. Freed in this pass's finally; run()'s finally covers abnormal exits.
+    const { width: frameW, height: frameH } = this.source.info;
+    const frames = this.frames = core().frameRing(3, frameW, frameH);
+    const residentLabels = this.residentLabels = core().upload(this.atlas!.labels);
+    const residentMask = this.residentMask = core().alloc(frameW * frameH);
     const fixedPixels = new Map<string, Uint32Array>(), previousPlacements = new Map<string, Placement>();
     const fixedBytes = this.regions.filter((r) => r.kind === 'fixed').reduce(
       (n, r) => n + Math.ceil(r.rect.width) * Math.ceil(r.rect.height) * 4,
@@ -1793,6 +1831,18 @@ export class Engine {
       this.source.info.width * this.source.info.height * 5 + fixedBytes + 8 * 1024 * 1024 +
         this.source.info.width * this.source.info.height * 4,
     );
+    const raisedTiles = this.tiles.ensureFootprint(this.source.info.width, this.source.info.height);
+    if (raisedTiles) {
+      await this.diagnostics.emit({
+        code: 'MEMORY_BUDGET_RAISED',
+        severity: 'info',
+        message: `瓦片缓存从预算允许的 ${this.tiles.maxTiles - raisedTiles} 块提高到 ${this.tiles.maxTiles} 块（约 ${
+          Math.round(this.tiles.maxTiles * this.tiles.size * this.tiles.size * 4.3 / 1024 / 1024)
+        } MB），以容纳一帧触及的全部瓦片。`,
+        action: '小于单帧覆盖范围的缓存会让每一帧都完整地重新解码与编码所有瓦片；如需更低内存，请降低录屏分辨率。',
+        detail: { budgetMB: this.project.settings.memoryMB, tiles: this.tiles.maxTiles, raisedBy: raisedTiles },
+      });
+    }
     // Resolves a raw (odometry-space) Placement into its final render-time pose and canvas: pose-graph
     // correction, attachment-shift, and the attachment chain walk. Shared by the current frame's own placements
     // and by the one-frame-lookahead neighbour placements consistencyMask() compares against — both need
@@ -1951,7 +2001,8 @@ export class Engine {
           // excepted (see consistencyMask's doc comment): a screen-fixed overlay occupies a different world
           // position every frame, so it never agrees with a neighbour sampled at the SAME world position and
           // ends up provisional instead of burned permanently into the canvas.
-          let consistent: Uint8Array | undefined;
+          let consistent: Uint8Array | Resident | undefined;
+          const current = frames.upload(frame.index, image);
           if (region.kind === 'moving') {
             const code = this.atlas!.code(region);
             const prevRaw = prevImage ? prevPlan?.placements.find((pl) => pl.layer === p.layer && !pl.skip) : undefined;
@@ -1959,22 +2010,33 @@ export class Engine {
             const prevResolved = prevRaw ? await resolvePlacement(prevRaw, frame.index - 1) : undefined;
             const nextResolved = nextRaw ? await resolvePlacement(nextRaw, frame.index + 1) : undefined;
             consistent = this.consistencyMask(
-              image,
-              this.atlas!,
+              current,
+              residentLabels,
               region,
               code,
               p,
               p.canvasId,
               prevResolved
-                ? { image: prevImage!, ...prevResolved, occlusions: prevRaw?.occlusions, voting: prevVoting?.[region.id] }
+                ? {
+                  image: frames.upload(frame.index - 1, prevImage!),
+                  ...prevResolved,
+                  occlusions: prevRaw?.occlusions,
+                  voting: prevVoting?.[region.id],
+                }
                 : undefined,
               nextResolved
-                ? { image: nextImage!, ...nextResolved, occlusions: nextRaw?.occlusions, voting: nextVoting?.[region.id] }
+                ? {
+                  image: frames.upload(frame.index + 1, nextImage!),
+                  ...nextResolved,
+                  occlusions: nextRaw?.occlusions,
+                  voting: nextVoting?.[region.id],
+                }
                 : undefined,
               votingRecord?.[region.id],
+              residentMask,
             );
           }
-          const stats = await compositor.add(image, region, p, frame.index, meta, consistent);
+          const stats = await compositor.add(image, region, p, frame.index, meta, consistent, current);
           this.project.tiles += stats.tiles;
           this.project.observedPixels += stats.added;
           dirtyMetas.add(p.canvasId);
@@ -1994,8 +2056,12 @@ export class Engine {
         }
         this.project.renderedFrames = frame.index + 1;
         if (performance.now() - lastFlush >= 1200) {
+          // Only tiles untouched since the previous checkpoint: the active footprint is repainted every frame
+          // and would otherwise be re-encoded on every checkpoint; it is written when it leaves the footprint.
+          const settledBefore = lastFlush;
           lastFlush = performance.now();
-          await this.tiles.flush();
+          await this.tiles.flush(settledBefore);
+          await compositor.flush();
           await this.diagnostics.flush();
           await flushMetas();
           if (pendingObservations.length) {
@@ -2098,6 +2164,7 @@ export class Engine {
       try {
         await it.return(undefined);
       } catch { /* already unwinding */ }
+      this.releaseResidentRenderState(compositor);
       // Best-effort: committed tiles and in-memory metas should not be stranded even when the loop exited through
       // a storage failure; a repeat failure here is swallowed rather than masking the original error.
       try {
@@ -2116,7 +2183,10 @@ export class Engine {
         } catch { /* the journal write itself failed too; the run is already marked partial. */ }
       }
       try {
-        if (!storageFailed) await flushMetas();
+        if (!storageFailed) {
+          await compositor.flush();
+          await flushMetas();
+        }
       } catch (error) {
         storageFailed = true;
         this.partial = true;

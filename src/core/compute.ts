@@ -1,5 +1,6 @@
 import type { Gray, RGBA } from '../types.ts';
 import { downscaleGray } from './raster.ts';
+import { ResidentFrame } from './wasm.ts';
 
 // A small structural surface keeps the CPU engine portable to runtimes without WebGPU DOM declarations.
 interface BufferLike {
@@ -124,7 +125,7 @@ export class AnalysisComputer {
     this.device?.destroy();
     this.device = undefined;
   }
-  async gray(image: RGBA, factor: number): Promise<Gray> {
+  async gray(image: RGBA | ResidentFrame, factor: number): Promise<Gray> {
     if (!Number.isInteger(factor) || factor < 1) throw new Error(`Invalid analysis factor ${factor}.`);
     if (this.mode === 'cpu' || this.disabled || factor === 1 || factor > 128) {
       this.stats.cpuFrames++;
@@ -163,7 +164,11 @@ export class AnalysisComputer {
       return downscaleGray(image, factor);
     }
   }
-  private async dispatch(image: RGBA, factor: number): Promise<Gray> {
+  private async dispatch(frame: RGBA | ResidentFrame, factor: number): Promise<Gray> {
+    // The GPU upload needs the bytes in JS; a core-resident frame is read back once for it.
+    const image: RGBA = frame instanceof ResidentFrame
+      ? { width: frame.width, height: frame.height, data: new Uint8ClampedArray(frame.bytes().buffer) }
+      : frame;
     const device = this.device!;
     // Same dimensions as the CPU path (raster.ts): a dimension smaller than `factor` still yields one output pixel.
     const width = Math.max(1, Math.ceil(image.width / factor)), height = Math.max(1, Math.ceil(image.height / factor));

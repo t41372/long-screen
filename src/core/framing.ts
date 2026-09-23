@@ -293,6 +293,7 @@ export async function buildFramedCanvas(
     }
     if (dst.some((w) => w >>> 24)) {
       tile.dirty = true;
+      tile.touched = performance.now();
       meta.tileCount++;
       meta.observedPixels += countCovered(tile.coverage);
       meta.provisionalPixels += countCovered(tile.provisional);

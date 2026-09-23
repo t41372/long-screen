@@ -1,5 +1,5 @@
 import type { Gray, Rect, RGBA } from '../types.ts';
-import { core } from './wasm.ts';
+import { core, ResidentFrame } from './wasm.ts';
 
 /** The floating-point pose remains diagnostic data; every native raster operation uses this integer origin. */
 export interface RasterPose {
@@ -18,7 +18,7 @@ export function analysisFactor(width: number, height: number, analysisSize: numb
   return Math.max(1, Math.ceil(Math.max(width, height) / Math.max(1, analysisSize)));
 }
 /** Box-filtered luma at an integer factor (Rust core). Deterministic in every runtime; no canvas resampling. */
-export function downscaleGray(image: RGBA, factor: number): Gray {
+export function downscaleGray(image: RGBA | ResidentFrame, factor: number): Gray {
   if (!Number.isInteger(factor) || factor < 1) {
     throw new Error(`Invalid analysis factor ${factor}.`);
   }

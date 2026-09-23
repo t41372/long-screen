@@ -134,6 +134,7 @@ Deno.test('compositor: an L-shaped conflict leaves the pixel-identical concave-c
   assertEquals(tile.conflicts[q(2, 0)], 0, 'the concave-corner block must not be flagged as conflict');
   assertEquals(tile.frozen[q(2, 0)], 0, 'the concave-corner block must not be frozen');
   assertEquals(tile.owner[q(2, 0)], 1, 'the concave-corner block keeps the first frame as owner');
+  await compositor.flush();
   const temporal = await db.scan('temporal/c/', { limit: 10 });
   assertEquals(temporal.length, 1);
   // F8/F12 regression: overwritePatch's conflictPixels must fold into stats.conflicts as PIXELS, not as a BLOCK
@@ -154,6 +155,7 @@ Deno.test('compositor: disjoint conflict components merge into one record with a
   paintRect(img1, { x: 0, y: 0, width: 32, height: 16 }, hot);
   paintRect(img1, { x: 80, y: 0, width: 32, height: 16 }, hot);
   await compositor.add(img1, region, place(0, 0, 0.5), 1, meta);
+  await compositor.flush();
   const afterFrame1 = await db.scan('temporal/c/', { limit: 10 });
   assertEquals(afterFrame1.length, 2, 'two disjoint components produce two records');
   const img2 = solid(112, 16, base);
@@ -161,6 +163,7 @@ Deno.test('compositor: disjoint conflict components merge into one record with a
   paintRect(img2, { x: 80, y: 0, width: 32, height: 16 }, hot);
   paintRect(img2, { x: 32, y: 0, width: 48, height: 16 }, hot);
   await compositor.add(img2, region, place(0, 0, 0.5), 2, meta);
+  await compositor.flush();
   const afterFrame2 = await db.scan<{ blocks: [number, number][]; rect: Rect }>('temporal/c/', { limit: 10 });
   assertEquals(afterFrame2.length, 1, 'the bridging component merges both prior records, leaving no orphan');
   assertEquals(afterFrame2[0].value.blocks.length, 7);

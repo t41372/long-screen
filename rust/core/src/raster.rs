@@ -23,21 +23,47 @@ pub fn downscaled_size(width: usize, height: usize, factor: usize) -> (usize, us
 
 /// Box-filtered luma at an integer factor. The mean is taken over the luma-weighted RGB sum, then `>> 8`,
 /// exactly like the historical analysis path, so analysis features stay comparable across releases.
+///
+/// Rows are swept sequentially into one accumulator per output column (a factor-wide box), so the input is
+/// read once, in order, instead of once per output cell with a stride.
 pub fn downscale_gray(rgba: &[u8], width: usize, height: usize, factor: usize, out: &mut [u8]) {
     let (ow, oh) = downscaled_size(width, height, factor);
     debug_assert!(out.len() >= ow * oh);
+    if factor == 1 {
+        grayscale(&rgba[..width * height * 4], &mut out[..width * height]);
+        return;
+    }
+    let mut acc = vec![0u64; ow];
     for y in 0..oh {
         let bh = factor.min(height - y * factor);
-        for x in 0..ow {
-            let bw = factor.min(width - x * factor);
-            let mut sum = 0u64;
-            for row in 0..bh {
-                let start = ((y * factor + row) * width + x * factor) * 4;
-                for px in rgba[start..start + bw * 4].chunks_exact(4) {
-                    sum += px[0] as u64 * 77 + px[1] as u64 * 150 + px[2] as u64 * 29;
+        acc.fill(0);
+        for row in 0..bh {
+            let start = (y * factor + row) * width * 4;
+            let line = &rgba[start..start + width * 4];
+            // Whole boxes first (a fixed-trip-count inner loop the compiler can unroll), then the partial one.
+            let full = width / factor;
+            for (bx, cell) in line[..full * factor * 4]
+                .chunks_exact(factor * 4)
+                .enumerate()
+            {
+                let mut sum = 0u32;
+                for px in cell.chunks_exact(4) {
+                    sum += px[0] as u32 * 77 + px[1] as u32 * 150 + px[2] as u32 * 29;
                 }
+                acc[bx] += sum as u64;
             }
-            out[y * ow + x] = ((sum / (bw * bh) as u64) >> 8) as u8;
+            if full < ow {
+                let mut sum = 0u32;
+                for px in line[full * factor * 4..].chunks_exact(4) {
+                    sum += px[0] as u32 * 77 + px[1] as u32 * 150 + px[2] as u32 * 29;
+                }
+                acc[full] += sum as u64;
+            }
+        }
+        let out_row = &mut out[y * ow..y * ow + ow];
+        for (x, o) in out_row.iter_mut().enumerate() {
+            let bw = factor.min(width - x * factor);
+            *o = ((acc[x] / (bw * bh) as u64) >> 8) as u8;
         }
     }
 }

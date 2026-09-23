@@ -1,9 +1,12 @@
-/** Loads the Rust core for Deno tests from the workspace build output, building it when missing or stale. */
+/** Loads the Rust core for Deno tests from the workspace build output: the SIMD128 module when this runtime
+ *  validates it (as the browser adapter would choose), otherwise the scalar baseline. `LONGSCREEN_CORE=scalar`
+ *  forces the baseline so both builds can be exercised against the same tests. */
 import { fromFileUrl } from '@std/path';
-import { type Core, core, coreLoaded, loadCore } from '../../src/core/wasm.ts';
+import { type Core, core, coreLoaded, loadCore, simdSupported } from '../../src/core/wasm.ts';
 
 const root = fromFileUrl(new URL('../../', import.meta.url));
-export const CORE_WASM = `${root}rust/target/wasm32-unknown-unknown/release/long_screen_core.wasm`;
+const variant = Deno.env.get('LONGSCREEN_CORE') === 'scalar' || !simdSupported() ? 'scalar' : 'simd';
+export const CORE_WASM = `${root}rust/target/${variant}/wasm32-unknown-unknown/release/long_screen_core.wasm`;
 
 export async function ensureCore(): Promise<Core> {
   if (coreLoaded()) return core();

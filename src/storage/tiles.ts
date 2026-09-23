@@ -22,6 +22,8 @@ export interface Tile {
   frozen: Uint8Array;
   dirty: boolean;
   existed: boolean;
+  /** `performance.now()` of the last write that dirtied this tile; lets flush() skip tiles still being painted. */
+  touched?: number;
 }
 export interface StoredTile extends TilePayload {
   coverage: Uint8Array;
@@ -94,6 +96,20 @@ export class TileStore {
   configureBudget(memoryMB: number, reservedBytes: number): void {
     const available = Math.max(0, memoryMB * 1024 * 1024 - reservedBytes);
     this.maxTiles = Math.max(2, Math.floor(available * .8 / (this.size * this.size * 4.3)));
+  }
+  /** Tiles one frame of `width`×`height` can touch at any integer pose (a partial tile on each side). */
+  footprint(width: number, height: number): number {
+    return (Math.ceil(width / this.size) + 1) * (Math.ceil(height / this.size) + 1);
+  }
+  /** Raises the cache limit to at least one frame footprint. An LRU cache smaller than the set a frame touches
+   *  every pass turns each frame into a full miss cycle (measured: 13,800 decodes / 29,220 encodes over 935
+   *  frames at 3456×2234 with a 38-tile limit), so the budget yields here; returns the tiles added, 0 if none. */
+  ensureFootprint(width: number, height: number): number {
+    const needed = this.footprint(width, height) + 2;
+    if (this.maxTiles >= needed) return 0;
+    const added = needed - this.maxTiles;
+    this.maxTiles = needed;
+    return added;
   }
   /** Checks residency without touching LRU order; callers can schedule hits before cold loads. */
   isResident(canvasId: string, x: number, y: number, level = 0): boolean {
@@ -169,8 +185,12 @@ export class TileStore {
     t.dirty = false;
     t.existed = true;
   }
-  async flush(): Promise<void> {
-    const dirty = [...this.cache.values()].filter((t) => t.dirty), rows: Row[] = [];
+  /** Encodes and writes dirty resident tiles in one batch. With `settledBefore`, only tiles whose last write
+   *  precedes that timestamp are written: tiles still being painted every frame are left for a later flush or
+   *  for eviction, instead of being re-encoded on every periodic checkpoint. */
+  async flush(settledBefore?: number): Promise<void> {
+    const dirty = [...this.cache.values()].filter((t) => t.dirty && (settledBefore === undefined || (t.touched ?? 0) < settledBefore)),
+      rows: Row[] = [];
     for (const t of dirty) {
       rows.push(...await this.encodeRows(t));
     }
