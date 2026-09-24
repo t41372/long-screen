@@ -8,7 +8,10 @@ import { BlobReader } from './reader.ts';
  *    non-standard signed offsets;
  *  - `MediaInfo.duration`, computed the same way ISO 14496-12 §8.6.6 and QuickTime's edit list always have been
  *    here: `mdhd`'s duration/timescale, overridden by the single edit-list entry's own timescale-converted duration
- *    when a `elst` is present. mediabunny's own duration accessors don't apply an edit list this way. */
+ *    when a `elst` is present. mediabunny's own duration accessors don't apply an edit list this way;
+ *  - a file that ends inside its `mdat`/`moof` (`truncated`), which mediabunny demuxes without comment up to the
+ *    last sample the file still holds.
+ *  It is never stricter than mediabunny about the file's top-level layout (see `topLevel`). */
 interface Box {
   type: string;
   start: number;
@@ -17,7 +20,8 @@ interface Box {
   size: number;
 }
 const text = (a: Uint8Array) => new TextDecoder().decode(a);
-async function boxAt(r: BlobReader, offset: number, parentEnd = r.file.size): Promise<Box> {
+/** A box header as written, unchecked: `end` may lie past `parentEnd` and `size` may be smaller than the header. */
+async function headerAt(r: BlobReader, offset: number, parentEnd: number): Promise<Box> {
   const h = await r.read(offset, 8);
   const v = new DataView(h.buffer, h.byteOffset, h.byteLength);
   let size = v.getUint32(0), header = 8;
@@ -28,10 +32,34 @@ async function boxAt(r: BlobReader, offset: number, parentEnd = r.file.size): Pr
   } else if (size === 0) {
     size = parentEnd - offset;
   }
-  if (size < header || offset + size > parentEnd) {
-    throw new Error(`Invalid MP4 box ${type} at ${offset}.`);
-  }
   return { type, start: offset, data: offset + header, end: offset + size, size };
+}
+async function boxAt(r: BlobReader, offset: number, parentEnd = r.file.size): Promise<Box> {
+  const b = await headerAt(r, offset, parentEnd);
+  if (b.size < b.data - b.start || b.end > parentEnd) {
+    throw new Error(`Invalid MP4 box ${b.type} at ${offset}.`);
+  }
+  return b;
+}
+/** The file's top-level boxes, walked the way mediabunny's own `readMetadata` walks them: a header that does not
+ *  parse, or a box that runs past the end of the file, ends the walk instead of failing it. Recordings carry both —
+ *  bytes after the last box, or an `mdat` the file ends inside of because the recording or its transfer was cut
+ *  off — and mediabunny demuxes such a file from its moov regardless, so failing here would reject a recording the
+ *  demuxer itself reads. Boxes inside moov/moof stay strict (`children`). */
+async function topLevel(r: BlobReader): Promise<{ boxes: Box[]; cut?: Box }> {
+  const boxes: Box[] = [];
+  for (let p = 0; p + 8 <= r.file.size;) {
+    const b = await headerAt(r, p, r.file.size).catch(() => undefined);
+    if (!b || b.size < b.data - b.start) {
+      break;
+    }
+    if (b.end > r.file.size) {
+      return { boxes, cut: b.type === 'mdat' || b.type === 'moof' ? b : undefined };
+    }
+    boxes.push(b);
+    p = b.end;
+  }
+  return { boxes };
 }
 async function* children(r: BlobReader, parent: Box | { data: number; end: number }): AsyncGenerator<Box> {
   for (let p = parent.data; p + 8 <= parent.end;) {
@@ -56,14 +84,18 @@ export interface IsobmffProbeResult {
    *  single valid `elst` entry is present), or `undefined` when no video track was found — the caller then leaves
    *  duration to mediabunny's own `getPrimaryVideoTrack()` returning null and its frozen error text. */
   duration?: number;
+  /** The `mdat`/`moof` box the file ends inside of, when that is where the top-level walk stopped: its type and the
+   *  byte offset its size field says it ends at. Samples past the file's end are not there to decode. */
+  truncated?: { box: string; declaredEnd: number };
 }
 /** Runs the pre-check. Throws with the same frozen error text the hand-written MP4Demuxer used to, for conditions
  *  mediabunny does not reject on its own. A file with no moov and no video track is left to mediabunny's own
  *  `getPrimaryVideoTrack()` returning null — the caller maps that to the same frozen messages. */
 export async function probeIsobmff(file: Blob): Promise<IsobmffProbeResult> {
   const r = new BlobReader(file);
+  const top = await topLevel(r);
   let moov: Box | undefined;
-  for await (const b of children(r, { data: 0, end: r.file.size })) {
+  for (const b of top.boxes) {
     if (b.type === 'moov') {
       moov = b;
     }
@@ -93,8 +125,9 @@ export async function probeIsobmff(file: Blob): Promise<IsobmffProbeResult> {
       break;
     }
   }
+  const truncated = top.cut && { box: top.cut.type, declaredEnd: top.cut.end };
   if (!trak) {
-    return { signedCttsV0: false };
+    return { signedCttsV0: false, truncated };
   }
   const mdia = await child(r, trak, 'mdia'), mdhd = mdia && await child(r, mdia, 'mdhd');
   let timescale = 1, duration = 0;
@@ -158,7 +191,7 @@ export async function probeIsobmff(file: Blob): Promise<IsobmffProbeResult> {
       }
     }
   }
-  for await (const moof of children(r, { data: 0, end: r.file.size })) {
+  for (const moof of top.boxes) {
     if (moof.type !== 'moof') {
       continue;
     }
@@ -176,5 +209,5 @@ export async function probeIsobmff(file: Blob): Promise<IsobmffProbeResult> {
       }
     }
   }
-  return { signedCttsV0, duration };
+  return { signedCttsV0, duration, truncated };
 }

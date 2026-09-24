@@ -439,6 +439,32 @@ Deno.test('demux: isobmff-probe rejects a sample-description index other than 1 
   const ok = minimalProbeMP4({});
   await probeIsobmff(new File([ok], 'stsc-ok.mp4'));
 });
+Deno.test('demux: isobmff-probe is no stricter than mediabunny about the top level — bytes after the last box are ignored', async () => {
+  // scroll.mov keeps its moov last; the junk's first word parses as a size far past the end of the file.
+  const bytes = await Deno.readFile(new URL('scroll.mov', fixtures)), junk = new Uint8Array(256).fill(0x5a);
+  const d = await new MediabunnyDemuxer(new File([bytes, junk], 'trailing-junk.mov')).init();
+  assertEquals(d.frameCount, truth.frames);
+  assertEquals(d.warnings.filter((w) => w.startsWith('TRUNCATED_RECORDING')), []);
+});
+Deno.test('demux: a file that ends inside its mdat opens with a TRUNCATED_RECORDING warning when moov comes first, and as unfinished when it comes last', async () => {
+  const faststart = await Deno.readFile(new URL('scroll.mp4', fixtures)), cut = faststart.length - 30000;
+  const d = await new MediabunnyDemuxer(new File([faststart.subarray(0, cut)], 'cut.mp4')).init();
+  const warning = d.warnings.find((w) => w.startsWith('TRUNCATED_RECORDING'));
+  assert(warning?.includes(`声明到第 ${faststart.length} 字节，文件只有 ${cut} 字节`), warning);
+  // The metadata still lists every sample; only the ones the file still holds come out of packets().
+  assertEquals(d.frameCount, truth.frames);
+  let n = 0;
+  for await (const _ of d.packets()) {
+    n++;
+  }
+  assert(n > 0 && n < truth.frames, `${n} packets`);
+  const moovLast = await Deno.readFile(new URL('scroll.mov', fixtures));
+  await assertRejects(
+    () => new MediabunnyDemuxer(new File([moovLast.subarray(0, moovLast.length - 200)], 'cut.mov')).init(),
+    Error,
+    'MP4/MOV has no movie metadata (moov). The recording may be unfinished.',
+  );
+});
 Deno.test('demux: WebM skips the full-file frame-count walk when Segment Info Duration is present, and falls back to it when absent', async () => {
   const withDuration = await new MediabunnyDemuxer(await fixture('scroll.webm')).init();
   assertEquals(withDuration.frameCount, undefined);

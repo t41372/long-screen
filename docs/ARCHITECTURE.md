@@ -315,7 +315,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `source.ts` — `FrameSource` 实现的组装点：demuxer 选择、`FrameConverter` 接入、缓冲区释放。TS 外壳：编排 + 浏览器 API。
 - `reader.ts` — `Demuxer`/`Packet` 接口，以及 `BlobReader`：最多 8 个 256KiB 页面的随机访问读取，不调用整段 `arrayBuffer()`；现在只被 `isobmff-probe.ts` 使用（容器本身的读取交给了 mediabunny 自己的 `BlobSource`）。TS 外壳：I/O。
 - `mediabunny-demux.ts` — `MediabunnyDemuxer`：MP4/MOV/fMP4/WebM 解封装，包在 npm 包 mediabunny 的 `Input`/`BlobSource`/`EncodedPacketSink` 之上，只用它的 packet 级 API（不用它的解码 sink，解码仍是本项目自己的 WebCodecs 路径）；把 mediabunny "警告后继续"的几种情形翻译成本项目原有的、冻结的错误文案。TS 外壳：I/O（容器解析）。
-- `isobmff-probe.ts` — 一次轻量 box 扫描，只检测 mediabunny 自己不拒绝的几种情形（多重/变速剪辑列表、sample-description 索引 ≠ 1）与 mediabunny 没有对应诊断的版本 0 `ctts` 有符号偏移；不重复 mediabunny 的解封装本身。TS 外壳：I/O（容器解析）。
+- `isobmff-probe.ts` — 一次轻量 box 扫描，只检测 mediabunny 自己不拒绝的几种情形（多重/变速剪辑列表、sample-description 索引 ≠ 1）与 mediabunny 没有对应诊断的版本 0 `ctts` 有符号偏移，以及文件在 `mdat`/`moof` 中途结束（`TRUNCATED_RECORDING` 警告；mediabunny 会不声不响地读到最后一个完整样本为止）；顶层 box 的容错与 mediabunny 一致（解析不了或超出文件末尾的顶层 box 结束扫描而不报错），不比它更严；不重复 mediabunny 的解封装本身。TS 外壳：I/O（容器解析）。
 - `convert.ts` — `VideoFrame` → RGBA 转换的可注入形态（直转/worker 转换）与显式释放缓冲池接入。TS 外壳：浏览器 API（WebCodecs）。
 - `convert-worker.ts` — 帧转换 worker：转移进来的 `VideoFrame` 上跑 `copyTo({format:'RGBA'})`，转移 RGBA 缓冲回去；刻意保持零依赖（不引入 `src/core/wasm.ts`）。TS 外壳：浏览器 API（Worker）。
 - `rgba-copy.ts` — `copyTo(RGBA)` 选项与结果布局校验，供直转/worker 转换器与 convert-worker.ts 共用。TS 外壳：浏览器 API。

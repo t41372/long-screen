@@ -106,6 +106,13 @@ export class MediabunnyDemuxer implements Demuxer {
       if (probe.signedCttsV0) {
         this.warnings.push(t('media.NONSTANDARD_SIGNED_CTTS_V0'));
       }
+      if (probe.truncated) {
+        // mediabunny's packet walk ends quietly at the last sample the file still holds, so without this the only
+        // sign would be the scan's PASS_FRAME_COUNT_MISMATCH at the end of a run.
+        this.warnings.push(
+          t('media.TRUNCATED_RECORDING', { box: probe.truncated.box, declaredEnd: probe.truncated.declaredEnd, size: this.file.size }),
+        );
+      }
     }
     let input: Input | undefined;
     try {

@@ -186,6 +186,8 @@ export const pipelineSections = {
     NONMONOTONIC_TIMESTAMP: '容器时间戳出现倒退；已按解码器的展示顺序继续处理，未丢弃观察。',
     NONSTANDARD_SIGNED_CTTS_V0:
       'NONSTANDARD_SIGNED_CTTS_V0: 该视频轨道的 ctts box 是 version 0，但包含负的合成时间偏移；ISO 14496-12 仅在 version 1 中定义负偏移。这些偏移按有符号处理（QuickTime/ReplayKit 的常见写法），未被当作异常大的正偏移。',
+    TRUNCATED_RECORDING:
+      'TRUNCATED_RECORDING: 文件在 {{box}} box 中途结束：该 box 声明到第 {{declaredEnd}} 字节，文件只有 {{size}} 字节。录制可能没有正常结束，或文件在复制/传输中被截断；截断处之后的帧无法解码，扫描到的帧会少于元数据中的帧数，结果将标记为 partial。',
   },
   exports: {
     tilesProgress: '导出原图与预览瓦片 {{n}}',

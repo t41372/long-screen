@@ -223,6 +223,8 @@ export const pipelineSections: Catalog<typeof zh> = {
       'A container timestamp went backwards; processing continued in the decoder’s presentation order, and no observation was discarded.',
     NONSTANDARD_SIGNED_CTTS_V0:
       'NONSTANDARD_SIGNED_CTTS_V0: This video track’s ctts box is version 0 but contains negative composition-time offsets; ISO 14496-12 only defines negative offsets in version 1. These offsets are treated as signed (a common QuickTime/ReplayKit convention), not as unusually large positive offsets.',
+    TRUNCATED_RECORDING:
+      'TRUNCATED_RECORDING: The file ends inside its {{box}} box: the box declares that it ends at byte {{declaredEnd}}, but the file has only {{size}} bytes. The recording may not have finished properly, or the file was cut off while being copied or transferred; frames after the cut cannot be decoded, so the scan finds fewer frames than the metadata lists and the result will be marked partial.',
   },
   exports: {
     tilesProgress: 'Exporting native and preview tiles {{n}}',
