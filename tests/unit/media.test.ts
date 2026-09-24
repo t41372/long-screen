@@ -914,7 +914,7 @@ Deno.test('source: canvas-backed converters require an OffscreenCanvas runtime',
   }
   assert(readThrew);
 });
-// R3-2: explicit-release conversion buffer pool (src/media/pool.ts). No fixed rotation — a buffer comes back
+// Explicit-release conversion buffer pool (src/media/pool.ts). No fixed rotation — a buffer comes back
 // ONLY when its holder calls release(), and an unreleased buffer is never handed out again (the worst case is
 // today's allocate-per-frame, never silent corruption of a still-live buffer).
 Deno.test('BufferPool: without release, every take() gets a fresh buffer; outstanding tracks the unreleased count', () => {

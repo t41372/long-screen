@@ -1,8 +1,8 @@
 /** Refactor-equivalence fingerprint: runs every synthetic scenario through the Engine and hashes EVERY row the run
  *  persisted (tiles, evidence, plans, observations, consistency verdicts, diagnostics, canvases, graph, regions…),
- *  normalised only for the random run id and wall-clock fields. Promoted from the orchestrator's scratchpad tool of
- *  the same name to a first-class repo script, so any tree can fingerprint itself with its own deno.json/config
- *  (no --config flag needed) and no <root> argument.
+ *  normalised only for the random run id and wall-clock fields. A first-class repo script (not an external tool),
+ *  so any tree can fingerprint itself with its own deno.json/config (no --config flag needed) and no <root>
+ *  argument.
  *
  *  Usage: deno run -A scripts/fingerprint-scenarios.ts <out.json> [--root <otherRepoRoot>] [--pixels] [scenario…]
  *  Without --root, fingerprints this checkout (dynamic-imports its own modules, resolved relative to this script).

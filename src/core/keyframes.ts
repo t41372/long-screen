@@ -1,6 +1,5 @@
 import type { Feature, Gray, Point, Rect, RGBA } from '../types.ts';
 import type { KV } from '../storage/db.ts';
-import { featureWords } from './features.ts';
 import type { Patch } from './motion.ts';
 import { pad } from './math.ts';
 import { core, type ResidentFrame, type ResidentGray } from './wasm.ts';
@@ -43,7 +42,7 @@ export interface RelocalizationQuery {
    * in which case `native` above is always used eagerly, exactly as the pre-port `find()` did. `nativeFilled`/
    * `markNativeFilled` share `native()`'s own per-frame memo, so whichever caller fills the plane first (this call
    * or a later `native()` call) is the only fill this frame — same contract as `track.ts`'s `reacquire`/
-   * `driftCorrection` (R4d step 4 reuses it here). */
+   * `driftCorrection`. */
   current?: RGBA | ResidentFrame;
   nativePlane?: ResidentGray;
   nativeFilled?: boolean;
@@ -61,13 +60,12 @@ export interface RelocalizationQuery {
    * target are recognised as the same physical place instead of scoring each other as rivals. */
   canonical?: (canvasId: string) => { canvasId: string; dx: number; dy: number };
 }
-/** Candidate evaluation core of find() (port-template §2): hypothesis matching, analysis audit and native-patch
- * refinement run in one Rust call (R4d step 4: `core().keyframesEvaluateCandidates`); the `Math.exp` confidence
- * formula and the scoring/rival/ambiguity resolution stay here in TS — the sort/best/rival selection needs the
- * exact host-`Math.exp`'d confidence as its sort key (see `rust/core/src/track.rs::RefinedCandidate`'s doc
- * comment). `canonical` replaces the original's per-call closure with a precomputed map from the candidate
- * canvasIds the async half already touched, built once per query (R2: was called repeatedly per `position()`
- * invocation). */
+/** Candidate evaluation core of find(): hypothesis matching, analysis audit and native-patch refinement run in
+ * one Rust call (`core().keyframesEvaluateCandidates`); the `Math.exp` confidence formula and the
+ * scoring/rival/ambiguity resolution stay here in TS — the sort/best/rival selection needs the exact
+ * host-`Math.exp`'d confidence as its sort key (see `rust/core/src/track.rs::RefinedCandidate`'s doc comment).
+ * `canonical` is a precomputed map from the candidate canvasIds the async half already touched, built once
+ * per query rather than recomputed per `position()` invocation. */
 export function evaluateCandidates(
   keyframes: Keyframe[],
   q: {
@@ -164,7 +162,7 @@ export class KeyframeIndex {
   }
   async add(k: Keyframe): Promise<void> {
     await this.db.put(`keyframe/${k.id}`, k);
-    const words = featureWords(k.features.filter((_, i) => i % 2 === 0));
+    const words = core().featureWords(k.features.filter((_, i) => i % 2 === 0));
     // Immutable per-keyframe postings. Reading a frequent word never allocates its entire list.
     for (let i = 0; i < words.length; i += 128) {
       await this.db.putMany(words.slice(i, i + 128).map((word) => ({ key: `word/${k.layer}/${word}/${pad(k.frame)}`, value: k.id })));
@@ -192,7 +190,7 @@ export class KeyframeIndex {
     if (features.length < 8) {
       return;
     }
-    const allWords = featureWords(features.filter((_, i) => i % 2 === 0)),
+    const allWords = core().featureWords(features.filter((_, i) => i % 2 === 0)),
       words = allWords.filter((_, i) => i % Math.max(1, Math.floor(allWords.length / 48)) === 0).slice(0, 48),
       votes = new Map<string, number>();
     let truncated = false;
@@ -243,7 +241,7 @@ export class KeyframeIndex {
       keyframes.push(k);
     }
     // canonical() is a pure function of canvasId; memoize it once per candidate canvas instead of calling it
-    // repeatedly from evaluateCandidates' position() closure (R2).
+    // repeatedly from evaluateCandidates' position() closure.
     const canonical = new Map<string, { canvasId: string; dx: number; dy: number }>();
     if (q.canonical) {
       for (const k of keyframes) {

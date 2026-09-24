@@ -1,5 +1,5 @@
-import type { Gray, Motion, MotionField, Rect, Region, RGBA } from '../types.ts';
-import { clamp, contains, norm } from './math.ts';
+import type { Gray, MotionField, Rect, Region, RGBA } from '../types.ts';
+import { norm } from './math.ts';
 import { core, type LearnerAccumulators, type LearnerHandle, type Resident, ResidentFrame } from './wasm.ts';
 /** A field carries real evidence only once some model moved more than analysis jitter and is reasonably well matched;
  * shared by per-frame and long-baseline (frame t−k vs t) evidence so both are held to the same bar. */
@@ -116,70 +116,16 @@ export class LayerLearner {
     return core().finishRegions(this.width, this.height, this.cell, this.acc, nativeWidth, nativeHeight, factor, this.reference);
   }
 }
-/** R6-B (final-verify-report.md item 13): this TS copy's one production caller, `solve/track.ts::ownFeaturesOf`,
- *  now calls `rust/core/src/region.rs::filter_features` instead — see that module's doc comment. This function
- *  stays only for `regionMotion` below (test-only, final-verify-report.md item 12: not this round's job) and for
- *  tests exercising the Rust port's parity against it (`tests/unit/parity/regions.test.ts`). */
-export function regionContains(region: Region, x: number, y: number, nativeWidth: number, nativeHeight: number): boolean {
-  if (!contains(region.rect, x, y) || region.exclusions?.some((r) => contains(r, x, y))) {
-    return false;
-  }
-  if (region.crop && !contains(region.crop, x, y)) {
-    return false;
-  }
-  if (region.solid || !region.mask) {
-    return true;
-  }
-  // The downscale truth is floor(x/factor), including the final partial cell; fall back to the ratio only for
-  // regions built before `factor` was recorded (e.g. hand-built test masks).
-  const xx = region.factor
-    ? clamp(Math.floor(x / region.factor), 0, region.maskWidth! - 1)
-    : clamp(Math.floor(x * region.maskWidth! / nativeWidth), 0, region.maskWidth! - 1);
-  const yy = region.factor
-    ? clamp(Math.floor(y / region.factor), 0, region.maskHeight! - 1)
-    : clamp(Math.floor(y * region.maskHeight! / nativeHeight), 0, region.maskHeight! - 1);
-  return !!region.mask[yy * region.maskWidth! + xx];
-}
-export function regionMotion(field: MotionField, region: Region, width: number, height: number): Motion {
-  if (region.kind === 'fixed') {
-    return { x: 0, y: 0, support: 100, unique: 100, confidence: 1, error: 0, ambiguous: false };
-  }
-  const votes = new Float64Array(field.motions.length);
-  let total = 0;
-  for (let y = 0; y < field.rows; y++) {
-    for (let x = 0; x < field.cols; x++) {
-      const px = Math.min(width - 1, (x + .5) * field.cell * width / (field.cols * field.cell)),
-        py = Math.min(height - 1, (y + .5) * field.cell * height / (field.rows * field.cell));
-      // Map by actual analysis dimensions when available, not by padded grid dimensions.
-      const nx = region.maskWidth ? Math.min(width - 1, (x + .5) * field.cell * width / region.maskWidth) : px;
-      const ny = region.maskHeight ? Math.min(height - 1, (y + .5) * field.cell * height / region.maskHeight) : py;
-      if (!regionContains(region, nx, ny, width, height)) {
-        continue;
-      }
-      const i = y * field.cols + x, w = field.confidence[i] / 255;
-      votes[field.labels[i]] += w;
-      total += w;
-    }
-  }
-  let best = 0;
-  for (let i = 1; i < votes.length; i++) {
-    if (votes[i] > votes[best]) {
-      best = i;
-    }
-  }
-  const m = field.motions[best];
-  return { ...m, confidence: field.difference < .12 ? .98 : m.confidence * clamp(votes[best] / Math.max(.01, total) * 1.3, .25, 1) };
-}
-
-/** Native-resolution pixel ownership computed once per run: compositing loops index a byte instead of calling
- *  regionContains per pixel. `resident` is the label plane's ONLY copy in core memory — solve/render/compositor
+/** Native-resolution pixel ownership computed once per run: compositing loops index a byte instead of testing
+ *  region membership per pixel (`rust/core/src/region.rs::Region::contains`, via `filter_features` and the
+ *  atlas label plane below). `resident` is the label plane's ONLY copy in core memory — solve/render/compositor
  *  read it directly (`atlas.resident`) instead of re-uploading `atlas.labels`, so the plane crosses the JS/Wasm
  *  boundary exactly once, at construction. `resident` lives for the whole run; call `dispose()` exactly once
  *  (run()'s finally) when it is no longer needed. */
 export class RegionAtlas {
   /** Core-resident label plane (0 = owned by no region, otherwise index + 1 into `regions`; first-containing-
-   *  region-wins, matching regionContains semantics). The single source of truth; `labels` below is a cached
-   *  copy of it, only materialised the first time a JS-side reader actually needs one. */
+   *  region wins). The single source of truth; `labels` below is a cached copy of it, only materialised the
+   *  first time a JS-side reader actually needs one. */
   readonly resident: Resident;
   /** Per-code pixel counts computed once in the same Rust call that builds `resident`, so count() is O(1)
    *  without a second scan (in Rust OR in TS) of the label plane. */

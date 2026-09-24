@@ -205,15 +205,6 @@ bench(
   5,
   5,
 );
-const filtered = core().pngFilterSub(tile, 512, 512);
-bench(
-  'PNG unfilter (512² tile)',
-  () => ts.unfilterPNG(filtered, 512, 512, 4),
-  () => core().pngUnfilter(filtered, 512, 512, 4),
-  (x, y) => assertEquals(x, y),
-  5,
-  5,
-);
 
 console.log(
   JSON.stringify({

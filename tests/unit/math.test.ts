@@ -1,5 +1,6 @@
 import { assertEquals } from '@std/assert';
-import { clamp, DisjointSet, hamming, intersect, median, norm, pad, popcount, rng, union } from '../../src/core/math.ts';
+import { clamp, intersect, median, norm, pad, rng, union } from '../../src/core/math.ts';
+import { DisjointSet, hamming, popcount } from '../support/reference/math.ts';
 Deno.test('math: clamp, median, norm, pad, popcount, hamming, rects', () => {
   assertEquals(clamp(5, 0, 3), 3);
   assertEquals(clamp(-1, 0, 3), 0);

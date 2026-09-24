@@ -1,5 +1,5 @@
 //! Linear-memory allocation, bounds checking, and the handle-table pattern shared by every stateful domain
-//! (`learner`, `voting`).
+//! (`layers`, `voting`, `temporal`, `pose_graph`, `regions`, `png`'s encode handles).
 
 use std::alloc::{alloc, dealloc, Layout};
 

@@ -10,15 +10,15 @@ import {
   countCovered,
   covered,
   markCovered,
-  markProvisional,
   provisional,
   QUALITY_BLOCK,
   type TileIndex,
   type TileStore,
 } from '../../../src/storage/tiles.ts';
 import { decodePNG } from '../../../src/codec/png.ts';
-import { intersect } from '../../../src/core/math.ts';
-import { regionContains } from '../../../src/core/layers.ts';
+import { intersect } from './math.ts';
+import { markProvisional } from '../tile-bits.ts';
+import { referenceRegionContains as regionContains } from './layers.ts';
 
 export interface ReferenceFrameLayout {
   width: number;

@@ -8,7 +8,6 @@
 import type { Feature, Gray, MotionField, RGBA, ScanRecord } from '../types.ts';
 import { informativeField, LayerLearner, RegionAtlas } from '../core/layers.ts';
 import { estimateMotion } from '../core/motion.ts';
-import { extractFeatures } from '../core/features.ts';
 import { core, coreBuild, type FrameRing, type ResidentFrame } from '../core/wasm.ts';
 import { analysisFactor, equalRGBA } from '../core/raster.ts';
 import { releaseUnlessHeld } from '../media/pool.ts';
@@ -26,8 +25,7 @@ interface Baseline {
   features: Feature[];
   index: number;
 }
-/** All per-pass state `scan()` used to close over, now fields; the small methods below are exactly the sub-steps
- * `scan()`'s single 287-line body used to inline. */
+/** Per-pass state, as fields rather than closed-over locals; the small methods below are the pass's sub-steps. */
 class ScanPass {
   private previous: Gray | undefined;
   private previousImage: RGBA | undefined;
@@ -201,7 +199,7 @@ class ScanPass {
         ? this.scanFrames!.upload(frame.index, frame.image)
         : frame.image;
       const g = duplicate ? this.previous! : await this.ctx.gray(current),
-        features = duplicate ? this.previousFeatures! : extractFeatures(g);
+        features = duplicate ? this.previousFeatures! : core().extractFeatures(g, 480);
       this.learner ??= this.ctx.learner = new LayerLearner(g.width, g.height);
       const field: MotionField = duplicate && this.lastField
         ? this.duplicateField(this.lastField, features)

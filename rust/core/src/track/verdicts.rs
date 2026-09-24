@@ -1,5 +1,5 @@
-//! Per-region, per-frame stateless tracking verdicts (R4b phase 3a) — split from the former monolithic
-//! `track.rs` (R6-B, final-verify-report.md item 10: the track trio was 842/842/717 lines). Byte-for-byte
+//! Per-region, per-frame stateless tracking verdicts — split out of the former monolithic
+//! `track.rs`. Byte-for-byte
 //! ports of `src/pipeline/solve/track.ts`'s frozen oracle in `tests/support/reference/track.ts`. Every
 //! function here is pure: plain scalars/tuples in, a plain result out, no I/O, no state carried between calls.
 //!
@@ -29,7 +29,7 @@ pub fn relocalize_verdict(m: Option<MatchInfo>, zoom_change: bool) -> bool {
     }
 }
 
-/// The three branches `track.ts::fragmentCause` chooses between: the trivial "gate" (R4b's "pure
+/// The three branches `track.ts::fragmentCause` chooses between: the trivial "gate" ("pure
 /// part"). `ZoomChange` means the caller returns `{ scale: fieldZoom, error: 0 }` directly;
 /// `ProbeScale` means the caller runs the existing `probeScale` kernel; `None` means "no cause"
 /// (`undefined`).
@@ -211,7 +211,7 @@ pub fn zoom_changed(region_zoom: Option<f64>, field_zoom: f64) -> bool {
 
 /// `track.ts::regionZoom`: the eligibility gate (`kind === 'moving' && ... >= 8`) fused with the
 /// existing `detect_scale` kernel it conditionally calls, so the ABI layer makes one call instead of
-/// counting uniques in TS first. `detect_scale` is unchanged (R4b: "detectScale is already Rust").
+/// counting uniques in TS first. `detect_scale` is unchanged ("detectScale is already Rust").
 pub fn region_zoom(kind_moving: bool, matches: &[MatchPoints]) -> Option<f64> {
     if !kind_moving {
         return None;

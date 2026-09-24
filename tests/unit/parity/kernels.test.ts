@@ -79,25 +79,18 @@ Deno.test('core parity: features, descriptors, matches and visual words agree wi
   assertEquals(core.featureWords([]), []);
 });
 
-Deno.test('core parity: PNG scanline reconstruction and Sub filtering are byte-exact for every filter and colour type', async () => {
+Deno.test('core parity: PNG Sub filtering is byte-exact; the frozen unfilter oracle round-trips it', async () => {
   const core = await ensureCore();
-  for (const channels of [1, 2, 3, 4]) {
-    for (const [w, h] of [[1, 1], [5, 3], [64, 17], [512, 4]]) {
-      const stride = w * channels, raw = new Uint8Array((stride + 1) * h);
-      for (let y = 0; y < h; y++) {
-        raw[y * (stride + 1)] = y % 5;
-        for (let i = 1; i <= stride; i++) raw[y * (stride + 1) + i] = Math.floor(random() * 256);
-      }
-      assertEquals(core.pngUnfilter(raw, w, h, channels), reference.unfilterPNG(raw, w, h, channels));
-    }
-  }
   const image = randomRGBA(37, 11);
   const filtered = core.pngFilterSub(new Uint8Array(image.data.buffer), 37, 11);
   assertEquals(filtered, reference.filterSub(image.data, 37, 11));
-  assertEquals(core.pngUnfilter(filtered, 37, 11, 4), image.data);
+  // `ls_png_unfilter` had no production caller (final-verify-report.md item 12) and was removed; `pngFilterSub`'s
+  // own inverse now lives only in the frozen oracle (tests/support/reference/kernels.ts::unfilterPNG), exercised
+  // here as a round-trip check on the Rust filter's own output rather than a Rust-vs-TS comparison.
+  assertEquals(reference.unfilterPNG(filtered, 37, 11, 4), image.data);
   let threw = false;
   try {
-    core.pngUnfilter(new Uint8Array([7, 0, 0, 0, 0]), 1, 1, 4);
+    reference.unfilterPNG(new Uint8Array([7, 0, 0, 0, 0]), 1, 1, 4);
   } catch (error) {
     threw = String(error).includes('Invalid PNG filter 7');
   }

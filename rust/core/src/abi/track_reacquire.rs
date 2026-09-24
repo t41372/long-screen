@@ -1,6 +1,6 @@
 //! `ls_track_reacquire`/`ls_track_drift_correction`: `extern "C"` surface for `crate::track::reacquire_hypotheses`
-//! / `reacquire_refine` / `drift_correction` (R4c 3b-ii) — split from the former monolithic `abi/track.rs`
-//! (R6-B, final-verify-report.md item 10). See `abi/track.rs`'s module doc comment for the split; `read_patches`
+//! / `reacquire_refine` / `drift_correction` — split out of the former monolithic `abi/track.rs`. See
+//! `abi/track.rs`'s module doc comment for the split; `read_patches`
 //! and `resolve_native` stay there (shared with `track_keyframes`).
 
 use crate::abi::features::read_features;
@@ -10,11 +10,11 @@ use crate::abi::wire::{read_rect, FEATURE_BYTES};
 use crate::abi::STATUS_BAD_ARGUMENT;
 use crate::track;
 
-/// `ls_track_reacquire`'s `out` layout (36 bytes): i32 x, i32 y, u32 ambiguous, u32 padding, f64 confidence,
+/// `ls_track_reacquire`'s `out` layout (40 bytes): i32 x, i32 y, u32 ambiguous, u32 padding, f64 confidence,
 /// f64 error, u32 filledNative, u32 padding.
 const TRACK_REACQUIRE_OUT_BYTES: usize = 40;
 
-/// R4c 3b-ii: `track.ts::reacquire` — `matchFeatures` + `translationHypotheses` (no native luma needed; see
+/// `track.ts::reacquire` — `matchFeatures` + `translationHypotheses` (no native luma needed; see
 /// `crate::track::reacquire_hypotheses`), then, only when that found a candidate, the native-plane lazy fill
 /// (see `resolve_native`) and up to 4 patch refinements + rival rejection (`crate::track::reacquire_refine`).
 /// Returns `1` (found), `0` (no candidate, or a rival rejected the top one), or `STATUS_BAD_ARGUMENT`.
@@ -100,7 +100,7 @@ pub extern "C" fn ls_track_reacquire(
 /// `ls_track_drift_correction`'s `out` layout (32 bytes): f64 x, f64 y, f64 error, u32 filledNative, u32 padding.
 const TRACK_DRIFT_CORRECTION_OUT_BYTES: usize = 32;
 
-/// R4c 3b-ii: `track.ts::driftCorrection` — no gate (the original always evaluates `native()`), so this always
+/// `track.ts::driftCorrection` — no gate (the original always evaluates `native()`), so this always
 /// resolves native luma (lazy fill, see `resolve_native`) before the one patch refinement. Returns `1`
 /// (corrected), `0` (not corrected), or `STATUS_BAD_ARGUMENT`.
 #[no_mangle]

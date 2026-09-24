@@ -1,38 +1,11 @@
-//! PNG scanline (un)filtering for the streaming single-PNG export path, and the tile codec
-//! (`ls_png_encode`/`ls_png_decode`, `png` crate end to end — see the dependency audit in the R3-1 spec:
-//! `Compression::Fast` + the crate's default Adaptive filter is ~5.5× faster than the previous
-//! Sub-filter + `CompressionStream` + JS CRC32 path, for +8.6% bytes; the owner chose this setting).
+//! PNG scanline sub-filtering for encode, and the tile codec (`ls_png_encode`/`ls_png_decode`, `png` crate end
+//! to end: `Compression::Fast` with the crate's default Adaptive filter measured ~5.5× faster than the
+//! previous Sub-filter + `CompressionStream` + JS CRC32 path, for +8.6% bytes — the owner chose this setting).
 
 use crate::abi::memory::{slice, slice_mut, HandleTable};
 use crate::abi::{STATUS_BAD_ARGUMENT, STATUS_BAD_FILTER, STATUS_OK};
-use crate::png::{expand_to_rgba, filter_sub_rgba, unfilter_to_rgba};
+use crate::png::{expand_to_rgba, filter_sub_rgba};
 use std::io::Cursor;
-
-/// PNG scanline reconstruction to RGBA. Returns 0, STATUS_BAD_ARGUMENT, or STATUS_BAD_FILTER − filter byte.
-#[no_mangle]
-pub extern "C" fn ls_png_unfilter(
-    raw: u32,
-    width: u32,
-    height: u32,
-    channels: u32,
-    out: u32,
-) -> i32 {
-    let (w, h, c) = (width as usize, height as usize, channels as usize);
-    if w == 0 || h == 0 || !(1..=4).contains(&c) {
-        return STATUS_BAD_ARGUMENT;
-    }
-    // SAFETY: adapter-owned buffers, bounds checked.
-    let (Some(src), Some(dst)) = (unsafe { slice(raw, (w * c + 1) * h) }, unsafe {
-        slice_mut(out, w * h * 4)
-    }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    // A bad filter byte is reported as -(256 + byte) so the adapter can name the offending value.
-    match unfilter_to_rgba(src, w, h, c, dst) {
-        Ok(()) => crate::abi::STATUS_OK,
-        Err(filter) => crate::abi::STATUS_BAD_FILTER - filter as i32,
-    }
-}
 
 /// Sub-filters RGBA rows for PNG encoding; `out` receives `height × (width×4 + 1)` bytes.
 #[no_mangle]
@@ -123,7 +96,7 @@ pub extern "C" fn ls_png_encode_free(handle: u32) {
 
 /// Classifies a `png` crate decode failure. `DecodingError`'s format-error detail is a private enum (only its
 /// `Display` text is public API), so an invalid filter byte — the one rejection case that must carry its
-/// specific value in the returned status, matching `ls_png_unfilter`'s convention — is recovered by parsing
+/// specific value in the returned status (the `STATUS_BAD_FILTER − filter_byte` convention below) — is recovered by parsing
 /// the crate's own "Unknown filter method N." message, which its `Display` impl (`png::decoder::stream`)
 /// documents as stable wording for that variant. Anything else becomes `STATUS_PNG_DECODE_FAILED`.
 fn classify(err: &png::DecodingError) -> i32 {
@@ -140,8 +113,8 @@ fn classify(err: &png::DecodingError) -> i32 {
 /// (`src/codec/png.ts::decodePNG`, which validates the container before this call — see
 /// `STATUS_PNG_DECODE_FAILED` above). Only the scanline predictor's filter-type byte lives inside the deflate
 /// stream, invisible to that container walk, so it is the one failure this call must still distinguish:
-/// returns `STATUS_OK`, `STATUS_BAD_ARGUMENT`, or `STATUS_BAD_FILTER − filter_byte` (same convention as
-/// `ls_png_unfilter`, so `src/core/wasm/exports.ts::check()` needs no change).
+/// returns `STATUS_OK`, `STATUS_BAD_ARGUMENT`, or `STATUS_BAD_FILTER − filter_byte` (see the error-convention
+/// list in `abi/mod.rs`, so `src/core/wasm/exports.ts::check()` needs no change).
 #[no_mangle]
 pub extern "C" fn ls_png_decode(src: u32, len: u32, out: u32, cap: u32) -> i32 {
     // SAFETY: adapter-owned buffers, bounds checked.
@@ -186,12 +159,10 @@ pub extern "C" fn ls_png_decode(src: u32, len: u32, out: u32, cap: u32) -> i32 {
 }
 
 /// One-shot CRC32 (`crc32fast`, hardware-accelerated where available) for `src/codec/png.ts`'s per-chunk PNG
-/// CRC checks, where the bytes to hash are already one contiguous slice — replaces the hand-rolled JS CRC32
-/// table it used. There used to be an incremental `ls_crc32_new`/`_update`/`_digest`/`_free` form too (a
-/// `HandleTable<crc32fast::Hasher>`), for a caller that saw its bytes in bounded pieces — `src/export/zip.ts`
-/// switched to `client-zip` (which computes its own CRC32 in JS) and `src/codec/png.ts::chunk()`'s type+body
-/// are already contiguous in its output buffer, so nothing needed it any more (final-review item 8: every IDAT
-/// chunk used to create a handle that only garbage collection ever freed on the TS side).
+/// CRC checks, where the bytes to hash are already one contiguous slice — `src/codec/png.ts::chunk()`'s
+/// type+body are already contiguous in its output buffer, so no incremental (bounded-pieces) form is needed
+/// here. `src/export/zip.ts` does not call this at all — it streams through `client-zip`, which computes its
+/// own CRC32 in JS.
 #[no_mangle]
 pub extern "C" fn ls_crc32(ptr: u32, len: u32) -> u32 {
     // SAFETY: adapter-owned buffer, bounds checked.

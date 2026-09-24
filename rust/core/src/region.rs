@@ -1,10 +1,10 @@
-//! Region membership (`src/core/layers.ts::regionContains`): rect, exclusions, optional native crop, and an
-//! analysis-resolution mask looked up at `floor(x / factor)` (or by ratio for masks built without a factor).
+//! Region membership: rect, exclusions, optional native crop, and an analysis-resolution mask looked up at
+//! `floor(x / factor)` (or by ratio for masks built without a factor).
 //!
 //! Generic over the mask storage (`M: AsRef<[u8]>`, defaulting to `Vec<u8>`) so this ONE `contains()` serves both
 //! `voting.rs`/`track.rs` (which retain a region across many calls and must own its mask) and
-//! `regions::atlas` (which only needs its mask to live for one `label_atlas` call and borrows it instead) — R6-B
-//! unified what used to be two mirrored copies of this method (final-verify-report.md item 13).
+//! `regions::atlas` (which only needs its mask to live for one `label_atlas` call and borrows it instead) —
+//! one implementation, not two mirrored copies of this method.
 
 use crate::features::Feature;
 use crate::geometry::{js_floor, Rect};
@@ -63,9 +63,9 @@ impl<M: AsRef<[u8]>> Region<M> {
     }
 }
 
-/// `src/pipeline/solve/track.ts::ownFeaturesOf` (R6-B: moved out of TS, final-verify-report.md item 13 — this was
-/// the one production caller of the former TS `regionContains`). Analysis-coordinate features are scaled to
-/// native pixels by `factor` (`p.x * f, p.y * f` in the original) before the same `contains()` test above.
+/// `src/pipeline/solve/track.ts::ownFeaturesOf`'s region-membership feature filter, moved out of TS.
+/// Analysis-coordinate features are scaled to native pixels by `factor` (`p.x * f, p.y * f`) before the same
+/// `contains()` test above.
 pub fn filter_features<M: AsRef<[u8]>>(
     region: &Region<M>,
     features: &[Feature],

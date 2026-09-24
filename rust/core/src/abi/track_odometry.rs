@@ -1,5 +1,5 @@
-//! `ls_track_odometry`: `extern "C"` surface for `crate::track::odometry` (R4c 3b-i) — split from the former
-//! monolithic `abi/track.rs` (R6-B, final-verify-report.md item 10). See `abi/track.rs`'s module doc comment
+//! `ls_track_odometry`: `extern "C"` surface for `crate::track::odometry` — split out of the former
+//! monolithic `abi/track.rs`. See `abi/track.rs`'s module doc comment
 //! for the split.
 
 use crate::abi::features::read_features;
@@ -15,7 +15,7 @@ use crate::track;
 /// f64 contentChange.agreement, u32 contentChange.blocks, u32 padding (64 bytes total).
 const TRACK_ODOMETRY_OUT_BYTES: usize = 64;
 
-/// R4c 3b-i: `track.ts::odometry` fused into one call — `matchFeatures` + `translationHypotheses` + the audit
+/// `track.ts::odometry` fused into one call — `matchFeatures` + `translationHypotheses` + the audit
 /// filter/sort + up to 6 native refinements with the velocity prior + rival detection + confidence, falling
 /// back (only when no hypothesis refines below the native-error threshold) to the analysis-grid difference
 /// sample that decides `static` vs `lost`. `previous`/`current` are full native RGBA frames

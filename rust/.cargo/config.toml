@@ -1,5 +1,6 @@
 # Target features are chosen per build by scripts/build-core.sh (scalar, SIMD128, and SIMD128 + shared-memory
-# threads variants); plain `cargo` invocations get the scalar baseline so `cargo test`/`cargo clippy` behave like
-# the shipped default.
+# threads variants); plain `cargo` invocations get the scalar baseline, NOT what ships to browsers (src/core/
+# wasm/loader.ts picks the SIMD128 build whenever WebAssembly SIMD is supported, falling back to scalar only
+# when it isn't) — this baseline exists so `cargo test`/`cargo clippy` have one fixed target to run against.
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "link-arg=--export=__heap_base", "-C", "target-feature=-simd128"]

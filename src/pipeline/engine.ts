@@ -88,145 +88,175 @@ export class Engine {
   setPaused(paused: boolean): void {
     this.ctx.setPaused(paused);
   }
+  /** Orchestrates one run: startup diagnostics, the five stages in order (fingerprint tests depend on this
+   *  order), top-level error handling, and resource release — always in that shape, whichever stage a run
+   *  stops or fails at. Each piece is a method below so this stays a sequence, not a single long function. */
   async run(): Promise<Project> {
     const ctx = this.ctx;
     try {
       // Inside the try: a failing initial write must still reach the finally below and release the
       // decoder/GPU device, instead of leaking them by throwing before the try is entered.
       await ctx.persist();
-      // The comparison tolerance is a property of the source, not of the algorithm, so the project says which
-      // one it ran with: a run that compared exactly and a run that allowed H.264 headroom are not the same
-      // evidence, and nothing downstream can tell them apart from the pixels alone.
-      await ctx.diagnostics.emit({
-        code: 'MODEL_ASSUMPTIONS',
-        severity: 'info',
-        message:
-          `重建采用分层平移画布与几何回环约束。自动遮罩和动态区域属于启发式推断；置信分数不是经过校准的正确概率。世界一致性比较按本片源声明的解码噪声 ±${ctx.noise} 级执行${
-            ctx.noise ? '（压缩视频的振铃/色度重建余量）' : '（无损片源，逐像素精确比较）'
-          }。`,
-        action: '比例或结构无法共存时会保留独立片段，不把不相容的状态强行拼接。',
-        detail: { noise: ctx.noise, lossless: ctx.noise === 0, source: ctx.source.info.mode, codec: ctx.source.info.codec },
-      });
-      if (ctx.project.settings.decoder === 'compatibility') {
-        await ctx.diagnostics.emit({
-          code: 'APPROXIMATE_DECODER',
-          severity: 'warning',
-          message:
-            `已明确启用 ${ctx.project.settings.compatibilityFPS} Hz 原生 seek 兼容模式。不能保证采到视频的每一帧，短暂内容可能缺失。`,
-          action: '需要逐帧覆盖保证时，使用 WebCodecs 支持的 H.264、VP9 等输入。',
-        });
-      }
-      if (ctx.source.info.width > ctx.project.settings.analysisSize || ctx.source.info.height > ctx.project.settings.analysisSize) {
-        await ctx.diagnostics.emit({
-          code: 'ANALYSIS_PYRAMID',
-          severity: 'info',
-          message: `运动分析的长边上限为 ${ctx.project.settings.analysisSize}px；原分辨率像素用于精修和最终合成，输出没有跟随降采样。`,
-        });
-      }
-      for (const warning of ctx.source.info.warnings) {
-        await ctx.diagnostics.emit({ code: 'MEDIA_NOTICE', severity: 'warning', message: warning });
-      }
-      if (ctx.source.info.width * ctx.source.info.height * 4 * 4 > ctx.project.settings.memoryMB * 1024 * 1024 * .8) {
-        await ctx.diagnostics.emit({
-          code: 'FRAME_MEMORY_PRESSURE',
-          severity: 'warning',
-          message: '单帧原始像素及参考帧占用已接近所选缓存预算。解码器/GPU 自身内存不受 JavaScript 缓存预算控制。',
-          action: '不会静默降低输出分辨率；内存不足时保留已提交数据并报告失败。',
-        });
-      }
-      let phaseStart = performance.now();
-      await scan(ctx);
-      ctx.timings.scanMS = performance.now() - phaseStart;
-      if (!ctx.project.frames) {
-        throw new Error('No observations could be decoded. Nothing has been marked as reconstructed.');
-      }
-      phaseStart = performance.now();
-      await solve(ctx);
-      ctx.timings.solveMS = performance.now() - phaseStart;
-      phaseStart = performance.now();
-      await render(ctx);
-      ctx.timings.renderMS = performance.now() - phaseStart;
-      phaseStart = performance.now();
-      await presentFraming(ctx);
-      ctx.timings.framingMS = performance.now() - phaseStart;
-      phaseStart = performance.now();
-      ctx.phase = 'pyramid';
-      ctx.project.status = 'pyramid';
-      await ctx.persist();
-      await presentPyramid(ctx);
-      if (ctx.stopRequested) {
-        ctx.partial = true;
-        ctx.stopRequested = false;
-      }
-      ctx.timings.pyramidMS = performance.now() - phaseStart;
-      await ctx.store.put('performance', {
-        ...ctx.timings,
-        exactDuplicateFrames: ctx.duplicates,
-        skippedPaints: ctx.skippedPaints,
-        tileEncodes: ctx.tiles.encodedTiles,
-        tileDecodes: ctx.tiles.decodedTiles,
-        tileEvictions: ctx.tiles.evictions,
-        compute: ctx.computer.stats,
-        consistencyVotedLayers: ctx.consistencyVotedLayers,
-        consistencyThinLayers: ctx.consistencyThinLayers,
-        note: 'Stage timings include decoding, storage and yields; not GPU-only kernel time.',
-      });
-      ctx.project.status = ctx.partial ? 'partial' : 'complete';
-      await ctx.diagnostics.flush();
-      await ctx.persist();
-      ctx.events.progress({
-        phase: ctx.project.status,
-        fraction: 1,
-        frames: ctx.project.renderedFrames,
-        time: ctx.source.info.duration,
-        message: ctx.partial ? '已保存明确标记的部分重建。' : '重建已完成；请检查诊断与未观察区域。',
-      });
+      await this.emitStartupDiagnostics();
+      await this.runStages();
     } catch (error) {
-      ctx.project.status = ctx.project.renderedFrames ? 'partial' : 'error';
-      ctx.project.error = error instanceof Error ? error.message : String(error);
-      // Do not destroy committed work when a later operation, codec, or quota fails.
-      try {
-        // Journaled (not a bare event) so it survives into export and a reopened project, not just the live UI.
-        // A StorageError reaching here is a persistence failure, not an algorithmic one — attribute it as
-        // PERSISTENCE_ERROR (mirroring the in-loop PERSISTENCE_PREFIX_ONLY handling) instead of the generic
-        // PROCESSING_ERROR, which otherwise misattributes a quota/transaction failure to processing.
-        const code = error instanceof StorageError ? 'PERSISTENCE_ERROR' : 'PROCESSING_ERROR';
-        await ctx.diagnostics.emit({
-          code,
-          severity: 'error',
-          message: ctx.project.error,
-          action: '已经提交到本地存储的瓦片仍可查看和导出；没有把失败标记成成功。',
-        });
-        await ctx.tiles.flush();
-        await ctx.diagnostics.flush();
-        await ctx.persist();
-      } catch (storageError) {
-        // Storage is already failing here, so this one stays event-only rather than risking a third failed write.
-        ctx.events.diagnostic({
-          code: 'PERSISTENCE_ERROR',
-          severity: 'error',
-          message: String(storageError),
-          action: '存储写入也失败；仅先前成功提交的数据可恢复。',
-        });
-      }
+      await this.handleFailure(error);
     } finally {
-      ctx.voting?.free();
-      ctx.voting = undefined;
-      ctx.learner?.dispose();
-      ctx.learner = undefined;
-      // The atlas's label plane is read (never re-uploaded) by solve()/render()/Compositor, so it is released
-      // here exactly once, not per-pass — freeing it earlier would be a use-after-free the moment any later
-      // pass touched `atlas.resident`.
-      ctx.atlas?.dispose();
-      ctx.atlas = undefined;
-      ctx.releaseResidentRenderState();
-      ctx.computer.dispose();
-      ctx.source.dispose();
-      // The `stopped` latch (unlike `stopRequested`) is deliberately left set across the whole run, from
-      // wherever a stop was first honoured through to the framing/pyramid gates above; only run() itself
-      // ever reads it, so it is only ever cleared here, once, at the very end of run().
-      ctx.stopped = false;
+      this.releaseRunState();
     }
     return ctx.project;
+  }
+  /** Diagnostics that describe the run's assumptions and inputs, emitted once before the first stage: the
+   *  reconstruction model, the decoder mode, the analysis pyramid (if downsampled), source warnings, and a
+   *  memory-pressure estimate. */
+  private async emitStartupDiagnostics(): Promise<void> {
+    const ctx = this.ctx;
+    // The comparison tolerance is a property of the source, not of the algorithm, so the project says which
+    // one it ran with: a run that compared exactly and a run that allowed H.264 headroom are not the same
+    // evidence, and nothing downstream can tell them apart from the pixels alone.
+    await ctx.diagnostics.emit({
+      code: 'MODEL_ASSUMPTIONS',
+      severity: 'info',
+      message:
+        `重建采用分层平移画布与几何回环约束。自动遮罩和动态区域属于启发式推断；置信分数不是经过校准的正确概率。世界一致性比较按本片源声明的解码噪声 ±${ctx.noise} 级执行${
+          ctx.noise ? '（压缩视频的振铃/色度重建余量）' : '（无损片源，逐像素精确比较）'
+        }。`,
+      action: '比例或结构无法共存时会保留独立片段，不把不相容的状态强行拼接。',
+      detail: { noise: ctx.noise, lossless: ctx.noise === 0, source: ctx.source.info.mode, codec: ctx.source.info.codec },
+    });
+    if (ctx.project.settings.decoder === 'compatibility') {
+      await ctx.diagnostics.emit({
+        code: 'APPROXIMATE_DECODER',
+        severity: 'warning',
+        message: `已明确启用 ${ctx.project.settings.compatibilityFPS} Hz 原生 seek 兼容模式。不能保证采到视频的每一帧，短暂内容可能缺失。`,
+        action: '需要逐帧覆盖保证时，使用 WebCodecs 支持的 H.264、VP9 等输入。',
+      });
+    }
+    if (ctx.source.info.width > ctx.project.settings.analysisSize || ctx.source.info.height > ctx.project.settings.analysisSize) {
+      await ctx.diagnostics.emit({
+        code: 'ANALYSIS_PYRAMID',
+        severity: 'info',
+        message: `运动分析的长边上限为 ${ctx.project.settings.analysisSize}px；原分辨率像素用于精修和最终合成，输出没有跟随降采样。`,
+      });
+    }
+    for (const warning of ctx.source.info.warnings) {
+      await ctx.diagnostics.emit({ code: 'MEDIA_NOTICE', severity: 'warning', message: warning });
+    }
+    if (ctx.source.info.width * ctx.source.info.height * 4 * 4 > ctx.project.settings.memoryMB * 1024 * 1024 * .8) {
+      await ctx.diagnostics.emit({
+        code: 'FRAME_MEMORY_PRESSURE',
+        severity: 'warning',
+        message: '单帧原始像素及参考帧占用已接近所选缓存预算。解码器/GPU 自身内存不受 JavaScript 缓存预算控制。',
+        action: '不会静默降低输出分辨率；内存不足时保留已提交数据并报告失败。',
+      });
+    }
+  }
+  /** The five stages, in the order the fingerprint oracle depends on: scan, solve, render, framing, pyramid.
+   *  Records each stage's wall-clock time and, on success, the final performance row, status and progress
+   *  event. Throws straight through to run()'s catch on any stage's failure. */
+  private async runStages(): Promise<void> {
+    const ctx = this.ctx;
+    let phaseStart = performance.now();
+    await scan(ctx);
+    ctx.timings.scanMS = performance.now() - phaseStart;
+    if (!ctx.project.frames) {
+      throw new Error('No observations could be decoded. Nothing has been marked as reconstructed.');
+    }
+    phaseStart = performance.now();
+    await solve(ctx);
+    ctx.timings.solveMS = performance.now() - phaseStart;
+    phaseStart = performance.now();
+    await render(ctx);
+    ctx.timings.renderMS = performance.now() - phaseStart;
+    phaseStart = performance.now();
+    await presentFraming(ctx);
+    ctx.timings.framingMS = performance.now() - phaseStart;
+    phaseStart = performance.now();
+    ctx.phase = 'pyramid';
+    ctx.project.status = 'pyramid';
+    await ctx.persist();
+    await presentPyramid(ctx);
+    if (ctx.stopRequested) {
+      ctx.partial = true;
+      ctx.stopRequested = false;
+    }
+    ctx.timings.pyramidMS = performance.now() - phaseStart;
+    await ctx.store.put('performance', {
+      ...ctx.timings,
+      exactDuplicateFrames: ctx.duplicates,
+      skippedPaints: ctx.skippedPaints,
+      tileEncodes: ctx.tiles.encodedTiles,
+      tileDecodes: ctx.tiles.decodedTiles,
+      tileEvictions: ctx.tiles.evictions,
+      compute: ctx.computer.stats,
+      consistencyVotedLayers: ctx.consistencyVotedLayers,
+      consistencyThinLayers: ctx.consistencyThinLayers,
+      note: 'Stage timings include decoding, storage and yields; not GPU-only kernel time.',
+    });
+    ctx.project.status = ctx.partial ? 'partial' : 'complete';
+    await ctx.diagnostics.flush();
+    await ctx.persist();
+    ctx.events.progress({
+      phase: ctx.project.status,
+      fraction: 1,
+      frames: ctx.project.renderedFrames,
+      time: ctx.source.info.duration,
+      message: ctx.partial ? '已保存明确标记的部分重建。' : '重建已完成；请检查诊断与未观察区域。',
+    });
+  }
+  /** run()'s top-level catch: marks the project partial or errored (never silently discards committed tiles),
+   *  journals the failure so it survives into export and a reopened project, and flushes what is already
+   *  committed. If that flush itself fails, falls back to an event-only diagnostic rather than risking a
+   *  third failed write. */
+  private async handleFailure(error: unknown): Promise<void> {
+    const ctx = this.ctx;
+    ctx.project.status = ctx.project.renderedFrames ? 'partial' : 'error';
+    ctx.project.error = error instanceof Error ? error.message : String(error);
+    // Do not destroy committed work when a later operation, codec, or quota fails.
+    try {
+      // Journaled (not a bare event) so it survives into export and a reopened project, not just the live UI.
+      // A StorageError reaching here is a persistence failure, not an algorithmic one — attribute it as
+      // PERSISTENCE_ERROR (mirroring the in-loop PERSISTENCE_PREFIX_ONLY handling) instead of the generic
+      // PROCESSING_ERROR, which otherwise misattributes a quota/transaction failure to processing.
+      const code = error instanceof StorageError ? 'PERSISTENCE_ERROR' : 'PROCESSING_ERROR';
+      await ctx.diagnostics.emit({
+        code,
+        severity: 'error',
+        message: ctx.project.error,
+        action: '已经提交到本地存储的瓦片仍可查看和导出；没有把失败标记成成功。',
+      });
+      await ctx.tiles.flush();
+      await ctx.diagnostics.flush();
+      await ctx.persist();
+    } catch (storageError) {
+      // Storage is already failing here, so this one stays event-only rather than risking a third failed write.
+      ctx.events.diagnostic({
+        code: 'PERSISTENCE_ERROR',
+        severity: 'error',
+        message: String(storageError),
+        action: '存储写入也失败；仅先前成功提交的数据可恢复。',
+      });
+    }
+  }
+  /** run()'s finally: releases every core-resident/decoder/GPU resource the run may have acquired, whichever
+   *  stage it stopped or failed at, exactly once. */
+  private releaseRunState(): void {
+    const ctx = this.ctx;
+    ctx.voting?.free();
+    ctx.voting = undefined;
+    ctx.learner?.dispose();
+    ctx.learner = undefined;
+    // The atlas's label plane is read (never re-uploaded) by solve()/render()/Compositor, so it is released
+    // here exactly once, not per-pass — freeing it earlier would be a use-after-free the moment any later
+    // pass touched `atlas.resident`.
+    ctx.atlas?.dispose();
+    ctx.atlas = undefined;
+    ctx.releaseResidentRenderState();
+    ctx.computer.dispose();
+    ctx.source.dispose();
+    // The `stopped` latch (unlike `stopRequested`) is deliberately left set across the whole run, from
+    // wherever a stop was first honoured through to the framing/pyramid gates above; only run() itself
+    // ever reads it, so it is only ever cleared here, once, at the very end of run().
+    ctx.stopped = false;
   }
 }

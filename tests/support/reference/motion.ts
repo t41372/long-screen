@@ -1,6 +1,6 @@
 /** FROZEN pre-migration motion module (parity oracle for rust/core/src/motion.rs). Not used by production code. */
 import type { Feature, Gray, Match, Motion, MotionField, Point, Rect, RGBA } from '../../../src/types.ts';
-import { clamp, median, norm, rng } from '../../../src/core/math.ts';
+import { clamp, median, norm, rng } from './math.ts';
 import { extractFeatures, matchFeatures, meanDifference } from './kernels.ts';
 export function translationHypotheses(matches: Match[], max = 6): Motion[] {
   const bins = new Map<string, Match[]>();

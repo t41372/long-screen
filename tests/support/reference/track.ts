@@ -1,24 +1,20 @@
-/** FROZEN TypeScript oracle for the R4 port (solve pass's per-region tracking decisions and keyframe scoring →
- * rust/core/src/track.rs). Verbatim copy of src/pipeline/solve/track.ts (post R1/R2 cleanup) plus
+/** FROZEN TypeScript oracle for the solve pass's per-region tracking decisions and keyframe scoring, as they ran
+ * before the port to rust/core/src/track.rs. Verbatim copy of src/pipeline/solve/track.ts plus
  * KeyframeIndex.evaluateCandidates from src/core/keyframes.ts, frozen at the commit that ported them to Rust.
  * Parity oracle for tests/unit/parity/track.test.ts. Not used by production code. Do not "fix" this — if the
- * production algorithm changes, that is a behaviour change and belongs in a new round, not a silent edit here. */
+ * production algorithm changes, that is a behaviour change and belongs in its own commit, not a silent edit here. */
 import type { Feature, Gray, Match, Point, Region, RGBA } from '../../../src/types.ts';
-import {
-  auditTranslation,
-  detectScale,
-  type NativeRefinement,
-  type Patch,
-  probeScale,
-  refineNative,
-  refinePatches,
-  translationHypotheses,
-} from '../../../src/core/motion.ts';
-import { regionContains } from '../../../src/core/layers.ts';
-import { matchFeatures } from '../../../src/core/features.ts';
+import { auditTranslation, detectScale, probeScale, translationHypotheses } from './motion.ts';
+// refineNative/refinePatches: NOT re-frozen here. Both this oracle and its own callers (track.ts's resident-plane
+// fast path) need to accept `ResidentFrame`/`ResidentGray`, which the plain-`Gray`/`RGBA` frozen `./motion.ts`
+// copies do not model; imported live from the production module, whose own parity is covered separately
+// (tests/unit/parity/motion.test.ts).
+import { type NativeRefinement, type Patch, refineNative, refinePatches } from '../../../src/core/motion.ts';
+import { referenceRegionContains as regionContains } from './layers.ts';
+import { matchFeatures } from './kernels.ts';
 import type { LabelMask, ResidentFrame, ResidentGray } from '../../../src/core/wasm.ts';
 import type { Keyframe, Relocalization } from '../../../src/core/keyframes.ts';
-/** Region-step.ts's own-features/texture/prior-matches setup (R1: was inline decision logic in the shell). */
+/** Region-step.ts's own-features/texture/prior-matches setup (was inline decision logic in the shell). */
 export function ownFeaturesOf(
   features: Feature[],
   r: Region,
@@ -61,7 +57,7 @@ export function gate(
 export function uncertainty(confidence: number, ambiguous: boolean, weakStep: boolean): boolean {
   return confidence < .60 || ambiguous || weakStep;
 }
-/** Confidence assigned on branches with no measurement to derive one from (R1: named so the value has one home). */
+/** Confidence assigned on branches with no measurement to derive one from (named so the value has one home). */
 export const STATIC_CONFIDENCE = .3;
 export const BLIND_CONFIDENCE = 0;
 export const FRAGMENT_CONFIDENCE = .20;
@@ -224,8 +220,8 @@ export function driftCorrection(inputs: DriftCorrectionInputs): { pose: Point; c
   return undefined;
 }
 /** Whether this frame mints a new keyframe. `lastNodeFrame` undefined means no node exists yet for this region
- * (R2: replaces the -Infinity sentinel the original used for "no prior node" when computing framesSinceLastNode —
- * with lastNodeFrame itself optional, that branch is short-circuited before the subtraction ever runs). */
+ * (replaces an -Infinity sentinel for "no prior node" when computing framesSinceLastNode — with lastNodeFrame
+ * itself optional, that branch is short-circuited before the subtraction ever runs). */
 export function needsKeyframe(
   kind: Region['kind'],
   anchor: Point | undefined,
@@ -250,7 +246,7 @@ export function targetPose(keyframe: Point, offset: Point, shift: Point): Point 
   return { x: keyframe.x + offset.x + shift.x, y: keyframe.y + offset.y + shift.y };
 }
 /** Whether a same-canvas revisit found at attachment time (`global`) should be folded onto `canvasId`: the
- * revisit's own canvas differs, the match is unambiguous, and confident enough (R1: was inline in
+ * revisit's own canvas differs, the match is unambiguous, and confident enough (was inline in
  * keyframe-step.ts). `resolvedTarget`/`shift` are computed by the caller because they close over the pass's
  * `attachments` map. */
 export function attachVerdict(
@@ -267,11 +263,11 @@ export function attachVerdict(
 export function odometryWeight(weakStep: boolean): number {
   return weakStep ? .05 : 1;
 }
-/** Pose-graph edge weights for the three ways a loop/attachment edge is added (R1: were literal 6/5/4 inline). */
+/** Pose-graph edge weights for the three ways a loop/attachment edge is added (were literal 6/5/4 inline). */
 export const LOOP_WEIGHT_CORRECTED = 6;
 export const LOOP_WEIGHT_RELINK = 5;
 export const LOOP_WEIGHT_CLOSURE = 4;
-/** Gate for thinOverlapCorrection, split out (R2) so the caller can check it once, before computing canonicalPose
+/** Gate for thinOverlapCorrection, split out so the caller can check it once, before computing canonicalPose
  * — the original had this exact gate duplicated inline in keyframe-step.ts AND inside thinOverlapCorrection
  * itself; this is the single copy. */
 export function thinOverlapEligible(weakStep: boolean, weak: boolean, ambiguous: boolean, confidence: number, error: number): boolean {
@@ -300,7 +296,7 @@ export function thinOverlapCorrection(inputs: ThinOverlapInputs): { target: Poin
 export type LoopVerdict = 'closure' | 'inconsistent' | 'ambiguous' | 'none';
 /** Whether a revisit on the SAME canvas the frame already resolved to should be folded in as a global position
  * constraint (a loop edge), rejected as conflicting with the continuous trajectory, or left unresolved because
- * the historical match itself was ambiguous. Computes the discrepancy itself (R2: was precomputed by the caller). */
+ * the historical match itself was ambiguous. Computes the discrepancy itself (was precomputed by the caller). */
 export function loopClosureVerdict(
   global: { keyframe: Point; offset: Point; ambiguous: boolean; confidence: number },
   shift: Point,

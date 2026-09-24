@@ -1,9 +1,9 @@
-//! `extern "C"` surface for `crate::track`'s stateless tracking verdicts (R4b phase 3a): hub module for the
-//! track trio's ABI layer plus the shared buffer-marshalling helpers `track_reacquire`/`track_keyframes` both
-//! need (`read_patches`, `fill_native_plane`, `resolve_native`). Split (R6-B, final-verify-report.md item 10:
-//! this was one 842-line file) into `track_odometry` (`ls_track_odometry`), `track_reacquire`
-//! (`ls_track_reacquire`/`ls_track_drift_correction`), `track_keyframes` (`ls_keyframes_evaluate_candidates`);
-//! `extern "C"` names are resolved by the linker, so no call-site elsewhere changes.
+//! `extern "C"` surface for `crate::track`'s stateless tracking verdicts: hub module for the track trio's ABI
+//! layer plus the shared buffer-marshalling helpers `track_reacquire`/`track_keyframes` both need
+//! (`read_patches`, `fill_native_plane`, `resolve_native`). Split into `track_odometry` (`ls_track_odometry`),
+//! `track_reacquire` (`ls_track_reacquire`/`ls_track_drift_correction`), `track_keyframes`
+//! (`ls_keyframes_evaluate_candidates`); `extern "C"` names are resolved by the linker, so no call-site
+//! elsewhere changes.
 //!
 //! The stateless verdicts here (`ls_track_uncertainty` through `ls_track_region_zoom`) are
 //! scalar-in/scalar-or-small-buffer-out and cannot fail on a bad argument (there is no pointer to validate
@@ -330,8 +330,8 @@ pub(crate) unsafe fn fill_native_plane(
 /// `native_mode` 0 means `native_ptr` already holds a ready `native_width × native_height` luma buffer (the
 /// non-resident-current-frame fallback the TS wrapper computes eagerly, exactly as the original `native()`
 /// thunk did — see `src/core/wasm/track.ts`); `native_mode` 1 means `native_ptr` is the shared RESIDENT native
-/// plane, filled from `current_frame_ptr` only if `already_filled == 0` (R4c 3b-ii: "computed lazily core-side
-/// ... at most once per frame"). Returns `(gray, filled_now)`; `filled_now` is only ever true in mode 1, and
+/// plane, filled from `current_frame_ptr` only if `already_filled == 0` (computed lazily core-side, at most
+/// once per frame). Returns `(gray, filled_now)`; `filled_now` is only ever true in mode 1, and
 /// only on the call that actually did the fill — the caller reports it back to TS so the SAME per-frame memo
 /// `solve.ts`'s `native()` closure already uses (shared with every other native-luma consumer, e.g.
 /// keyframe-step.ts) is updated too, not just this call's own view.

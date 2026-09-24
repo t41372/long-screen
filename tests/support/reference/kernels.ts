@@ -2,7 +2,7 @@
  *  Rust core (tests/unit/core-parity.test.ts). Not used by production code. Do not "fix" these; a behaviour
  *  change belongs in rust/core with a deliberately updated test. */
 import type { Feature, Gray, Match, Rect, RGBA } from '../../../src/types.ts';
-import { contains, hamming, rng } from '../../../src/core/math.ts';
+import { contains, hamming, rng } from './math.ts';
 const random = rng(0xabc7361);
 const pairs = Array.from({ length: 256 }, () => {
   const coord = () => Math.round((random() + random() + random() - 1.5) * 6);

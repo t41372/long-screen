@@ -61,7 +61,7 @@ Deno.test({
       // "分页导出" is the explicit paged-sheets entry point: a ZIP with at least one native-size PNG and a manifest.
       await page.waitForFunction('!document.querySelector("#export-sheets").disabled', null, { timeout: 30000 });
       // Real-browser throughput of the client-zip-backed writer (src/export/zip.ts), not a pass/fail assertion —
-      // informational only, for the before/after comparison in the R3-6 report.
+      // informational only.
       const zipStarted = performance.now();
       const [sheetsDownload] = await Promise.all([
         page.waitForEvent('download', { timeout: 180000 }),

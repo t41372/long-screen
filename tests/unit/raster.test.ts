@@ -1,16 +1,8 @@
 import '../support/core.ts';
 import { assert, assertEquals, assertThrows } from '@std/assert';
-import {
-  analysisFactor,
-  cropRGBA,
-  downscaleGray,
-  downscaleRGBA,
-  halveRGBA,
-  meanAbsoluteDifference,
-  resolveRasterPose,
-  thumbnail,
-} from '../../src/core/raster.ts';
-import { regionContains } from '../../src/core/layers.ts';
+import { analysisFactor, downscaleGray, halveRGBA, resolveRasterPose } from '../../src/core/raster.ts';
+import { referenceRegionContains as regionContains } from '../support/reference/layers.ts';
+import { cropRGBA, downscaleRGBA, meanAbsoluteDifference, thumbnail } from '../support/pixel-fixtures.ts';
 import type { Gray, Region, RGBA } from '../../src/types.ts';
 Deno.test('raster: integer analysis factor, exact box downscale, crops, previews', () => {
   assertEquals(analysisFactor(3456, 2234, 640), 6);

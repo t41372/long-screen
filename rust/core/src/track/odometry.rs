@@ -1,5 +1,5 @@
-//! Frame-to-frame odometry (R4c 3b-i) — split from the former monolithic `track.rs` (R6-B,
-//! final-verify-report.md item 10). `track.ts::odometry` fused into one call: analysis-scale hypotheses,
+//! Frame-to-frame odometry — split out of the former monolithic `track.rs`.
+//! `track.ts::odometry` fused into one call: analysis-scale hypotheses,
 //! block-aware audit, up to 6 native refinements + rival detection + confidence, falling back to the
 //! difference sample that decides `static` vs `lost`.
 
@@ -40,7 +40,7 @@ pub struct OdometryEstimate {
     pub content_change: Option<ContentChange>,
 }
 
-/// One region's odometry inputs, fused into a single call (R4c 3b-i): `matchFeatures` +
+/// One region's odometry inputs, fused into a single call: `matchFeatures` +
 /// `translationHypotheses` + the audit filter/sort + up to 6 native refinements with the velocity prior +
 /// rival detection + confidence, and — only on the fallback path — the static/lost difference sampling.
 /// `previous`/`current` are full native RGBA frames (`width × height × 4`); `region` is only read on the

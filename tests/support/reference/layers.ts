@@ -5,8 +5,8 @@
  *  `RegionAtlas` in TS until stage 2 switches them to the Rust core. Not used by production code. Do not "fix"
  *  this. */
 import type { Gray, MotionField, Rect, Region, RGBA } from '../../../src/types.ts';
-import { clamp, contains, DisjointSet, intersect, norm } from '../../../src/core/math.ts';
-import { stationaryBoundary } from '../../../src/core/layers.ts';
+import { stationaryBoundary } from './chrome.ts';
+import { clamp, contains, DisjointSet, intersect, norm } from './math.ts';
 export function informativeField(field: MotionField): boolean {
   return !field.unknown && field.difference >= .2 && field.motions.some((m) => norm(m) > 1 && m.confidence > .3);
 }
@@ -202,9 +202,8 @@ export class ReferenceLayerLearner {
  *  lifted verbatim as the parity oracle for rust/core/src/regions.rs (tests/unit/regions-parity.test.ts, stage 2).
  *  `referenceFinish` takes the accumulator arrays as `LearnerHandle.read()` returns them (not the live class), the
  *  sizes, manual regions, factor and the retained native frame, so a parity test can drive it without the wasm
- *  learner. `stationaryBoundary` is NOT re-frozen here: it is already ported (rust/core/src/chrome.rs) and this
- *  oracle calls the production wrapper for it, unchanged by this port. Not used by production code. Do not "fix"
- *  this. */
+ *  learner. `stationaryBoundary` is imported from `./chrome.ts` (its own frozen oracle, rust/core/src/chrome.rs)
+ *  rather than re-frozen here. Not used by production code. Do not "fix" this. */
 export interface FinishAccumulators {
   width: number;
   height: number;

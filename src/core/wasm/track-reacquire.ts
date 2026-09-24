@@ -1,6 +1,6 @@
-/** `track.ts::reacquire`/`driftCorrection` fused into one call each (R4c 3b-ii) — split from the former
- *  monolithic `wasm/track.ts` (R6-B, final-verify-report.md item 10). See `track.ts`'s module doc comment for
- *  the split; `b2`/`writePatches`/`resolveNative` stay there (shared with `track-keyframes.ts`). */
+/** `track.ts::reacquire`/`driftCorrection` fused into one call each — split out of `wasm/track.ts`. See
+ *  `track.ts`'s module doc comment for the split; `b2`/`writePatches`/`resolveNative` stay there (shared with
+ *  `track-keyframes.ts`). */
 import type { Feature, Gray, Point, Rect } from '../../types.ts';
 import type { Core, PatchInput, RefinementResult } from './core.ts';
 import type { CoreExports } from './exports.ts';
@@ -26,7 +26,7 @@ export interface ReacquireInputs {
   f: number;
   radius: number;
 }
-/** `track.ts::reacquire`, fused into one call (R4c 3b-ii). `filledNative` tells the caller whether to update
+/** `track.ts::reacquire`, fused into one call. `filledNative` tells the caller whether to update
  *  the SAME per-frame `native()` memo `solve.ts` owns (see `FrameInput.markNativeFilled`). */
 export function reacquire(
   core: Core,
@@ -98,7 +98,7 @@ export interface DriftCorrectionInputs {
   rect: Rect;
   radius: number;
 }
-/** `track.ts::driftCorrection`, fused into one call (R4c 3b-ii). No gate: the original always evaluates
+/** `track.ts::driftCorrection`, fused into one call. No gate: the original always evaluates
  *  `native()`, so `filledNative` is true here whenever the resident plane wasn't already filled this frame. */
 export function driftCorrection(
   core: Core,

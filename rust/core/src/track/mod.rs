@@ -1,10 +1,10 @@
-//! Per-region, per-frame tracking decisions (R4b/R4c/R4d): the *stateless* verdicts and stateful-shell-facing
-//! kernels of `src/pipeline/solve/track.ts`, byte-for-byte ports of the frozen oracle in
+//! Per-region, per-frame tracking decisions: the *stateless* verdicts and stateful-shell-facing kernels of
+//! `src/pipeline/solve/track.ts`, byte-for-byte ports of the frozen oracle in
 //! `tests/support/reference/track.ts`. Every function is pure: plain scalars/tuples in, a plain result out, no
 //! I/O, no state carried between calls (the stateful per-region tracker — previous features, velocity, anchor
-//! patches — stays in TS, R4c 3b-iii measured no gain from a stateful core-side tracker).
+//! patches — stays in TS; a stateful core-side tracker was measured and showed no gain).
 //!
-//! Split (R6-B, final-verify-report.md item 10: this was one 842-line file) into one module per concern,
+//! Split into one module per concern,
 //! mirroring `regions/`'s precedent: `verdicts` (small stateless decisions), `odometry` (frame-to-frame
 //! tracking), `reacquire` (anchor re-acquisition + drift correction), `keyframes` (candidate scoring). Every
 //! item is re-exported here so `crate::track::X` paths elsewhere (the ABI layer, this module's own tests) are

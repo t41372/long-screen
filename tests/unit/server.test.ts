@@ -31,7 +31,7 @@ Deno.test('server: index, mime types, no-cache and nosniff headers', async () =>
   assertEquals(empty.status, 200);
   assertEquals(empty.headers.get('content-length'), '0');
 });
-// FIX6 regression: `serveDir` only attaches its `headers` option to a fresh (200/206) response — a conditional GET
+// Regression: `serveDir` only attaches its `headers` option to a fresh (200/206) response — a conditional GET
 // it answers with 304 Not Modified carries none of them. A COEP subresource (e.g. the RPC worker script) revalidated
 // by the browser after a page reload then arrives without cross-origin-resource-policy, which WebKit's
 // `require-corp` embedder policy treats as an absent CORP header and refuses to load — this silently broke

@@ -69,9 +69,8 @@ class CanvasMetaCache {
     for (const id of ids) this.dirty.delete(id);
   }
 }
-/** All per-pass state `render()` used to close over, now fields; the small methods below are exactly the
- * sub-steps `render()`'s single 385-line body used to inline. See the file header for the one-frame-lookahead
- * ordering `run()` must preserve exactly. */
+/** Per-pass state, as fields rather than closed-over locals; the small methods below are the pass's sub-steps.
+ * See the file header for the one-frame-lookahead ordering `run()` must preserve exactly. */
 class RenderPass {
   private graph!: PoseGraph;
   private compositor!: Compositor;

@@ -1,7 +1,7 @@
-/** Byte-exact parity between the Rust tracking verdicts (rust/core/src/track.rs + abi/track.rs, phase 3a of R4b)
- *  and the frozen TS oracle they replace (tests/support/reference/track.ts). Runs on whichever build
- *  `LONGSCREEN_CORE` selects (scalar/simd/threads — see tests/support/core.ts). Stateless verdicts (phase 3a)
- *  and the fused odometry call (R4c 3b-i) are exercised here; reacquire/driftCorrection stay TS until 3b-ii. */
+/** Byte-exact parity between the Rust tracking verdicts (rust/core/src/track.rs + abi/track.rs) and the frozen
+ *  TS oracle they replace (tests/support/reference/track.ts). Runs on whichever build `LONGSCREEN_CORE` selects
+ *  (scalar/simd/threads — see tests/support/core.ts). Covers the stateless verdicts and the fused odometry,
+ *  reacquire and driftCorrection calls. */
 import { assert, assertEquals } from '@std/assert';
 import { ensureCore } from '../../support/core.ts';
 import { rng } from '../../../src/core/math.ts';

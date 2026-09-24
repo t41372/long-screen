@@ -6,16 +6,11 @@ import { core, type Resident, type ResidentFrame, type TemporalIndexHandle, type
 import type { RegionAtlas } from './layers.ts';
 import { union } from './math.ts';
 import { resolveRasterPose } from './raster.ts';
-/** Persisted row shape (`temporal/<canvasId>/<id>` — frozen, see common.md): a `TemporalRow` (rust/core/src/temporal.rs's
- *  `TemporalRecord`, via `TemporalIndexHandle`, src/core/wasm/temporal.ts) plus the canvas it belongs to. */
+/** Persisted row shape (`temporal/<canvasId>/<id>` — frozen; do not change the key layout or field order): a
+ *  `TemporalRow` (rust/core/src/temporal.rs's `TemporalRecord`, via `TemporalIndexHandle`,
+ *  src/core/wasm/temporal.ts) plus the canvas it belongs to. */
 type TemporalRegion = TemporalRow & { canvasId: string };
 
-/** Compare block membership, not only a bounding box or cardinality. */
-export function sameBlockSet(a: [number, number][], b: [number, number][]): boolean {
-  if (a.length !== b.length) return false;
-  const keys = new Set(a.map(([x, y]) => `${x},${y}`));
-  return keys.size === b.length && b.every(([x, y]) => keys.has(`${x},${y}`));
-}
 /** Integer key for an absolute 16px block: row-major, so ascending keys are (by, bx) order. Blocks within
  *  ±2^25 (±537 M native pixels) pack exactly into a double. Only used for the per-frame `conflictBlocks`
  *  bookkeeping below (a JS `Set<number>` of blocks touched this call, fed to `components()`) — the temporal

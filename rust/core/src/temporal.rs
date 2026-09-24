@@ -211,7 +211,7 @@ pub struct TemporalRecord {
 /// `insert` of an id already present is a no-op (never moves it, matching `Set.add`); `remove` deletes it
 /// wherever it sits without disturbing the order of what remains (matching `Set.delete`); a genuinely new id is
 /// appended at the end. Deliberately NOT an indexmap `IndexSet` with `swap_remove` (which reorders on removal) —
-/// see the R3-5c spec's row-order tripwire (tests/unit/compositor.test.ts).
+/// see the row-order tripwire in tests/unit/compositor.test.ts.
 #[derive(Default, Clone)]
 struct OrderedIds {
     order: Vec<String>,
@@ -312,7 +312,7 @@ impl TemporalIndex {
     /// single counter shared across every canvas the Compositor ever touches (not reset per canvas), so the
     /// caller threads it through every `decide()` call on every canvas's handle and keeps the returned value —
     /// never derived from loaded ids, which is why a fresh id can collide with a still-loaded row (see the
-    /// R3-5c tripwire tests).
+    /// id-collision tripwire tests in tests/unit/compositor.test.ts).
     #[allow(clippy::too_many_arguments)]
     pub fn decide(
         &mut self,
@@ -698,8 +698,8 @@ mod tests {
         assert_eq!(tile.quality[0], 0); // round(0.0 * 255)
     }
 
-    // --- TemporalIndex: mirrors the R3-5c tripwire in tests/unit/compositor.test.ts (Step 0) against the pure
-    // Rust index directly, without going through the FFI/Compositor layer. ---
+    // --- TemporalIndex: mirrors the row-order/id-collision tripwires in tests/unit/compositor.test.ts against
+    // the pure Rust index directly, without going through the FFI/Compositor layer. ---
 
     fn block_rect(bx: i32, by: i32, w: i32, h: i32) -> Rect {
         Rect {

@@ -566,13 +566,12 @@ Deno.test('engine: PROCESSING_ERROR is journaled (survives into diagnostic/ rows
   const codes = await codesOf(store);
   assert(codes.has('PROCESSING_ERROR'), [...codes].join(','));
 });
-// NONFINITE_POSE recovery: replaces the retired call-counting NaN-poison DIFFERENTIAL harness for tracking
-// paths that now run inside a single fused Rust call (R4c 3b-i's core().trackOdometry, and later
-// reacquire/driftCorrection) — those calls are no longer individually visible/interceptable at the JS boundary
-// the old differential poison harness monkeypatched, so this stubs the shell's own entry point directly and
+// NONFINITE_POSE recovery: tracking now runs inside a single fused Rust call (core().trackOdometry, and later
+// reacquire/driftCorrection), no longer individually visible/interceptable at the JS boundary a call-counting
+// NaN-poison differential harness could monkeypatch, so this stubs the shell's own entry point directly and
 // checks the shell's EXISTING recovery (region-step.ts's `!Number.isFinite(state.pose.x/.y)` guard, which runs
-// before keyframeStep — R3, pre-existing, intentionally unchanged by any R4 phase) end to end: one diagnostic,
-// a fresh fragment canvas, no non-finite coordinate reaches any persisted row, and the run still completes.
+// before keyframeStep, pre-existing and unchanged by the Rust port) end to end: one diagnostic, a fresh
+// fragment canvas, no non-finite coordinate reaches any persisted row, and the run still completes.
 Deno.test('engine: a non-finite odometry delta is caught by NONFINITE_POSE, starts a new fragment canvas, and never persists a non-finite coordinate', async () => {
   const scenario = buildScenario('traversal'), db = new MemoryKV(), source = new ScenarioSource(scenario);
   const c = core() as unknown as { trackOdometry(inputs: unknown): { decision: string; delta: { x: number; y: number } } };
@@ -644,7 +643,7 @@ async function assertRecoversFromNonfinitePose(
   // continuous canvas per moving region).
   assert(canvasIds.size > 1, `expected a new fragment canvas after NONFINITE_POSE, got canvasIds=${[...canvasIds]}`);
 }
-// R4c 3b-ii: the same NONFINITE_POSE recovery, via a poisoned core().trackDriftCorrection instead. driftCorrection
+// The same NONFINITE_POSE recovery, via a poisoned core().trackDriftCorrection instead. driftCorrection
 // has no gate (region-step.ts always calls it once an anchor exists and the field difference clears .12), so the
 // first call it makes is poisoned; a corrected (truthy) result's pose is what feeds state.pose, so only a
 // poisoned TRUTHY result propagates — matching driftCorrection's own "undefined means no correction" contract.

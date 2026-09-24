@@ -15,5 +15,6 @@ crate-type = ["cdylib", "rlib"]
 # (`classify` in abi/png.rs). Brings in fdeflate/flate2/miniz_oxide/crc32fast transitively.
 png = "=0.18.1"
 # Already a transitive dependency of png (chunk CRCs); used directly for `ls_crc32` (crate::abi::png), which
-# replaces the hand-rolled JS CRC32 table in src/codec/crc.ts and src/export/zip.ts.
+# replaces the hand-rolled JS CRC32 table src/codec/crc.ts used to carry (src/export/zip.ts does not use this
+# module — it streams through client-zip, which computes its own CRC32 in JS).
 crc32fast = "=1.5.2"

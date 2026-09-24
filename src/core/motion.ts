@@ -1,37 +1,10 @@
-import type { Feature, Gray, Match, Motion, MotionField, Point, Rect, RGBA } from '../types.ts';
+import type { Feature, Gray, MotionField, Point, Rect, RGBA } from '../types.ts';
 import { clamp } from './math.ts';
-import { extractFeatures, matchFeatures } from './features.ts';
-import {
-  type AuditResult,
-  core,
-  type LabelMask,
-  type PatchInput,
-  type RefinementResult,
-  type ResidentFrame,
-  ResidentGray,
-} from './wasm.ts';
-/** Motion evidence on analysis and native images. Every kernel runs in the Rust core (rust/core/src/motion.rs);
- *  this module keeps the pipeline-facing call shape and the pure orchestration (`probeScale`). */
-export function translationHypotheses(matches: Match[], max = 6): Motion[] {
-  return core().translationHypotheses(matches, max);
-}
-export function verifyTranslation(a: Gray, b: Gray, dx: number, dy: number, roi?: Rect): number {
-  return core().verifyTranslation(a, b, dx, dy, roi);
-}
-export type Audit = AuditResult;
-/** Held-out photometric evidence, using textured pixels and clamping BOTH observations to the pane.
- * Block statistics separate "the page moved as hypothesised while one widget changed" from "this alignment is wrong".
- * `tolerant` accepts a ±1 pixel neighbourhood, for analysis images whose native motion is not a multiple of the factor. */
-export function auditTranslation(a: Gray, b: Gray, dx: number, dy: number, roi?: Rect, tolerant = false): Audit {
-  return core().auditTranslation(a, b, dx, dy, roi, tolerant);
-}
-export function refineTranslation(a: Gray, b: Gray, p: Point, roi?: Rect, radius = 2): Point {
-  return core().refineTranslation(a, b, p, roi, radius);
-}
-/** Similarity is a change detector, not an excuse to silently rescale source pixels. */
-export function detectScale(matches: Match[]): number {
-  return core().detectScale(matches);
-}
+import { core, type LabelMask, type PatchInput, type RefinementResult, type ResidentFrame, ResidentGray } from './wasm.ts';
+/** Motion evidence on analysis and native images. Every kernel runs in the Rust core (rust/core/src/motion.rs),
+ *  called through `core()` directly except where a doc comment below says otherwise. This module keeps the
+ *  pure orchestration on top of it (`estimateMotion`, `extractPatches`, `probeScale`) plus `refineNative`/
+ *  `refinePatches`, whose resident-frame call shape a test oracle still needs. */
 export function estimateMotion(a: Gray, b: Gray, _previous?: MotionField, af?: Feature[], bf?: Feature[]): MotionField {
   if (a.width !== b.width || a.height !== b.height) {
     throw new Error('FRAME_GEOMETRY_CHANGED');
@@ -42,12 +15,15 @@ export function estimateMotion(a: Gray, b: Gray, _previous?: MotionField, af?: F
   if (difference < .12) {
     return core().estimateMotion(a, b, [], 0);
   }
-  const featuresA = af || extractFeatures(a), featuresB = bf || extractFeatures(b);
-  return core().estimateMotion(a, b, matchFeatures(featuresA, featuresB), featuresB.length);
+  const featuresA = af || core().extractFeatures(a, 480), featuresB = bf || core().extractFeatures(b, 480);
+  return core().estimateMotion(a, b, core().matchFeatures(featuresA, featuresB, true), featuresB.length);
 }
 export type NativeRefinement = RefinementResult;
-/** Native-pixel refinement and verification. No frame resizing and no averaging of text at the seam.
- * `mask` restricts both frames to one region's atlas membership. */
+/** Native-pixel refinement and verification. No frame resizing and no averaging of text at the seam. `mask`
+ *  restricts both frames to one region's atlas membership. Kept as a wrapper (unlike this module's other former
+ *  one-line delegations) because `tests/support/reference/track.ts`'s dual-mode plain/resident call sites need
+ *  the `RGBA | ResidentFrame` signature `core().refineNative` has, which the frozen, plain-`RGBA`-only
+ *  `tests/support/reference/motion.ts` copy does not model. */
 export function refineNative(
   a: RGBA | ResidentFrame,
   b: RGBA | ResidentFrame,
@@ -99,15 +75,15 @@ export function extractPatches(
   }
   return out;
 }
-/** Measures how well keyframe patches (region-local, in the keyframe's frame) align in the current native frame at `guess` (current → keyframe), refining on the native raster. */
+/** Measures how well keyframe patches (region-local, in the keyframe's frame) align in the current native frame
+ *  at `guess` (current → keyframe), refining on the native raster. Kept as a wrapper for the same
+ *  resident-vs-plain reason as `refineNative` above. */
 export function refinePatches(patches: Patch[], native: Gray | ResidentGray, region: Rect, guess: Point, radius = 3): NativeRefinement {
   return core().refinePatches(patches, native, region, guess, radius);
 }
-/** Bilinear resample of an analysis image by a scale factor (probe only; output pixels are never resampled). */
-export function resampleGray(g: Gray, scale: number): Gray {
-  return core().resampleGray(g, scale);
-}
-/** When translation fails, asks explicitly whether the previous observation explains the current one at another magnification. */
+/** When translation fails, asks explicitly whether the previous observation explains the current one at another
+ *  magnification. The only orchestration in this module that is not a thin pass-through: it drives several
+ *  Rust kernels through `core()` in a loop over candidate scales. */
 export function probeScale(
   previous: Gray,
   current: Gray,
@@ -117,14 +93,14 @@ export function probeScale(
 ): { scale: number; error: number } | undefined {
   let best: { scale: number; error: number } | undefined;
   for (const scale of scales) {
-    const scaled = resampleGray(previous, scale),
-      features = extractFeatures(scaled, 320),
-      matches = matchFeatures(features, currentFeatures);
-    for (const m of translationHypotheses(matches, 4)) {
+    const scaled = core().resampleGray(previous, scale),
+      features = core().extractFeatures(scaled, 320),
+      matches = core().matchFeatures(features, currentFeatures, true);
+    for (const m of core().translationHypotheses(matches, 4)) {
       if (m.support < 8) {
         continue;
       }
-      const audit = auditTranslation(scaled, current, m.x, m.y, roi, true);
+      const audit = core().auditTranslation(scaled, current, m.x, m.y, roi, true);
       if (audit.samples < 200 || !Number.isFinite(audit.error) || audit.agreement < .5 || audit.agreeingError > 10) {
         continue;
       }

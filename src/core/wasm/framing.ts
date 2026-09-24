@@ -7,6 +7,7 @@ import type { Rect, Region, RGBA } from '../../types.ts';
 import type { Core } from './core.ts';
 import type { CoreExports } from './exports.ts';
 import { LAYOUT_BYTES, VOTING_REGION_BYTES } from './exports.ts';
+import { writeRegionDescriptor } from './marshal.ts';
 import type { Resident } from './memory.ts';
 
 export interface FrameLayout {
@@ -135,30 +136,11 @@ function uploadRegions(core: Core, exports: CoreExports, regions: Region[]): { p
     };
     const descriptor = core.alloc(regions.length * VOTING_REGION_BYTES);
     residents.push(descriptor);
-    const view = new DataView(exports.memory.buffer, descriptor.ptr, regions.length * VOTING_REGION_BYTES);
     regions.forEach((r, i) => {
-      const o = i * VOTING_REGION_BYTES;
-      core.writeRect(descriptor.ptr + o, r.rect);
       const exclusionsPtr = alloc((r.exclusions?.length || 0) * 32);
-      (r.exclusions || []).forEach((e, k) => core.writeRect(exclusionsPtr + k * 32, e));
-      view.setUint32(o + 32, exclusionsPtr, true);
-      view.setUint32(o + 36, r.exclusions?.length || 0, true);
       const cropPtr = alloc(r.crop ? 32 : 0);
-      if (r.crop) core.writeRect(cropPtr, r.crop);
-      view.setUint32(o + 40, cropPtr, true);
-      view.setUint32(o + 44, r.solid ? 1 : 0, true);
-      const useMask = !!r.mask && !r.solid;
-      const maskPtr = alloc(useMask ? r.mask!.byteLength : 0);
-      if (useMask) {
-        if (!r.maskWidth || !r.maskHeight || r.mask!.byteLength !== r.maskWidth * r.maskHeight) {
-          throw new Error(`CORE_BAD_ARGUMENT: region ${r.id} mask does not match its declared ${r.maskWidth}×${r.maskHeight}.`);
-        }
-        core.writeBytes(maskPtr, r.mask!);
-      }
-      view.setUint32(o + 48, maskPtr, true);
-      view.setUint32(o + 52, useMask ? r.maskWidth! : 0, true);
-      view.setUint32(o + 56, useMask ? r.maskHeight! : 0, true);
-      view.setUint32(o + 60, useMask ? r.factor || 0 : 0, true);
+      const maskPtr = alloc(!!r.mask && !r.solid ? r.mask!.byteLength : 0);
+      writeRegionDescriptor(exports, descriptor.ptr, i * VOTING_REGION_BYTES, r, exclusionsPtr, cropPtr, maskPtr);
     });
     return { ptr: descriptor.ptr, count: regions.length, residents };
   } catch (error) {

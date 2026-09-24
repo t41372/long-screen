@@ -7,9 +7,10 @@ import { buildFramedCanvas } from '../../../src/core/framing.ts';
 import { referenceBuildFramedCanvas, referenceFrameCoordinate, referenceFrameLayout } from '../../support/reference/framing.ts';
 import { encodeRGBA } from '../../../src/codec/png.ts';
 import { iterate, MemoryKV } from '../../../src/storage/db.ts';
-import { markCovered, markProvisional, TileStore } from '../../../src/storage/tiles.ts';
+import { markCovered, TileStore } from '../../../src/storage/tiles.ts';
 import type { CanvasMeta, Region, RGBA } from '../../../src/types.ts';
 import { rng } from '../../../src/core/math.ts';
+import { markProvisional } from '../../support/tile-bits.ts';
 
 function makeSource(width: number, height: number, seed: number): RGBA {
   const data = new Uint8ClampedArray(width * height * 4), rnd = rng(seed);

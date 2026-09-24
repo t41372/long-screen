@@ -61,12 +61,6 @@ export const markCovered = (tile: Tile, p: number): void => {
   tile.coverage[p >> 3] |= 1 << (p & 7);
 };
 export const provisional = (tile: Tile, p: number): boolean => !!(tile.provisional[p >> 3] & (1 << (p & 7)));
-export const markProvisional = (tile: Tile, p: number): void => {
-  tile.provisional[p >> 3] |= 1 << (p & 7);
-};
-export const clearProvisional = (tile: Tile, p: number): void => {
-  tile.provisional[p >> 3] &= ~(1 << (p & 7));
-};
 export function countCovered(coverage: Uint8Array): number {
   let observed = 0;
   for (const byte of coverage) {

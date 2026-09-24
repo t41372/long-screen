@@ -120,7 +120,6 @@ export interface CoreExports {
     noise: number,
     out: number,
   ): number;
-  ls_png_unfilter(raw: number, width: number, height: number, channels: number, out: number): number;
   ls_png_filter_sub(rgba: number, width: number, height: number, out: number): number;
   ls_png_encode(rgba: number, width: number, height: number): number;
   ls_png_encode_len(handle: number): number;

@@ -2,18 +2,10 @@
 import type { CanvasMeta, Diagnostic, Placement, Rect, Region, RGBA } from '../../../src/types.ts';
 import type { KV } from '../../../src/storage/db.ts';
 import { iterate } from '../../../src/storage/db.ts';
-import {
-  clearProvisional,
-  covered,
-  markCovered,
-  markProvisional,
-  provisional,
-  QUALITY_BLOCK,
-  type TileStore,
-} from '../../../src/storage/tiles.ts';
+import { covered, markCovered, provisional, QUALITY_BLOCK, type TileStore } from '../../../src/storage/tiles.ts';
 import type { RegionAtlas } from '../../../src/core/layers.ts';
-import { intersect, pad, popcount, union } from '../../../src/core/math.ts';
-import { resolveRasterPose } from '../../../src/core/raster.ts';
+import { intersect, pad, popcount, resolveRasterPose, union } from './math.ts';
+import { clearProvisional, markProvisional } from '../tile-bits.ts';
 /** Native-screen occluder membership, native-frame coordinates. Occlusions are always full-width bands, so rect containment on (sx, sy) matches the row-rule used before. */
 function occluded(occlusions: Rect[] | undefined, sx: number, sy: number): boolean {
   return !!occlusions && occlusions.some((o) => sx >= o.x && sx < o.x + o.width && sy >= o.y && sy < o.y + o.height);

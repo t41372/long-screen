@@ -1,6 +1,6 @@
-/** `keyframes.ts::evaluateCandidates` fused into one call (R4d step 4) — split from the former monolithic
- *  `wasm/track.ts` (R6-B, final-verify-report.md item 10). See `track.ts`'s module doc comment for the split;
- *  `b`/`writePatches`/`resolveNative` stay there (shared with `track-reacquire.ts`). */
+/** `keyframes.ts::evaluateCandidates` fused into one call — split out of `wasm/track.ts`. See `track.ts`'s
+ *  module doc comment for the split; `b`/`writePatches`/`resolveNative` stay there (shared with
+ *  `track-reacquire.ts`). */
 import type { Feature, Gray, Rect } from '../../types.ts';
 import type { Core, PatchInput } from './core.ts';
 import type { CoreExports } from './exports.ts';
@@ -23,9 +23,9 @@ export interface EvaluateCandidatesQuery {
   factor: number;
   radius: number;
   /** See `ReacquireInputs.current`'s doc comment for the resident-lazy-fill contract — `undefined` here means
-   *  the caller has no resident frame to offer at all (R4d step 4: direct `evaluateCandidates`/`find()` callers
-   *  in tests, which do not go through `solve.ts`'s frame loop); `resolveNative` treats that exactly like any
-   *  other non-resident `current` (mode 0, `native()` called eagerly). */
+   *  the caller has no resident frame to offer at all (direct `evaluateCandidates`/`find()` callers in tests,
+   *  which do not go through `solve.ts`'s frame loop); `resolveNative` treats that exactly like any other
+   *  non-resident `current` (mode 0, `native()` called eagerly). */
   current: FrameInput | undefined;
   nativePlane: ResidentGray | undefined;
   nativeFilled: boolean;
@@ -49,7 +49,7 @@ const KEYFRAME_BYTES = 32;
 const CANDIDATE_HEADER_BYTES = 8;
 const CANDIDATE_RECORD_BYTES = 48;
 
-/** `keyframes.ts::evaluateCandidates` fused into one call (R4d step 4): match + hypothesis + analysis-scale
+/** `keyframes.ts::evaluateCandidates` fused into one call: match + hypothesis + analysis-scale
  *  audit for every keyframe, then — only if at least one candidate passed the audit — the lazy native-plane
  *  fill (same rule as `reacquire`/`driftCorrection`) and native-patch refinement. Returns the audited-and-
  *  refined candidate list, not the final pick: `keyframes.ts` finishes the `Math.exp` confidence formula and

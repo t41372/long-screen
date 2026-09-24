@@ -15,9 +15,16 @@ import {
   TileStore,
 } from '../../src/storage/tiles.ts';
 import { RegionAtlas } from '../../src/core/layers.ts';
-import { Compositor, sameBlockSet } from '../../src/core/compositor.ts';
+import { Compositor } from '../../src/core/compositor.ts';
 import type { CanvasMeta, Diagnostic, Placement, Rect, Region, RGBA } from '../../src/types.ts';
 type RGB4 = [number, number, number, number];
+/** Former src/core/compositor.ts export with no production caller left (final-verify-report.md item 12): compares
+ *  block membership, not only a bounding box or cardinality. Kept here only for this test. */
+function sameBlockSet(a: [number, number][], b: [number, number][]): boolean {
+  if (a.length !== b.length) return false;
+  const keys = new Set(a.map(([x, y]) => `${x},${y}`));
+  return keys.size === b.length && b.every(([x, y]) => keys.has(`${x},${y}`));
+}
 function solid(width: number, height: number, color: RGB4): RGBA {
   const data = new Uint8ClampedArray(width * height * 4);
   for (let i = 0; i < width * height; i++) data.set(color, i * 4);
@@ -641,12 +648,12 @@ for (const policy of ['stable', 'latest'] as const) {
   });
 }
 
-// --- R3-5c tripwire (Step 0): pins the exact ORDER flush() persists temporal rows in, across a
-// delete-then-reinsert-shaped sequence. JS Map/Set iteration is insertion order; deleting a key never reorders
-// the survivors, and re-`.set`-ing an EXISTING key never moves it either (only a delete+fresh-insert of a key
-// would move it to the end — and index.records never does that: it always deletes losers with `index.records
-// .delete`, never re-adds them under the same key). The port to Rust (BTreeMap<seq,Record> + HashMap<id,seq>)
-// must reproduce this exactly, not indexmap's swap_remove (which reorders on removal). Must pass on today's TS.
+// --- Tripwire: pins the exact ORDER flush() persists temporal rows in, across a delete-then-reinsert-shaped
+// sequence. JS Map/Set iteration is insertion order; deleting a key never reorders the survivors, and
+// re-`.set`-ing an EXISTING key never moves it either (only a delete+fresh-insert of a key would move it to
+// the end — and index.records never does that: it always deletes losers with `index.records.delete`, never
+// re-adds them under the same key). The Rust index (BTreeMap<seq,Record> + HashMap<id,seq>) must reproduce
+// this exactly, not indexmap's swap_remove (which reorders on removal).
 /** A KV wrapper that logs every delete()/putMany() call, in call order, so flush()'s row order is directly
  *  observable (db.scan() sorts by key and cannot show call order). */
 function spyKV(db: KV): { db: KV; log: string[] } {
@@ -667,7 +674,7 @@ function spyKV(db: KV): { db: KV; log: string[] } {
   };
   return { db: spy, log };
 }
-Deno.test('compositor: flush() persists temporal rows in exact index insertion/deletion order (R3-5c Step 0 tripwire)', async () => {
+Deno.test('compositor: flush() persists temporal rows in exact index insertion/deletion order (tripwire)', async () => {
   // A row of 13 single-block (16px) regions on one 208px-wide tile: blocks 0,4,8,12 each get their own
   // temporal record (A,B,C,D — far enough apart that their ±16px expanded rects never touch each other).
   const width = 13 * B, region = makeRegion({ x: 0, y: 0, width, height: B });
@@ -726,7 +733,7 @@ Deno.test('compositor: flush() persists temporal rows in exact index insertion/d
   assertEquals(final.map((r) => r.value.id), [ids.a], 'only the surviving merged record (A) remains persisted');
   assertEquals(final[0].value.blocks.length, 13, 'the final record owns every block 0..12');
 });
-Deno.test('compositor: a fresh id that collides with a still-loaded KV row overwrites it in place, not append (R3-5c Step 0)', async () => {
+Deno.test('compositor: a fresh id that collides with a still-loaded KV row overwrites it in place, not append', async () => {
   // temporalSequence always restarts at 0 in a new Compositor instance. If a canvas already has a persisted
   // record at id "0000000000" (typical: the first record any Compositor ever creates) and this Compositor's
   // first-ever new (non-overlapping) temporal record also gets the fresh id pad(0), `index.records.set` clobbers
@@ -760,7 +767,7 @@ Deno.test('compositor: a fresh id that collides with a still-loaded KV row overw
   assertEquals(rows.length, 1, 'the collision overwrites the preseeded row rather than adding a second one');
   assertEquals(rows[0].value.rect, { x: 0, y: 0, width: B, height: B }, "the new record's content replaced the stale preseeded one");
 });
-Deno.test('compositor: a fresh id that collides with a DELETED id is appended and un-deletes the key, emitting no delete() (R3-5c Step 0)', async () => {
+Deno.test('compositor: a fresh id that collides with a DELETED id is appended and un-deletes the key, emitting no delete()', async () => {
   // Complements the two tests above: here the fresh id collides with a key that USED to be live but was deleted
   // earlier in the same run (merged away). `index.records.set` on a non-existing key appends at the end of Map
   // iteration order, and `index.deleted.delete(record.id)` removes it from the pending-deletions set — so
@@ -848,7 +855,7 @@ Deno.test(
     // TemporalIndex::flush_take() (which drains `dirty`/`deleted`) BEFORE checking the caller's counts against
     // it, so a bad count silently lost every dirty/deleted row instead of returning an error with the index
     // unchanged. Reaches Compositor's private per-canvas handle the way this suite already reaches other
-    // private state (see common.md's "some tests reach private members through casts").
+    // private state (tests may reach private members through casts).
     const width = B, region = makeRegion({ x: 0, y: 0, width, height: B });
     const db = new MemoryKV(), tiles = new TileStore(db, width, 8), atlas = new RegionAtlas([region], width, B);
     const compositor = new Compositor(db, tiles, 'stable', async () => {}, atlas);

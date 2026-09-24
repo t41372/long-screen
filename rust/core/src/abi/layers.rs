@@ -115,7 +115,7 @@ pub extern "C" fn ls_learner_add(
 
 /// Number of named accumulator arrays `learner_array` recognises (selectors 0..=13); selector 14 is the
 /// separate "counts" tuple (informative frames, native frames, native width, native height). Asserted against
-/// `src/core/wasm/learner.ts`'s `LEARNER_ARRAYS` via `ls_layout` selector 12, so an array added or removed on
+/// `src/core/wasm/layers.ts`'s `LEARNER_ARRAYS` via `ls_layout` selector 12, so an array added or removed on
 /// one side without the other is caught instead of silently misreading `which`.
 pub const LEARNER_ARRAY_COUNT: usize = 14;
 

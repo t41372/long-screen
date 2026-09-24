@@ -9,6 +9,7 @@ import type { Rect, Region } from '../../types.ts';
 import type { Core } from './core.ts';
 import type { CoreExports } from './exports.ts';
 import { REGION_HEADER_BYTES, REGIONS_FINISH_DESC_BYTES, VOTING_REGION_BYTES } from './exports.ts';
+import { writeRegionDescriptor } from './marshal.ts';
 import { type FrameInput, type Resident, ResidentFrame } from './memory.ts';
 
 export interface FinishAccumulators {
@@ -234,27 +235,9 @@ export function labelAtlasResident(
     }
     sizes.push((regions.length + 1) * 4);
     const ptr = core.scratch(sizes), base = ptr[0], countsPtr = ptr[ptr.length - 1];
-    const view = new DataView(exports.memory.buffer, base, regions.length * VOTING_REGION_BYTES);
     regions.forEach((r, i) => {
-      const [exclusions, crop, mask] = ptr.slice(1 + i * 3, 4 + i * 3), o = i * VOTING_REGION_BYTES;
-      core.writeRect(base + o, r.rect);
-      (r.exclusions || []).forEach((e, k) => core.writeRect(exclusions + k * 32, e));
-      view.setUint32(o + 32, r.exclusions?.length ? exclusions : 0, true);
-      view.setUint32(o + 36, r.exclusions?.length || 0, true);
-      if (r.crop) core.writeRect(crop, r.crop);
-      view.setUint32(o + 40, r.crop ? crop : 0, true);
-      view.setUint32(o + 44, r.solid ? 1 : 0, true);
-      const useMask = !!r.mask && !r.solid;
-      if (useMask) {
-        if (!r.maskWidth || !r.maskHeight || r.mask!.byteLength !== r.maskWidth * r.maskHeight) {
-          throw new Error(`CORE_BAD_ARGUMENT: region ${r.id} mask does not match its declared ${r.maskWidth}×${r.maskHeight}.`);
-        }
-        core.writeBytes(mask, r.mask!);
-      }
-      view.setUint32(o + 48, useMask ? mask : 0, true);
-      view.setUint32(o + 52, useMask ? r.maskWidth! : 0, true);
-      view.setUint32(o + 56, useMask ? r.maskHeight! : 0, true);
-      view.setUint32(o + 60, useMask ? r.factor || 0 : 0, true);
+      const [exclusions, crop, mask] = ptr.slice(1 + i * 3, 4 + i * 3);
+      writeRegionDescriptor(exports, base, i * VOTING_REGION_BYTES, r, exclusions, crop, mask);
     });
     const status = exports.ls_regions_label_atlas(base, regions.length, width, height, resident.ptr, countsPtr);
     if (status === STATUS_TOO_MANY_REGIONS) throw new Error('Too many regions for the pixel atlas.');

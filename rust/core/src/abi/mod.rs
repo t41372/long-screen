@@ -8,23 +8,24 @@
 //!
 //! Error conventions (five, by export — TS depends on each; do not change any of them):
 //!   1. `STATUS_OK` (0) / `STATUS_BAD_ARGUMENT` (−1): most exports that write through an output pointer.
-//!   2. `STATUS_OK` / `STATUS_BAD_ARGUMENT` / `STATUS_BAD_FILTER − filter_byte`: `ls_png_unfilter` only.
+//!   2. `STATUS_OK` / `STATUS_BAD_ARGUMENT` / `STATUS_BAD_FILTER − filter_byte`: `ls_png_decode` only.
 //!   3. A non-negative count or length, `STATUS_BAD_ARGUMENT` on failure: extraction/matching exports
 //!      (`ls_extract_features`, `ls_match_features`, `ls_feature_words`, `ls_translation_hypotheses`,
 //!      `ls_sticky_occlusions`, `ls_voting_push`/`_drain`/`_pop`, `ls_learner_len`, `ls_keyframes_evaluate_candidates`),
 //!      plus `ls_voting_peek`, which additionally returns −2 for "no pending record" (not a bad argument).
-//!   4. A handle (> 0) or `STATUS_BAD_ARGUMENT`: `ls_learner_new`, `ls_voting_new`.
+//!   4. A handle (> 0) or `STATUS_BAD_ARGUMENT`: `ls_learner_new`, `ls_voting_new`, `ls_pose_graph_new`,
+//!      `ls_temporal_index_new`, `ls_png_encode`.
 //!   5. A plain numeric result with its own out-of-band sentinel, no status code: `ls_stationary_boundary`
 //!      (−1.0 none, −2.0 bad argument), `ls_verify_translation` (`NaN` bad argument), `ls_detect_scale` and
 //!      `ls_mean_difference` (a neutral default — 1.0 / 255.0 — on a bad argument, since callers cannot branch
 //!      on a status here).
 
 mod chrome;
-mod composite;
+mod compositor;
 mod consistency;
 mod features;
 mod framing;
-mod learner;
+mod layers;
 mod memory;
 mod motion;
 mod png;
@@ -39,6 +40,7 @@ mod track_odometry;
 mod track_reacquire;
 pub(crate) mod voting;
 pub(crate) mod wire;
+mod yuv;
 
 pub const STATUS_OK: i32 = 0;
 pub const STATUS_BAD_ARGUMENT: i32 = -1;
@@ -52,7 +54,7 @@ pub const STATUS_BAD_FILTER: i32 = -256;
 pub extern "C" fn ls_layout(which: u32) -> u32 {
     use crate::motion::MOTION_CELL;
     use framing::LAYOUT_BYTES;
-    use learner::LEARNER_ARRAY_COUNT;
+    use layers::LEARNER_ARRAY_COUNT;
     use regions::{REGIONS_FINISH_DESC_BYTES, REGION_HEADER_BYTES};
     use wire::{
         COMPOSITE_HEADER_BYTES, LEARNER_FIELD_BYTES, LEARNER_MOTION_BYTES, MATCH_POINT_BYTES,

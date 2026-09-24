@@ -1,5 +1,5 @@
-//! Anchor re-acquisition and drift correction (R4c 3b-ii) — split from the former monolithic `track.rs`
-//! (R6-B, final-verify-report.md item 10). `track.ts::reacquire`/`driftCorrection`, each split into a
+//! Anchor re-acquisition and drift correction — split out of the former monolithic `track.rs`.
+//! `track.ts::reacquire`/`driftCorrection`, each split into a
 //! hypothesis/audit half with no native luma and a native-patch refinement half, so the ABI layer can decide
 //! whether the resident native luma plane needs filling at all before calling the refinement half.
 
@@ -9,7 +9,7 @@ use crate::motion::{
     refine_patches, translation_hypotheses, Gray, MatchPoints, Motion, Patch, Point,
 };
 
-/// `track.ts::reacquire`'s hypothesis-generation half (R4c 3b-ii): `matchFeatures` + `translationHypotheses`
+/// `track.ts::reacquire`'s hypothesis-generation half: `matchFeatures` + `translationHypotheses`
 /// filtered by `support >= 6`, with NO native luma involved. Split out from the native-refinement half
 /// (`reacquire_refine`) so the ABI layer can decide whether the resident native luma plane needs filling at
 /// all this call — the original TS `native()` thunk was only ever evaluated once `models.slice(0, 4)` actually

@@ -7,12 +7,12 @@
  *  Kernels return negative status codes rather than trapping; those are surfaced as thrown errors.
  *
  *  Split by domain under `src/core/wasm/`, mirroring `rust/core/src/abi/*.rs`; this file is a barrel that
- *  re-exports every name callers already import from `src/core/wasm.ts` (16 importers, including
+ *  re-exports every name callers already import from `src/core/wasm.ts` (24 importers, including
  *  `tests/support/core.ts`, which needs `loadCore`/`simdSupported`). */
 export type { AuditResult, CoreThreads, LabelMask, PatchInput, RefinementResult } from './wasm/core.ts';
 export { Core } from './wasm/core.ts';
-export type { LearnerAccumulators } from './wasm/learner.ts';
-export { LearnerHandle } from './wasm/learner.ts';
+export type { LearnerAccumulators } from './wasm/layers.ts';
+export { LearnerHandle } from './wasm/layers.ts';
 export type { BytesInput, FrameInput } from './wasm/memory.ts';
 export { FrameRing, Resident, ResidentFrame, ResidentGray } from './wasm/memory.ts';
 export type { VotingBox, VotingRecord, VotingVerdict } from './wasm/voting.ts';
@@ -28,7 +28,7 @@ export type {
   OcclusionDecision,
 } from './wasm/track.ts';
 export type { FrameLayout, FramingSession, FramingTile, SourceFramingTile } from './wasm/framing.ts';
-export type { CompositeObservation, CompositeTile, CompositeTileStats, PreparedObservation } from './wasm/composite.ts';
+export type { CompositeObservation, CompositeTile, CompositeTileStats, PreparedObservation } from './wasm/compositor.ts';
 export type {
   OverwriteStats,
   OverwriteTile,

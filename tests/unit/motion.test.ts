@@ -1,19 +1,8 @@
 import '../support/core.ts';
 import { assert, assertEquals, assertThrows } from '@std/assert';
 import { extractFeatures, grayscale, matchFeatures } from '../../src/core/features.ts';
-import {
-  auditTranslation,
-  detectScale,
-  estimateMotion,
-  extractPatches,
-  probeScale,
-  refineNative,
-  refinePatches,
-  refineTranslation,
-  resampleGray,
-  translationHypotheses,
-  verifyTranslation,
-} from '../../src/core/motion.ts';
+import { core } from '../../src/core/wasm.ts';
+import { estimateMotion, extractPatches, probeScale, refineNative, refinePatches } from '../../src/core/motion.ts';
 import { crop, rgba } from '../support/pixel-fixtures.ts';
 import type { Gray, Match } from '../../src/types.ts';
 import { makeWorld } from '../../src/synthetic/world.ts';
@@ -53,26 +42,28 @@ Deno.test('motion: reversal, unrelated frames, geometry mismatch, consensus ambi
         unique: false,
       }),
     );
-  const h = translationHypotheses(matches)[0];
+  const h = core().translationHypotheses(matches, 6)[0];
   assert(h.ambiguous);
   assertEquals(h.y, 20);
-  assertEquals(translationHypotheses([]).length, 0);
-  assertEquals(translationHypotheses(matches.slice(0, 2)).length, 0);
+  assertEquals(core().translationHypotheses([], 6).length, 0);
+  assertEquals(core().translationHypotheses(matches.slice(0, 2), 6).length, 0);
 });
 Deno.test('motion: verify/audit/refine on analysis images', () => {
   const a = crop(100, 100), b = crop(117, 123);
-  assert(verifyTranslation(a, b, 17, 23) < 1);
-  assert(verifyTranslation(a, b, 40, 40) > 20);
-  assertEquals(verifyTranslation(a, b, 17, 23, { x: 0, y: 0, width: 10, height: 10 }), Infinity);
-  const good = auditTranslation(a, b, 17, 23), bad = auditTranslation(a, b, 30, 30), none = auditTranslation(a, b, 300, 300);
+  assert(core().verifyTranslation(a, b, 17, 23) < 1);
+  assert(core().verifyTranslation(a, b, 40, 40) > 20);
+  assertEquals(core().verifyTranslation(a, b, 17, 23, { x: 0, y: 0, width: 10, height: 10 }), Infinity);
+  const good = core().auditTranslation(a, b, 17, 23, undefined, false),
+    bad = core().auditTranslation(a, b, 30, 30, undefined, false),
+    none = core().auditTranslation(a, b, 300, 300, undefined, false);
   assert(good.error < 1 && good.mismatch < .01 && good.agreement > .9 && good.blocks > 4);
   assert(bad.error > 20 && bad.agreement < .2);
   assertEquals(none.error, Infinity);
   assertEquals(none.overlap, 0);
-  const tolerant = auditTranslation(a, b, 18, 23, undefined, true);
+  const tolerant = core().auditTranslation(a, b, 18, 23, undefined, true);
   assert(tolerant.error < good.error + 30);
-  assertEquals(refineTranslation(a, b, { x: 16.4, y: 23.6 }), { x: 17, y: 23 });
-  assertEquals(refineTranslation(a, b, { x: 17, y: 23 }, { x: 0, y: 0, width: 4, height: 4 }), { x: 17, y: 23 });
+  assertEquals(core().refineTranslation(a, b, { x: 16.4, y: 23.6 }, undefined, 2), { x: 17, y: 23 });
+  assertEquals(core().refineTranslation(a, b, { x: 17, y: 23 }, { x: 0, y: 0, width: 4, height: 4 }, 2), { x: 17, y: 23 });
 });
 Deno.test('motion: native refinement returns integer offsets, errors and runner-up gaps; degenerate masks never produce NaN', () => {
   const a = rgba(crop(100, 100)), b = rgba(crop(117, 123));
@@ -112,10 +103,10 @@ Deno.test('motion: keyframe patches measure revisits at native precision', () =>
 });
 Deno.test('motion: scale detection and explicit magnification probe', () => {
   const a = crop(40, 40, 300, 220), features = extractFeatures(a), matches = matchFeatures(features, features);
-  assertEquals(detectScale(matches), 1);
-  assertEquals(detectScale([]), 1);
+  assertEquals(core().detectScale(matches), 1);
+  assertEquals(core().detectScale([]), 1);
   const page = makeWorld(700, 500, 5, 'cards', 2), g: Gray = { width: 700, height: 500, data: grayscale(page.data, 700, 500).data };
-  const zoomed = resampleGray(g, 1.25), cropped = { width: 640, height: 448, data: new Uint8Array(640 * 448) };
+  const zoomed = core().resampleGray(g, 1.25), cropped = { width: 640, height: 448, data: new Uint8Array(640 * 448) };
   for (let y = 0; y < 448; y++) {
     cropped.data.set(zoomed.data.subarray(y * zoomed.width, y * zoomed.width + 640), y * 640);
   }
@@ -126,5 +117,5 @@ Deno.test('motion: scale detection and explicit magnification probe', () => {
   const probe = probeScale(base, cropped, extractFeatures(cropped));
   assert(probe && Math.abs(probe.scale - 1.25) < .01, JSON.stringify(probe));
   assertEquals(probeScale(base, crop(0, 0, 640, 448), extractFeatures(crop(0, 0, 640, 448))), undefined);
-  assertEquals(resampleGray({ width: 1, height: 1, data: new Uint8Array([7]) }, 3).width, 3);
+  assertEquals(core().resampleGray({ width: 1, height: 1, data: new Uint8Array([7]) }, 3).width, 3);
 });

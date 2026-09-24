@@ -1,20 +1,20 @@
-/** Per-region, per-frame tracking verdicts (R4b phase 3a) plus keyframe candidate scoring (R4d step 4),
- *  mirroring `rust/core/src/abi/track.rs`. Every export here is a single call over plain scalars/buffers — no
- *  handles, no state carried across calls (a stateful per-region tracker was measured in R4c 3b-iii and NOT
- *  built: no measurable gain over these per-call fusions). `has*`/`*EqCanvas` booleans are `0`/`1`; multi-way
- *  verdicts come back as small tags decoded into the TS union types `track.ts` already exports.
+/** Per-region, per-frame tracking verdicts plus keyframe candidate scoring, mirroring `rust/core/src/abi/
+ *  track.rs`. Every export here is a single call over plain scalars/buffers — no handles, no state carried
+ *  across calls (a stateful per-region tracker was measured and not built: no gain over these per-call
+ *  fusions). `has*`/`*EqCanvas` booleans are `0`/`1`; multi-way verdicts come back as small tags decoded into
+ *  the TS union types `track.ts` already exports.
  *
- *  Hub module for the track trio (R6-B, final-verify-report.md item 10: this was one 717-line file): the
- *  stateless verdicts above plus the region/native-luma marshalling helpers `track-odometry.ts`
- *  (`writeRegion`)/`track-reacquire.ts`/`track-keyframes.ts` (`b2`, `writePatches`, `resolveNative`) share.
- *  Split into `track-odometry.ts` (`odometry`), `track-reacquire.ts` (`reacquire`/`driftCorrection`),
- *  `track-keyframes.ts` (`evaluateCandidates`); `wasm/core.ts`'s `import * as track from './track.ts'` needs
- *  no edit — re-exported here via `export *`. */
+ *  Hub module for the track trio: the stateless verdicts above plus the region/native-luma marshalling helpers
+ *  `track-odometry.ts` (`writeRegion`)/`track-reacquire.ts`/`track-keyframes.ts` (`b2`, `writePatches`,
+ *  `resolveNative`) share. Split into `track-odometry.ts` (`odometry`), `track-reacquire.ts`
+ *  (`reacquire`/`driftCorrection`), `track-keyframes.ts` (`evaluateCandidates`); `wasm/core.ts`'s
+ *  `import * as track from './track.ts'` needs no edit — re-exported here via `export *`. */
 import type { Feature, Gray, Match, Point, Region } from '../../types.ts';
 import type { Core, PatchInput } from './core.ts';
 import type { CoreExports } from './exports.ts';
 import { MATCH_POINT_BYTES, PATCH_BYTES, VOTING_REGION_BYTES } from './exports.ts';
 import { readFeatures, writeFeatures } from './features.ts';
+import { writeRegionDescriptor } from './marshal.ts';
 import { type FrameInput, ResidentFrame, ResidentGray } from './memory.ts';
 export * from './track-odometry.ts';
 export * from './track-reacquire.ts';
@@ -207,35 +207,16 @@ export function regionZoom(core: Core, exports: CoreExports, kindMoving: boolean
   return Number.isNaN(result) ? undefined : result;
 }
 
-/** One serialised `Region` for `ls_track_odometry`'s difference-sample fallback: the same
- *  `VOTING_REGION_BYTES` wire format `wasm/voting.ts::votingRing` writes once per solve pass, written here
- *  every call (R4c 3b-i keeps this simple; only the rare fallback path — the fast native refinement failed —
- *  actually reads it core-side). */
+/** One serialised `Region` for `ls_track_odometry`'s difference-sample fallback: the same wire format
+ *  `wasm/voting.ts::votingRing` writes once per solve pass, written here every call (only the rare fallback
+ *  path — the fast native refinement failed — actually reads it core-side). */
 export function writeRegion(core: Core, base: number, exclusions: number, crop: number, mask: number, r: Region): void {
-  core.writeRect(base, r.rect);
-  const view = new DataView(core.exports.memory.buffer, base, VOTING_REGION_BYTES);
-  (r.exclusions || []).forEach((e, k) => core.writeRect(exclusions + k * 32, e));
-  view.setUint32(32, r.exclusions?.length ? exclusions : 0, true);
-  view.setUint32(36, r.exclusions?.length || 0, true);
-  if (r.crop) core.writeRect(crop, r.crop);
-  view.setUint32(40, r.crop ? crop : 0, true);
-  view.setUint32(44, r.solid ? 1 : 0, true);
-  const useMask = !!r.mask && !r.solid;
-  if (useMask) {
-    if (!r.maskWidth || !r.maskHeight || r.mask!.byteLength !== r.maskWidth * r.maskHeight) {
-      throw new Error(`CORE_BAD_ARGUMENT: region ${r.id} mask does not match its declared ${r.maskWidth}×${r.maskHeight}.`);
-    }
-    core.writeBytes(mask, r.mask!);
-  }
-  view.setUint32(48, useMask ? mask : 0, true);
-  view.setUint32(52, useMask ? r.maskWidth! : 0, true);
-  view.setUint32(56, useMask ? r.maskHeight! : 0, true);
-  view.setUint32(60, useMask ? r.factor || 0 : 0, true);
+  writeRegionDescriptor(core.exports, base, 0, r, exclusions, crop, mask);
 }
 
-/** `src/pipeline/solve/track.ts::ownFeaturesOf` (R6-B: moved out of TS — final-verify-report.md item 13, the one
- *  production caller of the former TS `regionContains`, now `rust/core/src/region.rs::filter_features`). Reuses
- *  `writeRegion`'s wire format (`ls_track_odometry`'s own `region` argument). */
+/** `src/pipeline/solve/track.ts::ownFeaturesOf`'s region-membership feature filter
+ *  (`rust/core/src/region.rs::filter_features`). Reuses `writeRegion`'s wire format (`ls_track_odometry`'s own
+ *  `region` argument). */
 export function filterFeatures(
   core: Core,
   exports: CoreExports,
@@ -283,13 +264,13 @@ export function writePatches(core: Core, listPtr: number, dataPtrs: number[], pa
  *  `ResidentFrame` and `nativePlane` exists — the fused call fills it lazily, core-side, if `nativeFilled` says
  *  it hasn't been this frame; mode 0 (ready buffer, freshly copied into scratch) otherwise — the rare
  *  geometry-mismatch fallback, where `native()` (the historical thunk, still doing the JS-side `grayscale()`
- *  conversion for this branch — R4c 3b-ii does not port that rare path) is called EAGERLY here, before Rust
+ *  conversion for this branch, which this fused call does not port) is called EAGERLY here, before Rust
  *  even knows whether a candidate exists, unlike the resident branch's true laziness; the trade-off is
  *  deliberate (this branch never reaches the 24×11 differential suite, and the alternative was a second ABI
  *  call splitting the hypothesis pre-check from the refinement for this one rare path).
- *  `current` is `undefined` for callers with no resident frame to offer at all (R4d step 4:
- *  `evaluateCandidates`'s direct-call test callers, and the differential harness's frozen pre-fusion engine,
- *  which never threads `current`/`nativePlane` through `KeyframeIndex.find()` at all) — that alone does not
+ *  `current` is `undefined` for callers with no resident frame to offer at all (`evaluateCandidates`'s
+ *  direct-call test callers, and the differential harness's frozen pre-fusion engine, which never threads
+ *  `current`/`nativePlane` through `KeyframeIndex.find()` at all) — that alone does not
  *  imply `native()` returns a plain `Gray`: a caller's own `native()` closure can still close over a resident
  *  frame independently (exactly what the frozen engine's `native` thunk does) and hand back a `ResidentGray`
  *  here. `alreadyFilled: true` on THAT result (not `nativeFilled`, which is meaningless for a plane that is not

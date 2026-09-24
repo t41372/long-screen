@@ -1,5 +1,5 @@
-//! Keyframe candidate scoring (R4d step 4) — split from the former monolithic `track.rs` (R6-B,
-//! final-verify-report.md item 10). `keyframes.ts::evaluateCandidates`'s audit and native-refinement phases:
+//! Keyframe candidate scoring — split out of the former monolithic `track.rs`.
+//! `keyframes.ts::evaluateCandidates`'s audit and native-refinement phases:
 //! hypothesis matching + analysis-scale audit over every keyframe, then (only for audited candidates) native
 //! patch refinement. The `Math.exp` confidence formula and the sort/best/rival selection stay in TS (see
 //! `RefinedCandidate`'s doc comment below for why).
@@ -10,7 +10,7 @@ use crate::motion::{
     audit_translation, refine_patches, translation_hypotheses, Gray, MatchPoints, Patch, Point,
 };
 
-/// R4d step 4: one keyframe `evaluate_candidates_audit`/`_refine` score a query against — the parts of
+/// One keyframe `evaluate_candidates_audit`/`_refine` score a query against — the parts of
 /// `keyframes.ts`'s `Keyframe` (features/gray/patches) the Rust port needs. `x`/`y`/`canvasId` and the
 /// caller's `canonical` map stay TS-side: the final sort/best/rival selection that needs them runs there too
 /// (see `RefinedCandidate`'s doc comment for why).
@@ -36,7 +36,7 @@ pub struct AuditedCandidate {
 
 /// `keyframes.ts::evaluateCandidates`'s match + hypothesis + analysis-scale-audit phase, over every keyframe —
 /// no native luma touched here, so the ABI layer can decide whether to fill the (possibly resident) native
-/// plane at all based on whether this returns anything (R4d step 4: "native refinement only for candidates that
+/// plane at all based on whether this returns anything ("native refinement only for candidates that
 /// pass the audit").
 pub fn evaluate_candidates_audit(
     keyframes: &[CandidateKeyframe<'_>],

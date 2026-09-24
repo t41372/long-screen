@@ -50,7 +50,7 @@ export function temporalComponents(core: Core, cells: [number, number][], size: 
 }
 
 const OVERWRITE_TILE_HEADER_BYTES = 32, OVERWRITE_OUTPUT_BYTES = 16;
-/** The mutable buffers of one resident tile, as `TileStore` holds them (mirrors `wasm/composite.ts`'s
+/** The mutable buffers of one resident tile, as `TileStore` holds them (mirrors `wasm/compositor.ts`'s
  *  `CompositeTile`, but `frozen` is written here, not only read — `overwritePatch` sets it under the 'stable'
  *  policy). */
 export interface OverwriteTile {
@@ -73,7 +73,7 @@ export interface OverwriteStats {
 /** Mirrors `Compositor.overwritePatch`'s per-tile inner loop (src/core/compositor.ts): unconditionally copies
  *  every pixel of `blocks` (absolute block coordinates already restricted to this tile) from `image` into the
  *  tile. `image` is a plain frame or a `ResidentFrame` already uploaded to the `FrameRing` for this observation
- *  (mirrors `prepareObservation`'s `residentImage` handling, src/core/wasm/composite.ts) — a resident frame's
+ *  (mirrors `prepareObservation`'s `residentImage` handling, src/core/wasm/compositor.ts) — a resident frame's
  *  pointer is growth-stable, so it is used in place instead of copying the whole frame (up to ~30MB at
  *  3456×2234) into scratch on every one of this call's per-tile invocations (`overwritePatch` calls this once
  *  per tile the patch touches). `tileSize` must equal `tile.pixels`'s own (native) tile size. */

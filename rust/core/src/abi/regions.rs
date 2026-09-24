@@ -369,8 +369,8 @@ pub extern "C" fn ls_regions_label_atlas(
     crate::abi::STATUS_OK
 }
 
-/// `src/pipeline/solve/track.ts::ownFeaturesOf` (R6-B, final-verify-report.md item 13: the one production caller
-/// of the former TS `regionContains`, now `crate::region::filter_features`). `features` is `count ×
+/// `src/pipeline/solve/track.ts::ownFeaturesOf`'s region-membership feature filter
+/// (`crate::region::filter_features`). `features` is `count ×
 /// wire::FEATURE_BYTES` (this adapter's feature wire format); `region` is one `wire::VOTING_REGION_BYTES`
 /// descriptor (the same layout `ls_voting_new`/`ls_track_odometry`'s `region` argument use). `out` must have room
 /// for `count × FEATURE_BYTES` (an upper bound — filtering only ever removes features). Returns the number kept,

@@ -1,7 +1,7 @@
 //! `ls_keyframes_evaluate_candidates`: `extern "C"` surface for `crate::track::evaluate_candidates_audit` /
-//! `evaluate_candidates_refine` (R4d step 4) — split from the former monolithic `abi/track.rs` (R6-B,
-//! final-verify-report.md item 10). See `abi/track.rs`'s module doc comment for the split; `read_patches` and
-//! `resolve_native` stay there (shared with `track_reacquire`).
+//! `evaluate_candidates_refine` — split out of the former monolithic `abi/track.rs`. See `abi/track.rs`'s
+//! module doc comment for the split; `read_patches` and `resolve_native` stay there (shared with
+//! `track_reacquire`).
 
 use crate::abi::features::read_features;
 use crate::abi::memory::{slice, slice_mut};
@@ -59,7 +59,7 @@ const CANDIDATE_HEADER_BYTES: usize = 8;
 /// support, u32 unique, u32 ambiguous, u32 strong, u32 padding, f64 error, f64 analysisError.
 const CANDIDATE_RECORD_BYTES: usize = 48;
 
-/// R4d step 4: `keyframes.ts::evaluateCandidates` fused into one call — the audit phase (match + hypotheses +
+/// `keyframes.ts::evaluateCandidates` fused into one call — the audit phase (match + hypotheses +
 /// the analysis-scale audit, no native luma; `crate::track::evaluate_candidates_audit`) over every keyframe,
 /// THEN, only if at least one candidate passed the audit, the lazy native-plane fill (`resolve_native`, shared
 /// with `ls_track_reacquire`/`ls_track_drift_correction`) and native-patch refinement

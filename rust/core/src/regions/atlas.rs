@@ -5,8 +5,8 @@
 //! `AtlasRegion`/`AtlasMask` are `crate::region::Region`/`Mask` instantiated over borrowed mask bytes (`&'a [u8]`)
 //! instead of the default `Vec<u8>` — they only need to live for this one `label_atlas` call, unlike
 //! `voting.rs`'s Ring, which retains a region across many calls and must own its mask. Membership logic (Region's
-//! `contains()`) is shared, not mirrored (R6-B unified what used to be two copies — final-verify-report.md item
-//! 13); `tests/unit/parity/regions.test.ts` still exercises both instantiations through the ABI.
+//! `contains()`) is shared, not mirrored — one implementation, not two independent copies;
+//! `tests/unit/parity/regions.test.ts` still exercises both instantiations through the ABI.
 
 use crate::geometry::{js_ceil, js_floor};
 use crate::region::{Mask, Region};

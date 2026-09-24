@@ -3,8 +3,9 @@ import { assert, assertEquals } from '@std/assert';
 import { buildFramedCanvas, frameCoordinate, frameLayout } from '../../src/core/framing.ts';
 import { encodeRGBA } from '../../src/codec/png.ts';
 import { iterate, MemoryKV } from '../../src/storage/db.ts';
-import { covered, markCovered, markProvisional, provisional, TileStore } from '../../src/storage/tiles.ts';
+import { covered, markCovered, provisional, TileStore } from '../../src/storage/tiles.ts';
 import type { CanvasMeta, Region, RGBA } from '../../src/types.ts';
+import { markProvisional } from '../support/tile-bits.ts';
 const region: Region = { id: 'pane', name: 'pane', kind: 'moving', rect: { x: 2, y: 2, width: 8, height: 6 }, solid: true };
 const meta: CanvasMeta = {
   id: 'world',

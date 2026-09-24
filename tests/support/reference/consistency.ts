@@ -1,4 +1,4 @@
-import { resolveRasterPose } from '../../../src/core/raster.ts';
+import { resolveRasterPose } from './math.ts';
 import type { RegionAtlas } from '../../../src/core/layers.ts';
 import type { Rect, Region, RGBA } from '../../../src/types.ts';
 

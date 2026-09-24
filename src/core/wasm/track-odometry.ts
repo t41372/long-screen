@@ -1,5 +1,5 @@
-/** `track.ts::odometry` fused into one call (R4c 3b-i) — split from the former monolithic `wasm/track.ts`
- *  (R6-B, final-verify-report.md item 10). See `track.ts`'s module doc comment for the split. */
+/** `track.ts::odometry` fused into one call — split out of `wasm/track.ts`. See `track.ts`'s module doc
+ *  comment for the split. */
 import type { Feature, Gray, Point, Rect, Region } from '../../types.ts';
 import type { Core, LabelMask } from './core.ts';
 import type { CoreExports } from './exports.ts';
@@ -38,7 +38,7 @@ export interface OdometryInputs {
   ownFeatures: Feature[];
   confidence: number;
 }
-/** `track.ts::odometry`, fused into one call (R4c 3b-i): `matchFeatures` + `translationHypotheses` + the
+/** `track.ts::odometry`, fused into one call: `matchFeatures` + `translationHypotheses` + the
  *  audit filter/sort + up to 6 native refinements + rival detection + confidence, falling back core-side to
  *  the difference sample that decides `static` vs `lost`. Cross-frame state (`state.previousFeatures`, the
  *  region's velocity) is still owned by the shell; this call is stateless like every other `track.*` export. */
@@ -126,7 +126,7 @@ export function odometry(core: Core, exports: CoreExports, inputs: OdometryInput
   const hasContentChange = view.getUint32(40, true) === 1;
   const decision = ODOMETRY_DECISION_TAGS[tag], ambiguous = view.getUint32(24, true) === 1, weakStep = view.getUint32(28, true) === 1;
   const stepError = view.getFloat64(32, true);
-  // WHY this multiply stays in TS (architecture decision, R4c 3b-i): on 'tracked', `confidence` off the wire is
+  // WHY this multiply stays in TS: on 'tracked', `confidence` off the wire is
   // the RAW hypothesis confidence (`rust/core/src/track.rs`'s `OdometryEstimate.confidence` doc comment) —
   // `Math.exp(-stepError / 20)` runs HERE, in TS, for bit-identity with the historical TS confidence formula.
   // Rust libm's `exp` rounds the last bit differently from V8's `Math.exp` on some inputs (confirmed by the

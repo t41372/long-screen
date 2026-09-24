@@ -1,13 +1,16 @@
 /** `Core`: lifecycle (instantiate the Wasm module, optionally with a shared-memory thread pool; dispose) plus
  *  thin delegating methods for every kernel, so `core().x(...)` keeps its shape while the marshalling for each
- *  domain lives in its own module (`raster.ts`, `features.ts`, `motion.ts`, `chrome.ts`, `consistency.ts`,
- *  `composite.ts`, `png.ts`, `learner.ts`, `voting.ts`). */
+ *  of the 16 domains lives in its own module (`raster.ts`, `features.ts`, `motion.ts`, `chrome.ts`,
+ *  `consistency.ts`, `compositor.ts`, `png.ts`, `layers.ts`, `voting.ts`, `framing.ts`, `pyramid.ts`,
+ *  `regions.ts`, `temporal.ts`, `track.ts` (+ its `track-odometry`/`track-reacquire`/`track-keyframes` split),
+ *  `pose-graph.ts`, `yuv.ts`). */
 import type { Feature, Gray, Match, Motion, MotionField, Point, Rect, Region, RGBA } from '../../types.ts';
 import { assertLayout, type CoreExports } from './exports.ts';
 import { allocOrThrow, Arena, type BytesInput, type FrameInput, FrameRing, Resident, ResidentFrame, ResidentGray } from './memory.ts';
 import { placeFrame as placeFrameImpl, writeRect as writeRectImpl } from './marshal.ts';
 import { check as checkStatus } from './exports.ts';
 import * as raster from './raster.ts';
+import * as yuv from './yuv.ts';
 import * as pyramid from './pyramid.ts';
 import * as temporal from './temporal.ts';
 import type { OverwriteStats, OverwriteTile, TemporalComponent, TemporalIndexHandle } from './temporal.ts';
@@ -17,9 +20,9 @@ import * as chrome from './chrome.ts';
 import * as consistency from './consistency.ts';
 import type { ConsistencyMaskInput } from './consistency.ts';
 import * as png from './png.ts';
-import * as composite from './composite.ts';
-import type { CompositeObservation, PreparedObservation } from './composite.ts';
-import { learner as learnerFactory, type LearnerHandle } from './learner.ts';
+import * as composite from './compositor.ts';
+import type { CompositeObservation, PreparedObservation } from './compositor.ts';
+import { learner as learnerFactory, type LearnerHandle } from './layers.ts';
 import { type VotingRing, votingRing as votingRingFactory } from './voting.ts';
 import {
   type FinishAccumulators,
@@ -91,7 +94,7 @@ export class Core {
   private readonly arena: Arena;
   /** Frame arena: holds state that must survive a whole per-canvas tile loop, during which transient calls
    *  (e.g. PNG encoding on tile eviction) must not clobber it — either one `prepareObservation()` result
-   *  (composite.ts, the render pass's compositing) or one `FramingSession` (framing.ts, the presentation
+   *  (compositor.ts, the render pass's compositing) or one `FramingSession` (framing.ts, the presentation
    *  pass's `paintTile`/`foldEvidence` loop). Only one of the two is ever live at a time: `Engine.run()`
    *  (src/pipeline/engine.ts) awaits the whole render pass to finish before starting the presentation pass, so
    *  their frame-arena users never interleave — a future concurrent-canvas render would need a second arena
@@ -190,7 +193,7 @@ export class Core {
   scratch(sizes: number[]): number[] {
     return this.arena.plan(sizes);
   }
-  /** Frame-wide scratch space that survives across a tile loop (`composite.ts::prepareObservation`). */
+  /** Frame-wide scratch space that survives across a tile loop (`compositor.ts::prepareObservation`). */
   scratchFrame(sizes: number[]): number[] {
     return this.frameArena.plan(sizes);
   }
@@ -279,7 +282,7 @@ export class Core {
     matrix: number,
     dest?: Uint8ClampedArray,
   ): Uint8ClampedArray {
-    return raster.frameToRGBA(this, src, format, layout, width, height, matrix, dest);
+    return yuv.frameToRGBA(this, src, format, layout, width, height, matrix, dest);
   }
   extractFeatures(image: Gray, maxFeatures: number, roi?: Rect): Feature[] {
     return featuresDomain.extractFeatures(this, image, maxFeatures, roi);
@@ -349,9 +352,6 @@ export class Core {
   /** Same kernel, written into a resident buffer so the compositor can consume it without a round trip. */
   consistencyMaskInto(input: ConsistencyMaskInput, output: Resident): void {
     consistency.consistencyMaskInto(this, input, output);
-  }
-  pngUnfilter(raw: Uint8Array, width: number, height: number, channels: number): Uint8ClampedArray {
-    return png.pngUnfilter(this, raw, width, height, channels);
   }
   pngFilterSub(rgba: Uint8Array, width: number, height: number): Uint8Array<ArrayBuffer> {
     return png.pngFilterSub(this, rgba, width, height);
@@ -455,8 +455,7 @@ export class Core {
     poseGraphFreeImpl(this.exports, handle);
   }
 
-  /** Per-region, per-frame tracking verdicts (`src/pipeline/solve/track.ts`, R4b phase 3a): stateless,
-   *  one small call each. */
+  /** Per-region, per-frame tracking verdicts for `src/pipeline/solve/track.ts`: stateless, one small call each. */
   trackUncertainty(confidence: number, ambiguous: boolean, weakStep: boolean): boolean {
     return track.uncertainty(this.exports, confidence, ambiguous, weakStep);
   }
@@ -512,26 +511,26 @@ export class Core {
   trackRegionZoom(kindMoving: boolean, priorMatches: Match[]): number | undefined {
     return track.regionZoom(this, this.exports, kindMoving, priorMatches);
   }
-  /** `track.ts::odometry` fused into one call (R4c 3b-i). */
+  /** `track.ts::odometry` fused into one call. */
   trackOdometry(inputs: track.OdometryInputs): track.OdometryEstimate {
     return track.odometry(this, this.exports, inputs);
   }
-  /** `track.ts::reacquire` fused into one call (R4c 3b-ii). */
+  /** `track.ts::reacquire` fused into one call. */
   trackReacquire(inputs: track.ReacquireInputs): { result: track.ReacquireEstimate | undefined; filledNative: boolean } {
     return track.reacquire(this, this.exports, inputs);
   }
-  /** `track.ts::driftCorrection` fused into one call (R4c 3b-ii). */
+  /** `track.ts::driftCorrection` fused into one call. */
   trackDriftCorrection(inputs: track.DriftCorrectionInputs): { pose: Point | undefined; error: number; filledNative: boolean } {
     return track.driftCorrection(this, this.exports, inputs);
   }
-  /** `keyframes.ts::evaluateCandidates` fused into one call (R4d step 4). */
+  /** `keyframes.ts::evaluateCandidates` fused into one call. */
   keyframesEvaluateCandidates(
     keyframes: track.EvaluateCandidatesKeyframe[],
     q: track.EvaluateCandidatesQuery,
   ): { results: track.EvaluateCandidatesResult[]; filledNative: boolean } {
     return track.evaluateCandidates(this, this.exports, keyframes, q);
   }
-  /** `solve/track.ts::ownFeaturesOf` (R6-B: moved out of TS, final-verify-report.md item 13). */
+  /** `solve/track.ts::ownFeaturesOf`'s region-membership feature filter, moved out of TS. */
   filterFeatures(features: Feature[], region: Region, factor: number, nativeWidth: number, nativeHeight: number): Feature[] {
     return track.filterFeatures(this, this.exports, features, region, factor, nativeWidth, nativeHeight);
   }

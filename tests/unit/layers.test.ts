@@ -1,8 +1,9 @@
 import '../support/core.ts';
 import { assert, assertEquals, assertThrows } from '@std/assert';
 import { grayscale } from '../../src/core/features.ts';
-import { LayerLearner, RegionAtlas, regionContains, regionMotion, stationaryBoundary, stickyOcclusions } from '../../src/core/layers.ts';
+import { LayerLearner, RegionAtlas, stationaryBoundary, stickyOcclusions } from '../../src/core/layers.ts';
 import { contains } from '../../src/core/math.ts';
+import { referenceRegionContains as regionContains } from '../support/reference/layers.ts';
 import { fixedBand } from '../../src/synthetic/scenarios.ts';
 import {
   constantFrames,
@@ -15,7 +16,7 @@ import {
   World,
 } from '../../src/synthetic/world.ts';
 import { runScenario, verifyLayer } from '../support/run.ts';
-import { fieldFor, rgba } from '../support/pixel-fixtures.ts';
+import { fieldFor, regionMotion, rgba } from '../support/pixel-fixtures.ts';
 import type { FramePlan, Gray, Point, Region, ScanRecord } from '../../src/types.ts';
 import { pad } from '../../src/core/math.ts';
 // F7: the downscale truth is floor(x/factor); nativeWidth/nativeHeight are NOT exact multiples of factor here
@@ -117,8 +118,8 @@ Deno.test('layers: sub-analysis-pixel scrolling still separates a fixed header v
 // scan → solve → render pipeline, not just LayerLearner.finish() in isolation. The path is monotonic (unlike
 // 'factor4', which reverses direction): a reversal deep in repeating 'cards' content lands the frame-to-frame
 // odometry on a period-aliased candidate ~670px away — reproducible identically at the divisible height 1080
-// and with other world seeds, i.e. a pre-existing motion-matching ambiguity unrelated to factor divisibility
-// (see this agent's final report) — and would make this test assert something it isn't measuring.
+// and with other world seeds, i.e. a pre-existing motion-matching ambiguity unrelated to factor divisibility —
+// and would make this test assert something it isn't measuring.
 function factor4NonDivisibleScenario(): Scenario {
   const RW = 1920, RH = 1082, RH_HEADER = 80;
   const world = makeWorld(2400, 2600, 8181, 'cards', 4);
