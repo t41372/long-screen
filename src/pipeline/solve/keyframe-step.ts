@@ -3,11 +3,11 @@
 // region and, if so, runs the revisit search, fragment-attachment, thin-overlap trajectory correction and
 // loop-closure bookkeeping that a new keyframe triggers — applying track.ts's pure decisions in the original
 // order. Not an algorithm awaiting a Rust port itself; see track.ts's header for what is.
-import type { Attachment, CanvasMeta, Feature, Gray, Point, Region, ScanRecord } from '../../types.ts';
+import type { Attachment, CanvasMeta, Feature, Gray, Point, Region, RGBA, ScanRecord } from '../../types.ts';
 import { extractPatches } from '../../core/motion.ts';
 import type { Keyframe, KeyframeIndex } from '../../core/keyframes.ts';
 import { pad } from '../../core/math.ts';
-import type { ResidentGray } from '../../core/wasm.ts';
+import type { ResidentFrame, ResidentGray } from '../../core/wasm.ts';
 import { attachmentShift } from '../attachments.ts';
 import type { RegionState } from './state.ts';
 import {
@@ -32,6 +32,12 @@ export interface KeyframeStepInput {
   roi: { x: number; y: number; width: number; height: number };
   ownFeatures: Feature[];
   native: () => Gray | ResidentGray;
+  /** See `region-step.ts`'s `FrameInput` fields of the same name — passed through so this frame's `index.find()`
+   * call (R4d step 4) can use the same lazy resident native-plane fill as odometry/reacquire/driftCorrection. */
+  current: RGBA | ResidentFrame;
+  nativePlane: ResidentGray | undefined;
+  nativeFilled(): boolean;
+  markNativeFilled(): void;
   lost: boolean;
   skip: boolean;
   relocalized: boolean;
@@ -44,7 +50,24 @@ export interface KeyframeStepInput {
  * `pass.index` exactly as the original inline loop body did. */
 export async function keyframeStep(pass: SolvePass, state: RegionState, input: KeyframeStepInput): Promise<void> {
   const { ctx, graph, index, attachments, f, radius, resolveTarget, canonicalCanvas, canonicalPose, canonical } = pass;
-  const { frame, scan, g, r, roi, ownFeatures, native, lost, skip, relocalized, weakStep, stepError } = input;
+  const {
+    frame,
+    scan,
+    g,
+    r,
+    roi,
+    ownFeatures,
+    native,
+    current,
+    nativePlane,
+    nativeFilled,
+    markNativeFilled,
+    lost,
+    skip,
+    relocalized,
+    weakStep,
+    stepError,
+  } = input;
   if (skip) {
     return;
   }
@@ -60,6 +83,10 @@ export async function keyframeStep(pass: SolvePass, state: RegionState, input: K
       features: ownFeatures,
       gray: g,
       native,
+      current,
+      nativePlane,
+      nativeFilled: nativeFilled(),
+      markNativeFilled,
       layer: r.id,
       frame: frame.index,
       roi,

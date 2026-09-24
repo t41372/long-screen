@@ -1,13 +1,14 @@
-/** Per-region, per-frame tracking verdicts (R4b phase 3a), mirroring `rust/core/src/abi/track.rs`. Every
- *  export here is a single small call over plain scalars — no handles, no state carried across calls
- *  (the stateful per-region tracker is phase 3b). `has*`/`*EqCanvas` booleans are `0`/`1`; multi-way
+/** Per-region, per-frame tracking verdicts (R4b phase 3a) plus keyframe candidate scoring (R4d step 4),
+ *  mirroring `rust/core/src/abi/track.rs`. Every export here is a single call over plain scalars/buffers — no
+ *  handles, no state carried across calls (a stateful per-region tracker was measured in R4c 3b-iii and NOT
+ *  built: no measurable gain over these per-call fusions). `has*`/`*EqCanvas` booleans are `0`/`1`; multi-way
  *  verdicts come back as small tags decoded into the TS union types `track.ts` already exports. */
 import type { Feature, Gray, Match, Point, Rect, Region } from '../../types.ts';
 import type { Core, LabelMask, PatchInput, RefinementResult } from './core.ts';
 import type { CoreExports } from './exports.ts';
 import { MATCH_POINT_BYTES, PATCH_BYTES, VOTING_REGION_BYTES } from './exports.ts';
 import { writeFeatures } from './features.ts';
-import { type FrameInput, Resident, ResidentFrame, type ResidentGray } from './memory.ts';
+import { type FrameInput, Resident, ResidentFrame, ResidentGray } from './memory.ts';
 
 const b = (v: boolean) => (v ? 1 : 0);
 
@@ -376,19 +377,36 @@ function writePatches(core: Core, listPtr: number, dataPtrs: number[], patches: 
     view.setUint32(i * PATCH_BYTES + 12, dataPtrs[i], true);
   });
 }
-/** Resolves `reacquire`/`driftCorrection`'s "native luma source" the same way `rust/core/src/abi/track.rs`'s
- *  `resolve_native` expects: mode 1 (resident) when `current` is a `ResidentFrame` and `nativePlane` exists —
- *  the fused call fills it lazily, core-side, if `nativeFilled` says it hasn't been this frame; mode 0 (ready
- *  buffer) otherwise — the rare geometry-mismatch fallback, where `native()` (the historical thunk, still doing
- *  the JS-side `grayscale()` conversion for this branch — R4c 3b-ii does not port that rare path) is called
- *  EAGERLY here, before Rust even knows whether a candidate exists, unlike the resident branch's true laziness;
- *  the trade-off is deliberate (this branch never reaches the 24×11 differential suite, and the alternative was
- *  a second ABI call splitting the hypothesis pre-check from the refinement for this one rare path). */
+/** Resolves `reacquire`/`driftCorrection`/`evaluateCandidates`'s "native luma source" the same way
+ *  `rust/core/src/abi/track.rs`'s `resolve_native` expects: mode 1 (resident) when `current` is a
+ *  `ResidentFrame` and `nativePlane` exists — the fused call fills it lazily, core-side, if `nativeFilled` says
+ *  it hasn't been this frame; mode 0 (ready buffer, freshly copied into scratch) otherwise — the rare
+ *  geometry-mismatch fallback, where `native()` (the historical thunk, still doing the JS-side `grayscale()`
+ *  conversion for this branch — R4c 3b-ii does not port that rare path) is called EAGERLY here, before Rust
+ *  even knows whether a candidate exists, unlike the resident branch's true laziness; the trade-off is
+ *  deliberate (this branch never reaches the 24×11 differential suite, and the alternative was a second ABI
+ *  call splitting the hypothesis pre-check from the refinement for this one rare path).
+ *  `current` is `undefined` for callers with no resident frame to offer at all (R4d step 4:
+ *  `evaluateCandidates`'s direct-call test callers, and the differential harness's frozen pre-fusion engine,
+ *  which never threads `current`/`nativePlane` through `KeyframeIndex.find()` at all) — that alone does not
+ *  imply `native()` returns a plain `Gray`: a caller's own `native()` closure can still close over a resident
+ *  frame independently (exactly what the frozen engine's `native` thunk does) and hand back a `ResidentGray`
+ *  here. `alreadyFilled: true` on THAT result (not `nativeFilled`, which is meaningless for a plane that is not
+ *  the shared per-frame memo) tells the caller never to report this as "I filled the memo". */
 function resolveNative(
-  current: FrameInput,
+  current: FrameInput | undefined,
   nativePlane: ResidentGray | undefined,
   native: () => Gray | ResidentGray,
-): { mode: number; ptr: number; currentFramePtr: number; width: number; height: number; scratchBytes: number; fallback?: Gray } {
+): {
+  mode: number;
+  ptr: number;
+  currentFramePtr: number;
+  width: number;
+  height: number;
+  scratchBytes: number;
+  alreadyFilled: boolean;
+  fallback?: Gray;
+} {
   if (current instanceof ResidentFrame && nativePlane) {
     return {
       mode: 1,
@@ -397,17 +415,30 @@ function resolveNative(
       width: nativePlane.width,
       height: nativePlane.height,
       scratchBytes: 0,
+      alreadyFilled: false,
     };
   }
-  const fallback = native() as Gray;
+  const result = native();
+  if (result instanceof ResidentGray) {
+    return {
+      mode: 1,
+      ptr: result.ptr,
+      currentFramePtr: 0,
+      width: result.width,
+      height: result.height,
+      scratchBytes: 0,
+      alreadyFilled: true,
+    };
+  }
   return {
     mode: 0,
     ptr: 0,
     currentFramePtr: 0,
-    width: fallback.width,
-    height: fallback.height,
-    scratchBytes: fallback.data.byteLength,
-    fallback,
+    width: result.width,
+    height: result.height,
+    scratchBytes: result.data.byteLength,
+    alreadyFilled: false,
+    fallback: result,
   };
 }
 
@@ -465,7 +496,7 @@ export function reacquire(
     src.mode,
     src.mode === 0 ? pFallback : src.ptr,
     src.currentFramePtr,
-    b2(nativeFilled),
+    b2(nativeFilled || src.alreadyFilled),
     src.width,
     src.height,
     pOut,
@@ -532,7 +563,7 @@ export function driftCorrection(
     src.mode,
     src.mode === 0 ? pFallback : src.ptr,
     src.currentFramePtr,
-    b2(nativeFilled),
+    b2(nativeFilled || src.alreadyFilled),
     src.width,
     src.height,
     pOut,
@@ -544,3 +575,143 @@ export function driftCorrection(
   return { pose: { x: view.getFloat64(0, true), y: view.getFloat64(8, true) }, error: view.getFloat64(16, true), filledNative };
 }
 const TRACK_DRIFT_CORRECTION_OUT_BYTES = 32;
+
+export interface EvaluateCandidatesKeyframe {
+  features: Feature[];
+  gray: Gray;
+  patches: PatchInput[];
+}
+export interface EvaluateCandidatesQuery {
+  features: Feature[];
+  gray: Gray;
+  roi: Rect;
+  region: Rect;
+  factor: number;
+  radius: number;
+  /** See `ReacquireInputs.current`'s doc comment for the resident-lazy-fill contract — `undefined` here means
+   *  the caller has no resident frame to offer at all (R4d step 4: direct `evaluateCandidates`/`find()` callers
+   *  in tests, which do not go through `solve.ts`'s frame loop); `resolveNative` treats that exactly like any
+   *  other non-resident `current` (mode 0, `native()` called eagerly). */
+  current: FrameInput | undefined;
+  nativePlane: ResidentGray | undefined;
+  nativeFilled: boolean;
+  native: () => Gray | ResidentGray;
+}
+export interface EvaluateCandidatesResult {
+  keyframeIndex: number;
+  x: number;
+  y: number;
+  support: number;
+  unique: number;
+  ambiguous: boolean;
+  strong: boolean;
+  error: number;
+  analysisError: number;
+}
+/** `ls_keyframes_evaluate_candidates`'s per-keyframe descriptor (this module's own wire format — see
+ *  `rust/core/src/abi/track.rs::KEYFRAME_BYTES`): u32 featuresPtr, featureCount, patchesPtr, patchCount,
+ *  grayPtr, grayWidth, grayHeight, padding. */
+const KEYFRAME_BYTES = 32;
+const CANDIDATE_HEADER_BYTES = 8;
+const CANDIDATE_RECORD_BYTES = 48;
+
+/** `keyframes.ts::evaluateCandidates` fused into one call (R4d step 4): match + hypothesis + analysis-scale
+ *  audit for every keyframe, then — only if at least one candidate passed the audit — the lazy native-plane
+ *  fill (same rule as `reacquire`/`driftCorrection`) and native-patch refinement. Returns the audited-and-
+ *  refined candidate list, not the final pick: `keyframes.ts` finishes the `Math.exp` confidence formula and
+ *  the sort/best/rival selection in TS (see `rust/core/src/track.rs::RefinedCandidate`'s doc comment — that
+ *  selection needs the exact host-`Math.exp`'d confidence as its sort key, so it cannot move to Rust without
+ *  a second bit-exactness risk on top of `OdometryEstimate.confidence`'s). */
+export function evaluateCandidates(
+  core: Core,
+  exports: CoreExports,
+  keyframes: EvaluateCandidatesKeyframe[],
+  q: EvaluateCandidatesQuery,
+): { results: EvaluateCandidatesResult[]; filledNative: boolean } {
+  const { features, gray, roi, region, factor, radius, current, nativePlane, nativeFilled, native } = q;
+  const src = resolveNative(current, nativePlane, native);
+  const maxRecords = keyframes.length * 8;
+  const perKeyframeSizes = keyframes.flatMap((k) => [
+    k.features.length * core.featureBytes,
+    k.patches.length * PATCH_BYTES,
+    k.gray.data.byteLength,
+    ...k.patches.map((p) => p.data.byteLength),
+  ]);
+  const ptr = core.scratch([
+    keyframes.length * KEYFRAME_BYTES,
+    features.length * core.featureBytes,
+    gray.data.byteLength,
+    32,
+    32,
+    src.scratchBytes,
+    CANDIDATE_HEADER_BYTES + maxRecords * CANDIDATE_RECORD_BYTES,
+    ...perKeyframeSizes,
+  ]);
+  const [pKeyframes, pFeatures, pGray, pRoi, pRegion, pFallback, pOut] = ptr;
+  let cursor = 7;
+  const desc = new DataView(core.exports.memory.buffer);
+  for (let i = 0; i < keyframes.length; i++) {
+    const k = keyframes[i];
+    const featuresPtr = ptr[cursor++], patchListPtr = ptr[cursor++], grayPtr = ptr[cursor++];
+    const dataPtrs = k.patches.map(() => ptr[cursor++]);
+    writeFeatures(core, featuresPtr, k.features);
+    writePatches(core, patchListPtr, dataPtrs, k.patches);
+    core.writeBytes(grayPtr, k.gray.data);
+    const base = pKeyframes + i * KEYFRAME_BYTES;
+    desc.setUint32(base, featuresPtr, true);
+    desc.setUint32(base + 4, k.features.length, true);
+    desc.setUint32(base + 8, patchListPtr, true);
+    desc.setUint32(base + 12, k.patches.length, true);
+    desc.setUint32(base + 16, grayPtr, true);
+    desc.setUint32(base + 20, k.gray.width, true);
+    desc.setUint32(base + 24, k.gray.height, true);
+    desc.setUint32(base + 28, 0, true);
+  }
+  writeFeatures(core, pFeatures, features);
+  core.writeBytes(pGray, gray.data);
+  core.writeRect(pRoi, roi);
+  core.writeRect(pRegion, region);
+  if (src.mode === 0) core.writeBytes(pFallback, src.fallback!.data);
+  const count = exports.ls_keyframes_evaluate_candidates(
+    pKeyframes,
+    keyframes.length,
+    pFeatures,
+    features.length,
+    pGray,
+    gray.width,
+    gray.height,
+    pRoi,
+    pRegion,
+    factor,
+    radius,
+    src.mode,
+    src.mode === 0 ? pFallback : src.ptr,
+    src.currentFramePtr,
+    b(nativeFilled || src.alreadyFilled),
+    src.width,
+    src.height,
+    pOut,
+  );
+  if (count === -1) throw new Error('CORE_BAD_ARGUMENT: evaluate candidates.');
+  if (count === 0) return { results: [], filledNative: false };
+  const headerBytes = core.readBytes(pOut, CANDIDATE_HEADER_BYTES);
+  const filledNative = new DataView(headerBytes.buffer, headerBytes.byteOffset, CANDIDATE_HEADER_BYTES).getUint32(0, true) === 1;
+  const recordBytes = core.readBytes(pOut + CANDIDATE_HEADER_BYTES, count * CANDIDATE_RECORD_BYTES);
+  const rview = new DataView(recordBytes.buffer, recordBytes.byteOffset, count * CANDIDATE_RECORD_BYTES);
+  const results: EvaluateCandidatesResult[] = [];
+  for (let i = 0; i < count; i++) {
+    const o = i * CANDIDATE_RECORD_BYTES;
+    results.push({
+      keyframeIndex: rview.getUint32(o, true),
+      x: rview.getInt32(o + 4, true),
+      y: rview.getInt32(o + 8, true),
+      support: rview.getUint32(o + 12, true),
+      unique: rview.getUint32(o + 16, true),
+      ambiguous: rview.getUint32(o + 20, true) === 1,
+      strong: rview.getUint32(o + 24, true) === 1,
+      error: rview.getFloat64(o + 32, true),
+      analysisError: rview.getFloat64(o + 40, true),
+    });
+  }
+  return { results, filledNative };
+}

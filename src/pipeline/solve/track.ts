@@ -1,15 +1,21 @@
-// PARTIALLY PORTED (Rust — see docs/history/2026-09-rust-migration-log.md "已在 Rust 核心中"): the per-region tracking DECISIONS
-// region-step.ts's stepRegion() and keyframe-step.ts's keyframeStep() apply each frame. R4b phase 3a ported every
-// stateless verdict below (uncertainty, relocalizeVerdict, fragmentCause's gate, occlusionEligible, attachVerdict,
-// odometryWeight, thinOverlapEligible/Correction, loopClosureVerdict, needsKeyframe, zoomChanged, regionZoom,
-// targetPose) to rust/core/src/track.rs; each function here is now a thin call into src/core/wasm/track.ts,
+// MOSTLY PORTED (Rust — see docs/history/2026-09-rust-migration-log.md "已在 Rust 核心中"): the per-region tracking
+// DECISIONS region-step.ts's stepRegion() and keyframe-step.ts's keyframeStep() apply each frame. R4b phase 3a
+// ported every stateless verdict (uncertainty, relocalizeVerdict, fragmentCause's gate, occlusionEligible,
+// attachVerdict, odometryWeight, thinOverlapEligible/Correction, loopClosureVerdict, needsKeyframe, zoomChanged,
+// regionZoom, targetPose) to rust/core/src/track.rs; each is now a thin call into src/core/wasm/track.ts,
 // exported under its original name/signature so region-step.ts/keyframe-step.ts need no changes. R4c 3b-i fused
-// odometry (matchFeatures + translationHypotheses + the audit filter/sort + native refinements + rival detection
-// + confidence + the static/lost difference sample) into one more such call. reacquire and driftCorrection
-// (below) are still TS pending phase 3b-ii's stateful tracker handle. This split (R1/R2, plus keyframe scoring's
-// own pure core, evaluateCandidates, in src/core/keyframes.ts) is why tests/support/reference/track.ts could
-// freeze the pre-port functions' outputs as a TS oracle (tests/unit/parity/track.test.ts checks the Rust
-// replacements against it).
+// odometry the same way; R4c 3b-ii fused reacquire and driftCorrection (native luma filled lazily, core-side) —
+// a stateful cross-frame tracker handle was measured and NOT built (no measurable gain over these per-call
+// fusions). Keyframe candidate scoring's own pure core, evaluateCandidates, is a separate module
+// (src/core/keyframes.ts, bound through src/core/wasm/track.ts too) — R4d step 4 ported it the same way. Every
+// `Math.exp` these functions' TS halves still finish (driftCorrection's/reacquire's/odometry's confidence
+// multiply) is a deliberate bit-exactness choice, not unported logic — see each one's own WHY comment.
+// STILL TS below (not this round's job — see spec-r4d): ownFeaturesOf/isTextured/priorMatchesOf (R1: named so
+// the shell's own inline setup has one home; ownFeaturesOf/priorMatchesOf are geometry/match glue over
+// already-Rust kernels (regionContains, matchFeatures), isTextured is a bare `.length >= 8`) and gate() (a
+// six-way branch with no native/patch/feature work of its own — the shell's dispatch, not tracking math). This
+// split (R1/R2) is why tests/support/reference/track.ts could freeze the pre-port functions' outputs as a TS
+// oracle (tests/unit/parity/track.test.ts checks the Rust replacements against it).
 import type { Feature, Gray, Match, Point, Region, RGBA } from '../../types.ts';
 import { type NativeRefinement, type Patch, probeScale } from '../../core/motion.ts';
 import { regionContains } from '../../core/layers.ts';

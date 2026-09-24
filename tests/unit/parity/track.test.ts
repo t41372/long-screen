@@ -2,15 +2,16 @@
  *  and the frozen TS oracle they replace (tests/support/reference/track.ts). Runs on whichever build
  *  `LONGSCREEN_CORE` selects (scalar/simd/threads — see tests/support/core.ts). Stateless verdicts (phase 3a)
  *  and the fused odometry call (R4c 3b-i) are exercised here; reacquire/driftCorrection stay TS until 3b-ii. */
-import { assertEquals } from '@std/assert';
+import { assert, assertEquals } from '@std/assert';
 import { ensureCore } from '../../support/core.ts';
 import { rng } from '../../../src/core/math.ts';
 import * as ref from '../../support/reference/track.ts';
-import type { Feature, Match, Point, Region } from '../../../src/types.ts';
+import type { Feature, Gray, Match, Point, Region } from '../../../src/types.ts';
 import * as kernelsRef from '../../support/reference/kernels.ts';
 import { rgbaOf, textureGray } from '../../support/parity-fixtures.ts';
 import { extractPatches } from '../../../src/core/motion.ts';
 import * as trackPipeline from '../../../src/pipeline/solve/track.ts';
+import { evaluateCandidates, type Keyframe } from '../../../src/core/keyframes.ts';
 
 Deno.test('core parity: track.uncertainty matches the frozen oracle', async () => {
   const core = await ensureCore();
@@ -397,7 +398,7 @@ async function reacquireCase(w: number, h: number, seed: number, dx: number | un
   const anchorNative = core.grayscale(anchorRGBA.data, w, h);
   const currentNative = core.grayscale(currentRGBAData, w, h);
   const anchorPatches = extractPatches(anchorNative, { x: 0, y: 0, width: w, height: h }, anchorFeatures, 1);
-  return { anchorFeatures, ownFeatures, anchorPatches, currentNative, currentRGBAData };
+  return { anchorFeatures, ownFeatures, anchorPatches, currentNative, currentRGBAData, anchorGray, ownGray };
 }
 
 Deno.test('core parity: track.reacquire matches the frozen oracle (found, no candidate, resident lazy fill, pre-filled)', async () => {
@@ -511,5 +512,101 @@ Deno.test('core parity: track.driftCorrection matches the frozen oracle (correct
     assertEquals(filledNative, !c.preFilled, `${what} filledNative`);
     residentFrame.free();
     plane.free();
+  }
+});
+
+function kf(id: string, x: number, y: number, features: Feature[], gray: Gray, patches: ReturnType<typeof extractPatches>): Keyframe {
+  return {
+    id,
+    node: `${id}-node`,
+    canvasId: `${id}-canvas`,
+    layer: 'body',
+    frame: x + y,
+    features,
+    gray,
+    x,
+    y,
+    scaleX: 1,
+    scaleY: 1,
+    patches,
+  };
+}
+
+Deno.test('core parity: keyframes.evaluateCandidates matches the frozen oracle (found, ambiguous rival, no match, resident lazy fill)', async () => {
+  const core = await ensureCore();
+  const w = 220, h = 150, region = { x: 0, y: 0, width: w, height: h }, roi = region, radius = 3;
+  const empty = new Map<string, { canvasId: string; dx: number; dy: number }>();
+
+  // Case 1: a single keyframe strongly matches an offset query — both a non-resident eager `native()` and a
+  // resident lazy-fill call must agree on every Relocalization field, byte-for-byte.
+  {
+    const c = await reacquireCase(w, h, 6001, 6, -4);
+    const keyframes = [kf('a', 0, 0, c.anchorFeatures, c.anchorGray, c.anchorPatches)];
+    const q = { features: c.ownFeatures, gray: c.ownGray, roi, region, factor: 1, radius };
+    const refResult = ref.evaluateCandidates(keyframes, { ...q, native: () => c.currentNative }, empty);
+    const prodEager = evaluateCandidates(keyframes, { ...q, native: () => c.currentNative }, empty);
+    assertEquals(prodEager, refResult, 'case 1 (non-resident, eager)');
+    assert(refResult && refResult.strong, 'case 1 expected a strong match from the frozen oracle');
+
+    const residentFrame = core.frame(w, h);
+    residentFrame.write(new Uint8Array(c.currentRGBAData.buffer, c.currentRGBAData.byteOffset, c.currentRGBAData.byteLength));
+    const plane = core.gray(w, h);
+    let filledNative = false;
+    const prodResident = evaluateCandidates(keyframes, {
+      ...q,
+      native: () => c.currentNative,
+      current: residentFrame,
+      nativePlane: plane,
+      nativeFilled: false,
+      markNativeFilled: () => {
+        filledNative = true;
+      },
+    }, empty);
+    assertEquals(prodResident, refResult, 'case 1 (resident lazy fill)');
+    assert(filledNative, 'case 1 resident: a strong candidate exists, so the lazy fill must have run');
+    residentFrame.free();
+    plane.free();
+  }
+
+  // Case 2: too few own features — find()'s own `features.length < 8` gate never reaches evaluateCandidates in
+  // production, but evaluateCandidates itself must still agree with the oracle on an empty result.
+  {
+    const c = await reacquireCase(w, h, 6002, 6, -4);
+    const keyframes = [kf('b', 0, 0, c.anchorFeatures, c.anchorGray, c.anchorPatches)];
+    const q = { features: c.ownFeatures.slice(0, 3), gray: c.ownGray, native: () => c.currentNative, roi, region, factor: 1, radius };
+    assertEquals(evaluateCandidates(keyframes, q, empty), ref.evaluateCandidates(keyframes, q, empty), 'case 2 (too few matches)');
+  }
+
+  // Case 3: an unrelated query matches no keyframe at all — no candidate should ever pass the audit.
+  {
+    const c = await reacquireCase(w, h, 6003, undefined, undefined);
+    const keyframes = [kf('c', 0, 0, c.anchorFeatures, c.anchorGray, c.anchorPatches)];
+    const q = { features: c.ownFeatures, gray: c.ownGray, native: () => c.currentNative, roi, region, factor: 1, radius };
+    assertEquals(evaluateCandidates(keyframes, q, empty), ref.evaluateCandidates(keyframes, q, empty), 'case 3 (no match)');
+  }
+
+  // Case 4: two keyframes cropped from the same repeating texture, one period apart, both plausibly explain the
+  // query — the rival path (score, sort, position, the `results.find((r) => r !== best && …)` rival test) must
+  // resolve identically, `canonical` empty here (a non-trivial `canonical` map is exercised end-to-end by
+  // keyframes.test.ts's "canonical resolves a fragment-space rival" case, which goes through find()).
+  {
+    const page = textureGray(w + 200, h, 6004);
+    const crop = (x: number) => {
+      const data = new Uint8Array(w * h);
+      for (let row = 0; row < h; row++) data.set(page.data.subarray(row * page.width + x, row * page.width + x + w), row * w);
+      return { width: w, height: h, data };
+    };
+    const g0 = crop(0), g1 = crop(60), gq = crop(30);
+    const f0 = kernelsRef.extractFeatures(g0), f1 = kernelsRef.extractFeatures(g1), fq = kernelsRef.extractFeatures(gq);
+    const n0 = core.grayscale(rgbaOf(g0).data, w, h),
+      n1 = core.grayscale(rgbaOf(g1).data, w, h),
+      nq = core.grayscale(rgbaOf(gq).data, w, h);
+    const p0 = extractPatches(n0, region, f0, 1), p1 = extractPatches(n1, region, f1, 1);
+    const keyframes = [kf('r0', 0, 0, f0, g0, p0), kf('r1', 60, 0, f1, g1, p1)];
+    const q = { features: fq, gray: gq, native: () => nq, roi, region, factor: 1, radius };
+    const refResult = ref.evaluateCandidates(keyframes, q, empty);
+    const prodResult = evaluateCandidates(keyframes, q, empty);
+    assertEquals(prodResult, refResult, 'case 4 (rival)');
+    assert(refResult?.ambiguous, 'case 4 expected the frozen oracle to mark this rival pair ambiguous');
   }
 });

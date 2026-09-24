@@ -1,9 +1,9 @@
-import type { Feature, Gray, Point, Rect } from '../types.ts';
+import type { Feature, Gray, Point, Rect, RGBA } from '../types.ts';
 import type { KV } from '../storage/db.ts';
-import { featureWords, matchFeatures } from './features.ts';
-import { auditTranslation, type Patch, refinePatches, translationHypotheses } from './motion.ts';
+import { featureWords } from './features.ts';
+import type { Patch } from './motion.ts';
 import { pad } from './math.ts';
-import type { ResidentGray } from './wasm.ts';
+import { core, type ResidentFrame, type ResidentGray } from './wasm.ts';
 export interface Keyframe extends Point {
   id: string;
   node: string;
@@ -32,8 +32,22 @@ export interface Relocalization {
 export interface RelocalizationQuery {
   features: Feature[];
   gray: Gray;
-  /** Full-resolution luma of the query frame, computed on first use (only candidates that pass the analysis audit need it). */
+  /** Full-resolution luma of the query frame. When `current`/`nativePlane` below are given (the resident-plane
+   * path), it is computed lazily, core-side, only if some candidate passes the analysis audit; otherwise (no
+   * `current`, or a caller that hands a plain `Gray`/`ResidentGray` directly — e.g. tests) it is used eagerly,
+   * before Rust even knows whether a candidate exists — the same trade-off `track.ts`'s `reacquire`/
+   * `driftCorrection` already made for their own rare non-resident fallback. */
   native: Gray | ResidentGray | (() => Gray | ResidentGray);
+  /** The current frame and the shared per-frame resident native-luma plane (`solve.ts`'s `nativePlane`), when the
+   * caller has them — undefined for callers with no resident frame to offer (e.g. direct `find()` calls in tests),
+   * in which case `native` above is always used eagerly, exactly as the pre-port `find()` did. `nativeFilled`/
+   * `markNativeFilled` share `native()`'s own per-frame memo, so whichever caller fills the plane first (this call
+   * or a later `native()` call) is the only fill this frame — same contract as `track.ts`'s `reacquire`/
+   * `driftCorrection` (R4d step 4 reuses it here). */
+  current?: RGBA | ResidentFrame;
+  nativePlane?: ResidentGray;
+  nativeFilled?: boolean;
+  markNativeFilled?: () => void;
   layer: string;
   frame: number;
   roi: Rect;
@@ -47,16 +61,23 @@ export interface RelocalizationQuery {
    * target are recognised as the same physical place instead of scoring each other as rivals. */
   canonical?: (canvasId: string) => { canvasId: string; dx: number; dy: number };
 }
-/** Pure candidate evaluation core of find() (port-template §2): hypothesis matching, analysis audit, native-patch
- * refinement, scoring and rival/ambiguity resolution over an already-fetched keyframe set. `canonical` replaces
- * the original's per-call closure with a precomputed map from the candidate canvasIds the async half already
- * touched, built once per query (R2: was called repeatedly per `position()` invocation). */
+/** Candidate evaluation core of find() (port-template §2): hypothesis matching, analysis audit and native-patch
+ * refinement run in one Rust call (R4d step 4: `core().keyframesEvaluateCandidates`); the `Math.exp` confidence
+ * formula and the scoring/rival/ambiguity resolution stay here in TS — the sort/best/rival selection needs the
+ * exact host-`Math.exp`'d confidence as its sort key (see `rust/core/src/track.rs::RefinedCandidate`'s doc
+ * comment). `canonical` replaces the original's per-call closure with a precomputed map from the candidate
+ * canvasIds the async half already touched, built once per query (R2: was called repeatedly per `position()`
+ * invocation). */
 export function evaluateCandidates(
   keyframes: Keyframe[],
   q: {
     features: Feature[];
     gray: Gray;
     native: Gray | ResidentGray | (() => Gray | ResidentGray);
+    current?: RGBA | ResidentFrame;
+    nativePlane?: ResidentGray;
+    nativeFilled?: boolean;
+    markNativeFilled?: () => void;
     roi: Rect;
     region: Rect;
     factor: number;
@@ -64,41 +85,44 @@ export function evaluateCandidates(
   },
   canonical: Map<string, { canvasId: string; dx: number; dy: number }>,
 ): (Relocalization & { strong: boolean }) | undefined {
-  const { features, gray, native, roi, region, factor, radius } = q;
-  const results: (Relocalization & { strong: boolean })[] = [];
-  for (const k of keyframes) {
-    const matches = matchFeatures(k.features, features), models = translationHypotheses(matches, 16);
-    for (const m of models.slice(0, 8)) {
-      if (m.support < 6) {
-        continue;
-      }
-      // Analysis-scale audit tolerates sub-factor misalignment; the decision is made on native pixels below.
-      const audit = auditTranslation(k.gray, gray, m.x, m.y, roi, factor > 1);
-      if (audit.overlap < .22 || !Number.isFinite(audit.error) || (audit.mismatch > .12 && audit.agreement < .5)) {
-        continue;
-      }
-      const refined = refinePatches(k.patches, typeof native === 'function' ? native() : native, region, {
-        x: m.x * factor,
-        y: m.y * factor,
-      }, radius);
-      if (!Number.isFinite(refined.error) || refined.error > 12) {
-        continue;
-      }
-      const strong = m.support >= 10 && m.unique >= 6 && m.confidence >= .45;
-      const confidence = Math.min(.95, .45 + .5 * (1 - Math.exp(-m.unique / 7))) * Math.exp(-refined.error / 20);
-      results.push({
-        keyframe: k,
-        offset: { x: refined.x, y: refined.y },
-        confidence,
-        ambiguous: m.ambiguous,
-        support: m.support,
-        unique: m.unique,
-        error: refined.error,
-        analysisError: audit.error,
-        strong,
-      });
-    }
+  if (keyframes.length === 0) {
+    return undefined;
   }
+  const { features, gray, native, roi, region, factor, radius, current, nativePlane, nativeFilled, markNativeFilled } = q;
+  const { results: audited, filledNative } = core().keyframesEvaluateCandidates(
+    keyframes.map((k) => ({ features: k.features, gray: k.gray, patches: k.patches })),
+    {
+      features,
+      gray,
+      roi,
+      region,
+      factor,
+      radius,
+      current,
+      nativePlane,
+      nativeFilled: nativeFilled ?? false,
+      native: typeof native === 'function' ? native : () => native,
+    },
+  );
+  if (filledNative) {
+    markNativeFilled?.();
+  }
+  if (audited.length === 0) {
+    return undefined;
+  }
+  const results: (Relocalization & { strong: boolean })[] = audited.map((r) => ({
+    keyframe: keyframes[r.keyframeIndex],
+    offset: { x: r.x, y: r.y },
+    // Math.exp finished in TS on the host's own implementation, same bit-exactness reason as `OdometryEstimate`'s
+    // confidence field (see rust/core/src/track.rs::RefinedCandidate's doc comment).
+    confidence: Math.min(.95, .45 + .5 * (1 - Math.exp(-r.unique / 7))) * Math.exp(-r.error / 20),
+    ambiguous: r.ambiguous,
+    support: r.support,
+    unique: r.unique,
+    error: r.error,
+    analysisError: r.analysisError,
+    strong: r.strong,
+  }));
   const score = (r: Relocalization) => (r.support * .25 + r.unique) * r.confidence;
   results.sort((a, b) => score(b) - score(a));
   const best = results.find((r) => r.strong);
@@ -143,7 +167,23 @@ export class KeyframeIndex {
   }
   /** Finds where the current observation sits relative to earlier keyframes. Returns nothing rather than guessing when several places fit. */
   async find(q: RelocalizationQuery): Promise<Relocalization | undefined> {
-    const { features, gray, native, layer, frame, roi, region, factor, radius, exclude } = q, minGap = q.minGap ?? 3;
+    const {
+        features,
+        gray,
+        native,
+        current,
+        nativePlane,
+        nativeFilled,
+        markNativeFilled,
+        layer,
+        frame,
+        roi,
+        region,
+        factor,
+        radius,
+        exclude,
+      } = q,
+      minGap = q.minGap ?? 3;
     if (features.length < 8) {
       return;
     }
@@ -203,6 +243,10 @@ export class KeyframeIndex {
         }
       }
     }
-    return evaluateCandidates(keyframes, { features, gray, native, roi, region, factor, radius }, canonical);
+    return evaluateCandidates(
+      keyframes,
+      { features, gray, native, current, nativePlane, nativeFilled, markNativeFilled, roi, region, factor, radius },
+      canonical,
+    );
   }
 }

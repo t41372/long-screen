@@ -524,6 +524,13 @@ export class Core {
   trackDriftCorrection(inputs: track.DriftCorrectionInputs): { pose: Point | undefined; error: number; filledNative: boolean } {
     return track.driftCorrection(this, this.exports, inputs);
   }
+  /** `keyframes.ts::evaluateCandidates` fused into one call (R4d step 4). */
+  keyframesEvaluateCandidates(
+    keyframes: track.EvaluateCandidatesKeyframe[],
+    q: track.EvaluateCandidatesQuery,
+  ): { results: track.EvaluateCandidatesResult[]; filledNative: boolean } {
+    return track.evaluateCandidates(this, this.exports, keyframes, q);
+  }
 
   /** `buildFramedCanvas`'s `frameLayout()`. */
   frameLayout(source: { width: number; height: number }, pane: Rect, boundsWidth: number, boundsHeight: number): FrameLayout {

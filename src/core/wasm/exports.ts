@@ -391,6 +391,26 @@ export interface CoreExports {
     nativeHeight: number,
     out: number,
   ): number;
+  ls_keyframes_evaluate_candidates(
+    keyframes: number,
+    keyframeCount: number,
+    features: number,
+    featureCount: number,
+    gray: number,
+    grayWidth: number,
+    grayHeight: number,
+    roi: number,
+    region: number,
+    factor: number,
+    radius: number,
+    nativeMode: number,
+    nativePtr: number,
+    currentFramePtr: number,
+    alreadyFilled: number,
+    nativeWidth: number,
+    nativeHeight: number,
+    out: number,
+  ): number;
   ls_frame_layout(sourceWidth: number, sourceHeight: number, pane: number, boundsWidth: number, boundsHeight: number, out: number): number;
   ls_frame_coordinate(layout: number, x: number, y: number, out: number): number;
   ls_frame_backgrounds(
