@@ -356,7 +356,8 @@ export class Core {
   crc32(bytes: Uint8Array): number {
     return png.crc32(this, bytes);
   }
-  /** Incremental CRC32 for a caller streaming bounded chunks (`src/export/zip.ts`, `src/codec/png.ts::chunk()`). */
+  /** Incremental CRC32 for a caller streaming bounded chunks (`src/codec/png.ts::chunk()`). `src/export/zip.ts`
+   *  does not use this — it streams through `client-zip`, which computes its own CRC32 in JS. */
   crc32Stream(): png.Crc32 {
     return new png.Crc32(this);
   }

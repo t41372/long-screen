@@ -115,23 +115,23 @@ pub fn backgrounds(
     let mut rows = vec![0u32; image_height];
     let mut columns = vec![0u32; image_width];
     let mut samples = Vec::new();
-    for y in 0..image_height {
+    for (y, row) in rows.iter_mut().enumerate() {
         samples.clear();
         let mut x = pane.x as i64;
         while (x as f64) < pane.x + pane.width {
             samples.push(px32(rgba, y * image_width + x as usize));
             x += xs as i64;
         }
-        rows[y] = mode(&samples);
+        *row = mode(&samples);
     }
-    for x in 0..image_width {
+    for (x, column) in columns.iter_mut().enumerate() {
         samples.clear();
         let mut y = pane.y as i64;
         while (y as f64) < pane.y + pane.height {
             samples.push(px32(rgba, y as usize * image_width + x));
             y += ys as i64;
         }
-        columns[x] = mode(&samples);
+        *column = mode(&samples);
     }
     (rows, columns)
 }

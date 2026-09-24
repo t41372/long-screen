@@ -1,7 +1,9 @@
 /** CRC32 (`crc32fast`, hardware-accelerated where available) via the Rust core — replaces the hand-rolled JS
  *  CRC32 table this module used to carry. `CRC32` keeps its old incremental class shape (`update()` any number
- *  of times, `digest()` any number of times, no explicit dispose) so `src/export/zip.ts` needed no call-site
- *  changes; `crc32()` is the one-shot convenience form. */
+ *  of times, `digest()` any number of times, no explicit dispose) so `src/codec/png.ts` (its only caller: the
+ *  per-chunk CRC written into each PNG chunk) needed no call-site changes; `crc32()` is the one-shot convenience
+ *  form. `src/export/zip.ts`'s ZIP writer does not use this module — it streams through `client-zip`, which
+ *  computes its own CRC32 in JS. */
 import { core } from '../core/wasm.ts';
 export class CRC32 {
   private readonly stream = core().crc32Stream();

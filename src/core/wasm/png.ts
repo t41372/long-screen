@@ -51,9 +51,10 @@ export function crc32(core: Core, bytes: Uint8Array): number {
 }
 
 /** Incremental CRC32 for a caller that sees its data in bounded chunks and must not buffer a whole file to hash
- *  it (`src/export/zip.ts::ZipWriter.add`, `src/codec/png.ts::chunk()`). The core handle is freed when this
- *  wrapper is garbage collected (`FinalizationRegistry`) rather than by an explicit `dispose()` every call site
- *  would have to remember — callers read `digest()` as many times as they like, as the old JS class did. */
+ *  it (`src/codec/png.ts::chunk()`). `src/export/zip.ts`'s `ZipWriter` does not use this any more — it streams
+ *  through `client-zip`, which computes its own CRC32 in JS. The core handle is freed when this wrapper is
+ *  garbage collected (`FinalizationRegistry`) rather than by an explicit `dispose()` every call site would have
+ *  to remember — callers read `digest()` as many times as they like, as the old JS class did. */
 const crc32Registry = new FinalizationRegistry<{ core: Core; handle: number }>(({ core, handle }) => {
   try {
     core.exports.ls_crc32_free(handle);

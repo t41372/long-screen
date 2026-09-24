@@ -4,11 +4,13 @@
 
 `manifest.json` 保存项目、设置、媒体尺寸 / 名称 / 字节数、各画布原生坐标边界。每个独立画布有自己的坐标原点；fragment 之间没有声明空间邻接关系。bounds 是外接矩形，不是“全部被观察”的保证。
 
+瓦片 PNG 现在由 Rust 核心里的 `png` crate（`=0.18.1`，及其传递依赖 fdeflate/flate2/miniz_oxide/crc32fast）编码，取代了此前手写的 Sub filter + 浏览器 `CompressionStream` + 手写 JS CRC32 表。这只改变编码器实现，PNG 字节流本身仍是标准、可被任意 PNG 阅读器打开；换编码器之后新写出的瓦片字节可能与旧版本不同（比如 filter 选择的启发式），但解码出的像素完全相同——比较两次运行是否等价时用 `--pixels`（`deno task fingerprint`）或 `--verify-tiles`（`benchmark-pipeline.ts`）的解码像素哈希，不要直接比较 PNG 字节。
+
 ```text
 index.html                              可直接离线打开的查看器
 manifest.json                           全局描述
 README.txt                              阅读说明
-tiles/<canvas>/<level>/<tileX>_<tileY>.png
+tiles/<canvas>/<level>/<tileX>_<tileY>.png    # 标准 PNG；由 Rust 核心里的 `png` crate（image-rs）编码（见下）
 coverage/<canvas>/<tileX>_<tileY>.bin
 provisional/<canvas>/<tileX>_<tileY>.bin
 quality/<canvas>/<tileX>_<tileY>.json
@@ -52,7 +54,7 @@ worldY = tileY * tileSize + inTileY
 
 ## consistency/&lt;frame&gt; ——内部暂存，不导出
 
-`consistency/<frame>` 是 `Engine.solve()` 位移展开一致性投票（docs/ARCHITECTURE.md §七）的中间结果：每个存在的行是一个 `{ [regionId]: { x0, y0, w, h, bits } }` 记录，`bits` 是分析分辨率（不是原生分辨率）下、以 `(x0,y0)` 为原点、`w×h` 的 row-major、低位先使用位图，置位表示该分析格在结算时判定为不一致。只有该帧的某个移动区域至少有一格被判定不一致时才会写这一行，多数帧完全不写。渲染阶段读取它、按分析因子放大到原生分辨率，与 ±1 帧掩码取逻辑或后驱动 `provisional` 位图（见上）——`consistency/<frame>` 本身只是过程数据，不代表最终瞬态状态，也不按世界坐标或画布坐标组织，只按屏幕/分析坐标。这些行是内部暂存：**保留，不在 `exportProject` 的 ZIP 里导出**（不同于 `scan-features/`、`keyframe/`、`word/`——那些在 `solve()` 结束时就被删除；`consistency/` 会在整个运行结束后继续留在本地存储里，供后续检查/调试用，只是不打包进离线结果）。
+`consistency/<frame>` 是 `solve()`（`src/pipeline/solve/solve.ts`，投票环的求值在 `rust/core/src/voting.rs`）位移展开一致性投票（docs/ARCHITECTURE.md §七）的中间结果：每个存在的行是一个 `{ [regionId]: ConsistencyVote }` 记录，`ConsistencyVote` = box（`x0, y0, w, h`）+ 两张位图 `bits` 与 `clean`。两者都是分析分辨率（不是原生分辨率）下、以 `(x0,y0)` 为原点、`w×h` 的 row-major、低位先使用位图：`bits` 置位表示该分析格结算时判定为不一致，`clean` 置位表示判定为干净（比例阈值的镜像，且要求比较次数 ≥3），两者都不置位表示比较次数不足以下结论——这是三态，不是一份位图（详见 ARCHITECTURE §七）。只有该帧的某个移动区域至少有一格拿到结论（`bits` 或 `clean` 任一置位）时才会写这一行，多数帧完全不写。渲染阶段读取它（连同相邻两帧的同一份记录）、按分析因子放大到原生分辨率，驱动 `provisional` 位图（见上）——`consistency/<frame>` 本身只是过程数据，不代表最终瞬态状态，也不按世界坐标或画布坐标组织，只按屏幕/分析坐标。这些行是内部暂存：**保留，不在 `exportProject` 的 ZIP 里导出**（不同于 `scan-features/`、`keyframe/`、`word/`——那些在 `solve()` 结束时就被删除；`consistency/` 会在整个运行结束后继续留在本地存储里，供后续检查/调试用，只是不打包进离线结果）。
 
 ## 帧记录
 
@@ -74,37 +76,54 @@ worldY = tileY * tileSize + inTileY
 
 ## 诊断码
 
-| 代码 | 含义 |
-|---|---|
-| `MODEL_ASSUMPTIONS` | 声明本次重建采用的模型与其局限；`detail` 带 `noise`（本片源声明的每通道解码噪声，单位 RGB 级）、`lossless`、`source`、`codec`，记录世界一致性比较实际用的容差——无损片源为 0（逐像素精确），压缩视频为 10（H.264/VP9 振铃与色度重建余量），见 `MediaInfo.noise` |
-| `MEDIA_NOTICE` | 容器层面的提醒（HDR 等自由文本 demuxer 警告）。`NONSTANDARD_SIGNED_CTTS_V0`（见下）是这条消息文本里的前缀，不是它自己的诊断码——它总是以 `MEDIA_NOTICE`、severity `warning` 出现 |
-| `ANALYSIS_PYRAMID` | 运动分析在缩图尺度进行，输出未跟随降采样 |
-| `COMPUTE_BACKEND` | 首帧分析后台校准结果（CPU 或 WebGPU box-luma + CPU 配准）；`detail` 带 `calibration`（cpuMS/gpuMS/bitExact）时说明已经拿到过一个 GPU 设备 |
-| `NEGATIVE_TIMESTAMP_SKIPPED` | 解码器输出了编辑列表起点之前的帧，按容器语义不展示（已计数） |
-| `NONMONOTONIC_TIMESTAMP` | 容器时间戳倒退，已按解码器展示顺序继续 |
-| `CONTAINER_SIZE_MISMATCH` | 容器声明尺寸与码流不符，以码流为准 |
-| `DECODE_PREFIX_ONLY` | 解码中断，只对已解码前缀继续处理。`DECODER_STALLED`（见下）是这类错误消息文本里的前缀，不是它自己的诊断码 |
-| `AUTOMATIC_LAYER_MASK` / `MULTIPLE_SCROLL_LAYERS` | 自动分层结果 |
-| `MANUAL_UNASSIGNED` / `EXPLICITLY_EXCLUDED_REGION` / `MANUAL_REGION_PRIORITY` | 手动区域相关 |
-| `LOW_TEXTURE_UNOBSERVABLE` / `UNOBSERVABLE_FRAME` | 该帧（该区域）没有可辨认纹理，不画到任何位置 |
-| `UNRESOLVED_MOTION` / `AMBIGUOUS_PATTERN` | 缺少可靠对齐依据 / 存在多个合理匹配 |
-| `THIN_OVERLAP_STEP` | 移动过快，位移只由很小的重叠决定 |
-| `TRAJECTORY_CORRECTED` | 回访证据更强，已改正当前及之后的轨迹（此前像素保持原样） |
-| `PARTIAL_CONTENT_CHANGE` | 部分区块与整体位移不一致（动画 / 懒加载 / 重排） |
-| `LOW_CONFIDENCE_PLACEMENT` | 低置信位置推断，对应像素在质量遮罩中标记 |
-| `RELOCALIZED` / `LOOP_CLOSURE` | 通过历史锚点重新定位 / 加入全局约束 |
-| `INCONSISTENT_LOOP_REJECTED` / `AMBIGUOUS_LOOP` | 历史匹配与轨迹冲突或有多解，未强加 |
-| `FRAGMENT_ATTACHED` | 独立片段被回访证据整体接回已有画布 |
-| `UNPLACED_FRAGMENT` / `SCALE_CHANGE_FRAGMENT` | 无法确认相对位置 / 检测到比例变化，保留独立片段 |
-| `TEMPORAL_OR_ALIGNMENT_CONFLICT` / `INCOMPLETE_TEMPORAL_PATCH` | 重叠区域存在明显差异 / 变化区域从未完整可见 |
-| `GRAPH_RESIDUAL` | 位置图残差未收敛到亚像素 |
-| `RELOCALIZATION_BUDGET` | 重复纹理导致检索预算被截断 |
-| `NONFINITE_POSE` / `PROCESSING_ERROR` / `PERSISTENCE_ERROR` / `EXPORT_ERROR` | 错误路径 |
-| `NON_SQUARE_PIXELS` | 容器声明的显示尺寸与存储尺寸不同（非方形像素）；保留原始存储像素，不缩放 |
-| `PRESENTATION_FRAME` | 带外框呈现与原始二维内容分别保留；外框来自参考帧，延长部分只是装饰背景，不算已观察内容 |
-| `PRESENTATION_TOO_SPARSE` | 带外框呈现画布所需瓦片数超过上限，已跳过；核心重建不受影响 |
-| `PRESENTATION_REFERENCE_FAILED` | 构建带外框呈现所需的参考帧失败；带外框视图被跳过，核心重建不受影响 |
-| `PRESENTATION_STAGE_FAILED` | 带外框呈现阶段整体失败；核心重建结果和状态不受影响 |
-| `PYRAMID_FAILED` | 预览金字塔构建失败；原尺寸 Level 0 瓦片不受影响，仍可查看和导出 |
-| `ANALYSIS_PREFIX_ONLY` | 定位或渲染阶段中断；仅对已处理的前缀帧继续 |
-| `PERSISTENCE_PREFIX_ONLY` | 存储写入失败并已停止；仅已成功写入的前缀帧结果可用 |
+| 代码                                                                          | 含义                                                                                                                                                                                                                                                           |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MODEL_ASSUMPTIONS`                                                           | 声明本次重建采用的模型与其局限；`detail` 带 `noise`（本片源声明的每通道解码噪声，单位 RGB 级）、`lossless`、`source`、`codec`，记录世界一致性比较实际用的容差——无损片源为 0（逐像素精确），压缩视频为 10（H.264/VP9 振铃与色度重建余量），见 `MediaInfo.noise` |
+| `MEDIA_NOTICE`                                                                | 容器层面的提醒（HDR 等自由文本 demuxer 警告）。`NONSTANDARD_SIGNED_CTTS_V0`（见下）是这条消息文本里的前缀，不是它自己的诊断码——它总是以 `MEDIA_NOTICE`、severity `warning` 出现                                                                                |
+| `ANALYSIS_PYRAMID`                                                            | 运动分析在缩图尺度进行，输出未跟随降采样                                                                                                                                                                                                                       |
+| `APPROXIMATE_DECODER`                                                         | 已明确启用原生 seek 兼容模式；不保证采到视频每一帧，短暂内容可能缺失                                                                                                                                                                                           |
+| `COMPUTE_BACKEND`                                                             | 首帧分析后台校准结果（CPU 或 WebGPU box-luma + CPU 配准）；`detail` 带 `calibration`（cpuMS/gpuMS/bitExact）时说明已经拿到过一个 GPU 设备                                                                                                                      |
+| `NEGATIVE_TIMESTAMP_SKIPPED`                                                  | 解码器输出了编辑列表起点之前的帧，按容器语义不展示（已计数）                                                                                                                                                                                                   |
+| `NONMONOTONIC_TIMESTAMP`                                                      | 容器时间戳倒退，已按解码器展示顺序继续                                                                                                                                                                                                                         |
+| `CONTAINER_SIZE_MISMATCH`                                                     | 容器声明尺寸与码流不符，以码流为准                                                                                                                                                                                                                             |
+| `DECODE_PREFIX_ONLY`                                                          | 解码中断，只对已解码前缀继续处理。`DECODER_STALLED`（见下）是这类错误消息文本里的前缀，不是它自己的诊断码                                                                                                                                                      |
+| `PASS_FRAME_COUNT_MISMATCH`                                                   | 某一遍（scan/solve/render）实际完成的帧数少于该遍预期帧数；结果被标记为 partial，已提交前缀保留                                                                                                                                                                |
+| `AUTOMATIC_LAYER_MASK` / `MULTIPLE_SCROLL_LAYERS`                             | 自动分层结果                                                                                                                                                                                                                                                   |
+| `MANUAL_UNASSIGNED` / `EXPLICITLY_EXCLUDED_REGION` / `MANUAL_REGION_PRIORITY` | 手动区域相关                                                                                                                                                                                                                                                   |
+| `LOW_TEXTURE_UNOBSERVABLE` / `UNOBSERVABLE_FRAME`                             | 该帧（该区域）没有可辨认纹理，不画到任何位置                                                                                                                                                                                                                   |
+| `UNRESOLVED_MOTION` / `AMBIGUOUS_PATTERN`                                     | 缺少可靠对齐依据 / 存在多个合理匹配                                                                                                                                                                                                                            |
+| `TEMPORAL_UNDERSAMPLING`                                                      | 该帧持续时间偏长；高速移动期间可能存在从未被采集到的区域                                                                                                                                                                                                       |
+| `THIN_OVERLAP_STEP`                                                           | 移动过快，位移只由很小的重叠决定                                                                                                                                                                                                                               |
+| `TRAJECTORY_CORRECTED`                                                        | 回访证据更强，已改正当前及之后的轨迹（此前像素保持原样）                                                                                                                                                                                                       |
+| `PARTIAL_CONTENT_CHANGE`                                                      | 部分区块与整体位移不一致（动画 / 懒加载 / 重排）                                                                                                                                                                                                               |
+| `LOW_CONFIDENCE_PLACEMENT`                                                    | 低置信位置推断，对应像素在质量遮罩中标记                                                                                                                                                                                                                       |
+| `STICKY_OCCLUSION`                                                            | 顶端纹理支持屏幕固定而非页面位移；本次观察的固定遮挡不写入移动画布，原始参考界面保留在外框呈现中                                                                                                                                                               |
+| `RELOCALIZED` / `LOOP_CLOSURE`                                                | 通过历史锚点重新定位 / 加入全局约束                                                                                                                                                                                                                            |
+| `INCONSISTENT_LOOP_REJECTED` / `AMBIGUOUS_LOOP`                               | 历史匹配与轨迹冲突或有多解，未强加                                                                                                                                                                                                                             |
+| `FRAGMENT_ATTACHED`                                                           | 独立片段被回访证据整体接回已有画布                                                                                                                                                                                                                             |
+| `UNPLACED_FRAGMENT` / `SCALE_CHANGE_FRAGMENT`                                 | 无法确认相对位置 / 检测到比例变化，保留独立片段                                                                                                                                                                                                                |
+| `TEMPORAL_OR_ALIGNMENT_CONFLICT` / `INCOMPLETE_TEMPORAL_PATCH`                | 重叠区域存在明显差异 / 变化区域从未完整可见                                                                                                                                                                                                                    |
+| `MISSING_SCAN_RECORD` / `MISSING_PLAN`                                        | 求解 / 渲染阶段缺少对应的 `scan/`/`plan/` 持久化记录；已停止在已提交的前缀，不当作零位移或空观察                                                                                                                                                               |
+| `MEMORY_BUDGET_RAISED`                                                        | 瓦片缓存已从预算允许的块数提高，以容纳一帧触及的全部瓦片；`detail` 带具体块数与估算内存                                                                                                                                                                        |
+| `FRAME_MEMORY_PRESSURE`                                                       | 单帧原始像素及参考帧占用已接近所选缓存预算；不会静默降低输出分辨率                                                                                                                                                                                             |
+| `GRAPH_RESIDUAL`                                                              | 位置图残差未收敛到亚像素                                                                                                                                                                                                                                       |
+| `RELOCALIZATION_BUDGET`                                                       | 重复纹理导致检索预算被截断                                                                                                                                                                                                                                     |
+| `NONFINITE_POSE` / `PROCESSING_ERROR` / `PERSISTENCE_ERROR` / `EXPORT_ERROR`  | 错误路径                                                                                                                                                                                                                                                       |
+| `NON_SQUARE_PIXELS`                                                           | 容器声明的显示尺寸与存储尺寸不同（非方形像素）；保留原始存储像素，不缩放                                                                                                                                                                                       |
+| `PRESENTATION_FRAME`                                                          | 带外框呈现与原始二维内容分别保留；外框来自参考帧，延长部分只是装饰背景，不算已观察内容                                                                                                                                                                         |
+| `PRESENTATION_TOO_SPARSE`                                                     | 带外框呈现画布所需瓦片数超过上限，已跳过；核心重建不受影响                                                                                                                                                                                                     |
+| `PRESENTATION_REFERENCE_FAILED`                                               | 构建带外框呈现所需的参考帧失败；带外框视图被跳过，核心重建不受影响                                                                                                                                                                                             |
+| `PRESENTATION_STAGE_FAILED`                                                   | 带外框呈现阶段整体失败；核心重建结果和状态不受影响                                                                                                                                                                                                             |
+| `PYRAMID_FAILED`                                                              | 预览金字塔构建失败；原尺寸 Level 0 瓦片不受影响，仍可查看和导出                                                                                                                                                                                                |
+| `ANALYSIS_PREFIX_ONLY`                                                        | 定位或渲染阶段中断；仅对已处理的前缀帧继续                                                                                                                                                                                                                     |
+| `PERSISTENCE_PREFIX_ONLY`                                                     | 存储写入失败并已停止；仅已成功写入的前缀帧结果可用                                                                                                                                                                                                             |
+
+以下诊断码只由界面产生（`src/ui/**`），不写入持久化的 `diagnostics.jsonl`，只出现在运行时的诊断列表里：
+
+| 代码                       | 含义                                                                                                                                                 |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PREVIOUS_RUN_INTERRUPTED` | 打开页面时发现上一次重建的崩溃记录（`src/ui/flight.ts` 每秒写入 localStorage 的阶段/帧/内存/后台时长），页面被浏览器回收或崩溃、没有收到正常结束信号 |
+| `INTERRUPTED_SESSION`      | 从本地存储恢复项目时发现上一次处理没有完成；仅已提交的数据可恢复，不支持断点续算                                                                     |
+| `PROBE_FAILED`             | 逐帧解码探测（WebCodecs 读首帧）失败，将尝试浏览器原生播放器读取元数据                                                                               |
+| `START_ERROR`              | 开始重建时抛出异常，重建未能开始                                                                                                                     |
+| `WORKER_ERROR`             | Worker 报告了一个未被更具体诊断码覆盖的错误                                                                                                          |

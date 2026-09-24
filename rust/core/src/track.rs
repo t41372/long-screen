@@ -92,7 +92,14 @@ pub fn attach_verdict(
     shift: (f64, f64),
 ) -> Option<(f64, f64)> {
     let g = global?;
-    if resolved_target_eq_canvas || g.ambiguous || !(g.confidence > 0.72) {
+    // `!(g.confidence > 0.72)`, spelled via `partial_cmp` to satisfy `clippy::neg_cmp_op_on_partial_ord` WITHOUT
+    // changing the truth table: `Some(Greater)` is the only value the negation excludes, so a NaN confidence
+    // (`partial_cmp` gives `None`) still takes this branch, exactly as `!(NaN > 0.72)` (`NaN > x` is always
+    // `false` in IEEE 754) evaluates to `true` in the TS original.
+    if resolved_target_eq_canvas
+        || g.ambiguous
+        || g.confidence.partial_cmp(&0.72) != Some(std::cmp::Ordering::Greater)
+    {
         return None;
     }
     Some(target_pose(g.keyframe, g.offset, shift))

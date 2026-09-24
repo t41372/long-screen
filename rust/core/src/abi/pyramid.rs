@@ -18,7 +18,7 @@ pub extern "C" fn ls_assemble_pyramid_parent(
     size: u32,
     out: u32,
 ) -> i32 {
-    if size == 0 || size % 2 != 0 {
+    if size == 0 || !size.is_multiple_of(2) {
         return STATUS_BAD_ARGUMENT;
     }
     let size = size as usize;

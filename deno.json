@@ -19,8 +19,8 @@
       "dependencies": ["build:core"]
     },
     "fixtures": "deno run --allow-read --allow-write --allow-run --allow-env scripts/make-fixtures.ts",
-    "fmt": "deno fmt src main.ts scripts tests",
-    "lint": "deno lint src main.ts scripts tests",
+    "fmt": "deno fmt src main.ts scripts tests README.md docs && cd rust && cargo fmt",
+    "lint": "deno lint src main.ts scripts tests && cd rust && cargo fmt --check && cargo clippy --target wasm32-unknown-unknown -- -D warnings",
     "fingerprint": "deno run -A scripts/fingerprint-scenarios.ts"
   },
   "compilerOptions": {
@@ -36,7 +36,8 @@
   "fmt": {
     "lineWidth": 140,
     "singleQuote": true,
-    "semiColons": true
+    "semiColons": true,
+    "proseWrap": "preserve"
   },
   "lint": {
     "rules": {

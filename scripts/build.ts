@@ -1,6 +1,8 @@
 /** Builds the Rust core to WebAssembly, bundles the browser adapter with `deno bundle` and copies static assets
- *  into dist/. No npm, no CDN, no runtime dependencies. Builds into a staging directory and swaps it in on
- *  success, so a failed build never deletes a working dist/.
+ *  into dist/. No CDN, no upload endpoint, no network at runtime; the Rust core does compile in a handful of
+ *  crates (image-rs `png` and its deflate backends, `crc32fast`) and the export path uses the npm package
+ *  `client-zip` — dist/THIRD_PARTY_NOTICES.txt below is generated from those at build time. Builds into a staging
+ *  directory and swaps it in on success, so a failed build never deletes a working dist/.
  *
  *  Every path below is resolved from this script's own location (not the process's current working directory), so
  *  `deno task build` from the repo root and `deno run -A <path>/scripts/build.ts` from anywhere else produce the
@@ -148,7 +150,7 @@ try {
   const dist = join(root, 'dist');
   await Deno.remove(dist, { recursive: true }).catch(() => {});
   await Deno.rename(staging, dist);
-  console.log('Built dist/ — no runtime dependencies, no CDN, no upload endpoint.');
+  console.log('Built dist/ — no CDN, no upload endpoint, no network at runtime (see THIRD_PARTY_NOTICES.txt).');
 } catch (error) {
   await Deno.remove(staging, { recursive: true }).catch(() => {});
   throw error;

@@ -2,7 +2,7 @@
 
 **从本地屏幕录影恢复稀疏二维画布。**
 
-纯客户端静态 Web 项目，运行时和工具链都是 Deno。包含视频解封装、逐帧解码、运动分层、历史重定位、磁盘位置图、原分辨率瓦片合成、质量诊断和离线导出。没有上传接口、云端推理、OCR、模型下载或第三方运行时依赖。
+纯客户端静态 Web 项目：一层薄 TypeScript（界面、Worker RPC、浏览器 I/O、编排）包着一个 Rust 编译成 WebAssembly 的核心，承担全部算法。包含视频解封装、逐帧解码、运动分层、历史重定位、磁盘位置图、原分辨率瓦片合成、质量诊断和离线导出。没有上传接口、云端推理、OCR、模型下载。工具链是 Deno；核心的构建工具链是 rustup/cargo（第一次构建自动安装，见下）。
 
 > 请把它当作具有可检查证据的视觉重建系统，不是对任意录屏都能证明正确的页面恢复器。自动分层、重定位、动态区域检测仍是启发式。**流程完成不等于结果被证明正确。** 实测范围与未实现的能力见 [能力边界](docs/CAPABILITIES.md) 与 [测试说明](docs/TESTING.md)。
 
@@ -17,12 +17,15 @@ deno task start      # 缺少 dist/ 时自动构建，然后在 4173 提供静�
 打开 `http://localhost:4173`。左侧可以直接运行内置演示（与测试套件使用同一批带真值的合成场景），也可以选择自己的录屏。
 
 ```sh
-deno task build      # 只构建 dist/
+deno task build:core # 只编译 Rust 核心到 rust/target/{scalar,simd,threads}
+deno task build      # 构建 Rust 核心 + 打包 TS 到 dist/（测试/开发用，带 test harness 与 source map）
+deno task build:prod # 同上，去掉 test harness 与 source map，供生产部署
 deno task check      # 全量类型检查
-deno task test       # 单元 + 场景端到端测试（纯 Deno，无浏览器）
+deno task test       # 单元 + 场景端到端测试（纯 Deno，无浏览器；先构建核心）
 deno task coverage   # 同上并强制核心目录的覆盖率门槛
-deno task test:browser   # 真实 Chrome 中的解码、重建、界面与导出测试
-deno task fixtures   # 用 ffmpeg 重新生成编码测试样本
+deno task test:browser   # 真实 Chrome + Playwright WebKit 中的解码、重建、界面与导出测试
+deno task fixtures   # 用 ffmpeg 生成缺失的编码测试样本（已存在的文件不会被覆盖）
+deno task fingerprint    # 逐场景、逐持久化行的字节级指纹工具，见 docs/TESTING.md
 ```
 
 浏览器测试（`deno task test:browser`）需要 Google Chrome（Playwright 自带的 Chromium 不含 H.264）和 Playwright 的 WebKit：`npx playwright@1.58.2 install webkit`（需要 Node.js；版本与 `deno.json` 里的 `playwright` 一致）。`deno task fixtures` 需要 ffmpeg。
@@ -45,6 +48,10 @@ deno task fixtures   # 用 ffmpeg 重新生成编码测试样本
 
 优先写入用户选择的文件；不支持该接口时用 OPFS 写临时文件再下载。无磁盘写出路径时明确失败，不回退成把整个输出拼进 RAM。
 
+## 部署
+
+`deno task build:prod` 产出的 `dist/` 是静态站点，上传到任何遵守 `_headers` 文件的静态托管（Cloudflare Pages、Netlify；`static/_headers` 原样复制并设置线程构建需要的 COOP/COEP/CORP 响应头，以及缓存策略）即可，不再是 GitHub Pages——后者不能设置自定义响应头，会导致页面不跨源隔离、Wasm 核心退回单线程构建（仍能运行，只是没有线程加速）。
+
 ## 架构
 
 ```text
@@ -57,23 +64,25 @@ File / Blob（分段随机读取，8 × 256KiB 页面）
   → IndexedDB 原图瓦片 / 覆盖位图 / 诊断
 ```
 
-解码之后的每一步都是纯 TypeScript，接收 `RGBA` 而不是 canvas，因此 Deno 测试跑的就是浏览器里跑的那份代码。详见 [架构文档](docs/ARCHITECTURE.md)。
-
-这描述的是**当前实现**，尚不满足用户明确要求的“薄前端 + Rust/WebAssembly 核心”。目标边界、性能证据与迁移验收见 [Rust/Wasm 评估](docs/RUST-WASM-ASSESSMENT.md)；隔离的评估原型不代表应用已经迁移。
+解码是唯一依赖浏览器 API 的一步：`FrameSource` 产出 `RGBA` 而不是 canvas，供之后各遍使用。配准、分层、位置图、合成、瓦片编解码等算法全部在 `rust/core` 编译成的 Wasm 核心里；TypeScript 是围绕它的薄壳（界面、Worker RPC、I/O、编排）。Deno 测试与浏览器加载的是同一份核心，因此 Deno 里验证过的算法行为就是浏览器里的行为。详见 [架构文档](docs/ARCHITECTURE.md)；迁移过程与逐模块进度见 [docs/history/2026-09-rust-migration-log.md](docs/history/2026-09-rust-migration-log.md)。
 
 ## 目录
 
 ```text
-src/core        配准、分层、位置图、关键帧、合成、光栅工具
+rust/core       Rust 核心源码；编译为 core.wasm / core.simd.wasm / core.threads.wasm 三种构建
+src/core        围绕核心的 TS 薄壳：配准、分层、位置图、关键帧、合成、光栅、加载与选择构建（src/core/wasm/**）
 src/media       容器解析、范围读取、WebCodecs 解码
-src/codec       PNG 编解码（瓦片与导出共用，纯 TS）
-src/pipeline    三遍引擎
+src/codec       PNG 编解码的 TS 编排层，chunk/CRC 校验通过核心
+src/pipeline    三遍引擎的编排（scan/solve/render），部分冲突处理与位姿图优化仍是纯 TS
 src/storage     IndexedDB / 内存 KV、瓦片、诊断
 src/synthetic   合成场景、渲染器、真值校验器（同时是内置演示）
-src/export      ZIP64、PNG 分页、离线查看器
+src/export      ZIP64（借助 npm 包 client-zip）、PNG 分页、离线查看器
 src/ui          界面与瓦片查看器
-tests/unit      纯 Deno 单元与场景端到端测试
-tests/browser   Playwright 驱动真实 Chrome
+scripts         构建（build.ts/build-core.sh）、基准、指纹、样本生成等工具脚本
+static          COOP/COEP `_headers`、开发用 harness 页面等静态资源
+tests/unit      纯 Deno 单元测试、场景端到端测试、`tests/unit/parity/` 下的 TS↔Rust 字节级对照
+tests/support   测试用核心加载、场景真值校验、冻结的 parity 参照实现（tests/support/reference/）
+tests/browser   Playwright 驱动真实 Chrome + WebKit
 ```
 
 许可证 MIT。

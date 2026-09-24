@@ -104,7 +104,7 @@ pub extern "C" fn ls_overwrite_tile(
     let n = size * size;
     let tile_blocks = (size / QUALITY_BLOCK) * (size / QUALITY_BLOCK);
     let owner_ptr = t.u32(20);
-    if owner_ptr == 0 || owner_ptr % 4 != 0 || !in_bounds(owner_ptr, tile_blocks * 4) {
+    if owner_ptr == 0 || !owner_ptr.is_multiple_of(4) || !in_bounds(owner_ptr, tile_blocks * 4) {
         return STATUS_BAD_ARGUMENT;
     }
     // SAFETY: every buffer is validated against linear memory; tile buffers are distinct allocations.
