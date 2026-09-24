@@ -11,7 +11,7 @@ import { pad } from '../core/math.ts';
 import { core, type Resident } from '../core/wasm.ts';
 import { attachedRenderShift, resolveTarget as resolveAttachmentTarget } from './attachments.ts';
 import { consistencyMask, type ConsistencyRecord } from './consistency.ts';
-import { type RunContext, StorageError } from './context.ts';
+import { prefixOnly, type RunContext, StorageError } from './context.ts';
 export async function render(ctx: RunContext): Promise<void> {
   ctx.phase = 'rendering';
   ctx.project.status = 'rendering';
@@ -305,24 +305,12 @@ export async function render(ctx: RunContext): Promise<void> {
       if (error instanceof StorageError) {
         storageFailed = true;
         try {
-          await ctx.diagnostics.emit({
-            code: 'PERSISTENCE_PREFIX_ONLY',
-            severity: 'error',
-            message: String(error),
-            action: `仅对已经渲染的前 ${ctx.project.renderedFrames} 帧保留结果；存储写入已停止。`,
-            detail: { pass: 'render', frames: ctx.project.renderedFrames },
-          });
+          await ctx.diagnostics.emit(prefixOnly('PERSISTENCE_PREFIX_ONLY', 'render', ctx.project.renderedFrames, error));
         } catch { /* the journal write itself failed too; the run is already marked partial. */ }
         stop = true;
         return;
       }
-      await ctx.diagnostics.emit({
-        code: 'ANALYSIS_PREFIX_ONLY',
-        severity: 'error',
-        message: String(error),
-        action: `仅对已经渲染的前 ${ctx.project.renderedFrames} 帧保留结果。`,
-        detail: { pass: 'render', frames: ctx.project.renderedFrames },
-      });
+      await ctx.diagnostics.emit(prefixOnly('ANALYSIS_PREFIX_ONLY', 'render', ctx.project.renderedFrames, error));
       stop = true;
     }
   };
@@ -344,13 +332,7 @@ export async function render(ctx: RunContext): Promise<void> {
           throw error;
         }
         ctx.partial = true;
-        await ctx.diagnostics.emit({
-          code: 'DECODE_PREFIX_ONLY',
-          severity: 'error',
-          message: String(error),
-          action: `仅对已经渲染的前 ${ctx.project.renderedFrames} 帧保留结果。`,
-          detail: { pass: 'render', frames: ctx.project.renderedFrames },
-        });
+        await ctx.diagnostics.emit(prefixOnly('DECODE_PREFIX_ONLY', 'render', ctx.project.renderedFrames, error));
         break;
       }
       if (step.done) {
@@ -385,13 +367,7 @@ export async function render(ctx: RunContext): Promise<void> {
       storageFailed = true;
       ctx.partial = true;
       try {
-        await ctx.diagnostics.emit({
-          code: 'PERSISTENCE_PREFIX_ONLY',
-          severity: 'error',
-          message: String(error),
-          action: `仅对已经渲染的前 ${ctx.project.renderedFrames} 帧保留结果；存储写入已停止。`,
-          detail: { pass: 'render', frames: ctx.project.renderedFrames },
-        });
+        await ctx.diagnostics.emit(prefixOnly('PERSISTENCE_PREFIX_ONLY', 'render', ctx.project.renderedFrames, error));
       } catch { /* the journal write itself failed too; the run is already marked partial. */ }
     }
     try {
@@ -403,13 +379,7 @@ export async function render(ctx: RunContext): Promise<void> {
       storageFailed = true;
       ctx.partial = true;
       try {
-        await ctx.diagnostics.emit({
-          code: 'PERSISTENCE_PREFIX_ONLY',
-          severity: 'error',
-          message: String(error),
-          action: `仅对已经渲染的前 ${ctx.project.renderedFrames} 帧保留结果；存储写入已停止。`,
-          detail: { pass: 'render', frames: ctx.project.renderedFrames },
-        });
+        await ctx.diagnostics.emit(prefixOnly('PERSISTENCE_PREFIX_ONLY', 'render', ctx.project.renderedFrames, error));
       } catch { /* the journal write itself failed too; the run is already marked partial. */ }
     }
   }

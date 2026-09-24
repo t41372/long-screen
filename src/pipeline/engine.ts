@@ -5,13 +5,16 @@
 //   context.ts       RunContext: state and services every pass shares, plus checkpoint/report/persist/
 //                     putMany/commitRows/passMismatch and StorageError/StopRequested. Shell, not algorithm.
 //   scan.ts          the scan pass (motion evidence, layer learning, region finalisation). Shell.
-//   solve/solve.ts   the solve pass (frame loop, plan batching, voting ring, graph optimise) AND the
-//                     per-region tracking decisions (hypothesis scoring, audit acceptance, native refinement,
-//                     confidence, anchor re-acquisition, keyframe/revisit/attachment/loop-closure) that are
-//                     still plain TypeScript — algorithm-awaiting-port (see docs/HANDOFF.md "已在 Rust 核心中").
-//                     Splitting that decision logic out into solve/{track,place,keyframe}.ts, isolated as pure
-//                     functions, is the next step; this round only split the pass classes apart. Shell for
-//                     everything else in the file (storage, diagnostics, progress, batching, failure paths).
+//   solve/solve.ts   the solve pass shell (setup, frame loop, duplicate-frame shortcut, plan/consistency
+//                     batching, voting ring lifecycle, graph optimise, scratch deletion). Shell.
+//   solve/state.ts   RegionState, Decision, initialState(), newCanvas() — the per-region tracking state
+//                     solve.ts and region-step.ts share. Shell.
+//   solve/track.ts   the per-region tracking DECISIONS (hypothesis scoring, audit acceptance, native
+//                     refinement, confidence, anchor re-acquisition, keyframe/revisit/attachment/loop-closure
+//                     verdicts) as pure functions — plain inputs, plain results, no storage or diagnostics.
+//                     Still plain TypeScript, algorithm-awaiting-port (see docs/HANDOFF.md "已在 Rust 核心中").
+//   solve/region-step.ts, solve/keyframe-step.ts  the per-region shell that applies track.ts's decisions, in
+//                     the original order, to storage/diagnostics/the pose graph/keyframe index. Shell.
 //   render.ts        the render pass (placement resolution, consistency-mask consultation, compositing,
 //                     observation ledger). Shell.
 //   presentation.ts  run()'s framing and pyramid stages. Shell.

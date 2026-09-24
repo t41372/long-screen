@@ -13,7 +13,7 @@ import { analysisFactor, equalRGBA } from '../core/raster.ts';
 import { encodeRGBA } from '../codec/png.ts';
 import { pad } from '../core/math.ts';
 import { encodeFeatures } from './features-codec.ts';
-import { type RunContext, StorageError } from './context.ts';
+import { prefixOnly, type RunContext, StorageError } from './context.ts';
 export async function scan(ctx: RunContext): Promise<void> {
   ctx.phase = 'scanning';
   let previous: Gray | undefined,
@@ -48,12 +48,7 @@ export async function scan(ctx: RunContext): Promise<void> {
           throw error;
         }
         ctx.partial = true;
-        await ctx.diagnostics.emit({
-          code: 'DECODE_PREFIX_ONLY',
-          severity: 'error',
-          message: String(error),
-          action: `仅对已经解码的前 ${ctx.project.frames} 帧继续定位和合成。`,
-        });
+        await ctx.diagnostics.emit(prefixOnly('DECODE_PREFIX_ONLY', 'scan', ctx.project.frames, error));
         break;
       }
       if (step.done) {
@@ -212,12 +207,7 @@ export async function scan(ctx: RunContext): Promise<void> {
           // Storage is failing: mark partial and stop, do not attempt another write. The diagnostic itself
           // goes through the journal only if that journal write succeeds.
           try {
-            await ctx.diagnostics.emit({
-              code: 'PERSISTENCE_PREFIX_ONLY',
-              severity: 'error',
-              message: String(error),
-              action: `仅对已经解码的前 ${ctx.project.frames} 帧继续定位和合成；存储写入已停止。`,
-            });
+            await ctx.diagnostics.emit(prefixOnly('PERSISTENCE_PREFIX_ONLY', 'scan', ctx.project.frames, error));
           } catch { /* the journal write itself failed too; the run is already marked partial. */ }
           break;
         }
@@ -225,20 +215,10 @@ export async function scan(ctx: RunContext): Promise<void> {
         // anomaly, not an algorithmic one, even though gray() only notices it once the body already has
         // the frame in hand; it is reported the same way a decode failure is.
         if (error instanceof Error && error.message.startsWith('FRAME_GEOMETRY_CHANGED')) {
-          await ctx.diagnostics.emit({
-            code: 'DECODE_PREFIX_ONLY',
-            severity: 'error',
-            message: String(error),
-            action: `仅对已经解码的前 ${ctx.project.frames} 帧继续定位和合成。`,
-          });
+          await ctx.diagnostics.emit(prefixOnly('DECODE_PREFIX_ONLY', 'scan', ctx.project.frames, error));
           break;
         }
-        await ctx.diagnostics.emit({
-          code: 'ANALYSIS_PREFIX_ONLY',
-          severity: 'error',
-          message: String(error),
-          action: `仅对已经解码的前 ${ctx.project.frames} 帧继续定位和合成。`,
-        });
+        await ctx.diagnostics.emit(prefixOnly('ANALYSIS_PREFIX_ONLY', 'scan', ctx.project.frames, error));
         break;
       }
     }
@@ -261,12 +241,7 @@ export async function scan(ctx: RunContext): Promise<void> {
       ctx.partial = true;
       storageFailed = true;
       try {
-        await ctx.diagnostics.emit({
-          code: 'PERSISTENCE_PREFIX_ONLY',
-          severity: 'error',
-          message: String(error),
-          action: `仅对已经解码的前 ${ctx.project.frames} 帧继续定位和合成；存储写入已停止。`,
-        });
+        await ctx.diagnostics.emit(prefixOnly('PERSISTENCE_PREFIX_ONLY', 'scan', ctx.project.frames, error));
       } catch { /* the journal write itself failed too; the run is already marked partial. */ }
     }
   }

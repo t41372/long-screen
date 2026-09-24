@@ -14,7 +14,32 @@ import type { FrameRing, Resident, ResidentFrame, ResidentGray, VotingRing } fro
 import { AnalysisComputer } from '../core/compute.ts';
 import { DECODED_VIDEO_NOISE } from '../media/source.ts';
 import type { EngineEvents } from './engine.ts';
-import type { Region } from '../types.ts';
+import type { Diagnostic, Region } from '../types.ts';
+/** Every pass, on hitting a decode/analysis/storage failure it cannot recover from, keeps whatever prefix of frames
+ * it already committed and reports that instead of failing the whole run. The three passes' wording and detail
+ * shape differ only in the pass name and its frame-count noun ("解码"/"求解"/"渲染" — decode/solve/render), and
+ * whether a PERSISTENCE failure appends "；存储写入已停止。"; scan's message carries no `detail` (see spec), solve's
+ * and render's carry `{ pass, frames }`. Building the event here keeps that repeated shape in one place instead of
+ * re-typed at each of the ~10 emission sites across scan.ts/solve.ts/render.ts. */
+export function prefixOnly(
+  code: 'DECODE_PREFIX_ONLY' | 'ANALYSIS_PREFIX_ONLY' | 'PERSISTENCE_PREFIX_ONLY',
+  pass: 'scan' | 'solve' | 'render',
+  frames: number,
+  error: unknown,
+): Diagnostic {
+  const base = pass === 'scan'
+    ? `仅对已经解码的前 ${frames} 帧继续定位和合成`
+    : pass === 'solve'
+    ? `仅对已经求解的前 ${frames} 帧继续渲染`
+    : `仅对已经渲染的前 ${frames} 帧保留结果`;
+  return {
+    code,
+    severity: 'error',
+    message: String(error),
+    action: base + (code === 'PERSISTENCE_PREFIX_ONLY' ? '；存储写入已停止。' : '。'),
+    ...(pass === 'scan' ? {} : { detail: { pass, frames } }),
+  };
+}
 /** Wraps a KV failure so per-frame error handling can tell "storage is failing" apart from an algorithmic error,
  * without every call site re-deriving that distinction from error messages or DOMException names. */
 export class StorageError extends Error {
