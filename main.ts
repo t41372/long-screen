@@ -1,5 +1,5 @@
 /** Static file server for the built app. Range requests, correct MIME types, no caching, no upload endpoint. */
-import { extname, join, normalize, resolve, SEPARATOR } from '@std/path';
+import { extname, fromFileUrl, join, normalize, resolve, SEPARATOR } from '@std/path';
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -85,7 +85,7 @@ export function createHandler(options: ServerOptions): (request: Request) => Pro
       'cache-control': 'no-cache',
       'x-content-type-options': 'nosniff',
       'accept-ranges': 'bytes',
-      // Cross-origin isolation grants SharedArrayBuffer, which the threaded core needs (src/core/wasm.ts::planCore).
+      // Cross-origin isolation grants SharedArrayBuffer, which the threaded core needs (src/core/wasm/loader.ts::planCore).
       // Everything the app loads is same-origin, so these cost nothing; without them the single-thread core runs.
       'cross-origin-opener-policy': 'same-origin',
       'cross-origin-embedder-policy': 'require-corp',
@@ -138,51 +138,108 @@ export function createHandler(options: ServerOptions): (request: Request) => Pro
     return new Response(body, { status, headers });
   };
 }
-/** Newest mtime under a directory; mirrors the check tests/browser/support.ts runs before the browser suite, so
- *  `deno task start` cannot quietly keep serving a bundle that predates the last source edit. */
-export async function newestSource(dir: string): Promise<number> {
+/** Newest mtime of a file under `dir` whose name ends in one of `extensions`, recursively (default: the TS/HTML/CSS
+ *  app layer). Shared by `newestBuildInput` below and by tests/browser/support.ts's `rebuildIfStale` (which imports
+ *  it from here), so there is exactly one definition of "what counts as a build input". */
+export async function newestSource(dir: string, extensions: readonly string[] = ['.ts', '.html', '.css']): Promise<number> {
   let latest = 0;
   for await (const entry of Deno.readDir(dir)) {
     const path = join(dir, entry.name);
     if (entry.isDirectory) {
-      latest = Math.max(latest, await newestSource(path));
-    } else if (entry.name.endsWith('.ts') || entry.name.endsWith('.html') || entry.name.endsWith('.css')) {
+      latest = Math.max(latest, await newestSource(path, extensions));
+    } else if (extensions.some((ext) => entry.name.endsWith(ext))) {
       latest = Math.max(latest, (await Deno.stat(path)).mtime?.getTime() ?? 0);
     }
   }
   return latest;
 }
-if (import.meta.main) {
-  const port = Number(Deno.env.get('PORT') || 4173), root = Deno.env.get('LONGSCREEN_DIST') || 'dist';
+/** Newest mtime among everything that should invalidate a built dist/: the TS/HTML/CSS layer (src/, static/) and
+ *  the Rust core (rust/core/src/**\/*.rs, both Cargo.toml, rust-toolchain.toml, Cargo.lock, .cargo/config.toml),
+ *  plus the build scripts themselves. Without the Rust half, editing a .rs file and running `deno task start` kept
+ *  serving the old core.wasm forever — nothing under src/ or static/ ever changes when only the core changes.
+ *  Throws if `root` has no source tree at all (e.g. a standalone dist/ deployed without one); callers that want to
+ *  tolerate that catch it themselves. */
+export async function newestBuildInput(root: string): Promise<number> {
+  let latest = Math.max(
+    await newestSource(join(root, 'src')),
+    await newestSource(join(root, 'static')),
+    await newestSource(join(root, 'rust', 'core', 'src'), ['.rs']),
+  );
+  for (
+    const rel of [
+      'rust/Cargo.toml',
+      'rust/core/Cargo.toml',
+      'rust/Cargo.lock',
+      'rust/.cargo/config.toml',
+      'rust/rust-toolchain.toml',
+      'scripts/build.ts',
+      'scripts/build-core.sh',
+    ]
+  ) {
+    try {
+      latest = Math.max(latest, (await Deno.stat(join(root, rel))).mtime?.getTime() ?? 0);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+      // Optional on their own (e.g. a rust/ checkout without rust-toolchain.toml); newestSource above already
+      // throws for the tree as a whole when the source checkout is genuinely absent.
+    }
+  }
+  return latest;
+}
+/** Whether the dist/ built at `distRoot` predates `newestBuildInput(root)` — the one "is dist stale" decision
+ *  `deno task start` and tests/browser/support.ts's browser-suite harness both make, against the same file
+ *  (dist/index.html, the last file `scripts/build.ts` writes before swapping the build in). */
+export async function isDistStale(root: string, distRoot: string): Promise<{ stale: boolean; built: number }> {
   let built = 0;
   try {
-    built = (await Deno.stat(join(root, 'index.html'))).mtime?.getTime() ?? 0;
+    built = (await Deno.stat(join(distRoot, 'index.html'))).mtime?.getTime() ?? 0;
   } catch {
     built = 0;
   }
   let stale = built === 0;
   if (!stale) {
     try {
-      stale = built < Math.max(await newestSource('src'), await newestSource('static'));
-    } catch {
-      // src/ or static/ absent (e.g. a standalone dist/ deployed without the source tree): trust the existing build.
+      stale = built < await newestBuildInput(root);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+      // src/, static/ or rust/ absent (e.g. a standalone dist/ deployed without the source tree): trust the
+      // existing build rather than fail the server.
     }
   }
+  return { stale, built };
+}
+/** Spawns `scripts/build.ts` under `root` with an explicit cwd, so it behaves the same regardless of the caller's
+ *  own working directory. Returns the child process's exit code (0 on success). The command line mirrors deno.json's
+ *  `build` task (kept in sync by hand — deno.json is out of scope for this change). */
+export async function runBuild(root: string): Promise<number> {
+  const result = await new Deno.Command(Deno.execPath(), {
+    args: ['run', '--allow-read', '--allow-write', '--allow-run', '--allow-env', join(root, 'scripts/build.ts')],
+    cwd: root,
+    stdout: 'inherit',
+    stderr: 'inherit',
+  }).output();
+  return result.code;
+}
+if (import.meta.main) {
+  const repoRoot = fromFileUrl(new URL('.', import.meta.url));
+  const port = Number(Deno.env.get('PORT') || 4173);
+  const distRoot = resolve(repoRoot, Deno.env.get('LONGSCREEN_DIST') || 'dist');
+  const { stale, built } = await isDistStale(repoRoot, distRoot);
   if (stale) {
-    console.log(built ? 'dist/ is older than src/ or static/; rebuilding.' : 'dist/ is missing; building first.');
-    const build = await new Deno.Command(Deno.execPath(), {
-      args: ['run', '--allow-read', '--allow-write', '--allow-run', '--allow-env', 'scripts/build.ts'],
-      stdout: 'inherit',
-      stderr: 'inherit',
-    }).output();
-    if (!build.success) {
-      Deno.exit(build.code);
+    console.log(built ? 'dist/ is older than src/, static/ or the Rust core; rebuilding.' : 'dist/ is missing; building first.');
+    const code = await runBuild(repoRoot);
+    if (code !== 0) {
+      Deno.exit(code);
     }
   }
   Deno.serve({
     port,
     hostname: Deno.env.get('HOST') || '0.0.0.0',
     onListen: ({ port }) =>
-      console.log(`Long Screen: http://localhost:${port}  (serving ${root}; HTTPS is required for non-localhost devices)`),
-  }, createHandler({ root }));
+      console.log(`Long Screen: http://localhost:${port}  (serving ${distRoot}; HTTPS is required for non-localhost devices)`),
+  }, createHandler({ root: distRoot }));
 }

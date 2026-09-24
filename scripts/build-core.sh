@@ -2,13 +2,13 @@
 # Builds the Rust reconstruction core to WebAssembly three times from one source: a baseline (scalar) module for
 # every engine; a SIMD128 module for engines whose WebAssembly.validate accepts v128 (Chrome 91+, Safari 16.4+); and
 # a SIMD128 + shared-memory threads module for cross-origin-isolated pages, whose kernels split work across pool
-# helper workers (rust/core/src/pool.rs). The adapter picks at load time (src/core/wasm.ts::planCore). Outputs under
+# helper workers (rust/core/src/pool.rs). The adapter picks at load time (src/core/wasm/loader.ts::planCore). Outputs under
 # rust/target/{scalar,simd,threads}/wasm32-unknown-unknown/release/long_screen_core.wasm; scripts/build.ts
 # copies them to dist/assets/core.wasm, core.simd.wasm and core.threads.wasm.
 #
 # The threaded build must rebuild std with atomics (-Zbuild-std), which stable rustc only allows with
 # RUSTC_BOOTSTRAP=1; it uses the same pinned 1.94.0 toolchain plus its rust-src component. Its memory limits must
-# match THREADS_INITIAL_PAGES / THREADS_MAX_PAGES in src/core/wasm.ts.
+# match THREADS_INITIAL_PAGES / THREADS_MAX_PAGES in src/core/wasm/core.ts.
 # Requires rustup, which installs the toolchain pinned in rust/rust-toolchain.toml.
 set -euo pipefail
 cd "$(dirname "$0")/.."

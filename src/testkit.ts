@@ -5,16 +5,8 @@ import { PoseGraph } from './core/pose-graph.ts';
 import { RegionAtlas } from './core/layers.ts';
 import { covered, markCovered, pngTileCodec, TileStore } from './storage/tiles.ts';
 import { DemoSource } from './media/demo.ts';
-import {
-  canvasConverter,
-  CompatibilitySource,
-  directConverter,
-  openDemuxer,
-  openMedia,
-  planarConverter,
-  PreciseSource,
-  workerConverter,
-} from './media/source.ts';
+import { CompatibilitySource, openDemuxer, openMedia, PreciseSource } from './media/source.ts';
+import { canvasConverter, directConverter, planarConverter, workerConverter } from './media/convert.ts';
 import { MP4Demuxer } from './media/mp4.ts';
 import { WebMDemuxer } from './media/webm.ts';
 import { BlobReader } from './media/reader.ts';

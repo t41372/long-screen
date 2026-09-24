@@ -1,5 +1,5 @@
 import { type Browser, type BrowserContext, chromium, type Page, webkit } from 'playwright';
-import { createHandler } from '../../main.ts';
+import { createHandler, isDistStale, runBuild } from '../../main.ts';
 export const root = new URL('../../', import.meta.url).pathname;
 export interface Harness {
   browser: Browser;
@@ -9,38 +9,16 @@ export interface Harness {
   external: string[];
   close(): Promise<void>;
 }
-/** Newest mtime under a directory, so a bundle can be compared against the sources it was built from. */
-async function newest(dir: string): Promise<number> {
-  let latest = 0;
-  for await (const entry of Deno.readDir(dir)) {
-    const path = `${dir}/${entry.name}`;
-    if (entry.isDirectory) {
-      latest = Math.max(latest, await newest(path));
-    } else if (entry.name.endsWith('.ts') || entry.name.endsWith('.html') || entry.name.endsWith('.css')) {
-      latest = Math.max(latest, (await Deno.stat(path)).mtime?.getTime() ?? 0);
-    }
-  }
-  return latest;
-}
-/** Rebuilds dist/ whenever it is missing or older than src/ or static/. Testing a stale bundle would silently verify code that is no longer shipped. */
+/** Rebuilds dist/ whenever it is missing or older than a build input (src/, static/ or the Rust core — see
+ *  main.ts's `newestBuildInput`). Testing a stale bundle would silently verify code that is no longer shipped. The
+ *  staleness decision and the build invocation are the same ones `deno task start` makes, imported from main.ts so
+ *  there is exactly one of each. */
 export async function rebuildIfStale(): Promise<void> {
-  let built = 0;
-  try {
-    built = (await Deno.stat(`${root}dist/assets/testkit.js`)).mtime?.getTime() ?? 0;
-  } catch {
-    built = 0;
-  }
-  const sources = Math.max(await newest(`${root}src`), await newest(`${root}static`));
-  if (built > sources) {
+  const { stale } = await isDistStale(root, `${root}dist`);
+  if (!stale) {
     return;
   }
-  const build = await new Deno.Command(Deno.execPath(), {
-    args: ['run', '--allow-read', '--allow-write', '--allow-run', '--allow-env', `${root}scripts/build.ts`],
-    cwd: root,
-    stdout: 'inherit',
-    stderr: 'inherit',
-  }).output();
-  if (!build.success) {
+  if (await runBuild(root) !== 0) {
     throw new Error('dist/ is stale and rebuilding it failed');
   }
 }

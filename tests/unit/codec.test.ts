@@ -1,7 +1,7 @@
 import '../support/core.ts';
 import { assert, assertEquals, assertRejects } from '@std/assert';
 import { decodePNG, encodePNG, encodeRGBA } from '../../src/codec/png.ts';
-import { CRC32, crc32, utf8 } from '../../src/export/crc.ts';
+import { CRC32, crc32, utf8 } from '../../src/codec/crc.ts';
 import { blobChunks, single, ZipWriter } from '../../src/export/zip.ts';
 import { MemoryKV } from '../../src/storage/db.ts';
 import { rng } from '../../src/core/math.ts';

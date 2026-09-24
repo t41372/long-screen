@@ -1,4 +1,4 @@
-import { CRC32, utf8 } from '../export/crc.ts';
+import { CRC32, utf8 } from './crc.ts';
 import type { RGBA } from '../types.ts';
 import { core } from '../core/wasm.ts';
 function chunk(type: string, body: Uint8Array): Uint8Array {

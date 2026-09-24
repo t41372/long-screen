@@ -3,15 +3,8 @@ import { assert, assertEquals, assertRejects } from '@std/assert';
 import { BlobReader, type Packet } from '../../src/media/reader.ts';
 import { av01CodecString, MP4Demuxer } from '../../src/media/mp4.ts';
 import { vp09CodecString, WebMDemuxer } from '../../src/media/webm.ts';
-import {
-  bitmapReader,
-  canvasConverter,
-  CompatibilitySource,
-  openDemuxer,
-  openMedia,
-  PreciseSource,
-  Signal,
-} from '../../src/media/source.ts';
+import { bitmapReader, CompatibilitySource, openDemuxer, openMedia, PreciseSource, Signal } from '../../src/media/source.ts';
+import { canvasConverter } from '../../src/media/convert.ts';
 import type { MediaInfo, RGBA } from '../../src/types.ts';
 const fixtures = new URL('../fixtures/', import.meta.url);
 const truth = JSON.parse(await Deno.readTextFile(new URL('truth.json', fixtures)));

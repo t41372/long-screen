@@ -4,10 +4,11 @@ import { deletePrefix, iterate } from '../storage/db.ts';
 import type { CanvasMeta, Project, Rect, Region } from '../types.ts';
 import { type StoredTile, type TileIndex, TileStore } from '../storage/tiles.ts';
 import { ZipWriter } from './zip.ts';
-import { utf8 } from './crc.ts';
+import { utf8 } from '../codec/crc.ts';
 import { createTarget } from './target.ts';
 import { offlineViewer } from './offline.ts';
-import { encodePNG, rasterRows } from './png.ts';
+import { encodePNG } from '../codec/png.ts';
+import { rasterRows } from './png.ts';
 export interface ExportResult {
   blob?: Blob;
   name: string;

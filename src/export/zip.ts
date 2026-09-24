@@ -1,6 +1,6 @@
 import type { KV } from '../storage/db.ts';
 import { deletePrefix, iterate } from '../storage/db.ts';
-import { CRC32, utf8 } from './crc.ts';
+import { CRC32, utf8 } from '../codec/crc.ts';
 import { pad } from '../core/math.ts';
 import { createId } from '../core/id.ts';
 export interface ByteSink {

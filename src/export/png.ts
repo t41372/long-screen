@@ -1,6 +1,5 @@
 import type { TileStore } from '../storage/tiles.ts';
 import type { Rect } from '../types.ts';
-export { encodePNG } from '../codec/png.ts';
 /** Streams native-resolution rows out of disk tiles; unobserved pixels stay transparent. */
 export async function* rasterRows(
   tiles: TileStore,

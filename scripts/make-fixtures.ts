@@ -1,4 +1,7 @@
 /** Deterministic encoded fixtures. ffmpeg is a test-time dependency only; nothing here ships to the browser. */
+// encodeRGBA calls the Rust core (core()); load the workspace build the tests use before it runs, or regenerating
+// world.png throws CORE_NOT_LOADED (see tests/support/core.ts, and scripts/inspect-recording.ts for the same fix).
+import '../tests/support/core.ts';
 import { buildScenario } from '../src/synthetic/scenarios.ts';
 import { renderFrame } from '../src/synthetic/world.ts';
 import { encodeRGBA } from '../src/codec/png.ts';
