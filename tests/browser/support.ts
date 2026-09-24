@@ -9,20 +9,21 @@ export interface Harness {
   external: string[];
   close(): Promise<void>;
 }
-/** Rebuilds dist/ whenever it is missing or older than a build input (src/, static/ or the Rust core — see
+/** The suite builds and serves its own dev build (with testkit.js and harness.html) in dist-test/, so it never
+ *  replaces dist/ — a production dist/ from `deno task build:prod` stays exactly as it was built for a deploy, and a
+ *  portable or production build never leaves these tests without their harness. */
+export const distTest = `${root}dist-test`;
+/** Rebuilds dist-test/ whenever it is missing or older than a build input (src/, static/ or the Rust core — see
  *  main.ts's `newestBuildInput`). Testing a stale bundle would silently verify code that is no longer shipped. The
  *  staleness decision and the build invocation are the same ones `deno task start` makes, imported from main.ts so
  *  there is exactly one of each. */
 export async function rebuildIfStale(): Promise<void> {
-  const { stale } = await isDistStale(root, `${root}dist`);
-  if (!stale) {
-    return;
-  }
-  if (await runBuild(root) !== 0) {
-    throw new Error('dist/ is stale and rebuilding it failed');
+  const { stale } = await isDistStale(root, distTest);
+  if (stale && await runBuild(root, 'dist-test') !== 0) {
+    throw new Error('dist-test/ is stale and rebuilding it failed');
   }
 }
-/** Serves dist/ (built on demand) plus fixtures and optional real recordings, and launches the system Chrome, which has H.264/HEVC decoders. */
+/** Serves dist-test/ (built on demand) plus fixtures and optional real recordings, and launches the system Chrome, which has H.264/HEVC decoders. */
 export async function harness(
   options: {
     viewport?: { width: number; height: number };
@@ -40,7 +41,7 @@ export async function harness(
   await rebuildIfStale();
   const server = Deno.serve(
     { port: 0, hostname: options.hostname || '127.0.0.1', onListen: () => {} },
-    createHandler({ root: `${root}dist`, mounts: { '/fixtures/': `${root}tests/fixtures`, '/test_case/': `${root}test_case` } }),
+    createHandler({ root: distTest, mounts: { '/fixtures/': `${root}tests/fixtures`, '/test_case/': `${root}test_case` } }),
   );
   const base = `http://${options.hostname || '127.0.0.1'}:${server.addr.port}`;
   const contextOptions = {

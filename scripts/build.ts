@@ -12,16 +12,20 @@
  *  (Cloudflare Pages, Netlify; static/_headers is copied in verbatim and sets the COOP/COEP/CORP headers the
  *  threaded Wasm core needs, plus caching). `--production` (deno task build:prod) drops the test-only harness and
  *  source maps and minifies; use that build for a real deploy. See README.md's deployment section for hosting
- *  requirements (the 304-response header caveat in particular). */
+ *  requirements (the 304-response header caveat in particular).
+ *
+ *  `--out <dir>` (relative to the repo root, default `dist`) builds somewhere else instead: tests/browser builds and
+ *  serves dist-test/, and `deno task build:portable` builds its production input into dist-portable/.site, so
+ *  neither replaces the dist/ that `deno task start` serves and `deno task build:prod` leaves for a deploy. */
 import { copy, ensureDir } from '@std/fs';
-import { fromFileUrl, join } from '@std/path';
+import { fromFileUrl, isAbsolute, join, normalize } from '@std/path';
 import { generateNotices } from './notices.ts';
 const root = fromFileUrl(new URL('..', import.meta.url));
 // Test-only artefacts that ship under a default dist/: testkit.js exposes internals for tests/browser's Playwright
 // suite to drive directly, and static/harness.html is the page that loads it. Neither is linked from index.html,
-// so a production visitor never fetches them anyway, but the default build keeps them because tests/browser reads
-// them out of dist/ (not out of a separate test build) — see tests/browser/support.ts. `--production` (below) is
-// the build that actually ships: it drops both, along with every source map.
+// so a production visitor never fetches them anyway, but the default build keeps them because tests/browser drives
+// them (it builds its own copy into dist-test/, see tests/browser/support.ts). `--production` (below) is the build
+// that actually ships: it drops both, along with every source map.
 const production = Deno.args.includes('--production');
 const entries: [string, string][] = [
   ['src/ui/main.ts', 'assets/main.js'],
@@ -33,12 +37,26 @@ const entries: [string, string][] = [
 ];
 const minify = production || Deno.args.includes('--minify');
 const skipCore = Deno.args.includes('--skip-core');
+const outFlag = Deno.args.indexOf('--out');
+const outName = normalize(outFlag < 0 ? 'dist' : Deno.args[outFlag + 1] ?? '.').replace(/[\\/]+$/, '');
+// The output directory is deleted and replaced wholesale, so it has to be inside the repo, and it may only be
+// replaced if it is missing, empty, or an earlier build (index.html next to assets/). That is decided from what is
+// on disk rather than from the name: a file (`--out main.ts`), a source directory under any spelling a
+// case-insensitive file system accepts (`--out Src`), or dist-portable/ with a user's own files in it all refuse.
+if (outName === '.' || outName.startsWith('-') || outName.startsWith('..') || isAbsolute(outName)) {
+  console.error(`--out needs a directory inside the repo, relative to its root (e.g. dist-portable/.site); got "${outName}".`);
+  Deno.exit(1);
+}
+if (!await replaceable(join(root, outName))) {
+  console.error(`--out ${outName} exists and is not an earlier build (no index.html next to assets/); refusing to replace it.`);
+  Deno.exit(1);
+}
 const CORE_WASM: [string, string][] = [
   ['rust/target/scalar/wasm32-unknown-unknown/release/long_screen_core.wasm', 'assets/core.wasm'],
   ['rust/target/simd/wasm32-unknown-unknown/release/long_screen_core.wasm', 'assets/core.simd.wasm'],
   ['rust/target/threads/wasm32-unknown-unknown/release/long_screen_core.wasm', 'assets/core.threads.wasm'],
 ];
-const staging = join(root, 'dist.build');
+const outDir = join(root, outName), staging = `${outDir}.build`;
 await Deno.remove(staging, { recursive: true }).catch(() => {});
 await ensureDir(join(staging, 'assets'));
 try {
@@ -70,7 +88,7 @@ try {
       }
       throw error;
     }
-    console.log(`rust/core → dist/${output} (${((await Deno.stat(from)).size / 1024).toFixed(1)} KB)`);
+    console.log(`rust/core → ${outName}/${output} (${((await Deno.stat(from)).size / 1024).toFixed(1)} KB)`);
   }
   for (const [input, output] of entries) {
     const target = join(staging, output);
@@ -96,7 +114,7 @@ try {
       Deno.exit(result.code);
     }
     const bytes = (await Deno.stat(target)).size;
-    console.log(`${input} → dist/${output} (${(bytes / 1024).toFixed(1)} KB)`);
+    console.log(`${input} → ${outName}/${output} (${(bytes / 1024).toFixed(1)} KB)`);
   }
   // Every `new URL('./<name>.js'|'./<name>.wasm', ...)` under src/ is a runtime contract with `entries` and
   // CORE_WASM above: a typo in either place fails silently in the browser (a 404 for a bundle nobody bundled).
@@ -145,16 +163,30 @@ try {
   }
   const notices = await generateNotices(root, entries.map(([input]) => input));
   await Deno.writeTextFile(join(staging, 'THIRD_PARTY_NOTICES.txt'), notices);
-  console.log(`THIRD_PARTY_NOTICES.txt → dist/THIRD_PARTY_NOTICES.txt (${(notices.length / 1024).toFixed(1)} KB)`);
-  // Swap the finished build in. Everything above ran against `staging`; dist/ keeps serving the previous build
-  // until this point, so a bundling failure above never leaves dist/ deleted or half-written.
-  const dist = join(root, 'dist');
-  await Deno.remove(dist, { recursive: true }).catch(() => {});
-  await Deno.rename(staging, dist);
-  console.log('Built dist/ — no CDN, no upload endpoint, no network at runtime (see THIRD_PARTY_NOTICES.txt).');
+  console.log(`THIRD_PARTY_NOTICES.txt → ${outName}/THIRD_PARTY_NOTICES.txt (${(notices.length / 1024).toFixed(1)} KB)`);
+  // Swap the finished build in. Everything above ran against `staging`; the output directory keeps serving the
+  // previous build until this point, so a bundling failure above never leaves it deleted or half-written.
+  await Deno.remove(outDir, { recursive: true }).catch(() => {});
+  await Deno.rename(staging, outDir);
+  console.log(`Built ${outName}/ — no CDN, no upload endpoint, no network at runtime (see THIRD_PARTY_NOTICES.txt).`);
 } catch (error) {
   await Deno.remove(staging, { recursive: true }).catch(() => {});
   throw error;
+}
+/** Whether `dir` may be deleted and replaced by a build: it does not exist, is an empty directory, or is an earlier
+ *  build, which always holds index.html next to assets/. */
+async function replaceable(dir: string): Promise<boolean> {
+  let info: Deno.FileInfo;
+  try {
+    info = await Deno.stat(dir);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return true;
+    throw error;
+  }
+  if (!info.isDirectory) return false;
+  const names = new Set<string>();
+  for await (const entry of Deno.readDir(dir)) names.add(entry.name);
+  return names.size === 0 || (names.has('index.html') && names.has('assets'));
 }
 /** Every `./<name>.js`/`./<name>.wasm` string literal inside each `new URL(...)` call in `text`, wherever it sits
  *  in the argument list (a bare second argument, or one arm of a ternary first argument). Scans balanced parens

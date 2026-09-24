@@ -1,7 +1,8 @@
 /** Builds dist-portable/: one self-contained HTML file a locked-down machine can open with `file://` (double-click,
- *  no server, no install), zipped next to a Simplified-Chinese README. Runs `deno task build:prod` first (a
- *  dependency in deno.json) and only rewrites its *output*; nothing under src/, static/, rust/ or scripts/build.ts
- *  changes, so this file is the entire cost of the portable variant and can be dropped or cherry-picked on its own.
+ *  no server, no install), zipped next to a Simplified-Chinese README. `deno task build:portable` first runs
+ *  `deno task build:prod --out dist-portable/.site`, so the dist/ that `deno task start` serves (and a deploy
+ *  uploads) is left alone, and this script only rewrites that build's *output*; nothing under src/, static/ or rust/
+ *  changes for it.
  *
  *  Why a page opened from disk needs surgery at all — every fact below was checked with Chrome stable and
  *  Playwright WebKit against a page opened from file://, not assumed:
@@ -26,31 +27,31 @@ import { fromFileUrl, join } from '@std/path';
 import { zipSync } from 'fflate';
 
 const root = fromFileUrl(new URL('..', import.meta.url));
-const dist = join(root, 'dist');
 const out = join(root, 'dist-portable');
+const site = join(out, '.site');
 
 function readDist(rel: string): Promise<string>;
 function readDist(rel: string, binary: true): Promise<Uint8Array>;
 async function readDist(rel: string, binary?: true): Promise<string | Uint8Array> {
-  const path = join(dist, rel);
+  const path = join(site, rel);
   try {
     return binary ? await Deno.readFile(path) : await Deno.readTextFile(path);
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
-      throw new Error(`dist/${rel} is missing. Run \`deno task build:portable\` (it builds dist/ first).`);
+      throw new Error(`dist-portable/.site/${rel} is missing. Run \`deno task build:portable\` (it builds dist-portable/.site first).`);
     }
     throw error;
   }
 }
 
-const isDevBuild = await Deno.stat(join(dist, 'assets', 'testkit.js')).then(() => true, (error) => {
+const isDevBuild = await Deno.stat(join(site, 'assets', 'testkit.js')).then(() => true, (error) => {
   if (error instanceof Deno.errors.NotFound) return false;
   throw error;
 });
 if (isDevBuild) {
   throw new Error(
-    'dist/ is a dev build (dist/assets/testkit.js exists, which ships source-map links). Run `deno task build:portable` — ' +
-      'it rebuilds dist/ with `deno task build:prod` first.',
+    'dist-portable/.site is a dev build (its assets/testkit.js exists, which ships source-map links). Run `deno task ' +
+      'build:portable`, which rebuilds it with --production first.',
   );
 }
 
@@ -68,22 +69,22 @@ const wrappedScripts: Record<string, string> = {};
 for (const [name, resolvesAssets] of bundles) {
   const source = await readDist(`assets/${name}`);
   if (resolvesAssets && !source.includes('import.meta.url')) {
-    throw new Error(`dist/assets/${name}: expected at least one import.meta.url to rewrite, found none.`);
+    throw new Error(`dist-portable/.site/assets/${name}: expected at least one import.meta.url to rewrite, found none.`);
   }
   const code = source.replaceAll('import.meta.url', '__LS_BASE__');
   if (code.includes('import.meta')) {
-    throw new Error(`dist/assets/${name}: an import.meta reference survived the import.meta.url rewrite.`);
+    throw new Error(`dist-portable/.site/assets/${name}: an import.meta reference survived the import.meta.url rewrite.`);
   }
   // A dynamic import() still parses in a classic script, so the parse check below cannot catch it, but it fails at
   // runtime on file:// like any other module load. The lookbehind skips a method named import (`x.import(`).
   if (/(?<![.\w$])import\s*\(/.test(code)) {
-    throw new Error(`dist/assets/${name}: contains a dynamic import(), which cannot load from file://.`);
+    throw new Error(`dist-portable/.site/assets/${name}: contains a dynamic import(), which cannot load from file://.`);
   }
   const wrapped = `((__LS_BASE__) => {"use strict";\n${code}\n})(new URL("assets/${name}", self.__LS_PAGE__).href);`;
   try {
     new Function(wrapped); // parses only, never runs — catches leftover static import/export/top-level-await.
   } catch (error) {
-    throw new Error(`dist/assets/${name} did not parse as a classic script after wrapping: ${(error as Error).message}`);
+    throw new Error(`dist-portable/.site/assets/${name} did not parse as a classic script after wrapping: ${(error as Error).message}`);
   }
   wrappedScripts[name] = wrapped;
 }
@@ -169,11 +170,11 @@ interface PortablePayload {
 function replaceOnce(text: string, needle: string, replacement: string, label = needle): string {
   const parts = text.split(needle);
   if (parts.length !== 2) {
-    throw new Error(`dist/index.html: expected exactly one occurrence of ${label}, found ${parts.length - 1}.`);
+    throw new Error(`dist-portable/.site/index.html: expected exactly one occurrence of ${label}, found ${parts.length - 1}.`);
   }
   return parts[0] + replacement + parts[1];
 }
-if (css.includes('</style')) throw new Error('dist/style.css contains a literal "</style" — cannot inline it as <style>.');
+if (css.includes('</style')) throw new Error('dist-portable/.site/style.css contains a literal "</style" — cannot inline it as <style>.');
 let page = html;
 page = replaceOnce(page, '<link rel="stylesheet" href="./style.css">', `<style>${css}</style>`);
 page = replaceOnce(page, 'href="./icon.svg"', `href="data:image/svg+xml;base64,${encodeBase64(icon)}"`);
@@ -193,10 +194,10 @@ page = replaceOnce(page, '<script type="module" src="./assets/main.js"></script>
 const hash = await gitShortHash(root);
 const stamp = new Date().toISOString();
 page = replaceOnce(page, '<!doctype html>', `<!doctype html>\n<!-- Long Screen portable build · ${hash} · ${stamp} -->`);
-if (page.includes('./assets/')) throw new Error('dist/index.html: a ./assets/ reference survived rewriting.');
-if (/src="\.\//.test(page)) throw new Error('dist/index.html: a src="./..." reference survived rewriting.');
+if (page.includes('./assets/')) throw new Error('dist-portable/.site/index.html: a ./assets/ reference survived rewriting.');
+if (/src="\.\//.test(page)) throw new Error('dist-portable/.site/index.html: a src="./..." reference survived rewriting.');
 if (/href="\.\/(?!THIRD_PARTY_NOTICES\.txt")/.test(page)) {
-  throw new Error('dist/index.html: a href="./..." reference (other than THIRD_PARTY_NOTICES.txt) survived rewriting.');
+  throw new Error('dist-portable/.site/index.html: a href="./..." reference (other than THIRD_PARTY_NOTICES.txt) survived rewriting.');
 }
 
 // --- 6: write dist-portable/. Only this script's own outputs are replaced (the folder and earlier zips), so

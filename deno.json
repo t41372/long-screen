@@ -6,10 +6,7 @@
     "build:core": "bash scripts/build-core.sh",
     "build": "deno run --allow-read --allow-write --allow-run --allow-env --allow-net=jsr.io,api.jsr.io scripts/build.ts",
     "build:prod": "deno run --allow-read --allow-write --allow-run --allow-env --allow-net=jsr.io,api.jsr.io scripts/build.ts --production",
-    "build:portable": {
-      "command": "deno run --allow-read --allow-write --allow-run=git scripts/build-portable.ts",
-      "dependencies": ["build:prod"]
-    },
+    "build:portable": "deno task build:prod --out dist-portable/.site && deno run --allow-read --allow-write --allow-run=git scripts/build-portable.ts",
     "start": "deno run --allow-read --allow-net --allow-run --allow-env --allow-write main.ts",
     "dev": "deno task build && deno task start",
     "check": "deno check src/**/*.ts main.ts scripts/**/*.ts tests/**/*.ts",

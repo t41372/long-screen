@@ -1,5 +1,5 @@
 import { assert, assertEquals } from '@std/assert';
-import { createHandler, newestSource } from '../../main.ts';
+import { createHandler, newestSource, rebuildTarget } from '../../main.ts';
 const root = await Deno.makeTempDir();
 await Deno.writeTextFile(`${root}/index.html`, '<!doctype html><title>t</title>');
 await Deno.writeFile(`${root}/data.bin`, Uint8Array.from({ length: 1000 }, (_, i) => i & 255));
@@ -148,4 +148,10 @@ Deno.test('server: newestSource on a directory with no source files is zero', as
   await Deno.mkdir(`${dir}/empty-nested`);
   await Deno.writeTextFile(`${dir}/data.json`, '{}');
   assertEquals(await newestSource(dir), 0);
+});
+Deno.test('server: rebuildTarget rebuilds a dist root inside the repo, and leaves one outside it as it is', () => {
+  assertEquals(rebuildTarget('/repo', '/repo/dist'), 'dist');
+  assertEquals(rebuildTarget('/repo', '/repo/dist-portable/.site'), 'dist-portable/.site');
+  assertEquals(rebuildTarget('/repo', '/elsewhere/dist'), undefined);
+  assertEquals(rebuildTarget('/repo', '/repo-other/dist'), undefined);
 });

@@ -2,6 +2,9 @@
 dist/
 dist.build*/
 dist-portable/
+# the browser suite's own dev build (tests/browser/support.ts) and its staging directory
+dist-test/
+dist-test.build/
 rust/target/
 # coverage and test artefacts
 .coverage/

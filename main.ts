@@ -4,7 +4,7 @@
  *  that sits inside `root`/a mount but resolves outside it would otherwise be served (see tests/unit/server.test.ts's
  *  symlink test, which this preserves). No caching, no upload endpoint. */
 import { serveDir } from '@std/http/file-server';
-import { fromFileUrl, join, normalize, resolve, SEPARATOR } from '@std/path';
+import { fromFileUrl, isAbsolute, join, normalize, relative, resolve, SEPARATOR } from '@std/path';
 // Cross-origin isolation grants SharedArrayBuffer, which the threaded core needs (src/core/wasm/loader.ts::planCore).
 // Everything the app loads is same-origin, so these cost nothing; without them the single-thread core runs. Mirrored
 // exactly in static/_headers for hosted deploys (Cloudflare Pages / Netlify).
@@ -171,9 +171,10 @@ export async function isDistStale(root: string, distRoot: string): Promise<{ sta
   return { stale, built };
 }
 /** Spawns `scripts/build.ts` under `root` with an explicit cwd, so it behaves the same regardless of the caller's
- *  own working directory. Returns the child process's exit code (0 on success). The command line mirrors deno.json's
- *  `build` task (kept in sync by hand — deno.json is out of scope for this change). */
-export async function runBuild(root: string): Promise<number> {
+ *  own working directory, building the dev (non-production) bundle into `out` (relative to `root`, default dist/).
+ *  Returns the child process's exit code (0 on success). The command line mirrors deno.json's `build` task (kept in
+ *  sync by hand). */
+export async function runBuild(root: string, out = 'dist'): Promise<number> {
   const result = await new Deno.Command(Deno.execPath(), {
     args: [
       'run',
@@ -183,6 +184,8 @@ export async function runBuild(root: string): Promise<number> {
       '--allow-env',
       '--allow-net=jsr.io,api.jsr.io',
       join(root, 'scripts/build.ts'),
+      '--out',
+      out,
     ],
     cwd: root,
     stdout: 'inherit',
@@ -190,14 +193,24 @@ export async function runBuild(root: string): Promise<number> {
   }).output();
   return result.code;
 }
+/** The directory `deno task start` rebuilds when the dist root it serves is stale: that root, relative to the repo.
+ *  `undefined` for a root outside the repo (a LONGSCREEN_DIST that is someone else's build), which is served as it
+ *  is rather than built over. */
+export function rebuildTarget(repoRoot: string, distRoot: string): string | undefined {
+  const out = relative(repoRoot, distRoot);
+  return out.startsWith('..') || isAbsolute(out) ? undefined : out;
+}
 if (import.meta.main) {
   const repoRoot = fromFileUrl(new URL('.', import.meta.url));
   const port = Number(Deno.env.get('PORT') || 4173);
   const distRoot = resolve(repoRoot, Deno.env.get('LONGSCREEN_DIST') || 'dist');
   const { stale, built } = await isDistStale(repoRoot, distRoot);
-  if (stale) {
-    console.log(built ? 'dist/ is older than src/, static/ or the Rust core; rebuilding.' : 'dist/ is missing; building first.');
-    const code = await runBuild(repoRoot);
+  const out = rebuildTarget(repoRoot, distRoot);
+  if (stale && out === undefined) {
+    console.log(`${distRoot} is outside this repo; serving it as it is, without rebuilding.`);
+  } else if (stale) {
+    console.log(built ? `${out}/ is older than src/, static/ or the Rust core; rebuilding.` : `${out}/ is missing; building first.`);
+    const code = await runBuild(repoRoot, out);
     if (code !== 0) {
       Deno.exit(code);
     }
