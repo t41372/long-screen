@@ -13,6 +13,7 @@ import { PoseGraph } from '../../core/pose-graph.ts';
 import { KeyframeIndex } from '../../core/keyframes.ts';
 import { pad } from '../../core/math.ts';
 import { core, ResidentFrame, type ResidentGray, type VotingRecord } from '../../core/wasm.ts';
+import { releaseUnlessHeld } from '../../media/pool.ts';
 import { attachmentShift, resolveTarget as resolveAttachmentTarget } from '../attachments.ts';
 import { type CompactFeatures, decodeFeatures } from '../features-codec.ts';
 import type { ConsistencyRecord } from '../consistency.ts';
@@ -141,6 +142,9 @@ export async function solve(ctx: RunContext): Promise<void> {
           break;
         }
         if (scan.duplicate && previousPlan && states.every((s) => !s.blind)) {
+          // The duplicate-frame shortcut never looks at this frame's own decoded pixels (it just replays the
+          // previous plan) — this is the only use `frame.image` would otherwise get, so it is done right now.
+          releaseUnlessHeld(frame.image, previous as RGBA | undefined);
           const plan: FramePlan = {
             index: frame.index,
             time: frame.time,
@@ -160,7 +164,7 @@ export async function solve(ctx: RunContext): Promise<void> {
           if (solved >= ctx.project.frames) break;
           continue;
         }
-        const image = frame.image;
+        const image = frame.image, oldPrevious = previous;
         // A frame whose geometry differs from the run's stays in JS; gray() rejects it with the historical message.
         const current = image.width === solveFrames.width && image.height === solveFrames.height
           ? solveFrames.upload(frame.index, image)
@@ -212,6 +216,13 @@ export async function solve(ctx: RunContext): Promise<void> {
         }
         previous = current;
         previousGray = g;
+        // `current` is `image` itself only on a geometry mismatch (the FrameRing branch above copies into core
+        // memory and returns a ResidentFrame, which never aliases a JS RGBA, so this is a safe no-op then); either
+        // way, whatever `previous` held before this frame is no longer referenced by anything once `previous` has
+        // moved on. `releaseUnlessHeld` is a no-op on a plain `ResidentFrame` (no `release()`), so this call is
+        // correct regardless of which branch `oldPrevious`/`current` took.
+        releaseUnlessHeld(oldPrevious as RGBA | undefined, previous as RGBA | undefined);
+        releaseUnlessHeld(image, previous as RGBA | undefined);
         solved = frame.index + 1;
         await ctx.report(solved, frame.time, '原像素精修、历史重定位与二维回环约束。', solved / ctx.project.frames);
         if (ctx.stopRequested) {
@@ -222,6 +233,11 @@ export async function solve(ctx: RunContext): Promise<void> {
           break;
         }
       } catch (error) {
+        // `previous` was never reassigned on this (failing) iteration, so whatever it already held is still
+        // exactly what it was — release() is idempotent, so this is safe even if the failure happened after
+        // this frame's own release call already ran (the duplicate-shortcut branch, or a commitRows() throw
+        // after `previous = current` below already executed).
+        releaseUnlessHeld(frame.image, previous as RGBA | undefined);
         if (!solved) {
           throw error;
         }

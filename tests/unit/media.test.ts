@@ -5,6 +5,7 @@ import { av01CodecString, MP4Demuxer } from '../../src/media/mp4.ts';
 import { vp09CodecString, WebMDemuxer } from '../../src/media/webm.ts';
 import { bitmapReader, CompatibilitySource, openDemuxer, openMedia, PreciseSource, Signal } from '../../src/media/source.ts';
 import { canvasConverter } from '../../src/media/convert.ts';
+import { BufferPool, releaseUnlessHeld } from '../../src/media/pool.ts';
 import type { MediaInfo, RGBA } from '../../src/types.ts';
 const fixtures = new URL('../fixtures/', import.meta.url);
 const truth = JSON.parse(await Deno.readTextFile(new URL('truth.json', fixtures)));
@@ -912,4 +913,52 @@ Deno.test('source: canvas-backed converters require an OffscreenCanvas runtime',
     readThrew = true;
   }
   assert(readThrew);
+});
+// R3-2: explicit-release conversion buffer pool (src/media/pool.ts). No fixed rotation — a buffer comes back
+// ONLY when its holder calls release(), and an unreleased buffer is never handed out again (the worst case is
+// today's allocate-per-frame, never silent corruption of a still-live buffer).
+Deno.test('BufferPool: without release, every take() gets a fresh buffer; outstanding tracks the unreleased count', () => {
+  const pool = new BufferPool();
+  const a = pool.take(2, 2), b = pool.take(2, 2);
+  assertEquals(pool.outstanding, 2);
+  assert(a.data.buffer !== b.data.buffer, 'two live buffers must never alias');
+  a.data[0] = 7;
+  b.data[0] = 9;
+  assertEquals(a.data[0], 7, 'writing through one buffer must not touch the other');
+});
+Deno.test('BufferPool: release() returns the buffer to the pool, and only the next take() reuses it', () => {
+  const pool = new BufferPool();
+  const a = pool.take(4, 4);
+  const buffer = a.data.buffer;
+  a.release();
+  assertEquals(pool.outstanding, 0);
+  const b = pool.take(4, 4);
+  assertEquals(pool.outstanding, 1);
+  assert(b.data.buffer === buffer, 'a released buffer must be the next one handed out');
+  // release() is idempotent: a double release must not hand the same live buffer out twice.
+  a.release();
+  a.release();
+  assertEquals(pool.outstanding, 1, 'double-releasing an already-released buffer must not double the free count');
+});
+Deno.test('BufferPool: a buffer released after a geometry change is dropped, not handed out at the wrong size', () => {
+  const pool = new BufferPool();
+  const a = pool.take(4, 4);
+  a.release();
+  const b = pool.take(8, 8); // different byte length: the 4×4 free list is discarded, not reused wrong-sized.
+  assertEquals(b.data.length, 8 * 8 * 4);
+  b.release();
+  const c = pool.take(8, 8);
+  assertEquals(c.data.length, 8 * 8 * 4);
+});
+Deno.test('releaseUnlessHeld: releases only when the image is not aliased by another live holder', () => {
+  const pool = new BufferPool();
+  const shared = pool.take(2, 2); // e.g. scan's previousImage and baseline.image pointing at the same frame
+  releaseUnlessHeld(shared, shared); // still held by "the other field" — must not go back to the pool
+  assertEquals(pool.outstanding, 1);
+  releaseUnlessHeld(shared); // no longer held anywhere — now it may return
+  assertEquals(pool.outstanding, 0);
+});
+Deno.test('releaseUnlessHeld: a no-op on an image with no release() (e.g. the compatibility source, or undefined)', () => {
+  releaseUnlessHeld(undefined);
+  releaseUnlessHeld({ width: 1, height: 1, data: new Uint8ClampedArray(4) } as RGBA);
 });

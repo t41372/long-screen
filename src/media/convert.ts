@@ -1,6 +1,8 @@
 import type { MediaInfo, RGBA } from '../types.ts';
 import { core } from '../core/wasm.ts';
+import { frameToRGBA as coreFrameToRGBA } from '../core/wasm/raster.ts';
 import { copyFrameToRGBA, RGBA_COPY_OPTIONS } from './rgba-copy.ts';
+import { BufferPool, type PooledRGBA } from './pool.ts';
 /** Converts one decoded VideoFrame into plain RGBA (applying container rotation). Injected so the decoding pipeline is testable without a canvas. */
 export type FrameConverter = ((frame: VideoFrame, info: MediaInfo) => RGBA | Promise<RGBA>) & {
   /** Conversions run off the calling thread, so the source may start the next decoded frame's early. */
@@ -38,11 +40,13 @@ export function canvasConverter(): FrameConverter {
  *  to the canvas path permanently for this source. Rotated containers always use the canvas, which already rotates. */
 export function directConverter(fallback: FrameConverter = planarConverter()): FrameConverter {
   let direct: boolean | undefined;
+  const pool = new BufferPool();
   const convert = async (frame: VideoFrame, info: MediaInfo): Promise<RGBA> => {
     if (info.rotation !== 0 || direct === false || typeof frame.copyTo !== 'function') {
       return fallback(frame, info);
     }
     const width = info.codedWidth, height = info.codedHeight;
+    let image: PooledRGBA | undefined;
     try {
       if (direct === undefined) {
         // Probe: a browser that ignores `format` reports the native (e.g. I420) size instead, and a frame with a
@@ -50,10 +54,13 @@ export function directConverter(fallback: FrameConverter = planarConverter()): F
         const size = frame.allocationSize(RGBA_COPY_OPTIONS);
         if (size !== width * height * 4) throw new Error(`allocationSize ${size} ≠ ${width * height * 4}`);
       }
-      const data = await copyFrameToRGBA(frame, width, height);
+      image = pool.take(width, height);
+      await copyFrameToRGBA(frame, width, height, image.data);
       direct = true;
-      return { width, height, data };
+      return image;
     } catch (error) {
+      // Handed to nobody: this attempt's buffer must go back to the pool itself, not leak as "outstanding" forever.
+      image?.release();
       if (direct === true) throw error;
       direct = false;
       return fallback(frame, info);
@@ -106,6 +113,7 @@ export function planarConverter(
   // One reused buffer for the planes; a conversion that starts while another is still copying (a prefetched frame
   // the source then skipped) gets its own, so two copies never land in the same bytes.
   let scratch: ArrayBuffer | undefined, busy = false, planar: boolean | undefined, check: PlanarCheck | undefined;
+  const pool = new BufferPool();
   const convert = async (frame: VideoFrame, info: MediaInfo): Promise<RGBA> => {
     const format = frame.format ? FRAME_FORMATS[frame.format] : undefined, width = info.codedWidth, height = info.codedHeight;
     const matrix = matrixCode(frame.colorSpace ?? undefined, height);
@@ -115,7 +123,7 @@ export function planarConverter(
       return fallback(frame, info);
     }
     const own = !busy;
-    let data: Uint8ClampedArray;
+    let image: PooledRGBA | undefined;
     try {
       const rect = frame.visibleRect;
       if (rect && (rect.width !== width || rect.height !== height)) {
@@ -125,8 +133,10 @@ export function planarConverter(
       if (own && (!scratch || scratch.byteLength < size)) scratch = new ArrayBuffer(size);
       busy = true;
       const planes = own ? new Uint8Array(scratch!, 0, size) : new Uint8Array(size), layout = await frame.copyTo(planes);
-      data = core().frameToRGBA(planes, format, layout, width, height, matrix);
+      image = pool.take(width, height);
+      coreFrameToRGBA(core(), planes, format, layout, width, height, matrix, image.data);
     } catch (error) {
+      image?.release();
       if (planar) throw error;
       planar = false;
       return fallback(frame, info);
@@ -135,11 +145,14 @@ export function planarConverter(
     }
     if (planar === undefined) {
       const reference = await fallback(frame, info);
-      check = agreement(reference.data, data);
+      check = agreement(reference.data, image.data);
       planar = check.meanDiff <= PLANAR_MAX_MEAN && check.farShare <= PLANAR_MAX_FAR_SHARE;
-      if (!planar) return reference;
+      if (!planar) {
+        image.release();
+        return reference;
+      }
     }
-    return { width, height, data };
+    return image;
   };
   const describe = () =>
     planar
@@ -168,6 +181,10 @@ export function workerConverter(
 ): FrameConverter & { counts: WorkerConversionCounts } {
   const counts: WorkerConversionCounts = { worker: 0, inThread: 0 };
   const waiting = new Map<number, { resolve(buffer: ArrayBuffer): void; reject(error: Error): void }>();
+  // In-thread fallback frames (the worker unavailable or not yet proven) get their own pool; the worker's own
+  // reply buffers are pooled on ITS side (convert-worker.ts) and returned there by `release()` below — the two
+  // never share a free list, so a buffer belonging to one side is never handed to the other's `postMessage`.
+  const pool = new BufferPool();
   let worker: Worker | undefined, retired = typeof Worker === 'undefined', succeeded = false, sequence = 0;
   if (retired) counts.reason = 'Worker unavailable';
   const retire = (reason: string) => {
@@ -181,8 +198,14 @@ export function workerConverter(
   const inThread = async (frame: VideoFrame, info: MediaInfo): Promise<RGBA> => {
     counts.inThread++;
     if (!succeeded) return fallback(frame, info);
-    const width = info.codedWidth, height = info.codedHeight, data = await copyFrameToRGBA(frame, width, height);
-    return { width, height, data };
+    const width = info.codedWidth, height = info.codedHeight, image = pool.take(width, height);
+    try {
+      await copyFrameToRGBA(frame, width, height, image.data);
+      return image;
+    } catch (error) {
+      image.release();
+      throw error;
+    }
   };
   const takes = (frame: VideoFrame, info: MediaInfo): boolean => {
     if (retired || info.rotation !== 0 || typeof frame.copyTo !== 'function' || typeof frame.clone !== 'function') return false;
@@ -238,7 +261,20 @@ export function workerConverter(
       if (buffer.byteLength !== width * height * 4) throw new Error(`conversion worker returned ${buffer.byteLength} bytes`);
       succeeded = true;
       counts.worker++;
-      return { width, height, data: new Uint8ClampedArray(buffer) };
+      let released = false;
+      // Released back across the postMessage boundary (transferred, not copied) so the worker's own pool
+      // (convert-worker.ts) can reuse it for the next frame instead of allocating a fresh 30 MB buffer.
+      const release = () => {
+        if (released) return;
+        released = true;
+        try {
+          target.postMessage({ release: buffer }, [buffer]);
+        } catch {
+          // The worker was retired (terminated) between this frame converting and its release; nothing to give
+          // the buffer back to, and nothing to leak either — it is just GC'd like any other detached buffer.
+        }
+      };
+      return Object.assign({ width, height, data: new Uint8ClampedArray(buffer) }, { release });
     } catch (error) {
       retire(error instanceof Error ? error.message : String(error));
       return inThread(frame, info);

@@ -3,6 +3,7 @@ import type { Demuxer } from './reader.ts';
 import { MP4Demuxer } from './mp4.ts';
 import { WebMDemuxer } from './webm.ts';
 import { type FrameConverter, workerConverter } from './convert.ts';
+import { releaseUnlessHeld } from './pool.ts';
 export async function openDemuxer(file: Blob): Promise<Demuxer> {
   const header = new Uint8Array(await file.slice(0, 16).arrayBuffer());
   if (header[0] === 0x1a && header[1] === 0x45 && header[2] === 0xdf && header[3] === 0xa3) {
@@ -264,7 +265,10 @@ export class PreciseSource implements FrameSource {
         let closed = false;
         try {
           if (frame.timestamp < 0) {
-            // Samples before the movie edit are not presented by any player; they are counted, not hidden.
+            // Samples before the movie edit are not presented by any player; they are counted, not hidden. This
+            // frame is never yielded, so its already-started prefetch (`early`, if the source was one step ahead
+            // of the decoder) would otherwise convert into an image nothing ever releases.
+            await early?.then((image) => releaseUnlessHeld(image)).catch(() => {});
             this.notice('NEGATIVE_TIMESTAMP_SKIPPED', '解码器输出了位于编辑列表起点之前（负时间戳）的帧；按容器语义不展示这些帧。');
             continue;
           }
@@ -304,8 +308,10 @@ export class PreciseSource implements FrameSource {
         frame.close();
       }
       queue.length = 0;
-      // Bounded by the converter's own timeout; a stopped pass leaves no conversion running into the next one.
-      await ahead?.image.catch(() => {});
+      // Bounded by the converter's own timeout; a stopped pass leaves no conversion running into the next one. A
+      // frame that did convert here was never yielded to any pass, so nothing else can be holding its pool
+      // buffer — release it now or it (and the buffer behind it) is simply lost, not reused.
+      await ahead?.image.then((image) => releaseUnlessHeld(image)).catch(() => {});
       ahead = undefined;
       await producer;
     }

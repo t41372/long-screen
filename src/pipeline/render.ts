@@ -9,6 +9,7 @@ import { PoseGraph } from '../core/pose-graph.ts';
 import { Compositor } from '../core/compositor.ts';
 import { pad } from '../core/math.ts';
 import { core, type FrameRing, type Resident, type ResidentFrame } from '../core/wasm.ts';
+import { releaseUnlessHeld } from '../media/pool.ts';
 import { attachedRenderShift, resolveTarget as resolveAttachmentTarget } from './attachments.ts';
 import { consistencyMask, type ConsistencyRecord } from './consistency.ts';
 import { prefixOnly, type RunContext, StorageError } from './context.ts';
@@ -454,8 +455,12 @@ class RenderPass {
           // decode failure never drops an already-decoded, not-yet-composited frame.
           if (this.pending) {
             await this.processFrame(this.pending, this.pendingPrev, undefined);
+            // `pending`/`pendingPrev` are this pass's only holders of these two pool buffers; both are done now.
+            releaseUnlessHeld(this.pendingPrev, this.pending.image);
+            releaseUnlessHeld(this.pending.image);
           }
           this.pending = undefined;
+          this.pendingPrev = undefined;
           if (!this.ctx.project.renderedFrames) {
             throw error;
           }
@@ -467,17 +472,28 @@ class RenderPass {
           this.endedNaturally = true;
           if (this.pending) {
             await this.processFrame(this.pending, this.pendingPrev, undefined);
+            releaseUnlessHeld(this.pendingPrev, this.pending.image);
+            releaseUnlessHeld(this.pending.image);
           }
           this.pending = undefined;
+          this.pendingPrev = undefined;
           break;
         }
         const frame = step.value;
         if (this.pending) {
+          const oldPendingPrev = this.pendingPrev;
           await this.processFrame(this.pending, this.pendingPrev, frame.image);
           this.pendingPrev = this.pending.image;
+          // `oldPendingPrev` (frame N-2's image) was this call's `prevImage`, its last use anywhere in this pass —
+          // once `pendingPrev` has moved on to frame N-1's image, nothing still points at it.
+          releaseUnlessHeld(oldPendingPrev, this.pendingPrev, frame.image);
         }
         this.pending = frame;
         if (this.stop) {
+          // The lookahead frame just buffered was only ever used as `nextImage` in the call above (a read that
+          // does not keep the JS object); stopping here drops it without ever compositing it, so it is this
+          // pass's last chance to give its buffer back.
+          releaseUnlessHeld(this.pending.image, this.pendingPrev);
           this.pending = undefined;
           break;
         }

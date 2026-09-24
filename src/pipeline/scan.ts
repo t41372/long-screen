@@ -11,6 +11,7 @@ import { estimateMotion } from '../core/motion.ts';
 import { extractFeatures } from '../core/features.ts';
 import { core, coreBuild, type FrameRing, type ResidentFrame } from '../core/wasm.ts';
 import { analysisFactor, equalRGBA } from '../core/raster.ts';
+import { releaseUnlessHeld } from '../media/pool.ts';
 import { encodeRGBA } from '../codec/png.ts';
 import { pad } from '../core/math.ts';
 import { encodeFeatures } from './features-codec.ts';
@@ -189,6 +190,10 @@ class ScanPass {
         this.ctx.refineRadius = Math.max(3, Math.ceil(this.ctx.factor / 2) + 1);
         this.scanFrames = this.ctx.frames = core().frameRing(2, this.ctx.source.info.width, this.ctx.source.info.height);
       }
+      // Captured before this frame's own field/baseline computation below can move `this.baseline` on: releasing
+      // the pool buffers these held is only safe once we know what (if anything) still aliases them afterwards —
+      // scan's own baseline shortcut can point `baseline.image` at the very same object as `previousImage`.
+      const oldPreviousImage = this.previousImage, oldBaselineImage = this.baseline?.image;
       const duplicate = !!this.previousImage && equalRGBA(this.previousImage, frame.image);
       // The native frame enters core memory once here; the downscale and the layer learner both read it there. A
       // frame whose geometry differs from the run's is rejected by gray() below with the historical message.
@@ -216,6 +221,10 @@ class ScanPass {
       this.previousImage = frame.image;
       this.previousFeatures = features;
       this.lastField = field;
+      // Now that previousImage/baseline.image reflect this frame's outcome, anything the FRAME BEFORE this one
+      // held that neither field still points at (by identity, not just equal bytes) is done for good.
+      releaseUnlessHeld(oldPreviousImage, this.previousImage, this.baseline?.image);
+      releaseUnlessHeld(oldBaselineImage, this.previousImage, this.baseline?.image);
       await this.emitFrameDiagnostics(frame, features, field);
       await this.ctx.report(frame.index + 1, frame.time, '逐帧提取几何证据，学习独立运动区域。');
       if (this.ctx.stopRequested) {
@@ -223,6 +232,11 @@ class ScanPass {
         this.stop = true;
       }
     } catch (error) {
+      // This frame's own decoded image never became `previousImage` (the assignment above never ran, or this
+      // catch was reached before it) — nothing else in this pass can be holding it, so it is safe to release
+      // unconditionally instead of leaking it into the pool's "outstanding" count for the rest of the (now
+      // stopping) pass.
+      releaseUnlessHeld(frame.image, this.previousImage, this.baseline?.image);
       if (!this.ctx.project.frames) {
         throw error;
       }
