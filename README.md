@@ -54,6 +54,8 @@ deno task fingerprint    # 逐场景、逐持久化行的字节级指纹工具�
 
 `deno task build:prod` 产出的 `dist/` 是静态站点，上传到任何遵守 `_headers` 文件的静态托管（Cloudflare Pages、Netlify；`static/_headers` 原样复制并设置线程构建需要的 COOP/COEP/CORP 响应头，以及缓存策略）即可，不再是 GitHub Pages——后者不能设置自定义响应头，会导致页面不跨源隔离、Wasm 核心退回单线程构建（仍能运行，只是没有线程加速）。**托管方必须在 304 响应上也带上这三个头**，不能只在 200 上带：开发服务器（`deno task start`）对每个响应都重新附加，但静态托管各自的行为不一定一致——一次 304 上缺 CORP 头曾经打断 WebKit 私密浏览下的下载流程（见提交历史 "dev server re-applies COOP/COEP/CORP to every response"）；`_headers` 文件本身对 304 是否生效因托管商而异，部署时请在真实主机上核实（用浏览器开发者工具看一次带 `If-None-Match` 的重复请求，确认 304 响应也带着三个头）。
 
+本仓库用 Cloudflare Pages 的 Git 集成部署：push 到 `main` 时，Cloudflare 拉取仓库、运行 `bash scripts/pages-build.sh`、发布 `dist/`；push 到其他分支会生成预览部署。Pages 的构建镜像没有预装 Rust 和 Deno，所以这个脚本先装 rustup 和 `rust/rust-toolchain.toml` 固定的工具链，再用 npm 上官方的 `deno` 包运行 `deno task build:prod`。在 Cloudflare dashboard 里设置一次即可：Workers & Pages → Create → Pages → Connect to Git，选这个仓库，生产分支 `main`，构建命令 `bash scripts/pages-build.sh`，构建输出目录 `dist`。不需要 API token、仓库 secret 或 GitHub Actions。
+
 ## 架构
 
 ```text
