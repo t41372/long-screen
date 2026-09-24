@@ -13,6 +13,7 @@ import { releaseUnlessHeld } from '../media/pool.ts';
 import { attachedRenderShift, resolveTarget as resolveAttachmentTarget } from './attachments.ts';
 import { consistencyMask, type ConsistencyRecord } from './consistency.ts';
 import { prefixOnly, type RunContext, StorageError } from './context.ts';
+import { isValidPose } from './solve/track.ts';
 /** One placement's ledger row: what canvas it targeted, its final render-time placement, and either its pixel
  * contribution (addedPixels/conflictPixels/uncertainPixels) or which shortcut skipped painting it. */
 interface RenderDecision {
@@ -212,8 +213,13 @@ export class RenderPass {
   ): Promise<Uint8Array | Resident | undefined> {
     const prevRaw = prevImage ? prevPlan?.placements.find((pl) => pl.layer === p.layer && !pl.skip) : undefined;
     const nextRaw = nextImage ? nextPlan?.placements.find((pl) => pl.layer === p.layer && !pl.skip) : undefined;
-    const prevResolved = prevRaw ? await this.resolvePlacement(prevRaw, frame.index - 1) : undefined;
-    const nextResolved = nextRaw ? await this.resolvePlacement(nextRaw, frame.index + 1) : undefined;
+    // Same guard as this frame's own placement (above): a neighbour's plan/ row is read back from storage the
+    // same way, so it needs the same check before its pose reaches consistencyMask() — an invalid one is
+    // treated as "no neighbour this side" rather than skipping the whole call.
+    const prevResolvedRaw = prevRaw ? await this.resolvePlacement(prevRaw, frame.index - 1) : undefined;
+    const nextResolvedRaw = nextRaw ? await this.resolvePlacement(nextRaw, frame.index + 1) : undefined;
+    const prevResolved = prevResolvedRaw && isValidPose(prevResolvedRaw) ? prevResolvedRaw : undefined;
+    const nextResolved = nextResolvedRaw && isValidPose(nextResolvedRaw) ? nextResolvedRaw : undefined;
     return consistencyMask(
       current,
       this.residentLabels,
@@ -287,6 +293,34 @@ export class RenderPass {
     }
     const resolved = await this.resolvePlacement(placement, frame.index);
     const p = { ...placement, ...resolved };
+    // Defense in depth: the solve pass validates every pose it writes (region-step.ts's recoverNonfinitePose),
+    // so a plan/ row from THIS engine never carries one outside the canvas-addressable range. This pass reads
+    // plan/ back from storage rather than receiving it in-process, so a corrupted or foreign-written row is
+    // still possible; compositor.add()'s tile loop is sized directly from `p.x`/`p.y` and is not itself bounded,
+    // so an invalid pose is skipped here rather than handed to it.
+    if (!isValidPose(p)) {
+      await this.ctx.diagnostics.emit({
+        code: 'NONFINITE_POSE',
+        severity: 'error',
+        time: p.time,
+        frame: frame.index,
+        canvasId: p.canvasId,
+        message: '定位计算产生无效数值。已隔离此观察，未将无效坐标写入画布。',
+      });
+      return {
+        // Never carry the invalid x/y into the persisted observation/ row itself — zeroed, same as
+        // region-step.ts's recoverNonfinitePose resets state.pose, rather than the coordinate that triggered this.
+        decision: {
+          canvasId: p.canvasId,
+          placement: { ...p, x: 0, y: 0 },
+          addedPixels: 0,
+          conflictPixels: 0,
+          uncertainPixels: 0,
+          skipped: true,
+        },
+        movingMeta: undefined,
+      };
+    }
     const meta = await this.metaCache.get(p.canvasId);
     if (!meta) {
       throw new Error('Canvas metadata is missing.');

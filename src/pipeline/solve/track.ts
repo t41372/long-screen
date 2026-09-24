@@ -14,6 +14,7 @@
 // kept here because it is this shell's per-region setup. tests/support/reference/track.ts freezes the pre-port
 // TypeScript of these functions; tests/unit/parity/track.test.ts checks the Rust versions against it.
 import type { Feature, Gray, Match, Point, Region, RGBA } from '../../types.ts';
+import { CANVAS_PIXEL_BOUND } from '../../core/compositor.ts';
 import type { NativeRefinement, Patch } from '../../core/motion.ts';
 import { core, type LabelMask, type ResidentFrame, type ResidentGray } from '../../core/wasm.ts';
 /** Region-step.ts's own-features/texture/prior-matches setup (R1: was inline decision logic in the shell). */
@@ -64,6 +65,22 @@ export const STATIC_CONFIDENCE = .3;
 export const BLIND_CONFIDENCE = 0;
 export const FRAGMENT_CONFIDENCE = .20;
 export const NONFINITE_CONFIDENCE = 0;
+/** compositor.ts's `CANVAS_PIXEL_BOUND` is the single source of truth for how far a WORLD rect (a placement's
+ * pose plus its region rect's own offset/size) can reach before `blockKey` throws. A pose this module validates
+ * is the pose alone, before that region rect is added — so `POSE_BOUND` is `CANVAS_PIXEL_BOUND` shrunk by a
+ * margin comfortably larger than any region rect this app can ever produce, i.e. larger than any supported
+ * source-frame dimension: browsers/WebCodecs decoders commonly cap out around 8K–16K px per side, so 2**16
+ * (65536) leaves roughly 4× headroom over the largest of those and still leaves `POSE_BOUND` itself at ±536.8M
+ * native px. A pose outside this range can never be tiled or composited, so it is treated exactly like a
+ * non-finite one — rejected before it reaches compositor/framing loops sized from it — rather than turning into
+ * an unbounded tile-index scan (see region-step.ts's `recoverNonfinitePose`). compositor.ts's own `add()` throws
+ * a plain Error (not a wasm trap — this bound is TS-side) if a placement ever reaches it anyway, as a backstop:
+ * that is defense in depth, not the graceful path — this check, and render.ts's mirror of it, are. */
+const MAX_SUPPORTED_FRAME_DIMENSION = 2 ** 16;
+export const POSE_BOUND = CANVAS_PIXEL_BOUND - MAX_SUPPORTED_FRAME_DIMENSION;
+export function isValidPose(p: Point): boolean {
+  return Number.isFinite(p.x) && Number.isFinite(p.y) && Math.abs(p.x) <= POSE_BOUND && Math.abs(p.y) <= POSE_BOUND;
+}
 export function relocalizeVerdict(
   match: { ambiguous: boolean; confidence: number } | undefined,
   zoomChange: boolean,

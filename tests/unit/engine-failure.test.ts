@@ -605,10 +605,46 @@ Deno.test('engine: a non-finite odometry delta is caught by NONFINITE_POSE, star
     c.trackOdometry = original;
   }
 });
-/** Shared assertions for the three "a fused tracker call goes non-finite" tests: region-step.ts's
- * `!Number.isFinite(state.pose.x/.y)` guard fires exactly once, with a finite frame/time; no persisted
- * plan/observation row carries a non-finite coordinate; the run still completes; and the poisoned region gets a
- * fresh fragment canvas (more than one distinct canvasId across the run's placements). */
+/** Regression coverage for `isValidPose`'s `POSE_BOUND` check (track.ts), reusing the same odometry-delta
+ * injection point and shared assertion as the NaN test above: `+Infinity` and `-Infinity` were already caught
+ * at the pre-existing `Number.isFinite` guard (confirmed against a136135 — this is not a new failure mode for
+ * those two), but `1e12` is finite and was NOT: it would have sailed through untouched. These three prove the
+ * SAME guard now rejects all three uniformly, before `state.pose` can ever reach compositor.ts. This is NOT the
+ * OOM reproduction (a `1e12` pose here never exhausted memory — `Compositor.add()`'s tile loop is sized from
+ * the placement's rect width/height, not from its distance to the origin); see the `engine render:` test below
+ * for the actual OOM repro (a plan/ row read back with `x`/`y` = `Infinity`, which solve.ts's own validation
+ * cannot reach because it never runs on that row again). */
+for (const [label, value] of [['+Infinity', Infinity], ['-Infinity', -Infinity], ['a huge finite offset (1e12)', 1e12]] as const) {
+  Deno.test(`engine: an odometry delta of ${label} is caught by NONFINITE_POSE (out-of-range, not just non-finite) and never persists`, async () => {
+    const scenario = buildScenario('traversal'), db = new MemoryKV(), source = new ScenarioSource(scenario);
+    const c = core() as unknown as { trackOdometry(inputs: unknown): { decision: string; delta: { x: number; y: number } } };
+    const original = c.trackOdometry.bind(c);
+    let calls = 0, poisoned = false;
+    c.trackOdometry = (inputs: unknown) => {
+      calls++;
+      const est = original(inputs);
+      if (calls === 1 && est.decision === 'tracked') {
+        poisoned = true;
+        return { ...est, delta: { x: value, y: value } };
+      }
+      return est;
+    };
+    try {
+      const diagnostics: Diagnostic[] = [];
+      const engine = makeEngine(db, source, {}, (d) => diagnostics.push(d));
+      const project = await engine.run();
+      assert(poisoned, 'the stub never saw a tracked decision to poison — widen the scenario');
+      await assertRecoversFromNonfinitePose(db, project, diagnostics);
+    } finally {
+      c.trackOdometry = original;
+    }
+  });
+}
+/** Shared assertions for the "a fused tracker call produces an invalid pose" tests (odometry NaN/±Infinity/1e12,
+ * driftCorrection NaN): region-step.ts's `isValidPose(state.pose)` guard fires exactly once, with a finite
+ * frame/time; no persisted plan/observation row carries a non-finite coordinate; the run still completes; and
+ * the poisoned region gets a fresh fragment canvas (more than one distinct canvasId across the run's
+ * placements). */
 async function assertRecoversFromNonfinitePose(
   db: MemoryKV,
   project: { id: string; status: string; error?: string },
@@ -671,6 +707,149 @@ Deno.test('engine: a non-finite driftCorrection pose is caught by NONFINITE_POSE
     await assertRecoversFromNonfinitePose(db, project, diagnostics);
   } finally {
     c.trackDriftCorrection = original;
+  }
+});
+/** Walks every value ever put() into `db` (structuredClone snapshots, so this also covers rows later
+ * overwritten/deleted only in the sense that MemoryKV.data reflects the CURRENT persisted state — good enough
+ * here since the assertion is "nothing non-finite is ever left behind", not a history check) and fails on the
+ * first non-finite number found anywhere in the JSON tree: node/, edge/, keyframe/, attach/, canvas/, plan/ and
+ * observation/ rows alike, not just the placement fields the NONFINITE_POSE tests above happen to check. */
+function assertNoNonfiniteAnywhere(db: MemoryKV): void {
+  const bad: string[] = [];
+  const walk = (v: unknown, path: string): void => {
+    if (typeof v === 'number') {
+      if (!Number.isFinite(v)) bad.push(path);
+    } else if (Array.isArray(v)) {
+      v.forEach((x, i) => walk(x, `${path}[${i}]`));
+    } else if (v && typeof v === 'object') {
+      for (const [k, x] of Object.entries(v)) walk(x, `${path}.${k}`);
+    }
+  };
+  for (const [key, value] of db.data) walk(value, key);
+  assert(bad.length === 0, `non-finite number(s) reached persisted rows: ${bad.join(', ')}`);
+}
+// Keyframe-step candidates (attachment, thin-overlap correction) are validated and rejected BEFORE they can move
+// state.pose or be persisted — unlike the odometry/driftCorrection sources above, a rejected candidate here must
+// NOT raise NONFINITE_POSE (nothing was ever assigned to isolate) and must not raise the diagnostic that
+// normally announces a successful candidate (FRAGMENT_ATTACHED), matching attachVerdict()'s own "no verdict"
+// contract on any other kind of failure.
+Deno.test('engine: a non-finite attachment verdict is rejected before it can move state.pose or persist', async () => {
+  const scenario = buildScenario('revisit'), db = new MemoryKV(), source = new ScenarioSource(scenario);
+  const c = core() as unknown as {
+    trackAttachVerdict(global: unknown, resolvedTargetEqCanvas: boolean, shift: unknown): { x: number; y: number } | undefined;
+  };
+  const original = c.trackAttachVerdict.bind(c);
+  let poisoned = false;
+  // Poisons the first call keyframe-step.ts actually makes (i.e. the first frame with a revisit match) rather
+  // than waiting for a real attachment to occur (self-canvas revisits — the common case in a single-layer
+  // scenario — never produce one): this is fault injection on the defensive check itself, not a reproduction of
+  // an organic attachment.
+  c.trackAttachVerdict = (global, eq, shift) => {
+    if (!poisoned) {
+      poisoned = true;
+      return { x: Infinity, y: -Infinity };
+    }
+    return original(global, eq, shift);
+  };
+  try {
+    const diagnostics: Diagnostic[] = [];
+    const engine = makeEngine(db, source, {}, (d) => diagnostics.push(d));
+    const project = await engine.run();
+    assert(poisoned, 'the stub never saw a revisit match to poison — widen the scenario');
+    assertEquals(project.status, 'complete', project.error);
+    assertEquals(diagnostics.filter((d) => d.code === 'NONFINITE_POSE').length, 0, 'a rejected candidate must not isolate a fragment');
+    assertEquals(diagnostics.filter((d) => d.code === 'FRAGMENT_ATTACHED').length, 0, 'the poisoned verdict must not be applied');
+    assertNoNonfiniteAnywhere(db);
+  } finally {
+    c.trackAttachVerdict = original;
+  }
+});
+Deno.test('engine: a non-finite thin-overlap correction is rejected before it can move state.pose or persist', async () => {
+  const scenario = buildScenario('revisit'), db = new MemoryKV(), source = new ScenarioSource(scenario);
+  const c = core() as unknown as {
+    trackThinOverlapEligible(weakStep: boolean, weak: boolean, ambiguous: boolean, confidence: number, error: number): boolean;
+    trackThinOverlapCorrection(
+      canonicalKeyframe: unknown,
+      offset: unknown,
+      pose: unknown,
+    ): { target: { x: number; y: number }; discrepancy: number } | undefined;
+  };
+  const originalEligible = c.trackThinOverlapEligible.bind(c);
+  const original = c.trackThinOverlapCorrection.bind(c);
+  let poisoned = false;
+  // The eligibility gate (weakStep/weak, unambiguous, confidence > .72, error < 8) is a narrow real-world
+  // window; force it open so the fault-injected correction below actually gets a call to poison, the same way
+  // the other tests in this file force their own gate open rather than searching for a scenario that clears it
+  // by chance.
+  c.trackThinOverlapEligible = () => true;
+  c.trackThinOverlapCorrection = (canonicalKeyframe, offset, pose) => {
+    if (!poisoned) {
+      poisoned = true;
+      return { target: { x: 1e12, y: 0 }, discrepancy: 0 };
+    }
+    return original(canonicalKeyframe, offset, pose);
+  };
+  try {
+    const diagnostics: Diagnostic[] = [];
+    const engine = makeEngine(db, source, {}, (d) => diagnostics.push(d));
+    const project = await engine.run();
+    assert(poisoned, 'the stub never saw a defined revisit match to poison — widen the scenario');
+    assertEquals(project.status, 'complete', project.error);
+    assertEquals(diagnostics.filter((d) => d.code === 'NONFINITE_POSE').length, 0, 'a rejected candidate must not isolate a fragment');
+    assertEquals(diagnostics.filter((d) => d.code === 'TRAJECTORY_CORRECTED').length, 0, 'the poisoned correction must not be applied');
+    assertNoNonfiniteAnywhere(db);
+  } finally {
+    c.trackThinOverlapEligible = originalEligible;
+    c.trackThinOverlapCorrection = original;
+  }
+});
+// render.ts's own isValidPose() guard, over a plan/ row read back from storage rather than one this same run's
+// solve pass just wrote in-process (a foreign writer, bit rot, a future engine version — or simply a row solve.ts
+// validated correctly at write time that is then read back unvalidated, which is exactly what happened here: at
+// a136135, poisoning a plan/ row's x to Infinity this same way — confirmed manually with
+// `deno run -A --v8-flags=--max-old-space-size=512` — reproduces "Fatal JavaScript out of memory" inside
+// Compositor.add()'s tile-index loop, which is sized directly from the placement's x/y with no upper bound.
+// That loop is unreachable from a poisoned ODOMETRY delta (region-step.ts's pre-existing `Number.isFinite`
+// check already caught ±Infinity there, and a finite 1e12 offset never grows the loop's range at all — see the
+// comment above the odometry-delta tests above); this is the one path that actually needs render's own check.
+// Poison one moving placement's x on its way out of storage (KV.get, not the tracker) to exercise it.
+Deno.test('engine render: a plan/ placement read back with an out-of-range pose is skipped by render before compositing, not persisted', async () => {
+  const scenario = buildScenario('vertical'), db = new MemoryKV();
+  let poisoned = false;
+  const poisoning: KV = {
+    put: (k, v) => db.put(k, v),
+    delete: (k) => db.delete(k),
+    deleteMany: (k) => db.deleteMany(k),
+    scan: (p, o) => db.scan(p, o),
+    putMany: (r) => db.putMany(r),
+    get: async <T>(key: string) => {
+      const value = await db.get<T>(key);
+      if (!poisoned && key.includes('/plan/') && value && typeof value === 'object' && 'placements' in value) {
+        const plan = value as unknown as FramePlan;
+        const moving = plan.placements.find((p) => !p.skip);
+        if (moving) {
+          poisoned = true;
+          return { ...plan, placements: plan.placements.map((p) => p === moving ? { ...p, x: Infinity } : p) } as unknown as T;
+        }
+      }
+      return value;
+    },
+  };
+  const source = new ScenarioSource(scenario);
+  const diagnostics: Diagnostic[] = [];
+  const engine = makeEngine(poisoning, source, {}, (d) => diagnostics.push(d));
+  const project = await engine.run();
+  assert(poisoned, 'the stub never saw a moving plan/ placement to poison');
+  assertEquals(project.status, 'complete', project.error);
+  assertEquals(diagnostics.filter((d) => d.code === 'NONFINITE_POSE').length, 1, JSON.stringify(diagnostics.map((d) => d.code)));
+  const store = new Namespace(db, `run/${project.id}/`);
+  for await (const { value } of iterate<{ decisions: { placement: { x: number; y: number } }[] }>(store, 'observation/')) {
+    for (const d of value.decisions) {
+      assert(
+        Number.isFinite(d.placement.x) && Number.isFinite(d.placement.y),
+        `non-finite placement in observation/: ${JSON.stringify(d)}`,
+      );
+    }
   }
 });
 // Project history index (coordinate with the UI worker's 'projects'/'delete' commands).

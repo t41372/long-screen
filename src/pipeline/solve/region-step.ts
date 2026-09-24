@@ -18,6 +18,7 @@ import {
   fragmentCause,
   gate,
   isTextured,
+  isValidPose,
   NONFINITE_CONFIDENCE,
   occlusionEligible,
   odometry,
@@ -169,6 +170,12 @@ export class SolvePass {
       weakStep: locals.weakStep,
       stepError: locals.stepError,
     });
+    // keyframeStep can still move state.pose (attachment, thin-overlap correction) after the check above ran.
+    // Those two candidates are validated and rejected in place (keyframe-step.ts's applyAttachment/
+    // applyThinOverlapCorrection) before they are ever assigned to state.pose or persisted, so this call is
+    // defense-in-depth — it only fires if some other path inside keyframeStep reintroduces an invalid pose — and
+    // keeps the invariant that finalizePlacement() never sees one.
+    await this.recoverNonfinitePose(state, input, locals);
     return this.finalizePlacement(state, input, locals);
   }
   /** Derives this call's read-mostly values (region, roi, mask, own features, zoom state) and the mutable locals
@@ -470,10 +477,12 @@ export class SolvePass {
       });
     }
   }
-  /** After the decision is applied: if the pose ended up non-finite (any branch above, or a pre-existing NaN
-   * carried into this call), isolate the observation into a fresh fragment rather than writing invalid coordinates. */
+  /** After the decision is applied: if the pose ended up non-finite or outside the canvas-addressable range (any
+   * branch above, keyframeStep's attach/thin-overlap correction, or a pre-existing NaN carried into this call),
+   * isolate the observation into a fresh fragment rather than writing invalid coordinates. Called twice per
+   * region per frame — before and after keyframeStep() — because keyframeStep can still move state.pose. */
   private async recoverNonfinitePose(state: RegionState, input: FrameInput, locals: StepLocals): Promise<void> {
-    if (Number.isFinite(state.pose.x) && Number.isFinite(state.pose.y)) {
+    if (isValidPose(state.pose)) {
       return;
     }
     const { frame } = input;

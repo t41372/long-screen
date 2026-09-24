@@ -12,6 +12,7 @@ import { attachmentShift } from '../attachments.ts';
 import type { RegionState } from './state.ts';
 import {
   attachVerdict,
+  isValidPose,
   LOOP_WEIGHT_CLOSURE,
   LOOP_WEIGHT_CORRECTED,
   LOOP_WEIGHT_RELINK,
@@ -102,7 +103,7 @@ export async function keyframeStep(pass: SolvePass, state: RegionState, input: K
 async function revisitSearch(pass: SolvePass, input: KeyframeStepInput, locals: KeyframeLocals): Promise<void> {
   const { f, radius, canonical } = pass;
   const { frame, g, r, roi, ownFeatures, native, current, nativePlane, nativeFilled, markNativeFilled, lost, skip } = input;
-  locals.global = !lost && !skip && r.kind === 'moving' && frame.index > 3
+  const match = !lost && !skip && r.kind === 'moving' && frame.index > 3
     ? await pass.index.find({
       features: ownFeatures,
       gray: g,
@@ -121,6 +122,12 @@ async function revisitSearch(pass: SolvePass, input: KeyframeStepInput, locals: 
       canonical,
     })
     : undefined;
+  // A match whose keyframe pose or revisit offset is invalid can only ever come from a corrupted persisted
+  // keyframe (mintKeyframe never writes one — its pose is validated on the way in) or a poisoned core call; either
+  // way it must not reach attachVerdict/thinOverlapCorrection/loopClosureVerdict, whose outputs feed graph edge
+  // rows (dx/dy) that a pose-only finite check downstream would never see. Treated as "no revisit found" — same
+  // as a search that returned nothing.
+  locals.global = match && isValidPose(match.keyframe) && isValidPose(match.offset) ? match : undefined;
 }
 /** Ties an independent fragment rigidly back onto an existing canvas when the revisit search's global match
  * clears attachVerdict(): records the Attachment row, updates the canvas's attachedTo, emits FRAGMENT_ATTACHED,
@@ -132,7 +139,10 @@ async function applyAttachment(pass: SolvePass, state: RegionState, input: Keyfr
   const verdict = global
     ? attachVerdict(global, resolveTarget(global.keyframe.canvasId), state.canvasId, attachmentShift(attachments, global.keyframe.canvasId))
     : undefined;
-  if (!verdict) {
+  // A verdict whose pose is non-finite or outside the addressable canvas range is rejected exactly as if
+  // attachVerdict() had found no attachment (which itself emits no diagnostic on failure) — applying it would
+  // persist an invalid Attachment row, canvas/<id> meta and FRAGMENT_ATTACHED detail before any later check runs.
+  if (!verdict || !isValidPose(verdict.pose)) {
     return;
   }
   const { target, pose } = verdict;
@@ -196,7 +206,10 @@ async function applyThinOverlapCorrection(
     offset: global.offset,
     pose: state.pose,
   });
-  if (!correction) {
+  // Same rejection as applyAttachment: a non-finite or out-of-range corrected target is treated as "no
+  // correction" (thinOverlapCorrection()'s own undefined contract) rather than being assigned to state.pose and
+  // pushed into TRAJECTORY_CORRECTED's `detail`/the odometry edge weight below.
+  if (!correction || !isValidPose(correction.target)) {
     return;
   }
   locals.corrected = correction.target;

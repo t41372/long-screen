@@ -16,6 +16,11 @@ type TemporalRegion = TemporalRow & { canvasId: string };
  *  bookkeeping below (a JS `Set<number>` of blocks touched this call, fed to `components()`) — the temporal
  *  index itself (rust/core/src/temporal.rs) keeps block membership as plain (bx, by) pairs. */
 const BLOCK_OFFSET = 1 << 25, BLOCK_STRIDE = 1 << 26;
+/** The single source of truth for how far a placed (world-space) rect can reach before `blockKey` throws:
+ *  `BLOCK_OFFSET` blocks of `QUALITY_BLOCK` native pixels each, on either side of the origin. `solve/track.ts`'s
+ *  `isValidPose`/`POSE_BOUND` and `render.ts`'s own guard both derive their bound from this constant rather than
+ *  each picking their own — see `POSE_BOUND`'s doc comment for why theirs is smaller than this one. */
+export const CANVAS_PIXEL_BOUND = BLOCK_OFFSET * QUALITY_BLOCK;
 export function blockKey(bx: number, by: number): number {
   if (bx < -BLOCK_OFFSET || bx >= BLOCK_OFFSET || by < -BLOCK_OFFSET || by >= BLOCK_OFFSET) {
     throw new Error(`Block (${bx}, ${by}) is outside the addressable canvas.`);
@@ -169,6 +174,17 @@ export class Compositor {
     }
     const code = this.atlas.code(region), labels = this.atlas.resident, rectangular = this.rectangular.has(region.id);
     const world = { x: region.rect.x + ox, y: region.rect.y + oy, width: region.rect.width, height: region.rect.height };
+    // Defense in depth, not the graceful path (that is render.ts's own isValidPose check before this call ever
+    // happens): a world rect outside the addressable range would make the tile-index loop below unbounded (its
+    // extent is sized directly from `world`, e.g. `Infinity` makes `ty <= y1` never false) — a clean thrown
+    // Error here, instead of an unbounded loop that exhausts memory, no matter how this call was reached.
+    if (
+      !Number.isFinite(world.x) || !Number.isFinite(world.y) || Math.abs(world.x) >= CANVAS_PIXEL_BOUND ||
+      Math.abs(world.y) >= CANVAS_PIXEL_BOUND || Math.abs(world.x + world.width) >= CANVAS_PIXEL_BOUND ||
+      Math.abs(world.y + world.height) >= CANVAS_PIXEL_BOUND
+    ) {
+      throw new Error(`Placement (${p.x}, ${p.y}) puts region ${region.id} outside the addressable canvas.`);
+    }
     const stats: CompositeStats = { added: 0, conflicts: 0, uncertain: 0, tiles: 0, bounds: world, provisionalPixels: 0 };
     const conflictBlocks = new Set<number>();
     const x0 = Math.floor(world.x / size),
