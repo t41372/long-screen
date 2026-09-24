@@ -121,9 +121,14 @@ export function finishRegions(
     core.check(exports.ls_regions_read_cells(handle, cellsPtr), 'regions read cells');
     const headers = new DataView(exports.memory.buffer, headersPtr, count * REGION_HEADER_BYTES);
     const masks = new Uint8Array(exports.memory.buffer, masksPtr, count * width * height);
-    const cellIndices = new Uint32Array(
-      exports.memory.buffer.slice(cellsPtr, cellsPtr + cellsTotal * 4),
-    );
+    // `core.readBytes()`, not `exports.memory.buffer.slice()`: on the threads build `memory.buffer` is a
+    // `SharedArrayBuffer`, and `ArrayBuffer.prototype.slice`/`SharedArrayBuffer.prototype.slice` return the same
+    // buffer type as their receiver — a "copy" of a `SharedArrayBuffer` is still shared. `readBytes` instead
+    // slices the `Uint8Array` *view*, and `TypedArray.prototype.slice` always allocates a plain `ArrayBuffer`
+    // regardless of the source, giving a genuine copy that is safe to hand to `structuredClone`/`postMessage`/
+    // IndexedDB later (see regions-parity.test.ts's shared-memory guard test).
+    const cellsBytes = core.readBytes(cellsPtr, cellsTotal * 4);
+    const cellIndices = new Uint32Array(cellsBytes.buffer, cellsBytes.byteOffset, cellsTotal);
     const readRect = (at: number): Rect => ({
       x: headers.getFloat64(at, true),
       y: headers.getFloat64(at + 8, true),
@@ -254,7 +259,12 @@ export function labelAtlasResident(
     const status = exports.ls_regions_label_atlas(base, regions.length, width, height, resident.ptr, countsPtr);
     if (status === STATUS_TOO_MANY_REGIONS) throw new Error('Too many regions for the pixel atlas.');
     core.check(status, 'regions label atlas');
-    const counts = new Uint32Array(exports.memory.buffer.slice(countsPtr, countsPtr + (regions.length + 1) * 4));
+    // See the shared-memory note on the identical pattern in `finishRegions` above: `readBytes` (a
+    // `Uint8Array.slice()`), not `exports.memory.buffer.slice()`, so `counts` is a plain copy even on the
+    // threads build's `SharedArrayBuffer`-backed memory. `RegionAtlas.counts` (src/core/layers.ts) lives for
+    // the whole run, so a shared view here would silently outlive the call it came from.
+    const countsBytes = core.readBytes(countsPtr, (regions.length + 1) * 4);
+    const counts = new Uint32Array(countsBytes.buffer, countsBytes.byteOffset, regions.length + 1);
     return { resident, counts };
   } catch (error) {
     resident.free();

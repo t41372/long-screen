@@ -49,29 +49,3 @@ export function crc32(core: Core, bytes: Uint8Array): number {
   core.writeBytes(input, bytes);
   return core.exports.ls_crc32(input, bytes.byteLength) >>> 0;
 }
-
-/** Incremental CRC32 for a caller that sees its data in bounded chunks and must not buffer a whole file to hash
- *  it (`src/codec/png.ts::chunk()`). `src/export/zip.ts`'s `ZipWriter` does not use this any more — it streams
- *  through `client-zip`, which computes its own CRC32 in JS. The core handle is freed when this wrapper is
- *  garbage collected (`FinalizationRegistry`) rather than by an explicit `dispose()` every call site would have
- *  to remember — callers read `digest()` as many times as they like, as the old JS class did. */
-const crc32Registry = new FinalizationRegistry<{ core: Core; handle: number }>(({ core, handle }) => {
-  try {
-    core.exports.ls_crc32_free(handle);
-  } catch { /* core already torn down */ }
-});
-export class Crc32 {
-  private readonly handle: number;
-  constructor(private readonly core: Core) {
-    this.handle = core.check(core.exports.ls_crc32_new(), 'CRC32 new');
-    crc32Registry.register(this, { core, handle: this.handle }, this);
-  }
-  update(data: Uint8Array): void {
-    const [input] = this.core.scratch([data.byteLength]);
-    this.core.writeBytes(input, data);
-    this.core.check(this.core.exports.ls_crc32_update(this.handle, input, data.byteLength), 'CRC32 update');
-  }
-  digest(): number {
-    return this.core.exports.ls_crc32_digest(this.handle) >>> 0;
-  }
-}

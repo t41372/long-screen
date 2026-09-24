@@ -1,5 +1,6 @@
 import '../support/core.ts';
 import { assert, assertEquals, assertRejects } from '@std/assert';
+import { core } from '../../src/core/wasm.ts';
 import { iterate, type KV, MemoryKV } from '../../src/storage/db.ts';
 import {
   countCovered,
@@ -840,3 +841,110 @@ Deno.test("compositor: dispose() before the trailing flush() (render.ts's actual
   assertEquals(withDispose, withoutDispose, 'dispose() running before flush() must not change what gets persisted');
   assertEquals(withDispose.length, 1);
 });
+Deno.test(
+  'temporal ABI: ls_temporal_flush_take rejects a wrong count before draining the index (final-review item 3)',
+  async () => {
+    // Regression for rust/core/src/abi/temporal.rs::ls_temporal_flush_take, which used to call
+    // TemporalIndex::flush_take() (which drains `dirty`/`deleted`) BEFORE checking the caller's counts against
+    // it, so a bad count silently lost every dirty/deleted row instead of returning an error with the index
+    // unchanged. Reaches Compositor's private per-canvas handle the way this suite already reaches other
+    // private state (see common.md's "some tests reach private members through casts").
+    const width = B, region = makeRegion({ x: 0, y: 0, width, height: B });
+    const db = new MemoryKV(), tiles = new TileStore(db, width, 8), atlas = new RegionAtlas([region], width, B);
+    const compositor = new Compositor(db, tiles, 'stable', async () => {}, atlas);
+    const meta = makeMeta();
+    const base: RGB4 = [100, 100, 100, 255], hot: RGB4 = [250, 10, 10, 255];
+    await compositor.add(solid(width, B, base), region, place(0, 0, 0.5), 0, meta); // base coverage, no conflict
+    const img1 = solid(width, B, base);
+    paintRect(img1, { x: 0, y: 0, width: B, height: B }, hot);
+    await compositor.add(img1, region, place(0, 0, 0.5), 1, meta); // conflicts with the base -> a dirty record
+    const handle = (compositor as unknown as { temporal: Map<string, { handle: number }> }).temporal.get('c')!;
+    const exports = core().exports;
+    const [sizesOut] = core().scratch([12]);
+    assert(exports.ls_temporal_flush_sizes(handle.handle, sizesOut) === 0);
+    const sizesView = new DataView(exports.memory.buffer);
+    const deletedCount = sizesView.getUint32(sizesOut, true);
+    const dirtyCount = sizesView.getUint32(sizesOut + 4, true);
+    const dirtyBlockTotal = sizesView.getUint32(sizesOut + 8, true);
+    assert(dirtyCount > 0, 'setup should have produced at least one dirty record to flush');
+    const [deletedOut, headersOut, blocksOut] = core().scratch([
+      Math.max(1, deletedCount) * 10,
+      Math.max(1, dirtyCount) * 66,
+      Math.max(1, dirtyBlockTotal) * 8,
+    ]);
+    const badStatus = exports.ls_temporal_flush_take(handle.handle, deletedOut, deletedCount + 1, headersOut, blocksOut, dirtyCount);
+    assert(badStatus < 0, 'a wrong deletedCount must be rejected');
+    // The index must still hold every dirty/deleted row: a real flush() with the correct counts persists them.
+    await compositor.flush();
+    const rows = await db.scan('temporal/c/', { limit: 10 });
+    assertEquals(rows.length, 1, 'the row the bad call almost dropped is still there after a real flush()');
+  },
+);
+Deno.test(
+  'temporal ABI: ls_overwrite_tile returns a status (not a wasm trap) for a block whose pixel footprint falls ' +
+    'outside the source frame, tile buffers unchanged (final-review item 3)',
+  () => {
+    // Regression for rust/core/src/abi/temporal.rs::ls_overwrite_tile / rust/core/src/temporal.rs::overwrite_tile,
+    // which indexed `blocks` into `rgba`/`tile.pixels`/`tile.owner` unchecked -- a bad block made the exported
+    // function itself trap (Rust panics on an out-of-bounds slice index; the wasm build aborts on panic), not
+    // return `STATUS_BAD_ARGUMENT` as abi/mod.rs's memory contract promises ("an invalid request returns a
+    // negative status instead of trapping"). Calling `ls_overwrite_tile` through raw exports (bypassing
+    // `core().overwriteTile()`'s `core.check()`, which would turn EITHER a trap or a clean bad status into a
+    // caught exception and hide which one actually happened) makes a regression to a trap fail this test with
+    // an uncaught `WebAssembly.RuntimeError` instead of quietly passing. Unreachable in production (the caller
+    // only ever passes blocks `maskComplete` already proved consistent), but the ABI must not trust that from
+    // the wasm boundary.
+    const exports = core().exports;
+    const tileSize = 2 * B, n = tileSize * tileSize, tileBlocks = (tileSize / B) ** 2;
+    const imgWidth = 8, imgHeight = 8; // too small for block (0,0)'s 16x16 footprint at tx=ty=ox=oy=0
+    const [tileDesc, tPixels, tCoverage, tProvisional, tQuality, tConflicts, tOwner, tFrozen, rgbaScratch, blocksScratch, out] = core()
+      .scratch([
+        32,
+        n * 4,
+        Math.ceil(n / 8),
+        Math.ceil(n / 8),
+        tileBlocks,
+        tileBlocks,
+        tileBlocks * 4,
+        tileBlocks,
+        imgWidth * imgHeight * 4,
+        8,
+        16,
+      ]);
+    new Uint8Array(exports.memory.buffer).fill(0x42, tPixels, tPixels + n * 4); // a marker to prove it's untouched
+    const tileView = new DataView(exports.memory.buffer, tileDesc, 32);
+    [tPixels, tCoverage, tProvisional, tQuality, tConflicts, tOwner, tFrozen].forEach((p, i) => tileView.setUint32(i * 4, p, true));
+    tileView.setUint32(28, tileSize, true);
+    new DataView(exports.memory.buffer, blocksScratch, 8).setInt32(0, 0, true); // block (bx=0, by=0)
+    const before = new Uint8Array(exports.memory.buffer).slice(tPixels, tPixels + n * 4);
+    const status = exports.ls_overwrite_tile(tileDesc, rgbaScratch, imgWidth, imgHeight, blocksScratch, 1, 0, 0, 0, 0, 1, 1, 0, out);
+    assert(status < 0, `ls_overwrite_tile must return a negative status for an out-of-frame block, got ${status}`);
+    const after = new Uint8Array(exports.memory.buffer).slice(tPixels, tPixels + n * 4);
+    assertEquals(after, before, 'tile pixels must be unchanged after a rejected call');
+  },
+);
+Deno.test(
+  'compositor: add() on a canvas already dispose()d throws instead of silently losing its stashed rows (final-review item 5)',
+  async () => {
+    // Regression: temporalIndex() used to build a fresh Rust-resident index from a plain KV scan whenever
+    // this.temporal had no live handle for a canvas -- true both for a canvas never touched yet AND for one
+    // dispose() already drained into `stashed`. The second case is a bug, not ordinary lazy init: `stashed`
+    // holds dirty/deleted rows dispose() pulled out of the freed Rust index specifically because they are NOT
+    // in KV yet (flush() hasn't run), so a fresh KV-only reload would silently come up short. Unreachable in
+    // the pipeline today (dispose() only ever runs after the render pass's last add(), per dispose()'s own doc
+    // comment), but a caller that got the order wrong deserves an error, not quietly wrong persisted rows.
+    const width = B, region = makeRegion({ x: 0, y: 0, width, height: B });
+    const db = new MemoryKV(), tiles = new TileStore(db, width, 8), atlas = new RegionAtlas([region], width, B);
+    const compositor = new Compositor(db, tiles, 'stable', async () => {}, atlas);
+    const meta = makeMeta();
+    const base: RGB4 = [100, 100, 100, 255], hot: RGB4 = [250, 10, 10, 255];
+    await compositor.add(solid(width, B, base), region, place(0, 0, 0.5), 0, meta); // base coverage, no conflict
+    const img1 = solid(width, B, base);
+    paintRect(img1, { x: 0, y: 0, width: B, height: B }, hot);
+    await compositor.add(img1, region, place(0, 0, 0.5), 1, meta); // conflicts with the base -> a dirty record
+    compositor.dispose(); // stashes canvas 'c'; flush() has not run, so its dirty row is not in KV yet
+    const img2 = solid(width, B, base);
+    paintRect(img2, { x: 0, y: 0, width: B, height: B }, [1, 2, 3, 255]);
+    await assertRejects(() => compositor.add(img2, region, place(0, 0, 0.5), 2, meta));
+  },
+);

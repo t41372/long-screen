@@ -158,6 +158,28 @@ pub extern "C" fn ls_overwrite_tile(
             })
             .collect::<Vec<_>>()
     };
+    // `overwrite_tile` (rust/core/src/temporal.rs) indexes `tile.pixels`/`tile.owner` from each block unchecked
+    // — by contract (abi/mod.rs's memory contract: "an invalid request returns a negative status instead of
+    // trapping") every pointer this ABI hands a kernel must already be proven in-bounds, so a bad `blocks`
+    // entry has to be rejected here, not in the kernel. Unreachable in practice: the caller only ever passes
+    // blocks `maskComplete` already proved consistent, but a future caller (or a corrupted call) must get a
+    // status, not a trap. Every block's tile-local coordinates must land inside this tile (matching the owner/
+    // quality/conflicts/frozen arrays, sized `tile_blocks`), and its pixel footprint must land inside `rgba`
+    // (the source frame) once translated by `ox`/`oy`.
+    let per_tile = (size / QUALITY_BLOCK) as i64;
+    let b = QUALITY_BLOCK as i64;
+    for &(bx, by) in &block_pairs {
+        let local_bx = bx - tx as i64 * per_tile;
+        let local_by = by - ty as i64 * per_tile;
+        if local_bx < 0 || local_bx >= per_tile || local_by < 0 || local_by >= per_tile {
+            return STATUS_BAD_ARGUMENT;
+        }
+        let x0 = bx * b - ox as i64;
+        let y0 = by * b - oy as i64;
+        if x0 < 0 || y0 < 0 || x0 + b > img_width as i64 || y0 + b > img_height as i64 {
+            return STATUS_BAD_ARGUMENT;
+        }
+    }
     let mut buffers = OverwriteTile {
         size,
         pixels,
@@ -486,19 +508,19 @@ pub extern "C" fn ls_temporal_flush_take(
     let Some(index) = temporal_handles().get(handle) else {
         return STATUS_BAD_ARGUMENT;
     };
-    let (deleted, dirty) = index.flush_take();
-    if deleted.len() != deleted_count as usize || dirty.len() != dirty_count as usize {
+    // Validate the caller's counts against `flush_sizes()` (the same figures the caller is required to have
+    // just read them from — see the doc comment above) and every output slice BEFORE calling `flush_take()`,
+    // which mutates the index by draining `dirty`/`deleted`. `flush_take()` has no way to put rows back, so
+    // calling it first and only then discovering a bad count or pointer (the previous order here) silently
+    // dropped every dirty/deleted row on a mismatch instead of returning an error with the index unchanged.
+    let (want_deleted, want_dirty, want_total_blocks) = index.flush_sizes();
+    if deleted_count as usize != want_deleted || dirty_count as usize != want_dirty {
         return STATUS_BAD_ARGUMENT;
     }
     // SAFETY: adapter-owned buffer, bounds checked.
     let Some(deleted_dst) = (unsafe { slice_mut(deleted_out, deleted_count as usize * 10) }) else {
         return STATUS_BAD_ARGUMENT;
     };
-    for (i, id) in deleted.iter().enumerate() {
-        let b = id.as_bytes();
-        deleted_dst[i * 10..i * 10 + 10.min(b.len())].copy_from_slice(&b[..10.min(b.len())]);
-    }
-    let total_blocks: usize = dirty.iter().map(|(_, blocks)| blocks.len()).sum();
     // SAFETY: adapter-owned buffers, bounds checked.
     let (Some(headers_dst), Some(blocks_dst)) = (
         unsafe {
@@ -507,10 +529,21 @@ pub extern "C" fn ls_temporal_flush_take(
                 dirty_count as usize * TEMPORAL_RECORD_HEADER_BYTES,
             )
         },
-        unsafe { slice_mut(dirty_blocks_out, total_blocks * 8) },
+        unsafe { slice_mut(dirty_blocks_out, want_total_blocks * 8) },
     ) else {
         return STATUS_BAD_ARGUMENT;
     };
+    let (deleted, dirty) = index.flush_take();
+    // `flush_sizes()` and `flush_take()` observe the same index with no mutation between them (this function
+    // holds the only `&mut` access to it), so these can only disagree if that invariant is broken elsewhere;
+    // the buffers above are already sized and validated against `want_*`, so a divergence here is a bug in
+    // this file, not a caller error to report.
+    debug_assert_eq!(deleted.len(), want_deleted);
+    debug_assert_eq!(dirty.len(), want_dirty);
+    for (i, id) in deleted.iter().enumerate() {
+        let b = id.as_bytes();
+        deleted_dst[i * 10..i * 10 + 10.min(b.len())].copy_from_slice(&b[..10.min(b.len())]);
+    }
     let mut boff = 0usize;
     for (i, (record, blocks)) in dirty.iter().enumerate() {
         write_record_header(

@@ -221,18 +221,43 @@ async function jsDependencyIdentities(
   return [...seen.values()];
 }
 
+/** The npm package cache directory Deno actually resolved for this run — `deno info --json` (no entry point)
+ *  reports the live `npmCache` path, so this tracks DENO_DIR/registry overrides instead of assuming the default
+ *  macOS cache location (the previous hard-coded `~/Library/Caches/deno` broke on Linux CI and any DENO_DIR override,
+ *  and silently produced a path that never matched, which is why licenseText was never set below). */
+async function npmCacheRoot(root: string): Promise<string> {
+  const result = await run(Deno.execPath(), ['info', '--json'], root);
+  if (!result.ok) {
+    throw new Error(`deno info --json (npm cache location) failed:\n${result.stderr}`);
+  }
+  const info: { npmCache: string } = JSON.parse(result.stdout);
+  return join(info.npmCache, 'registry.npmjs.org');
+}
+
 async function jsNotices(root: string, entries: readonly string[]): Promise<NoticeEntry[]> {
   const identities = await jsDependencyIdentities(root, entries);
   const results: NoticeEntry[] = [];
+  const npmCache = await npmCacheRoot(root);
   for (const dep of identities) {
     if (dep.ecosystem === 'npm') {
-      const cacheRoot = join(Deno.env.get('DENO_DIR') || join(Deno.env.get('HOME') || '', 'Library/Caches/deno'), 'npm/registry.npmjs.org');
-      const pkgJsonPath = join(cacheRoot, dep.name, dep.version, 'package.json');
+      const pkgDir = join(npmCache, dep.name, dep.version);
+      const pkgJsonPath = join(pkgDir, 'package.json');
       const pkgJson = await Deno.readTextFile(pkgJsonPath).then(JSON.parse).catch(() => undefined);
       const license = pkgJson?.license ??
         (Array.isArray(pkgJson?.licenses) ? pkgJson.licenses.map((l: { type: string }) => l.type).join(' OR ') : undefined);
       if (!license) {
         throw new Error(`npm package ${dep.name}@${dep.version} (bundled into a JS asset) has no discoverable license in ${pkgJsonPath}.`);
+      }
+      let licenseText: string | undefined;
+      for (const candidate of ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'LICENSE-MIT', 'LICENSE.MIT', 'license']) {
+        licenseText = await Deno.readTextFile(join(pkgDir, candidate)).catch(() => undefined);
+        if (licenseText) break;
+      }
+      if (!licenseText) {
+        throw new Error(
+          `npm package ${dep.name}@${dep.version} (bundled into a JS asset) declares license "${license}" but no license ` +
+            `file was found in ${pkgDir} — the notices file would ship without its required text.`,
+        );
       }
       results.push({
         ecosystem: 'js',
@@ -240,6 +265,7 @@ async function jsNotices(root: string, entries: readonly string[]): Promise<Noti
         version: dep.version,
         license,
         sourceUrl: `https://www.npmjs.com/package/${dep.name}/v/${dep.version}`,
+        licenseText,
       });
     } else {
       // jsr's package-version API carries the license SPDX id it computed at publish time (most jsr packages don't

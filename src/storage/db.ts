@@ -23,6 +23,28 @@ interface StoredBlob {
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && Object.getPrototypeOf(value) === Object.prototype;
 const isStoredBlob = (value: unknown): value is StoredBlob => isPlainObject(value) && value.__longScreenBlob === true;
+/** Depth-first search for a typed array/`ArrayBuffer`/`DataView` backed by a `SharedArrayBuffer` (the threads
+ *  build's `core.exports.memory.buffer`) anywhere inside `value`. `structuredClone` — what `MemoryKV.put` uses —
+ *  happily "clones" one of these by handing back a second view of the SAME `SharedArrayBuffer`, not a copy, so
+ *  it cannot catch a caller that persisted a live core view by mistake; real IndexedDB rejects a `put()` whose
+ *  value contains a `SharedArrayBuffer` with a `DataCloneError`. `MemoryKV.put` (Deno's IndexedDB stand-in for
+ *  tests) checks this explicitly so that bug class — e.g. `wasm/regions.ts`'s `exports.memory.buffer.slice()`,
+ *  which on shared memory returns another `SharedArrayBuffer` instead of a copy (final-review item 6) — fails a
+ *  `deno task test` run under `LONGSCREEN_CORE=threads` instead of only a real browser. Every value this store
+ *  actually holds (tiles, temporal rows, diagnostics, features…) is a plain object/array tree of primitives,
+ *  typed arrays and `Blob`s (`toStorable`'s doc comment above), so this only needs to walk those shapes — not
+ *  every possible JS value. */
+function containsSharedArrayBuffer(value: unknown, seen = new Set<object>()): boolean {
+  if (value === null || typeof value !== 'object') return false;
+  if (typeof SharedArrayBuffer !== 'undefined' && value instanceof SharedArrayBuffer) return true;
+  if (ArrayBuffer.isView(value)) return typeof SharedArrayBuffer !== 'undefined' && value.buffer instanceof SharedArrayBuffer;
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) return value.some((v) => containsSharedArrayBuffer(v, seen));
+  if (value instanceof Blob) return false;
+  if (isPlainObject(value)) return Object.values(value).some((v) => containsSharedArrayBuffer(v, seen));
+  return false;
+}
 async function blobToStored(blob: Blob): Promise<StoredBlob> {
   return { __longScreenBlob: true, type: blob.type, bytes: await blob.arrayBuffer() };
 }
@@ -236,6 +258,14 @@ export class MemoryKV implements KV {
     return structuredClone(this.data.get(key)) as T | undefined;
   }
   async put(key: string, value: unknown): Promise<void> {
+    // See `containsSharedArrayBuffer`'s doc comment: `structuredClone` below would silently hand back a second
+    // view of the same `SharedArrayBuffer` instead of failing the way real IndexedDB does.
+    if (containsSharedArrayBuffer(value)) {
+      throw new Error(
+        `CORE_BAD_ARGUMENT: put(${JSON.stringify(key)}) value is backed by a SharedArrayBuffer (a live core view on ` +
+          `the threads build?) — IndexedDB would reject this too; copy it first (e.g. core.readBytes()).`,
+      );
+    }
     if (!this.data.has(key)) {
       this.keys.splice(this.lowerBound(key), 0, key);
     }

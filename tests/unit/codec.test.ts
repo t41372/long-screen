@@ -1,7 +1,7 @@
 import '../support/core.ts';
 import { assert, assertEquals, assertRejects } from '@std/assert';
 import { decodePNG, encodePNG, encodeRGBA } from '../../src/codec/png.ts';
-import { CRC32, crc32, utf8 } from '../../src/codec/crc.ts';
+import { crc32, utf8 } from '../../src/codec/crc.ts';
 import { blobChunks, single } from '../../src/export/zip.ts';
 import { rng } from '../../src/core/math.ts';
 import type { RGBA } from '../../src/types.ts';
@@ -10,10 +10,7 @@ function chunk(type: string, body: Uint8Array): Uint8Array {
   view.setUint32(0, body.length);
   out.set(name, 4);
   out.set(body, 8);
-  const crc = new CRC32();
-  crc.update(name);
-  crc.update(body);
-  view.setUint32(body.length + 8, crc.digest());
+  view.setUint32(body.length + 8, crc32(out.subarray(4, 8 + body.length)));
   return out;
 }
 async function deflate(data: Uint8Array): Promise<Uint8Array> {
@@ -187,10 +184,7 @@ Deno.test('png: streaming encoder validates dimensions and row counts', async ()
   await it.next();
   await it.return(undefined);
 });
-Deno.test('crc32 matches the standard check vector and the convenience wrapper', () => {
-  const crc = new CRC32();
-  crc.update(utf8('123456789'));
-  assertEquals(crc.digest(), 0xcbf43926);
+Deno.test('crc32 matches the standard check vector', () => {
   assertEquals(crc32(utf8('123456789')), 0xcbf43926);
 });
 // ZipWriter itself (now client-zip, npm/MIT, streamed straight into the sink — see src/export/zip.ts) is exercised

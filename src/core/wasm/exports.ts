@@ -128,10 +128,6 @@ export interface CoreExports {
   ls_png_encode_free(handle: number): void;
   ls_png_decode(src: number, len: number, out: number, cap: number): number;
   ls_crc32(ptr: number, len: number): number;
-  ls_crc32_new(): number;
-  ls_crc32_update(handle: number, ptr: number, len: number): number;
-  ls_crc32_digest(handle: number): number;
-  ls_crc32_free(handle: number): void;
   ls_mean_difference(a: number, b: number, len: number): number;
   ls_translation_hypotheses(matches: number, count: number, max: number, out: number): number;
   ls_detect_scale(matches: number, count: number): number;

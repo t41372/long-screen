@@ -112,8 +112,16 @@ export class Compositor {
   }
   /** Loads a canvas's persisted temporal records once, into a fresh Rust-resident index; afterwards that index
    *  is authoritative. Rows are handed over in KV scan (ascending id) order, exactly the order the in-memory
-   *  index used to build itself in. */
+   *  index used to build itself in. Throws if `canvasId` was already `dispose()`d: silently building a new
+   *  Rust-resident index from KV alone would leave out the still-unflushed rows `dispose()` drained into
+   *  `stashed` (a fresh KV scan cannot see them — they are not persisted yet), producing an index that looks
+   *  authoritative but has quietly lost pending edits instead of surfacing the "add() after dispose()" bug
+   *  that got it here. Unreachable in the pipeline today: `dispose()` runs after the render pass's last `add()`
+   *  (see `dispose()`'s own doc comment). */
   private async temporalIndex(canvasId: string): Promise<TemporalIndexHandle> {
+    if (this.stashed.has(canvasId)) {
+      throw new Error(`CORE_BAD_ARGUMENT: temporalIndex(${canvasId}) called after dispose() already drained and froze its state.`);
+    }
     let handle = this.temporal.get(canvasId);
     if (!handle) {
       handle = core().newTemporalIndex();
@@ -229,7 +237,17 @@ export class Compositor {
         // `consistent` is passed straight through to the one Rust call that reads it (`maskCompleteAndCommit`,
         // via `resolveTemporal`): a `Resident`'s own pointer is growth-stable (no view-staleness concern, unlike
         // the old TS walk), and a plain `Uint8Array` is copied into scratch fresh inside that same call.
-        const result = await this.resolveTemporal(image, region, p, frame, component.bounds, component.blocks, world, consistent);
+        const result = await this.resolveTemporal(
+          image,
+          region,
+          p,
+          frame,
+          component.bounds,
+          component.blocks,
+          world,
+          consistent,
+          residentFrame,
+        );
         patchedPixels += result.added;
         patchedTiles += result.newTiles;
         // A pixel count, not a block count — a block count would understate conflict pixels by roughly a factor
@@ -284,7 +302,10 @@ export class Compositor {
    *  needs no atlas/occlusion/consistency pixels) sizes the write-block buffer for `maskCompleteAndCommit` (the
    *  pixel-level completeness walk plus the index commit) to fill. `consistent` is handed straight to the
    *  second call: a `Resident`'s pointer is growth-stable, so unlike the old TS walk there is no "no core call
-   *  in between" requirement to preserve here — the whole walk already happens inside that one call. */
+   *  in between" requirement to preserve here — the whole walk already happens inside that one call.
+   *  `residentFrame`, when given, is `image` already uploaded to the `FrameRing` for this observation — passed
+   *  through to `overwritePatch` so a chosen patch reuses that pointer instead of re-copying the whole frame
+   *  once per tile (see `overwriteTile`'s doc comment, src/core/wasm/temporal.ts). */
   private async resolveTemporal(
     image: RGBA,
     region: Region,
@@ -294,6 +315,7 @@ export class Compositor {
     compBlocks: Set<number>,
     visible: Rect,
     consistent?: Uint8Array | Resident,
+    residentFrame?: ResidentFrame,
   ): Promise<PatchResult> {
     const index = await this.temporalIndex(p.canvasId);
     const [writeBlockCount, nextSeq] = index.decide(
@@ -320,7 +342,7 @@ export class Compositor {
     });
     let result: PatchResult = { added: 0, conflictPixels: 0, newTiles: 0, provisionalPixels: 0 };
     if (decision.chosen) {
-      result = await this.overwritePatch(image, p, decision.writeBlocks, frame);
+      result = await this.overwritePatch(image, p, decision.writeBlocks, frame, residentFrame);
     }
     if (decision.emitIncomplete) {
       await this.emit({
@@ -336,7 +358,13 @@ export class Compositor {
     }
     return result;
   }
-  private async overwritePatch(image: RGBA, p: Placement, mask: [number, number][], frame: number): Promise<PatchResult> {
+  private async overwritePatch(
+    image: RGBA,
+    p: Placement,
+    mask: [number, number][],
+    frame: number,
+    residentFrame?: ResidentFrame,
+  ): Promise<PatchResult> {
     const size = this.tiles.size, { rasterX: ox, rasterY: oy } = resolveRasterPose(p.x, p.y), B = QUALITY_BLOCK;
     const byTile = new Map<string, { tx: number; ty: number; blocks: [number, number][] }>();
     for (const [bx, by] of mask) {
@@ -354,8 +382,22 @@ export class Compositor {
       // resolveTemporal's maskComplete walk already tested this exact block set against the same
       // atlas.contains/occluded/consistent conditions before choosing to call overwritePatch, so every pixel
       // here is guaranteed in-bounds, unoccluded and world-consistent, and any standing provisional bit is
-      // healed, never set (rust/core/src/temporal.rs::overwrite_tile mirrors this loop exactly).
-      const result = core().overwriteTile(tile, size, image, tileBlocks, ox, oy, tx, ty, frame, p.confidence, this.policy === 'stable');
+      // healed, never set (rust/core/src/temporal.rs::overwrite_tile mirrors this loop exactly). `residentFrame`,
+      // when given, is `image` already uploaded for this observation — `overwriteTile` uses its pointer in
+      // place instead of copying the whole frame again for every tile this patch touches.
+      const result = core().overwriteTile(
+        tile,
+        size,
+        residentFrame ?? image,
+        tileBlocks,
+        ox,
+        oy,
+        tx,
+        ty,
+        frame,
+        p.confidence,
+        this.policy === 'stable',
+      );
       added += result.added;
       conflictPixels += result.conflictPixels;
       provisionalPixels += result.provisionalPixels;

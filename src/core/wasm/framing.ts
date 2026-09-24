@@ -119,49 +119,63 @@ export interface FramingSession {
 /** Uploads `regions` (ignore regions here) into PERSISTENT core memory (`ls_frame_paint_tile`'s pointer is read
  *  by every tile of a session, and transient `core.scratch()` resets on the very next unrelated kernel call —
  *  e.g. the PNG decode a `tiles.get()` between two tiles can trigger — so it would silently corrupt). Caller
- *  frees the returned residents exactly once (session `dispose()`). */
+ *  frees the returned residents exactly once (session `dispose()`). Frees every resident it allocated itself
+ *  before rethrowing (e.g. a mask-size mismatch caught partway through the `forEach` below) — otherwise a
+ *  region upload thrown away by the caller (nothing left to call `dispose()` on `residents`, since the throw
+ *  never returns them) would leak every allocation this function made before the error. */
 function uploadRegions(core: Core, exports: CoreExports, regions: Region[]): { ptr: number; count: number; residents: Resident[] } {
   if (!regions.length) return { ptr: 0, count: 0, residents: [] };
   const residents: Resident[] = [];
-  const alloc = (len: number): number => {
-    if (!len) return 0;
-    const r = core.alloc(len);
-    residents.push(r);
-    return r.ptr;
-  };
-  const descriptor = core.alloc(regions.length * VOTING_REGION_BYTES);
-  residents.push(descriptor);
-  const view = new DataView(exports.memory.buffer, descriptor.ptr, regions.length * VOTING_REGION_BYTES);
-  regions.forEach((r, i) => {
-    const o = i * VOTING_REGION_BYTES;
-    core.writeRect(descriptor.ptr + o, r.rect);
-    const exclusionsPtr = alloc((r.exclusions?.length || 0) * 32);
-    (r.exclusions || []).forEach((e, k) => core.writeRect(exclusionsPtr + k * 32, e));
-    view.setUint32(o + 32, exclusionsPtr, true);
-    view.setUint32(o + 36, r.exclusions?.length || 0, true);
-    const cropPtr = alloc(r.crop ? 32 : 0);
-    if (r.crop) core.writeRect(cropPtr, r.crop);
-    view.setUint32(o + 40, cropPtr, true);
-    view.setUint32(o + 44, r.solid ? 1 : 0, true);
-    const useMask = !!r.mask && !r.solid;
-    const maskPtr = alloc(useMask ? r.mask!.byteLength : 0);
-    if (useMask) {
-      if (!r.maskWidth || !r.maskHeight || r.mask!.byteLength !== r.maskWidth * r.maskHeight) {
-        throw new Error(`CORE_BAD_ARGUMENT: region ${r.id} mask does not match its declared ${r.maskWidth}×${r.maskHeight}.`);
+  try {
+    const alloc = (len: number): number => {
+      if (!len) return 0;
+      const r = core.alloc(len);
+      residents.push(r);
+      return r.ptr;
+    };
+    const descriptor = core.alloc(regions.length * VOTING_REGION_BYTES);
+    residents.push(descriptor);
+    const view = new DataView(exports.memory.buffer, descriptor.ptr, regions.length * VOTING_REGION_BYTES);
+    regions.forEach((r, i) => {
+      const o = i * VOTING_REGION_BYTES;
+      core.writeRect(descriptor.ptr + o, r.rect);
+      const exclusionsPtr = alloc((r.exclusions?.length || 0) * 32);
+      (r.exclusions || []).forEach((e, k) => core.writeRect(exclusionsPtr + k * 32, e));
+      view.setUint32(o + 32, exclusionsPtr, true);
+      view.setUint32(o + 36, r.exclusions?.length || 0, true);
+      const cropPtr = alloc(r.crop ? 32 : 0);
+      if (r.crop) core.writeRect(cropPtr, r.crop);
+      view.setUint32(o + 40, cropPtr, true);
+      view.setUint32(o + 44, r.solid ? 1 : 0, true);
+      const useMask = !!r.mask && !r.solid;
+      const maskPtr = alloc(useMask ? r.mask!.byteLength : 0);
+      if (useMask) {
+        if (!r.maskWidth || !r.maskHeight || r.mask!.byteLength !== r.maskWidth * r.maskHeight) {
+          throw new Error(`CORE_BAD_ARGUMENT: region ${r.id} mask does not match its declared ${r.maskWidth}×${r.maskHeight}.`);
+        }
+        core.writeBytes(maskPtr, r.mask!);
       }
-      core.writeBytes(maskPtr, r.mask!);
-    }
-    view.setUint32(o + 48, maskPtr, true);
-    view.setUint32(o + 52, useMask ? r.maskWidth! : 0, true);
-    view.setUint32(o + 56, useMask ? r.maskHeight! : 0, true);
-    view.setUint32(o + 60, useMask ? r.factor || 0 : 0, true);
-  });
-  return { ptr: descriptor.ptr, count: regions.length, residents };
+      view.setUint32(o + 48, maskPtr, true);
+      view.setUint32(o + 52, useMask ? r.maskWidth! : 0, true);
+      view.setUint32(o + 56, useMask ? r.maskHeight! : 0, true);
+      view.setUint32(o + 60, useMask ? r.factor || 0 : 0, true);
+    });
+    return { ptr: descriptor.ptr, count: regions.length, residents };
+  } catch (error) {
+    for (const r of residents) r.free();
+    throw error;
+  }
 }
 
 /** Opens a framing session for one presentation canvas: uploads the reference frame and computes the background
  *  rows/columns once (`ls_frame_backgrounds`), then plans reused frame-wide scratch for every subsequent
- *  `paintTile`/`foldEvidence` call (never per-pixel FFI — one call per output tile, mirroring `composite.ts`). */
+ *  `paintTile`/`foldEvidence` call (never per-pixel FFI — one call per output tile, mirroring `composite.ts`).
+ *  Every persistent allocation made here (`sourceFrame`, `bgRows`, `bgColumns`, the ignore-region residents) is
+ *  normally freed by the returned session's `dispose()` — but nothing calls `dispose()` on a session that was
+ *  never returned, so a throw partway through this function (a bad `ls_frame_backgrounds` status, an
+ *  out-of-memory `core.alloc`, or `uploadRegions` rethrowing after freeing its own residents) must free
+ *  whatever this function already allocated itself before propagating the error, or that memory leaks for the
+ *  rest of the session. */
 export function openFramingSession(
   core: Core,
   exports: CoreExports,
@@ -170,135 +184,143 @@ export function openFramingSession(
   ignoreRegions: Region[],
   tileSize: number,
 ): FramingSession {
-  const sourceFrame = core.frame(source.width, source.height);
-  sourceFrame.write(source.data);
-  const bgRows = core.alloc(source.height * 4), bgColumns = core.alloc(source.width * 4);
-  const [panePtr] = core.scratch([32]);
-  core.writeRect(panePtr, layout.pane);
-  core.check(
-    exports.ls_frame_backgrounds(sourceFrame.ptr, source.width, source.height, panePtr, bgRows.ptr, bgColumns.ptr),
-    'frameBackgrounds',
-  );
-  const { ptr: ignorePtr, count: ignoreCount, residents: ignoreResidents } = uploadRegions(core, exports, ignoreRegions);
+  const toFree: Resident[] = [];
+  try {
+    const sourceFrame = core.frame(source.width, source.height);
+    toFree.push(sourceFrame);
+    sourceFrame.write(source.data);
+    const bgRows = core.alloc(source.height * 4);
+    toFree.push(bgRows);
+    const bgColumns = core.alloc(source.width * 4);
+    toFree.push(bgColumns);
+    const [panePtr] = core.scratch([32]);
+    core.writeRect(panePtr, layout.pane);
+    core.check(
+      exports.ls_frame_backgrounds(sourceFrame.ptr, source.width, source.height, panePtr, bgRows.ptr, bgColumns.ptr),
+      'frameBackgrounds',
+    );
+    const { ptr: ignorePtr, count: ignoreCount, residents: ignoreResidents } = uploadRegions(core, exports, ignoreRegions);
+    toFree.push(...ignoreResidents);
 
-  const n = tileSize * tileSize, bits = Math.ceil(n / 8), blocks = (tileSize / 16) ** 2;
-  const sizes: number[] = [
-    LAYOUT_BYTES,
-    76, // paint descriptor
-    96, // fold descriptor
-    n * 4, // tile.pixels
-    bits, // tile.coverage
-    bits, // tile.provisional
-    blocks, // tile.quality
-    blocks * 4, // tile.score
-    blocks * 4, // tile.owner
-    blocks, // tile.conflicts
-    blocks, // tile.frozen
-    MAX_SOURCE_TILES * SOURCE_TILE_BYTES,
-  ];
-  for (let i = 0; i < MAX_SOURCE_TILES; i++) sizes.push(n * 4, bits, bits, blocks, blocks * 4, blocks * 4, blocks, blocks);
-  const ptr = core.scratchFrame(sizes);
-  const [layoutP, paintDescP, foldDescP, tPixels, tCoverage, tProvisional, tQuality, tScore, tOwner, tConflicts, tFrozen, sourcesP] = ptr;
-  writeLayout(new DataView(exports.memory.buffer, layoutP, LAYOUT_BYTES), layout);
-  const sourceSlots = Array.from({ length: MAX_SOURCE_TILES }, (_, i) => ptr.slice(12 + i * 8, 12 + i * 8 + 8));
+    const n = tileSize * tileSize, bits = Math.ceil(n / 8), blocks = (tileSize / 16) ** 2;
+    const sizes: number[] = [
+      LAYOUT_BYTES,
+      76, // paint descriptor
+      96, // fold descriptor
+      n * 4, // tile.pixels
+      bits, // tile.coverage
+      bits, // tile.provisional
+      blocks, // tile.quality
+      blocks * 4, // tile.score
+      blocks * 4, // tile.owner
+      blocks, // tile.conflicts
+      blocks, // tile.frozen
+      MAX_SOURCE_TILES * SOURCE_TILE_BYTES,
+    ];
+    for (let i = 0; i < MAX_SOURCE_TILES; i++) sizes.push(n * 4, bits, bits, blocks, blocks * 4, blocks * 4, blocks, blocks);
+    const ptr = core.scratchFrame(sizes);
+    const [layoutP, paintDescP, foldDescP, tPixels, tCoverage, tProvisional, tQuality, tScore, tOwner, tConflicts, tFrozen, sourcesP] = ptr;
+    writeLayout(new DataView(exports.memory.buffer, layoutP, LAYOUT_BYTES), layout);
+    const sourceSlots = Array.from({ length: MAX_SOURCE_TILES }, (_, i) => ptr.slice(12 + i * 8, 12 + i * 8 + 8));
 
-  const writeTileIn = (tile: FramingTile, which: 'pixels' | 'all') => {
-    core.writeBytes(tPixels, tile.pixels);
-    core.writeBytes(tCoverage, tile.coverage);
-    if (which === 'all') {
-      core.writeBytes(tProvisional, tile.provisional);
-      core.writeBytes(tQuality, tile.quality);
-      core.writeBytes(tScore, tile.score);
-      core.writeBytes(tOwner, tile.owner);
-      core.writeBytes(tConflicts, tile.conflicts);
-      core.writeBytes(tFrozen, tile.frozen);
-    }
-  };
-  const readTileOut = (tile: FramingTile, which: 'pixels' | 'all') => {
-    const mem = new Uint8Array(exports.memory.buffer);
-    tile.pixels.set(mem.subarray(tPixels, tPixels + n * 4));
-    tile.coverage.set(mem.subarray(tCoverage, tCoverage + tile.coverage.byteLength));
-    if (which === 'all') {
-      tile.provisional.set(mem.subarray(tProvisional, tProvisional + tile.provisional.byteLength));
-      tile.quality.set(mem.subarray(tQuality, tQuality + blocks));
-      tile.score.set(new Float32Array(exports.memory.buffer, tScore, blocks));
-      tile.owner.set(new Uint32Array(exports.memory.buffer, tOwner, blocks));
-      tile.conflicts.set(mem.subarray(tConflicts, tConflicts + blocks));
-      tile.frozen.set(mem.subarray(tFrozen, tFrozen + blocks));
-    }
-  };
-
-  return {
-    layout,
-    paintTile(tile, bounds) {
-      writeTileIn(tile, 'pixels');
-      const view = new DataView(exports.memory.buffer, paintDescP, 76);
-      view.setUint32(0, layoutP, true);
-      writeRect(view, 4, bounds);
-      view.setUint32(36, sourceFrame.ptr, true);
-      view.setUint32(40, source.width, true);
-      view.setUint32(44, source.height, true);
-      view.setUint32(48, bgRows.ptr, true);
-      view.setUint32(52, bgColumns.ptr, true);
-      view.setUint32(56, ignorePtr, true);
-      view.setUint32(60, ignoreCount, true);
-      view.setUint32(64, tileSize, true);
-      view.setUint32(68, tPixels, true);
-      view.setUint32(72, tCoverage, true);
-      core.check(exports.ls_frame_paint_tile(paintDescP), 'framePaintTile');
-      readTileOut(tile, 'pixels');
-    },
-    foldEvidence(tile, bounds, sourceBoundsX, sourceBoundsY, sources) {
-      if (sources.length > MAX_SOURCE_TILES) {
-        throw new Error(`CORE_BAD_ARGUMENT: at most ${MAX_SOURCE_TILES} source tiles fold into one output tile.`);
+    const writeTileIn = (tile: FramingTile, which: 'pixels' | 'all') => {
+      core.writeBytes(tPixels, tile.pixels);
+      core.writeBytes(tCoverage, tile.coverage);
+      if (which === 'all') {
+        core.writeBytes(tProvisional, tile.provisional);
+        core.writeBytes(tQuality, tile.quality);
+        core.writeBytes(tScore, tile.score);
+        core.writeBytes(tOwner, tile.owner);
+        core.writeBytes(tConflicts, tile.conflicts);
+        core.writeBytes(tFrozen, tile.frozen);
       }
-      writeTileIn(tile, 'all');
-      sources.forEach((s, i) => {
-        const [sp, sc, spr, sq, ssc, so, scf, sfr] = sourceSlots[i];
-        core.writeBytes(sp, s.pixels);
-        core.writeBytes(sc, s.coverage);
-        core.writeBytes(spr, s.provisional);
-        core.writeBytes(sq, s.quality);
-        core.writeBytes(ssc, s.score);
-        core.writeBytes(so, s.owner);
-        core.writeBytes(scf, s.conflicts);
-        core.writeBytes(sfr, s.frozen);
-        const ev = new DataView(exports.memory.buffer, sourcesP + i * SOURCE_TILE_BYTES, SOURCE_TILE_BYTES);
-        ev.setInt32(0, s.sx, true);
-        ev.setInt32(4, s.sy, true);
-        ev.setUint32(8, sp, true);
-        ev.setUint32(12, sc, true);
-        ev.setUint32(16, spr, true);
-        ev.setUint32(20, sq, true);
-        ev.setUint32(24, ssc, true);
-        ev.setUint32(28, so, true);
-        ev.setUint32(32, scf, true);
-        ev.setUint32(36, sfr, true);
-      });
-      const view = new DataView(exports.memory.buffer, foldDescP, 96);
-      view.setUint32(0, layoutP, true);
-      writeRect(view, 4, bounds);
-      view.setFloat64(36, sourceBoundsX, true);
-      view.setFloat64(44, sourceBoundsY, true);
-      view.setUint32(52, tileSize, true);
-      view.setUint32(56, tPixels, true);
-      view.setUint32(60, tCoverage, true);
-      view.setUint32(64, tProvisional, true);
-      view.setUint32(68, tQuality, true);
-      view.setUint32(72, tScore, true);
-      view.setUint32(76, tOwner, true);
-      view.setUint32(80, tConflicts, true);
-      view.setUint32(84, tFrozen, true);
-      view.setUint32(88, sources.length, true);
-      view.setUint32(92, sourcesP, true);
-      core.check(exports.ls_frame_fold_evidence(foldDescP), 'frameFoldEvidence');
-      readTileOut(tile, 'all');
-    },
-    dispose() {
-      sourceFrame.free();
-      bgRows.free();
-      bgColumns.free();
-      for (const r of ignoreResidents) r.free();
-    },
-  };
+    };
+    const readTileOut = (tile: FramingTile, which: 'pixels' | 'all') => {
+      const mem = new Uint8Array(exports.memory.buffer);
+      tile.pixels.set(mem.subarray(tPixels, tPixels + n * 4));
+      tile.coverage.set(mem.subarray(tCoverage, tCoverage + tile.coverage.byteLength));
+      if (which === 'all') {
+        tile.provisional.set(mem.subarray(tProvisional, tProvisional + tile.provisional.byteLength));
+        tile.quality.set(mem.subarray(tQuality, tQuality + blocks));
+        tile.score.set(new Float32Array(exports.memory.buffer, tScore, blocks));
+        tile.owner.set(new Uint32Array(exports.memory.buffer, tOwner, blocks));
+        tile.conflicts.set(mem.subarray(tConflicts, tConflicts + blocks));
+        tile.frozen.set(mem.subarray(tFrozen, tFrozen + blocks));
+      }
+    };
+
+    return {
+      layout,
+      paintTile(tile, bounds) {
+        writeTileIn(tile, 'pixels');
+        const view = new DataView(exports.memory.buffer, paintDescP, 76);
+        view.setUint32(0, layoutP, true);
+        writeRect(view, 4, bounds);
+        view.setUint32(36, sourceFrame.ptr, true);
+        view.setUint32(40, source.width, true);
+        view.setUint32(44, source.height, true);
+        view.setUint32(48, bgRows.ptr, true);
+        view.setUint32(52, bgColumns.ptr, true);
+        view.setUint32(56, ignorePtr, true);
+        view.setUint32(60, ignoreCount, true);
+        view.setUint32(64, tileSize, true);
+        view.setUint32(68, tPixels, true);
+        view.setUint32(72, tCoverage, true);
+        core.check(exports.ls_frame_paint_tile(paintDescP), 'framePaintTile');
+        readTileOut(tile, 'pixels');
+      },
+      foldEvidence(tile, bounds, sourceBoundsX, sourceBoundsY, sources) {
+        if (sources.length > MAX_SOURCE_TILES) {
+          throw new Error(`CORE_BAD_ARGUMENT: at most ${MAX_SOURCE_TILES} source tiles fold into one output tile.`);
+        }
+        writeTileIn(tile, 'all');
+        sources.forEach((s, i) => {
+          const [sp, sc, spr, sq, ssc, so, scf, sfr] = sourceSlots[i];
+          core.writeBytes(sp, s.pixels);
+          core.writeBytes(sc, s.coverage);
+          core.writeBytes(spr, s.provisional);
+          core.writeBytes(sq, s.quality);
+          core.writeBytes(ssc, s.score);
+          core.writeBytes(so, s.owner);
+          core.writeBytes(scf, s.conflicts);
+          core.writeBytes(sfr, s.frozen);
+          const ev = new DataView(exports.memory.buffer, sourcesP + i * SOURCE_TILE_BYTES, SOURCE_TILE_BYTES);
+          ev.setInt32(0, s.sx, true);
+          ev.setInt32(4, s.sy, true);
+          ev.setUint32(8, sp, true);
+          ev.setUint32(12, sc, true);
+          ev.setUint32(16, spr, true);
+          ev.setUint32(20, sq, true);
+          ev.setUint32(24, ssc, true);
+          ev.setUint32(28, so, true);
+          ev.setUint32(32, scf, true);
+          ev.setUint32(36, sfr, true);
+        });
+        const view = new DataView(exports.memory.buffer, foldDescP, 96);
+        view.setUint32(0, layoutP, true);
+        writeRect(view, 4, bounds);
+        view.setFloat64(36, sourceBoundsX, true);
+        view.setFloat64(44, sourceBoundsY, true);
+        view.setUint32(52, tileSize, true);
+        view.setUint32(56, tPixels, true);
+        view.setUint32(60, tCoverage, true);
+        view.setUint32(64, tProvisional, true);
+        view.setUint32(68, tQuality, true);
+        view.setUint32(72, tScore, true);
+        view.setUint32(76, tOwner, true);
+        view.setUint32(80, tConflicts, true);
+        view.setUint32(84, tFrozen, true);
+        view.setUint32(88, sources.length, true);
+        view.setUint32(92, sourcesP, true);
+        core.check(exports.ls_frame_fold_evidence(foldDescP), 'frameFoldEvidence');
+        readTileOut(tile, 'all');
+      },
+      dispose() {
+        for (const r of toFree) r.free();
+      },
+    };
+  } catch (error) {
+    for (const r of toFree) r.free();
+    throw error;
+  }
 }

@@ -2,10 +2,10 @@
  *  index + resolveTemporal's decision (mirrors `rust/core/src/abi/temporal.rs`): the 8-connected-components
  *  step of `Compositor.components`, the pixel write in `Compositor.overwritePatch`, and `Compositor`'s
  *  `TemporalIndex`/`resolveTemporal` (src/core/compositor.ts). */
-import type { Rect } from '../../types.ts';
+import type { Rect, RGBA } from '../../types.ts';
 import type { Core } from './core.ts';
 import type { CoreExports } from './exports.ts';
-import { FreeGuard, Resident } from './memory.ts';
+import { type FrameInput, FreeGuard, Resident, ResidentFrame } from './memory.ts';
 
 const HEADER_BYTES = 20;
 export interface TemporalComponent {
@@ -72,13 +72,16 @@ export interface OverwriteStats {
 
 /** Mirrors `Compositor.overwritePatch`'s per-tile inner loop (src/core/compositor.ts): unconditionally copies
  *  every pixel of `blocks` (absolute block coordinates already restricted to this tile) from `image` into the
- *  tile. `image` is always a plain frame (`overwritePatch` is only ever called with the observation's original
- *  RGBA, never a resident frame). `tileSize` must equal `tile.pixels`'s own (native) tile size. */
+ *  tile. `image` is a plain frame or a `ResidentFrame` already uploaded to the `FrameRing` for this observation
+ *  (mirrors `prepareObservation`'s `residentImage` handling, src/core/wasm/composite.ts) — a resident frame's
+ *  pointer is growth-stable, so it is used in place instead of copying the whole frame (up to ~30MB at
+ *  3456×2234) into scratch on every one of this call's per-tile invocations (`overwritePatch` calls this once
+ *  per tile the patch touches). `tileSize` must equal `tile.pixels`'s own (native) tile size. */
 export function overwriteTile(
   core: Core,
   tile: OverwriteTile,
   tileSize: number,
-  image: { data: Uint8ClampedArray; width: number; height: number },
+  image: FrameInput,
   blocks: [number, number][],
   ox: number,
   oy: number,
@@ -89,6 +92,7 @@ export function overwriteTile(
   stable: boolean,
 ): OverwriteStats {
   const n = tileSize * tileSize, tileBlocks = (tileSize / 16) ** 2, blockCount = blocks.length;
+  const residentImage = image instanceof ResidentFrame ? image : undefined;
   const [tileDesc, tPixels, tCoverage, tProvisional, tQuality, tConflicts, tOwner, tFrozen, rgbaScratch, blocksScratch, out] = core.scratch(
     [
       OVERWRITE_TILE_HEADER_BYTES,
@@ -99,7 +103,7 @@ export function overwriteTile(
       tileBlocks,
       tileBlocks * 4,
       tileBlocks,
-      image.width * image.height * 4,
+      residentImage ? 0 : image.width * image.height * 4,
       blockCount * 8,
       OVERWRITE_OUTPUT_BYTES,
     ],
@@ -114,7 +118,8 @@ export function overwriteTile(
   const tileView = new DataView(core.exports.memory.buffer, tileDesc, OVERWRITE_TILE_HEADER_BYTES);
   [tPixels, tCoverage, tProvisional, tQuality, tConflicts, tOwner, tFrozen].forEach((p, i) => tileView.setUint32(i * 4, p, true));
   tileView.setUint32(28, tileSize, true);
-  core.writeBytes(rgbaScratch, image.data);
+  const rgba = residentImage ? residentImage.ptr : rgbaScratch;
+  if (!residentImage) core.writeBytes(rgba, (image as RGBA).data);
   const blocksView = new DataView(core.exports.memory.buffer, blocksScratch, blockCount * 8);
   blocks.forEach(([bx, by], i) => {
     blocksView.setInt32(i * 8, bx, true);
@@ -123,7 +128,7 @@ export function overwriteTile(
   core.check(
     core.exports.ls_overwrite_tile(
       tileDesc,
-      rgbaScratch,
+      rgba,
       image.width,
       image.height,
       blockCount ? blocksScratch : 0,

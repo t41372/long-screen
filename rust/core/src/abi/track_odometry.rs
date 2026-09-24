@@ -53,6 +53,29 @@ pub extern "C" fn ls_track_odometry(
 ) -> i32 {
     let (iw, ih) = (image_width as usize, image_height as usize);
     let (gw, gh) = (gray_width as usize, gray_height as usize);
+    // Checked before use: `iw`/`ih`/`gw`/`gh`/the feature counts are caller-supplied (ultimately an untrusted
+    // decoded frame's own declared dimensions), and each gets multiplied below to size a `slice()` call —
+    // release builds have `overflow-checks = false` (rust/Cargo.toml), so an unchecked product could silently
+    // wrap to a small length, which `slice()` would accept, while this function keeps indexing with the
+    // original (un-wrapped) iw/ih/gw/gh — walking past that too-small slice into a wasm trap, not the negative
+    // status abi/mod.rs promises. Needs roughly 2^30+ pixels to reach on a 32-bit wasm usize.
+    let (
+        Some(frame_pixels),
+        Some(gray_pixels),
+        Some(previous_feature_bytes_len),
+        Some(own_feature_bytes_len),
+    ) = (
+        iw.checked_mul(ih),
+        gw.checked_mul(gh),
+        (previous_feature_count as usize).checked_mul(FEATURE_BYTES),
+        (own_feature_count as usize).checked_mul(FEATURE_BYTES),
+    )
+    else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let Some(frame_bytes) = frame_pixels.checked_mul(4) else {
+        return STATUS_BAD_ARGUMENT;
+    };
     // SAFETY: every buffer is adapter-owned; every length is bounds checked before the slice is trusted.
     let (
         Some(previous_bytes),
@@ -63,17 +86,12 @@ pub extern "C" fn ls_track_odometry(
         Some(own_feature_bytes),
         Some(dst),
     ) = (
-        unsafe { slice(previous, iw * ih * 4) },
-        unsafe { slice(current, iw * ih * 4) },
-        unsafe { slice(previous_gray, gw * gh) },
-        unsafe { slice(g, gw * gh) },
-        unsafe {
-            slice(
-                previous_features,
-                previous_feature_count as usize * FEATURE_BYTES,
-            )
-        },
-        unsafe { slice(own_features, own_feature_count as usize * FEATURE_BYTES) },
+        unsafe { slice(previous, frame_bytes) },
+        unsafe { slice(current, frame_bytes) },
+        unsafe { slice(previous_gray, gray_pixels) },
+        unsafe { slice(g, gray_pixels) },
+        unsafe { slice(previous_features, previous_feature_bytes_len) },
+        unsafe { slice(own_features, own_feature_bytes_len) },
         unsafe { slice_mut(out, TRACK_ODOMETRY_OUT_BYTES) },
     )
     else {
@@ -97,8 +115,8 @@ pub extern "C" fn ls_track_odometry(
     let mask = if labels == 0 {
         None
     } else {
-        // SAFETY: label plane covers the native frame.
-        match unsafe { slice(labels, iw * ih) } {
+        // SAFETY: label plane covers the native frame. `frame_pixels` is the already-overflow-checked iw*ih.
+        match unsafe { slice(labels, frame_pixels) } {
             Some(l) => Some((l, code as u8)),
             None => return STATUS_BAD_ARGUMENT,
         }

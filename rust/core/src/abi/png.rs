@@ -155,6 +155,14 @@ pub extern "C" fn ls_png_decode(src: u32, len: u32, out: u32, cap: u32) -> i32 {
         Ok(r) => r,
         Err(e) => return classify(&e),
     };
+    // Check the caller's `cap` against the declared IHDR dimensions BEFORE allocating `raw` below: `read_info()`
+    // has already parsed IHDR, so width/height are known here, but `output_buffer_size()`'s allocation is sized
+    // from those same (PNG-supplied, so untrusted) dimensions — no reason to allocate a buffer for a decode the
+    // caller's own `dst` could never hold anyway.
+    let (width, height) = reader.info().size();
+    if cap as u64 != width as u64 * height as u64 * 4 {
+        return STATUS_BAD_ARGUMENT;
+    }
     let Some(buf_len) = reader.output_buffer_size() else {
         return STATUS_PNG_DECODE_FAILED;
     };
@@ -173,17 +181,17 @@ pub extern "C" fn ls_png_decode(src: u32, len: u32, out: u32, cap: u32) -> i32 {
         png::ColorType::Rgba => 4,
         png::ColorType::Indexed => return STATUS_PNG_DECODE_FAILED,
     };
-    let (width, height) = reader.info().size();
-    if cap as u64 != width as u64 * height as u64 * 4 {
-        return STATUS_BAD_ARGUMENT;
-    }
     expand_to_rgba(&raw, channels, dst);
     STATUS_OK
 }
 
 /// One-shot CRC32 (`crc32fast`, hardware-accelerated where available) for `src/codec/png.ts`'s per-chunk PNG
 /// CRC checks, where the bytes to hash are already one contiguous slice — replaces the hand-rolled JS CRC32
-/// table it used. `ls_crc32_new`/`_update`/`_digest` below is the incremental form.
+/// table it used. There used to be an incremental `ls_crc32_new`/`_update`/`_digest`/`_free` form too (a
+/// `HandleTable<crc32fast::Hasher>`), for a caller that saw its bytes in bounded pieces — `src/export/zip.ts`
+/// switched to `client-zip` (which computes its own CRC32 in JS) and `src/codec/png.ts::chunk()`'s type+body
+/// are already contiguous in its output buffer, so nothing needed it any more (final-review item 8: every IDAT
+/// chunk used to create a handle that only garbage collection ever freed on the TS side).
 #[no_mangle]
 pub extern "C" fn ls_crc32(ptr: u32, len: u32) -> u32 {
     // SAFETY: adapter-owned buffer, bounds checked.
@@ -191,48 +199,4 @@ pub extern "C" fn ls_crc32(ptr: u32, len: u32) -> u32 {
         Some(bytes) => crc32fast::hash(bytes),
         None => 0,
     }
-}
-
-static mut CRC_HANDLES: HandleTable<crc32fast::Hasher> = HandleTable::new();
-fn crc_handles() -> &'static mut HandleTable<crc32fast::Hasher> {
-    // SAFETY: only the main instance touches CRC_HANDLES, and only through these exported entry points — no
-    // pool helper thread reaches this module.
-    unsafe { &mut *std::ptr::addr_of_mut!(CRC_HANDLES) }
-}
-
-/// Incremental CRC32 for a streaming caller that sees its data in bounded chunks and must not buffer a whole
-/// file to hash it (`src/export/zip.ts`'s per-entry CRC, and `src/codec/png.ts::chunk()`'s type+body CRC).
-/// Returns a handle (> 0) or `STATUS_BAD_ARGUMENT`.
-#[no_mangle]
-pub extern "C" fn ls_crc32_new() -> i32 {
-    crc_handles().insert(crc32fast::Hasher::new())
-}
-
-#[no_mangle]
-pub extern "C" fn ls_crc32_update(handle: u32, ptr: u32, len: u32) -> i32 {
-    // SAFETY: adapter-owned buffer, bounds checked.
-    let Some(bytes) = (unsafe { slice(ptr, len as usize) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let Some(hasher) = crc_handles().get(handle) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    hasher.update(bytes);
-    STATUS_OK
-}
-
-/// Reads the digest without consuming the handle: `src/export/zip.ts::ZipWriter.add` reads the same running
-/// CRC twice (the data descriptor, then the central-directory record) before the entry is done. Callers free
-/// the handle explicitly with `ls_crc32_free` once they are (`Crc32` in `src/core/wasm/png.ts`).
-#[no_mangle]
-pub extern "C" fn ls_crc32_digest(handle: u32) -> u32 {
-    match crc_handles().get(handle) {
-        Some(hasher) => hasher.clone().finalize(),
-        None => 0,
-    }
-}
-
-#[no_mangle]
-pub extern "C" fn ls_crc32_free(handle: u32) {
-    crc_handles().free(handle);
 }

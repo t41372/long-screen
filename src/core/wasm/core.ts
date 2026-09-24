@@ -89,8 +89,13 @@ const HELPER_STACK_BYTES = 1024 * 1024;
 export class Core {
   /** Transient arena: every kernel call replans it. */
   private readonly arena: Arena;
-  /** Frame arena: holds a prepared observation across the tile loop, during which transient calls
-   *  (e.g. PNG encoding on tile eviction) must not clobber it. Only one observation is live at a time. */
+  /** Frame arena: holds state that must survive a whole per-canvas tile loop, during which transient calls
+   *  (e.g. PNG encoding on tile eviction) must not clobber it — either one `prepareObservation()` result
+   *  (composite.ts, the render pass's compositing) or one `FramingSession` (framing.ts, the presentation
+   *  pass's `paintTile`/`foldEvidence` loop). Only one of the two is ever live at a time: `Engine.run()`
+   *  (src/pipeline/engine.ts) awaits the whole render pass to finish before starting the presentation pass, so
+   *  their frame-arena users never interleave — a future concurrent-canvas render would need a second arena
+   *  (or to serialise on this one) before that invariant could break. */
   private readonly frameArena: Arena;
   readonly featureBytes: number;
   readonly matchBytes: number;
@@ -251,7 +256,7 @@ export class Core {
   overwriteTile(
     tile: OverwriteTile,
     tileSize: number,
-    image: { data: Uint8ClampedArray; width: number; height: number },
+    image: FrameInput,
     blocks: [number, number][],
     ox: number,
     oy: number,
@@ -359,11 +364,6 @@ export class Core {
   }
   crc32(bytes: Uint8Array): number {
     return png.crc32(this, bytes);
-  }
-  /** Incremental CRC32 for a caller streaming bounded chunks (`src/codec/png.ts::chunk()`). `src/export/zip.ts`
-   *  does not use this — it streams through `client-zip`, which computes its own CRC32 in JS. */
-  crc32Stream(): png.Crc32 {
-    return new png.Crc32(this);
   }
 
   meanDifference(a: Gray, b: Gray): number {

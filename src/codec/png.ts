@@ -1,4 +1,4 @@
-import { CRC32, utf8 } from './crc.ts';
+import { crc32, utf8 } from './crc.ts';
 import type { RGBA } from '../types.ts';
 import { core } from '../core/wasm.ts';
 function chunk(type: string, body: Uint8Array): Uint8Array {
@@ -6,10 +6,9 @@ function chunk(type: string, body: Uint8Array): Uint8Array {
   view.setUint32(0, body.length);
   out.set(name, 4);
   out.set(body, 8);
-  const crc = new CRC32();
-  crc.update(name);
-  crc.update(body);
-  view.setUint32(body.length + 8, crc.digest());
+  // `name` and `body` already sit contiguously in `out` (bytes 4..8+body.length is exactly type+body, what a
+  // PNG chunk's CRC covers) — one core crc32() call over that slice, not an incremental update() per piece.
+  view.setUint32(body.length + 8, crc32(out.subarray(4, 8 + body.length)));
   return out;
 }
 const SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
