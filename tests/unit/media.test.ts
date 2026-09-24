@@ -3,6 +3,7 @@ import { assert, assertEquals, assertRejects } from '@std/assert';
 import { BlobReader, type Packet } from '../../src/media/reader.ts';
 import { MediabunnyDemuxer } from '../../src/media/mediabunny-demux.ts';
 import { probeIsobmff } from '../../src/media/isobmff-probe.ts';
+import { sniffSource, type SourceKind } from '../../src/media/sniff.ts';
 import { bitmapReader, CompatibilitySource, openDemuxer, openMedia, PreciseSource, Signal } from '../../src/media/source.ts';
 import { canvasConverter } from '../../src/media/convert.ts';
 import { BufferPool, releaseUnlessHeld } from '../../src/media/pool.ts';
@@ -464,6 +465,46 @@ Deno.test('demux: a file that ends inside its mdat opens with a TRUNCATED_RECORD
     Error,
     'MP4/MOV has no movie metadata (moov). The recording may be unfinished.',
   );
+});
+Deno.test('sniffSource: every fixture container passes; non-videos and unread video containers are named from their bytes, not their names', async () => {
+  for (const name of ['scroll.mp4', 'scroll.mov', 'fragmented.mp4', 'rotated.mp4', 'scroll.webm']) {
+    assertEquals(await sniffSource(await fixture(name)), { supported: true }, name);
+  }
+  const file = (parts: (string | number[])[], name: string, type = '') =>
+    new File(parts.map((p) => typeof p === 'string' ? p : new Uint8Array(p)), name, { type });
+  const cases: [File, SourceKind, boolean][] = [
+    // The report that prompted this: a Markdown file, which a drop bypasses the input's accept list with.
+    [file(['# 笔记\n\n- 不是视频\n'], 'notes.md', 'text/markdown'), 'text', false],
+    [file(['# renamed\n'], 'renamed.mp4', 'video/mp4'), 'text', false],
+    [file([[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]], 'shot.png'), 'png', false],
+    [file([[0xff, 0xd8, 0xff, 0xe0, 0, 0x10]], 'shot.jpg'), 'jpeg', false],
+    [file([[0, 0, 0, 24], 'ftypheic', [0, 0, 0, 0], 'mif1heic'], 'IMG_0001.HEIC'), 'heif', false],
+    [file(['%PDF-1.7\n%âã\n'], 'doc.pdf'), 'pdf', false],
+    [file([[0x50, 0x4b, 3, 4, 20, 0]], 'report.docx'), 'zip', false],
+    [file([], 'empty.mp4'), 'empty', false],
+    [file([[0, 0, 0, 0, 0xde, 0xad]], 'blob.bin'), 'unknown', false],
+    [file(['RIFF', [0, 0, 0, 0], 'AVI LIST'], 'capture.avi', 'video/x-msvideo'), 'avi', true],
+    [file([[0x30, 0x26, 0xb2, 0x75, 0x8e, 0x66, 0xcf, 0x11, 0xa6, 0xd9]], 'clip.wmv'), 'wmv', true],
+    [file(['FLV', [1, 5, 0, 0, 0, 9]], 'clip.flv'), 'flv', true],
+    [file(['GIF89a', [0x40, 1, 0xf0, 0, 0xf7, 0, 0]], 'capture.gif'), 'gif', true],
+    [file(['RIFF', [0, 0, 0, 0], 'WEBPVP8 '], 'shot.webp'), 'webp', false],
+    [file(['RIFF', [0, 0, 0, 0], 'WAVEfmt '], 'voice.wav'), 'wav', false],
+    [file(['RIFF', [0, 0, 0, 0], 'ACONanih'], 'cursor.ani'), 'riff', false],
+    [file([[0, 0, 1, 0xba, 0x44, 0, 4]], 'dvd.vob'), 'mpegps', true],
+    [file(['OggS', [0, 2, 0, 0]], 'clip.ogv'), 'ogg', true],
+    [file(['ID3', [4, 0, 0, 0, 0, 0]], 'song.mp3'), 'mp3', false],
+  ];
+  for (const [f, kind, video] of cases) {
+    assertEquals(await sniffSource(f), { supported: false, kind, video }, f.name);
+  }
+  // MPEG-TS is recognized by its sync byte every 188 bytes — but only when the bytes are not text.
+  const ts = new Uint8Array(564);
+  ts[0] = ts[188] = ts[376] = 0x47;
+  assertEquals(await sniffSource(new File([ts], 'rec.ts')), { supported: false, kind: 'mpegts', video: true });
+  assertEquals(await sniffSource(new File(['G'.repeat(600)], 'g.txt')), { supported: false, kind: 'text', video: false });
+  // Bytes nothing here recognizes are still handed to the demuxer when the name or type says video.
+  assertEquals(await sniffSource(file([[0, 0, 0, 0, 0xde, 0xad]], 'odd.mov')), { supported: true });
+  assertEquals(await sniffSource(file([[0, 0, 0, 0, 0xde, 0xad]], 'odd', 'video/quicktime')), { supported: true });
 });
 Deno.test('demux: WebM skips the full-file frame-count walk when Segment Info Duration is present, and falls back to it when absent', async () => {
   const withDuration = await new MediabunnyDemuxer(await fixture('scroll.webm')).init();

@@ -242,6 +242,8 @@ function readmeText(hash: string, stamp: string): string {
 
 用法：解压整个文件夹，用 Chrome 或 Edge 打开 long-screen.html：双击，或拖进浏览器窗口。不需要安装软件，不需要网络；录屏和结果都不会离开这台电脑。
 
+要选的文件：一段滚动页面的屏幕录影，MP4、MOV、WebM 或 MKV。Windows 可用“截图工具”的录制功能或 Xbox Game Bar（Win+Alt+R），Mac 用 ⌘⇧5，手机用系统自带的屏幕录制。文档、图片和 AVI / WMV / GIF 等其他格式会被直接拒绝并说明原因。
+
 浏览器：只支持 Chrome 和 Edge。Mac 上双击默认用 Safari 打开，请改用右键 →“打开方式”→ Chrome。Safari 打开后读不了你选的视频文件；Firefox 没有测试过。不要用无痕 / 隐私窗口，关掉窗口项目就没了。
 
 须知：

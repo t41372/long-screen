@@ -9,6 +9,7 @@ import { call } from './rpc.ts';
 import { captureNativeFrame, decoderVideo, seek, video, waitVideo, waitVideoOn } from './video.ts';
 import { t } from '../i18n/page.ts';
 import type { Diagnostic, MediaInfo } from '../types.ts';
+import { sniffSource, type SourceSniff } from '../media/sniff.ts';
 
 const MEDIA_HASH_PREFIX = 'long-screen-media-hash:';
 // Matching name + byte size is not proof of identity (two different recordings can share both). Content
@@ -43,15 +44,32 @@ export interface SourceFile {
   wire(): void;
 }
 
+function rejectionText(name: string, sniff: Extract<SourceSniff, { supported: false }>): string {
+  const kind = t(`ui.source.kind.${sniff.kind}`);
+  return sniff.video ? t('ui.source.rejectedVideo', { name, kind }) : t('ui.source.rejectedOther', { name, kind });
+}
+
 export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagnostic): void }): SourceFile {
   let videoURL: string | undefined;
   // Cancels the previous file's readiness listeners (decoderVideo's 'loadedmetadata'/'loadeddata'/'error'/timeout)
   // when a new file is chosen before they fired, so they never fire late against the new file's decoderVideo.src.
   let readinessAbort: AbortController | undefined;
+  let choices = 0;
 
   async function chooseFile(file: File): Promise<void> {
+    // A file that is not a video is refused before any state changes, so a recording chosen earlier stays selected.
+    // The counter keeps a slower check of an earlier pick from landing after a later one. A file that cannot be read
+    // at all is passed on: the probe and the native player report that the way they always have.
+    const choice = ++choices, sniff = await sniffSource(file).catch((): SourceSniff => ({ supported: true }));
+    if (choice !== choices) {
+      return;
+    }
     if (state.busy) {
       toast(t('ui.source.busyToast'));
+      return;
+    }
+    if (!sniff.supported) {
+      toast(rejectionText(file.name, sniff), true);
       return;
     }
     state.selectedFile = file;
@@ -162,7 +180,7 @@ export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagn
       $<HTMLButtonElement>('regions-btn').disabled = false;
     } catch (error) {
       $('file-subtitle').textContent = t('ui.source.subtitleUnavailable', { size: humanBytes(file.size) });
-      toast(String(error), true);
+      toast(t('ui.source.unreadableToast', { reason: String(error) }), true);
     }
   }
 

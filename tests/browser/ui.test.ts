@@ -70,6 +70,36 @@ Deno.test({
   },
 });
 Deno.test({
+  name:
+    'browser UI: a file that is not a video (Markdown) is refused from its bytes with guidance; the recording chosen before stays selected',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const h = await harness();
+    try {
+      const page = h.page;
+      await page.goto(h.base + '/');
+      await page.waitForFunction('!!window.longScreen');
+      await page.setInputFiles('#file-input', `${new URL('../fixtures/scroll.mp4', import.meta.url).pathname}`);
+      await page.waitForFunction(() => document.querySelector('#file-subtitle')?.textContent?.includes('avc1'), null, { timeout: 30000 });
+      const subtitle = await page.textContent('#file-subtitle');
+      const notes = `${results}notes.md`;
+      await Deno.writeTextFile(notes, '# 笔记\n\n不是视频。\n');
+      await page.setInputFiles('#file-input', notes);
+      await page.waitForFunction(() => document.querySelector('#toast')?.textContent?.includes('notes.md'), null, { timeout: 10000 });
+      const toast = await page.textContent('#toast');
+      assert(toast?.includes('“notes.md”不是视频（文本文件），没有打开。') && toast.includes('MP4、MOV、WebM 或 MKV'), toast ?? '');
+      assertEquals(await page.textContent('#file-title'), 'scroll.mp4');
+      assertEquals(await page.textContent('#file-subtitle'), subtitle);
+      assert(!(await page.textContent('#diagnostics'))?.includes('PROBE_FAILED'), 'the Markdown file never reached the probe');
+      assertEquals(h.errors, []);
+      assertEquals(h.external, []);
+    } finally {
+      await h.close();
+    }
+  },
+});
+Deno.test({
   name: 'browser UI: built-in demo runs through the worker and exports a portable ZIP64 project; mobile layout has no horizontal overflow',
   sanitizeOps: false,
   sanitizeResources: false,

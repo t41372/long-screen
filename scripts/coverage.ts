@@ -71,7 +71,8 @@ const INCLUDE = '--include=^file:.*/(src/.*|main\\.ts)$';
  *  branches, exercised only on its success path by a direct test) and the non-square-PAR/HDR container warnings
  *  (`track.getPixelAspectRatio()`/`hasHighDynamicRange()`, both mediabunny-side reads with no fixture on hand that
  *  exercises them) are the uncovered lines; nothing here regressed, the new code is just wider than the two direct
- *  tests it has. */
+ *  tests it has. media/sniff.ts (the chosen-file type check) is new at 100: its direct test names one file per
+ *  recognized kind. */
 const FLOORS: [RegExp, number][] = [
   [/^codec\/crc\.ts$/, 100],
   [/^codec\/png\.ts$/, 96],
@@ -123,6 +124,7 @@ const FLOORS: [RegExp, number][] = [
   [/^media\/pool\.ts$/, 100],
   [/^media\/reader\.ts$/, 100],
   [/^media\/rgba-copy\.ts$/, 14],
+  [/^media\/sniff\.ts$/, 100],
   [/^media\/source\.ts$/, 94],
   [/^pipeline\/attachments\.ts$/, 100],
   [/^pipeline\/consistency\.ts$/, 100],

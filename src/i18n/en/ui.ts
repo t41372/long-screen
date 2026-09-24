@@ -126,6 +126,33 @@ export const uiSections: Catalog<typeof zh> = {
       probeFailedMessage: 'Frame-accurate decode probing failed: {{error}}',
       probeFailedAction:
         "Will try the browser's native player to read metadata. To keep processing, choose “Approximate · native seek” for decoding.",
+      rejectedVideo:
+        '“{{name}}” is {{kind}}, a format the browser cannot read frame by frame, so it was not opened. Set your screen recorder to save MP4, or convert the file to MP4 first with HandBrake or ffmpeg.',
+      rejectedOther:
+        '“{{name}}” is not a video ({{kind}}), so it was not opened. Choose a screen recording of a scrolling page: MP4, MOV, WebM or MKV. On Windows, record with the Snipping Tool or Xbox Game Bar (Win+Alt+R); on a Mac, press ⌘⇧5; on a phone, use its built-in screen recording.',
+      unreadableToast:
+        'This video cannot be read ({{reason}}). Check that the recording finished properly and that the file was copied or downloaded completely; if it still fails, try an H.264 MP4. The diagnostics say why frame-accurate decoding failed.',
+      kind: {
+        empty: 'an empty file',
+        heif: 'a HEIC/AVIF image',
+        avi: 'an AVI video',
+        webp: 'a WebP image',
+        wav: 'a WAV audio file',
+        riff: 'a RIFF file',
+        wmv: 'a WMV/ASF video',
+        flv: 'an FLV video',
+        mpegps: 'an MPEG-PS video',
+        ogg: 'an Ogg media file',
+        gif: 'a GIF animation',
+        png: 'a PNG image',
+        jpeg: 'a JPEG image',
+        pdf: 'a PDF document',
+        zip: 'a ZIP archive or Office document',
+        mp3: 'an MP3 audio file',
+        text: 'a text file',
+        mpegts: 'an MPEG-TS video',
+        unknown: 'an unrecognised file',
+      },
     },
     viewer: {
       previewLevel: 'Preview L{{level}} (native size unchanged)',

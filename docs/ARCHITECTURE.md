@@ -299,7 +299,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `export.ts` — "下载长图"/"导出完整项目"/"复制长图"：优先原生保存文件选择器，回退锚点下载/OPFS 临时副本。UI。
 - `history.ts` — 本地项目历史对话框：分页列表、"打开"、"删除"（经 `src/storage/projects.ts` 的三键族删除）。UI。
 - `regions.ts` — 手动区域编辑对话框：在首帧上绘制 fixed/ignore/moving 矩形，写入 `state.manualRegions`。UI。
-- `source-file.ts` — 选择源录屏：文件输入/拖放、探测 RPC（含原生播放器回退）、内容指纹（供 diagnostics.ts 校验重开文件与项目来源一致）。UI，兼浏览器 API（File）。
+- `source-file.ts` — 选择源录屏：文件输入/拖放、按文件头拦下不是 MP4/MOV/WebM/MKV 的文件并给出指引（`media/sniff.ts`）、探测 RPC（含原生播放器回退）、内容指纹（供 diagnostics.ts 校验重开文件与项目来源一致）。UI，兼浏览器 API（File）。
 - `video.ts` — 原生 `<video>` seek + 帧捕获原语，供 source-file.ts/diagnostics.ts/compatibility 帧请求桥接共用。UI，兼浏览器 API。
 - `flight.ts` — 崩溃记录器：把重建的最后已知状态写入 localStorage，页面被杀或崩溃后下次加载上报一次并清除。UI，兼 I/O（localStorage）。
 
@@ -316,6 +316,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `reader.ts` — `Demuxer`/`Packet` 接口，以及 `BlobReader`：最多 8 个 256KiB 页面的随机访问读取，不调用整段 `arrayBuffer()`；现在只被 `isobmff-probe.ts` 使用（容器本身的读取交给了 mediabunny 自己的 `BlobSource`）。TS 外壳：I/O。
 - `mediabunny-demux.ts` — `MediabunnyDemuxer`：MP4/MOV/fMP4/WebM 解封装，包在 npm 包 mediabunny 的 `Input`/`BlobSource`/`EncodedPacketSink` 之上，只用它的 packet 级 API（不用它的解码 sink，解码仍是本项目自己的 WebCodecs 路径）；把 mediabunny "警告后继续"的几种情形翻译成本项目原有的、冻结的错误文案。TS 外壳：I/O（容器解析）。
 - `isobmff-probe.ts` — 一次轻量 box 扫描，只检测 mediabunny 自己不拒绝的几种情形（多重/变速剪辑列表、sample-description 索引 ≠ 1）与 mediabunny 没有对应诊断的版本 0 `ctts` 有符号偏移，以及文件在 `mdat`/`moof` 中途结束（`TRUNCATED_RECORDING` 警告；mediabunny 会不声不响地读到最后一个完整样本为止）；顶层 box 的容错与 mediabunny 一致（解析不了或超出文件末尾的顶层 box 结束扫描而不报错），不比它更严；不重复 mediabunny 的解封装本身。TS 外壳：I/O（容器解析）。
+- `sniff.ts` — 按文件前 512 字节判断所选文件是什么：ISOBMFF（MP4/MOV）与 EBML（WebM/MKV）放行；文本、图片（含 HEIC/AVIF）、PDF、压缩包，以及 AVI/WMV/FLV/MPEG-TS/GIF 等本项目不读的视频格式，由 source-file.ts 直接拒绝并说明原因。认不出的字节只在文件名或类型表明是视频时放行，交给 demuxer 判断。TS 外壳：I/O。
 - `convert.ts` — `VideoFrame` → RGBA 转换的可注入形态（直转/worker 转换）与显式释放缓冲池接入。TS 外壳：浏览器 API（WebCodecs）。
 - `convert-worker.ts` — 帧转换 worker：转移进来的 `VideoFrame` 上跑 `copyTo({format:'RGBA'})`，转移 RGBA 缓冲回去；刻意保持零依赖（不引入 `src/core/wasm.ts`）。TS 外壳：浏览器 API（Worker）。
 - `rgba-copy.ts` — `copyTo(RGBA)` 选项与结果布局校验，供直转/worker 转换器与 convert-worker.ts 共用。TS 外壳：浏览器 API。

@@ -117,6 +117,34 @@ export const uiSections = {
       subtitleUnavailable: '{{size}} · 逐帧解码与原生预览都不可用',
       probeFailedMessage: '逐帧解码探测失败：{{error}}',
       probeFailedAction: '将尝试浏览器原生播放器读取元数据。若仍要处理，请在解码方式中选择“近似 · 原生 seek”。',
+      rejectedVideo:
+        '“{{name}}”是 {{kind}}，浏览器无法逐帧读取这种格式，没有打开。请在录屏软件里改为输出 MP4，或先用 HandBrake / ffmpeg 转成 MP4。',
+      rejectedOther:
+        '“{{name}}”不是视频（{{kind}}），没有打开。请选择一段滚动页面的屏幕录影：MP4、MOV、WebM 或 MKV。Windows 可用“截图工具”的录制功能或 Xbox Game Bar（Win+Alt+R），Mac 用 ⌘⇧5，手机用系统自带的屏幕录制。',
+      unreadableToast:
+        '读不了这段视频（{{reason}}）。请确认录制已正常结束、文件复制或下载完整；仍不行时换成 H.264 编码的 MP4 再试。逐帧解码失败的原因见诊断记录。',
+      /** What a refused file is (src/media/sniff.ts's SourceKind), as it reads inside rejectedVideo/rejectedOther. */
+      kind: {
+        empty: '空文件',
+        heif: 'HEIC/AVIF 图片',
+        avi: 'AVI 视频',
+        webp: 'WebP 图片',
+        wav: 'WAV 音频',
+        riff: 'RIFF 文件',
+        wmv: 'WMV/ASF 视频',
+        flv: 'FLV 视频',
+        mpegps: 'MPEG-PS 视频',
+        ogg: 'Ogg 媒体',
+        gif: 'GIF 动图',
+        png: 'PNG 图片',
+        jpeg: 'JPEG 图片',
+        pdf: 'PDF 文档',
+        zip: 'ZIP 压缩包或 Office 文档',
+        mp3: 'MP3 音频',
+        text: '文本文件',
+        mpegts: 'MPEG-TS 视频',
+        unknown: '无法识别的文件',
+      },
     },
     viewer: {
       previewLevel: '预览 L{{level}}（原尺寸未改变）',
