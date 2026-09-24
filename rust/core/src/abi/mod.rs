@@ -28,6 +28,7 @@ mod memory;
 mod motion;
 mod png;
 mod raster;
+mod regions;
 mod voting;
 pub(crate) mod wire;
 
@@ -41,6 +42,7 @@ pub const STATUS_BAD_FILTER: i32 = -256;
 /// sides can no longer drift silently.
 #[no_mangle]
 pub extern "C" fn ls_layout(which: u32) -> u32 {
+    use regions::{REGIONS_FINISH_DESC_BYTES, REGION_HEADER_BYTES};
     use wire::{
         COMPOSITE_HEADER_BYTES, LEARNER_FIELD_BYTES, LEARNER_MOTION_BYTES, MATCH_POINT_BYTES,
         MOTION_BYTES, MOTION_FIELD_HEADER_BYTES, PATCH_BYTES, REFINEMENT_BYTES,
@@ -57,6 +59,8 @@ pub extern "C" fn ls_layout(which: u32) -> u32 {
         7 => LEARNER_MOTION_BYTES,
         8 => LEARNER_FIELD_BYTES,
         9 => 24, // motion-field cell size, matching motion::estimate_motion's fixed cell grid.
+        10 => REGIONS_FINISH_DESC_BYTES,
+        11 => REGION_HEADER_BYTES,
         _ => 0,
     }) as u32
 }

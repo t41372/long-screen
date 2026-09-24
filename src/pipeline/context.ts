@@ -88,9 +88,10 @@ export class RunContext {
   consistencyThinLayers = 0;
   /** Core-resident voting ring of the running solve pass; released in run()'s finally on every exit path. */
   voting?: VotingRing;
-  /** Core-resident render state (frame ring, label plane, consistency mask); released with the render pass. */
+  /** Core-resident render state (frame ring, consistency mask); released with the render pass. The atlas label
+   *  plane is NOT here: it is `atlas.resident`, shared read-only by solve/render/compositor, owned by the atlas
+   *  itself and released once with it (see `atlas` below), not per-pass. */
   frames?: FrameRing;
-  residentLabels?: Resident;
   residentMask?: Resident;
   /** Core-resident layer-learning accumulators of the scan pass; finish() releases them, run()'s finally otherwise. */
   learner?: LayerLearner;
@@ -101,14 +102,9 @@ export class RunContext {
   releaseResidentRenderState(compositor?: { dispose(): void }): void {
     compositor?.dispose();
     this.frames?.free();
-    this.residentLabels?.free();
     this.residentMask?.free();
     this.nativePlane?.free();
-    this.frames =
-      this.residentLabels =
-      this.residentMask =
-      this.nativePlane =
-        undefined;
+    this.frames = this.residentMask = this.nativePlane = undefined;
     for (const saved of this.fixedPixels.values()) saved.free();
     this.fixedPixels.clear();
   }
@@ -118,6 +114,8 @@ export class RunContext {
   timings: Record<string, number> = {};
   duplicates = 0;
   skippedPaints = 0;
+  /** Built once at the end of scan(), read by solve()/render()/Compositor for the rest of the run. Owns a
+   *  core-resident label plane (`atlas.resident`); disposed exactly once, in run()'s finally. */
   atlas?: RegionAtlas;
   source: FrameSource;
   computer: AnalysisComputer;

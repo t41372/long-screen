@@ -35,11 +35,13 @@ export async function solve(ctx: RunContext): Promise<void> {
     previousFeaturesAll: Feature[] | undefined,
     previousPlan: FramePlan | undefined,
     solved = 0;
-  // Native frames (previous, current) and the atlas label plane enter core memory once per frame / once per
-  // pass; native refinement, sticky-band detection and the downscale all read them there. Released in this
-  // pass's finally (run()'s finally covers abnormal exits through the same fields).
+  // Native frames (previous, current) enter core memory once per frame; native refinement, sticky-band detection
+  // and the downscale all read them there. Released in this pass's finally (run()'s finally covers abnormal
+  // exits through the same field).
   const solveFrames = ctx.frames = core().frameRing(2, ctx.source.info.width, ctx.source.info.height);
-  const residentLabels = ctx.residentLabels = core().upload(atlas.labels);
+  // The atlas label plane is already core-resident (built once by scan(), owned by `atlas`) — read it directly
+  // instead of uploading another copy; freed once with the atlas itself, not here.
+  const residentLabels = atlas.resident;
   // Full-resolution luma of the current frame, recomputed in place on first use each frame.
   const nativePlane = ctx.nativePlane = core().gray(ctx.source.info.width, ctx.source.info.height);
   const pending: { key: string; value: FramePlan }[] = [];
@@ -240,9 +242,10 @@ export async function solve(ctx: RunContext): Promise<void> {
       await it.return(undefined);
     } catch { /* already unwinding */ }
     solveFrames.free();
-    residentLabels.free();
+    // residentLabels (atlas.resident) is NOT freed here: this pass borrowed it, it did not upload it. It is
+    // released exactly once, with the atlas, in run()'s finally.
     nativePlane.free();
-    ctx.frames = ctx.residentLabels = ctx.nativePlane = undefined;
+    ctx.frames = ctx.nativePlane = undefined;
   }
   if (pending.length && !storageFailed) {
     try {

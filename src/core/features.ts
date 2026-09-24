@@ -17,13 +17,7 @@ export function matchFeatures(a: Feature[], b: Feature[], includeAmbiguous = tru
 export function featureWords(features: Feature[]): number[] {
   return core().featureWords(features);
 }
+/** `ls_mean_difference` (rust/core/src/raster.rs); kept here only for the historical call shape tests use. */
 export function meanDifference(a: Gray, b: Gray): number {
-  if (a.width !== b.width || a.height !== b.height) {
-    return 255;
-  }
-  let s = 0;
-  for (let i = 0; i < a.data.length; i++) {
-    s += Math.abs(a.data[i] - b.data[i]);
-  }
-  return s / a.data.length;
+  return core().meanDifference(a, b);
 }

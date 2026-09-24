@@ -1,5 +1,5 @@
 import type { Gray, Rect, RGBA } from '../types.ts';
-import { core, ResidentFrame } from './wasm.ts';
+import { core, type ResidentFrame } from './wasm.ts';
 
 /** The floating-point pose remains diagnostic data; every native raster operation uses this integer origin. */
 export interface RasterPose {

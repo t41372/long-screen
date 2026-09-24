@@ -18,6 +18,12 @@ import * as composite from './composite.ts';
 import type { CompositeObservation, PreparedObservation } from './composite.ts';
 import { learner as learnerFactory, type LearnerHandle } from './learner.ts';
 import { type VotingRing, votingRing as votingRingFactory } from './voting.ts';
+import {
+  type FinishAccumulators,
+  finishRegions as finishRegionsImpl,
+  labelAtlasResident as labelAtlasResidentImpl,
+  manualUncovered,
+} from './regions.ts';
 
 export interface RefinementResult {
   x: number;
@@ -344,5 +350,29 @@ export class Core {
   /** Plans the frame-wide observation buffers once; each `compositeTile` call then only moves one tile. */
   prepareObservation(obs: CompositeObservation, tileSize: number): PreparedObservation {
     return composite.prepareObservation(this, obs, tileSize);
+  }
+
+  /** Every algorithmic-path region of `LayerLearner.finish()` (band detection through sticky-header cleanup),
+   *  built in one call. */
+  finishRegions(
+    width: number,
+    height: number,
+    cell: number,
+    acc: FinishAccumulators,
+    nativeWidth: number,
+    nativeHeight: number,
+    factor: number,
+    reference?: FrameInput,
+  ): Region[] {
+    return finishRegionsImpl(this, this.exports, width, height, cell, acc, nativeWidth, nativeHeight, factor, reference);
+  }
+  /** The expensive step of `finish()`'s manual-region branch: is every native pixel left uncovered by `manual`? */
+  regionsManualUncovered(manual: Rect[], nativeWidth: number, nativeHeight: number): boolean {
+    return manualUncovered(this, this.exports, manual, nativeWidth, nativeHeight);
+  }
+  /** `RegionAtlas`'s pixel labelling for `regions` in one call, written directly into a new core-resident label
+   *  plane (never copied out and back), plus the per-code pixel counts. Caller owns the returned `resident`. */
+  labelAtlasResident(regions: Region[], width: number, height: number): { resident: Resident; counts: Uint32Array } {
+    return labelAtlasResidentImpl(this, this.exports, regions, width, height);
   }
 }

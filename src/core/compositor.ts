@@ -6,7 +6,7 @@ import { core, Resident, type ResidentFrame } from './wasm.ts';
 import type { RegionAtlas } from './layers.ts';
 import { intersect, pad, union } from './math.ts';
 import { resolveRasterPose } from './raster.ts';
-/** Native-screen occluder membership, native-frame coordinates. Occlusions are always full-width bands, so rect containment on (sx, sy) matches the row-rule used before. */
+/** Native-screen occluder membership, native-frame coordinates. Occlusions are always full-width bands, so rect containment on (sx, sy) is exact. */
 function occluded(occlusions: Rect[] | undefined, sx: number, sy: number): boolean {
   return !!occlusions && occlusions.some((o) => sx >= o.x && sx < o.x + o.width && sy >= o.y && sy < o.y + o.height);
 }
@@ -41,12 +41,12 @@ export function blockOf(key: number): [number, number] {
   const by = Math.floor(key / BLOCK_STRIDE);
   return [key - by * BLOCK_STRIDE - BLOCK_OFFSET, by - BLOCK_OFFSET];
 }
-/** Temporal records of one canvas, resident for the pass. Persisted rows are written by flush(), so a run that is
- *  interrupted mid-pass leaves rows as of the last flush — the same durability the tile cache already has. */
 /** In-memory form of a temporal record: the block membership is a resident integer-key set (records on a
  *  long-scrolling canvas grow to tens of thousands of blocks and are touched by every conflict component that
  *  overlaps them), and the persisted `blocks` array is derived from it only when a record is written. */
 type ResidentTemporal = Omit<TemporalRegion, 'blocks'> & { keys: Set<number> };
+/** Temporal records of one canvas, resident for the pass. Persisted rows are written by flush(), so a run that is
+ *  interrupted mid-pass leaves rows as of the last flush — the same durability the tile cache already has. */
 interface TemporalIndex {
   records: Map<string, ResidentTemporal>;
   dirty: Set<string>;
@@ -83,8 +83,6 @@ interface PatchResult {
 export class Compositor {
   private temporalSequence = 0;
   private rectangular = new Set<string>();
-  /** Atlas labels uploaded once per compositor so masked regions never copy the label plane per frame. */
-  private labels?: Resident;
   private temporal = new Map<string, TemporalIndex>();
   constructor(
     private db: KV,
@@ -127,11 +125,10 @@ export class Compositor {
     }
     return index;
   }
-  /** Releases the core-resident label plane; the compositor is unusable afterwards. */
-  dispose(): void {
-    this.labels?.free();
-    this.labels = undefined;
-  }
+  /** No-op: the compositor no longer owns any core-resident state (the atlas's label plane is shared, owned by
+   *  the atlas itself — `RegionAtlas.dispose()`, called once from run()'s finally). Kept so callers (`context.ts`'s
+   *  `releaseResidentRenderState`) can keep treating a compositor as disposable without a special case. */
+  dispose(): void {}
   /** `consistent`, when given, is a per-native-pixel (image-sized, one byte per pixel, indexed like `labels`) world-consistency
    *  mask computed by the render pass's one-frame lookahead: 0 means this pixel's placement here could be checked against a
    *  neighbouring frame and disagreed with every such check (CONSISTENT-BY-DEFAULT and genuinely-consistent pixels are both
@@ -155,9 +152,7 @@ export class Compositor {
     if (residentFrame && (residentFrame.width !== image.width || residentFrame.height !== image.height)) {
       throw new Error('Resident frame does not match the observation.');
     }
-    const code = this.atlas.code(region),
-      labels = this.labels ??= core().upload(this.atlas.labels),
-      rectangular = this.rectangular.has(region.id);
+    const code = this.atlas.code(region), labels = this.atlas.resident, rectangular = this.rectangular.has(region.id);
     const world = { x: region.rect.x + ox, y: region.rect.y + oy, width: region.rect.width, height: region.rect.height };
     const stats: CompositeStats = { added: 0, conflicts: 0, uncertain: 0, tiles: 0, bounds: world, provisionalPixels: 0 };
     const conflictBlocks = new Set<number>();
@@ -225,9 +220,9 @@ export class Compositor {
         const result = await this.resolveTemporal(image, region, p, frame, component.bounds, component.blocks, world, mask);
         patchedPixels += result.added;
         patchedTiles += result.newTiles;
-        // A pixel count now (F8/F12 fix); this used to fold in a block count instead, understating conflict
-        // pixels by roughly a factor of 256 (one QUALITY_BLOCK). Still coarser than a mismatch-pixel count
-        // (see PatchResult.conflictPixels): every pixel this patch rewrote, not only the ones that differed.
+        // A pixel count, not a block count — a block count would understate conflict pixels by roughly a factor
+        // of 256 (one QUALITY_BLOCK). Still coarser than a mismatch-pixel count (see PatchResult.conflictPixels):
+        // every pixel this patch rewrote, not only the ones that differed.
         patchedConflictPixels += result.conflictPixels;
         patchedProvisional += result.provisionalPixels;
         // stats.conflicts is the running frame-wide total (accumulated across every conflicting component
@@ -460,9 +455,9 @@ export class Compositor {
         }
       }
       // A masked block only ever reaches overwritePatch already holding ≥12 covered pixels — either this
-      // frame's own conflict detection required overlap ≥ 12 to flag it (see add()), or it carries forward an
-      // earlier resolveTemporal record, which itself only ever wrote pixels the same way. The tile this block
-      // sits on is therefore never new here, so there is no newTiles bookkeeping to do.
+      // frame's own conflict detection required overlap ≥ 12 to flag it (rust/core/src/compositor.rs), or it
+      // carries forward an earlier resolveTemporal record, which itself only ever wrote pixels the same way. The
+      // tile this block sits on is therefore never new here, so there is no newTiles bookkeeping to do.
       if (changed) {
         tile.dirty = true;
         tile.touched = performance.now();

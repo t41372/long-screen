@@ -214,6 +214,11 @@ export class Engine {
       ctx.voting = undefined;
       ctx.learner?.dispose();
       ctx.learner = undefined;
+      // The atlas's label plane is read (never re-uploaded) by solve()/render()/Compositor, so it is released
+      // here exactly once, not per-pass — freeing it earlier would be a use-after-free the moment any later
+      // pass touched `atlas.resident`.
+      ctx.atlas?.dispose();
+      ctx.atlas = undefined;
       ctx.releaseResidentRenderState();
       ctx.computer.dispose();
       ctx.source.dispose();

@@ -181,6 +181,15 @@ export interface CoreExports {
     carryCount: number,
     out: number,
   ): number;
+  ls_regions_finish(desc: number): number;
+  ls_regions_free(handle: number): void;
+  ls_regions_count(handle: number): number;
+  ls_regions_cells_total(handle: number): number;
+  ls_regions_read_headers(handle: number, out: number): number;
+  ls_regions_read_masks(handle: number, out: number): number;
+  ls_regions_read_cells(handle: number, out: number): number;
+  ls_regions_manual_uncovered(rects: number, count: number, nativeWidth: number, nativeHeight: number): number;
+  ls_regions_label_atlas(regions: number, count: number, width: number, height: number, labelsOut: number, countsOut: number): number;
 }
 
 /** Byte layouts shared with `rust/core/src/abi/wire.rs`. Asserted against the live module's `ls_layout` once
@@ -193,6 +202,8 @@ export const MATCH_POINT_BYTES = 40,
   PATCH_BYTES = 16,
   MOTION_CELL = 24;
 export const COMPOSITE_HEADER = 24, VOTING_REGION_BYTES = 64, LEARNER_MOTION_BYTES = 32, LEARNER_FIELD_BYTES = 40;
+/** `ls_regions_finish` request descriptor, and one output region header (`rust/core/src/abi/regions.rs`). */
+export const REGIONS_FINISH_DESC_BYTES = 112, REGION_HEADER_BYTES = 88;
 
 /** Selector → constant, in the order `rust/core/src/abi/mod.rs::ls_layout` matches them. */
 const LAYOUT = [
@@ -206,6 +217,8 @@ const LAYOUT = [
   LEARNER_MOTION_BYTES,
   LEARNER_FIELD_BYTES,
   MOTION_CELL,
+  REGIONS_FINISH_DESC_BYTES,
+  REGION_HEADER_BYTES,
 ];
 
 /** Throws a clear error the moment a Rust/TS byte-layout constant has drifted, instead of a wrong answer or an

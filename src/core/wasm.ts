@@ -16,6 +16,7 @@ export type { BytesInput, FrameInput } from './wasm/memory.ts';
 export { FrameRing, Resident, ResidentFrame, ResidentGray } from './wasm/memory.ts';
 export type { VotingBox, VotingRecord, VotingVerdict } from './wasm/voting.ts';
 export { VotingRing } from './wasm/voting.ts';
+export type { FinishAccumulators } from './wasm/regions.ts';
 export type { CompositeObservation, CompositeTile, CompositeTileStats, PreparedObservation } from './wasm/composite.ts';
 export type { ConsistencyMaskInput, ConsistencyNeighbourInput, ConsistencyVoteInput } from './wasm/consistency.ts';
 export { core, coreBuild, coreLoaded, type CorePlan, loadCore, loadPlannedCore, planCore, simdSupported } from './wasm/loader.ts';

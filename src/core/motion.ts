@@ -1,7 +1,15 @@
 import type { Feature, Gray, Match, Motion, MotionField, Point, Rect, RGBA } from '../types.ts';
 import { clamp } from './math.ts';
 import { extractFeatures, matchFeatures } from './features.ts';
-import { type AuditResult, core, type LabelMask, type RefinementResult, type ResidentFrame, ResidentGray } from './wasm.ts';
+import {
+  type AuditResult,
+  core,
+  type LabelMask,
+  type PatchInput,
+  type RefinementResult,
+  type ResidentFrame,
+  ResidentGray,
+} from './wasm.ts';
 /** Motion evidence on analysis and native images. Every kernel runs in the Rust core (rust/core/src/motion.rs);
  *  this module keeps the pipeline-facing call shape and the pure orchestration (`probeScale`). */
 export function translationHypotheses(matches: Match[], max = 6): Motion[] {
@@ -50,13 +58,8 @@ export function refineNative(
 ): NativeRefinement {
   return core().refineNative(a, b, guess, region, mask, radius);
 }
-export interface Patch {
-  /** Top-left corner in region-local native pixels. */
-  x: number;
-  y: number;
-  size: number;
-  data: Uint8Array;
-}
+/** Top-left corner in region-local native pixels. Same shape as `PatchInput` (wasm.ts), which `core().refinePatches` marshals. */
+export type Patch = PatchInput;
 /** Native-resolution texture samples kept with a keyframe (a few KB) so revisits and loop edges are measured in native pixels, not analysis pixels. */
 export function extractPatches(
   native: Gray | ResidentGray,

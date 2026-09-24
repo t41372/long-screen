@@ -29,11 +29,13 @@ export async function render(ctx: RunContext): Promise<void> {
     attachments.set(value.id, value);
   }
   // Core-resident render state: each decoded native frame enters core memory once (three slots: previous,
-  // current, lookahead), the atlas label plane once per pass, and the consistency mask is produced and consumed
-  // inside the core. Freed in this pass's finally; run()'s finally covers abnormal exits.
+  // current, lookahead), and the consistency mask is produced and consumed inside the core. Freed in this pass's
+  // finally; run()'s finally covers abnormal exits. The atlas label plane is NOT allocated here — it is
+  // `ctx.atlas!.resident`, already core-resident since scan() built the atlas, borrowed (not uploaded) below and
+  // released once with the atlas itself, in run()'s finally.
   const { width: frameW, height: frameH } = ctx.source.info;
   const frames = ctx.frames = core().frameRing(3, frameW, frameH);
-  const residentLabels = ctx.residentLabels = core().upload(ctx.atlas!.labels);
+  const residentLabels = ctx.atlas!.resident;
   const residentMask = ctx.residentMask = core().alloc(frameW * frameH);
   const fixedPixels = ctx.fixedPixels, previousPlacements = new Map<string, Placement>();
   const fixedBytes = ctx.regions.filter((r) => r.kind === 'fixed').reduce(
