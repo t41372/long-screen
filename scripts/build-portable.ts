@@ -179,17 +179,70 @@ let page = html;
 page = replaceOnce(page, '<link rel="stylesheet" href="./style.css">', `<style>${css}</style>`);
 page = replaceOnce(page, 'href="./icon.svg"', `href="data:image/svg+xml;base64,${encodeBase64(icon)}"`);
 page = replaceOnce(page, 'href="./"', 'href=""', 'the brand link href="./"');
+// What the page cannot tell a user on its own: a browser this build does not support (WebKit cannot read the picked
+// file from file://, see the module doc comment; Firefox is untested), and an app that never started. main.ts
+// publishes `window.longScreen` as the last step of its synchronous start-up, so a main.js that loaded but threw
+// part-way leaves it unset; a worker that fails later is the app's own "Worker 错误" toast. The banners float over the
+// top of the page, each with a close button, because the layout below is sized to the viewport (.workspace is
+// 100dvh minus the header): a banner in the flow would push its controls off-screen. The <noscript> one goes first
+// in <body> for the same reason. The UA test has no word boundary on purpose: headless Chrome reports itself as
+// "HeadlessChrome/".
+const OVERLAY_STYLE = 'position:fixed;top:0;left:0;right:0;z-index:40;box-shadow:0 4px 18px rgba(0,0,0,.18)';
+const NOTICE_STYLE = 'display:flex;gap:16px;align-items:flex-start;padding:12px 30px;background:#834d3c;color:#fcfff6;' +
+  'font-size:14px;line-height:1.7';
+const CLOSE_STYLE = 'flex:none;background:none;border:1px solid rgba(252,255,246,.6);border-radius:6px;color:inherit;' +
+  'font:inherit;padding:0 10px;cursor:pointer';
+const BROWSER_NOTICE = '这个便携版只支持 Chrome 和 Edge。当前浏览器能运行内置演示，但多半读不了你选的录屏文件。' +
+  '请用 Chrome 或 Edge 打开 long-screen.html（Mac：右键 →“打开方式”→ Chrome）。';
+const START_NOTICE =
+  'Long Screen 没能启动：页面脚本加载或运行失败。请用最新版 Chrome 或 Edge 打开，并确认浏览器或公司策略没有禁止本地网页运行脚本；' +
+  '仍然失败时，把浏览器控制台（F12）里的报错发给提供这个文件的人。';
+const noscript = `<noscript><div role="alert" style="${OVERLAY_STYLE};${NOTICE_STYLE}">Long Screen 需要 JavaScript：` +
+  '请在 Chrome 或 Edge 中允许这个页面运行脚本。</div></noscript>';
 const bootstrap = `<script type="application/json" id="long-screen-portable">${payloadJSON}</script>
 <script>(function () {
-  var data = JSON.parse(document.getElementById('long-screen-portable').textContent);
-  (${installPortable.toString()})(data, location.href);
-  var code = data.scripts['main.js'];
-  var blobURL = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
-  var s = document.createElement('script');
-  s.src = blobURL;
-  s.onerror = function () { console.error('long-screen portable: main.js blob script failed to load'); };
-  document.body.appendChild(s);
+  function notice(text) {
+    var box = document.getElementById('portable-notices');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'portable-notices';
+      box.style.cssText = ${JSON.stringify(OVERLAY_STYLE)};
+      document.body.appendChild(box);
+    }
+    var el = document.createElement('div'), message = document.createElement('span'), close = document.createElement('button');
+    el.setAttribute('role', 'alert');
+    el.className = 'portable-notice';
+    el.style.cssText = ${JSON.stringify(NOTICE_STYLE)};
+    message.style.flex = '1';
+    message.textContent = text;
+    close.type = 'button';
+    close.textContent = '关闭';
+    close.style.cssText = ${JSON.stringify(CLOSE_STYLE)};
+    close.onclick = function () { el.remove(); };
+    el.appendChild(message);
+    el.appendChild(close);
+    box.appendChild(el);
+  }
+  var failed = false;
+  function fail(reason) {
+    console.error('long-screen portable: ' + reason);
+    if (!failed) notice(${JSON.stringify(START_NOTICE)});
+    failed = true;
+  }
+  if (!/Chrom(e|ium)\\//.test(navigator.userAgent)) notice(${JSON.stringify(BROWSER_NOTICE)});
+  try {
+    var data = JSON.parse(document.getElementById('long-screen-portable').textContent);
+    (${installPortable.toString()})(data, location.href);
+    var s = document.createElement('script');
+    s.src = URL.createObjectURL(new Blob([data.scripts['main.js']], { type: 'text/javascript' }));
+    s.onerror = function () { fail('main.js blob script failed to load'); };
+    s.onload = function () { if (!window.longScreen) fail('main.js loaded but did not finish starting (see the error above)'); };
+    document.body.appendChild(s);
+  } catch (error) {
+    fail('bootstrap failed: ' + error);
+  }
 })();</script>`;
+page = replaceOnce(page, '<body>', `<body>\n${noscript}`);
 page = replaceOnce(page, '<script type="module" src="./assets/main.js"></script>', bootstrap);
 const hash = await gitShortHash(root);
 const stamp = new Date().toISOString();
