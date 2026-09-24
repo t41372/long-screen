@@ -1,8 +1,9 @@
 /** The local project history dialog: paginated listing, "打开" (reopen an earlier project) and "删除" (the three-
  *  key-family delete now shared with device-check.ts via src/storage/projects.ts on the worker side). */
 import type { AppState } from './state.ts';
-import { $, phaseNames, storageInfo, toast } from './dom.ts';
+import { $, phaseName, storageInfo, toast } from './dom.ts';
 import { call } from './rpc.ts';
+import { t } from '../i18n/page.ts';
 import type { Project } from '../types.ts';
 import type { Run } from './run.ts';
 import type { Canvases } from './canvases.ts';
@@ -17,7 +18,7 @@ export function createHistory(state: AppState, viewer: TiledViewer, run: Run, ca
 
   async function openProject(id: string): Promise<void> {
     if (state.busy) {
-      toast('请先完成当前处理。');
+      toast(t('ui.history.busyToast'));
       return;
     }
     run.resetView();
@@ -28,14 +29,17 @@ export function createHistory(state: AppState, viewer: TiledViewer, run: Run, ca
     await diagnostics.loadDiagnostics();
     viewer.fit();
     run.setBusy(false);
-    $('status-title').textContent = result.interrupted ? '处理曾中断 · 查看已提交结果' : phaseNames[state.project!.status];
-    $('progress-message').textContent = state.project!.error || '本地结果已恢复；原视频没有复制进项目。';
-    $('progress-count').textContent = `${state.project!.renderedFrames} 帧`;
+    $('status-title').textContent = result.interrupted ? t('ui.history.interruptedStatus') : phaseName(state.project!.status);
+    $('progress-message').textContent = state.project!.error || t('ui.history.restoredMessage');
+    $('progress-count').textContent = t('ui.count.frames', {
+      count: state.project!.renderedFrames,
+      frames: String(state.project!.renderedFrames),
+    });
     if (result.interrupted) {
       diagnostics.addDiagnostic({
         code: 'INTERRUPTED_SESSION',
         severity: 'warning',
-        message: '上一次处理没有完成。仅已提交的数据可恢复；重新处理需要再次选择原视频，当前不支持断点续算。',
+        message: t('ui.history.interruptedDiagnosticMessage'),
       });
     }
   }
@@ -57,21 +61,25 @@ export function createHistory(state: AppState, viewer: TiledViewer, run: Run, ca
         item.className = 'history-item';
         const body = document.createElement('div'), title = document.createElement('strong'), sub = document.createElement('p');
         title.textContent = p.name;
-        sub.textContent = `${new Date(p.created).toLocaleString()} · ${p.renderedFrames} 帧 · ${phaseNames[p.status] || p.status}`;
+        sub.textContent = t('ui.history.rowSub', {
+          date: new Date(p.created).toLocaleString(),
+          frames: t('ui.count.frames', { count: p.renderedFrames, frames: String(p.renderedFrames) }),
+          status: phaseName(p.status),
+        });
         body.append(title, sub);
         const actions = document.createElement('div');
         actions.className = 'history-actions';
         const open = document.createElement('button');
         open.className = 'secondary';
-        open.textContent = '打开';
+        open.textContent = t('ui.history.openBtn');
         open.onclick = () => {
           void openProject(p.id).then(() => $<HTMLDialogElement>('history-dialog').close()).catch((e) => toast(String(e), true));
         };
         const remove = document.createElement('button');
         remove.className = 'quiet';
-        remove.textContent = '删除';
+        remove.textContent = t('ui.history.deleteBtn');
         remove.onclick = () => {
-          if (confirm(`删除本地项目「${p.name}」及其所有瓦片？`)) {
+          if (confirm(t('ui.history.deleteConfirm', { name: p.name }))) {
             void call('delete', { projectId: p.id }).then(() => {
               item.remove();
               if (state.project?.id === p.id) {
@@ -90,7 +98,7 @@ export function createHistory(state: AppState, viewer: TiledViewer, run: Run, ca
       projectCursor = rows.at(-1)?.key || projectCursor;
       $('more-projects').hidden = rows.length < 30;
       if (!rows.length && reset) {
-        $('history-list').textContent = '还没有本地项目。';
+        $('history-list').textContent = t('ui.history.noProjects');
       }
     } catch (error) {
       toast(String(error), true);

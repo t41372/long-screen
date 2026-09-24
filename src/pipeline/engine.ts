@@ -30,6 +30,7 @@ import type { Diagnostic, FrameSource, Progress, Project, Settings } from '../ty
 import type { KV } from '../storage/db.ts';
 import type { Diagnostics } from '../storage/diagnostics.ts';
 import type { TileStore } from '../storage/tiles.ts';
+import { t } from '../i18n/index.ts';
 import { RunContext, StorageError } from './context.ts';
 import { presentFraming, presentPyramid } from './presentation.ts';
 import { scan } from './scan.ts';
@@ -117,26 +118,26 @@ export class Engine {
     await ctx.diagnostics.emit({
       code: 'MODEL_ASSUMPTIONS',
       severity: 'info',
-      message:
-        `重建采用分层平移画布与几何回环约束。自动遮罩和动态区域属于启发式推断；置信分数不是经过校准的正确概率。世界一致性比较按本片源声明的解码噪声 ±${ctx.noise} 级执行${
-          ctx.noise ? '（压缩视频的振铃/色度重建余量）' : '（无损片源，逐像素精确比较）'
-        }。`,
-      action: '比例或结构无法共存时会保留独立片段，不把不相容的状态强行拼接。',
+      message: t('diag.MODEL_ASSUMPTIONS.message', {
+        noise: ctx.noise,
+        margin: ctx.noise ? t('diag.MODEL_ASSUMPTIONS.marginLossy') : t('diag.MODEL_ASSUMPTIONS.marginLossless'),
+      }),
+      action: t('diag.MODEL_ASSUMPTIONS.action'),
       detail: { noise: ctx.noise, lossless: ctx.noise === 0, source: ctx.source.info.mode, codec: ctx.source.info.codec },
     });
     if (ctx.project.settings.decoder === 'compatibility') {
       await ctx.diagnostics.emit({
         code: 'APPROXIMATE_DECODER',
         severity: 'warning',
-        message: `已明确启用 ${ctx.project.settings.compatibilityFPS} Hz 原生 seek 兼容模式。不能保证采到视频的每一帧，短暂内容可能缺失。`,
-        action: '需要逐帧覆盖保证时，使用 WebCodecs 支持的 H.264、VP9 等输入。',
+        message: t('diag.APPROXIMATE_DECODER.message', { fps: ctx.project.settings.compatibilityFPS }),
+        action: t('diag.APPROXIMATE_DECODER.action'),
       });
     }
     if (ctx.source.info.width > ctx.project.settings.analysisSize || ctx.source.info.height > ctx.project.settings.analysisSize) {
       await ctx.diagnostics.emit({
         code: 'ANALYSIS_PYRAMID',
         severity: 'info',
-        message: `运动分析的长边上限为 ${ctx.project.settings.analysisSize}px；原分辨率像素用于精修和最终合成，输出没有跟随降采样。`,
+        message: t('diag.ANALYSIS_PYRAMID.message', { size: ctx.project.settings.analysisSize }),
       });
     }
     for (const warning of ctx.source.info.warnings) {
@@ -146,8 +147,8 @@ export class Engine {
       await ctx.diagnostics.emit({
         code: 'FRAME_MEMORY_PRESSURE',
         severity: 'warning',
-        message: '单帧原始像素及参考帧占用已接近所选缓存预算。解码器/GPU 自身内存不受 JavaScript 缓存预算控制。',
-        action: '不会静默降低输出分辨率；内存不足时保留已提交数据并报告失败。',
+        message: t('diag.FRAME_MEMORY_PRESSURE.message'),
+        action: t('diag.FRAME_MEMORY_PRESSURE.action'),
       });
     }
   }
@@ -201,7 +202,7 @@ export class Engine {
       fraction: 1,
       frames: ctx.project.renderedFrames,
       time: ctx.source.info.duration,
-      message: ctx.partial ? '已保存明确标记的部分重建。' : '重建已完成；请检查诊断与未观察区域。',
+      message: ctx.partial ? t('progress.runPartial') : t('progress.runComplete'),
     });
   }
   /** run()'s top-level catch: marks the project partial or errored (never silently discards committed tiles),
@@ -223,7 +224,7 @@ export class Engine {
         code,
         severity: 'error',
         message: ctx.project.error,
-        action: '已经提交到本地存储的瓦片仍可查看和导出；没有把失败标记成成功。',
+        action: t('diag.RUN_FAILURE.action'),
       });
       await ctx.tiles.flush();
       await ctx.diagnostics.flush();
@@ -234,7 +235,7 @@ export class Engine {
         code: 'PERSISTENCE_ERROR',
         severity: 'error',
         message: String(storageError),
-        action: '存储写入也失败；仅先前成功提交的数据可恢复。',
+        action: t('diag.PERSISTENCE_ERROR.action'),
       });
     }
   }

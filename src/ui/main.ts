@@ -1,7 +1,9 @@
 /** Bootstrap: builds every feature module in dependency order, routes worker events to them, and wires the handful
  *  of listeners with no state of their own (help dialog, dialog close buttons, viewer zoom). No algorithms here —
  *  this file, and everything it imports from src/ui/**, is the "thin TypeScript" shell over the Rust core. */
-import { $, NO_COMPRESSION_STREAM, phaseNames, storageInfo, toast } from './dom.ts';
+// First import: picks the page language before any other module can produce text.
+import { t, takeReopenProject, translatePage, wireLanguageSelect } from '../i18n/page.ts';
+import { $, NO_COMPRESSION_STREAM, phaseName, storageInfo, toast } from './dom.ts';
 import { call, on, onError, onFrameRequest, onMessageError } from './rpc.ts';
 import { TiledViewer } from './viewer.ts';
 import { createState } from './state.ts';
@@ -16,6 +18,7 @@ import { createExport } from './export.ts';
 import { flightEnd, flightProgress, takeInterruptedFlight } from './flight.ts';
 import { MEMORY_EXPORT_LIMIT } from '../export/target.ts';
 
+translatePage();
 const state = createState();
 const viewer = new TiledViewer(
   $<HTMLCanvasElement>('viewer'),
@@ -51,6 +54,7 @@ $('native-btn').onclick = () => viewer.native();
 $('zoom-in').onclick = () => viewer.zoom(1.3);
 $('zoom-out').onclick = () => viewer.zoom(1 / 1.3);
 $<HTMLInputElement>('quality-toggle').onchange = (e) => viewer.setQuality((e.target as HTMLInputElement).checked);
+wireLanguageSelect($<HTMLSelectElement>('language-select'), () => state.project?.id, (message) => toast(message, true));
 $('help-btn').onclick = () => $<HTMLDialogElement>('help-dialog').showModal();
 for (const el of document.querySelectorAll<HTMLElement>('[data-close]')) {
   el.onclick = () => {
@@ -60,12 +64,12 @@ for (const el of document.querySelectorAll<HTMLElement>('[data-close]')) {
 }
 $('persist-btn').onclick = () => {
   if (typeof navigator.storage?.persist !== 'function') {
-    toast('当前浏览器不支持申请持久存储；本地重建仍可使用，请在支持导出的环境保存重要结果。');
+    toast(t('ui.main.persistUnsupported'));
     return;
   }
-  void navigator.storage.persist().then((granted) =>
-    toast(granted ? '浏览器已授予持久存储；清除网站数据仍会删除项目。' : '浏览器未授予持久存储。请导出重要结果，避免自动回收。')
-  ).catch((error) => toast(String(error), true));
+  void navigator.storage.persist().then((granted) => toast(granted ? t('ui.main.persistGranted') : t('ui.main.persistDenied'))).catch((
+    error,
+  ) => toast(String(error), true));
 };
 
 // Worker event routing.
@@ -86,7 +90,7 @@ on('finished', (m) => {
   void canvases.refreshCanvases(true).then(() => viewer.fit());
   void diagnostics.loadDiagnostics();
   void storageInfo();
-  $('status-title').textContent = phaseNames[m.data.status];
+  $('status-title').textContent = phaseName(m.data.status);
   if (m.data.error) {
     toast(m.data.error, true);
   }
@@ -106,50 +110,63 @@ on('export-progress', (m) => {
 onError((message) => {
   flightEnd();
   run.setBusy(false);
-  toast(`Worker 错误：${message}`, true);
+  toast(t('ui.main.workerErrorToast', { message }), true);
 });
-onMessageError(() => toast('Worker 消息无法解码。请保留现有结果并重新加载。', true));
+onMessageError(() => toast(t('ui.main.workerMessageUndecodable'), true));
 
 void call('capabilities').then((c) => {
   state.capabilities = c;
   if (!c.offscreen) {
-    toast('当前浏览器缺少 OffscreenCanvas；无法运行渲染 Worker。', true);
+    toast(t('ui.main.offscreenMissing'), true);
   }
   if (!c.webcodecs) {
-    toast('当前浏览器没有 WebCodecs。需要明确选择可能漏帧的兼容 seek 模式。');
+    toast(t('ui.main.webcodecsMissingToast'));
   }
   if (!c.compression) {
     toast(NO_COMPRESSION_STREAM, true);
   }
   if (c.privateStorage) {
-    toast('隐私浏览：项目只保存在这个窗口的内存里，关闭窗口后即消失；需要保留请在关闭前导出。');
+    toast(t('ui.main.privateStorageToast'));
   } else if (!c.opfs && !('showSaveFilePicker' in window)) {
-    toast(`当前浏览器既没有 OPFS 也没有文件保存对话框；导出会在内存中生成（上限 ${Math.round(MEMORY_EXPORT_LIMIT / 1048576)} MB）。`);
+    toast(t('ui.main.noOpfsNoPicker', { mb: Math.round(MEMORY_EXPORT_LIMIT / 1048576) }));
   }
-}).catch((error) => toast(`无法打开本地数据库：${String(error)}`, true));
+}).catch((error) => toast(t('ui.main.dbOpenFailed', { error: String(error) }), true));
 void storageInfo();
+
+// The project that was on screen when the language menu reloaded the page.
+const reopen = takeReopenProject();
+if (reopen) {
+  void history.openProject(reopen).catch((error) => toast(String(error), true));
+}
 
 const interrupted = takeInterruptedFlight();
 if (interrupted) {
   const where = interrupted.phase
-    ? `「${phaseNames[interrupted.phase] || interrupted.phase}」第 ${interrupted.frames ?? 0} 帧`
-    : '开始阶段';
+    ? t('ui.main.interruptedPhaseWhere', { phase: phaseName(interrupted.phase), frames: interrupted.frames ?? 0 })
+    : t('ui.main.interruptedStartPhase');
   const hidden = interrupted.hiddenS
-    ? `页面在后台约 ${interrupted.hiddenS} 秒${interrupted.hiddenNow ? '（中断时仍在后台）' : ''}`
-    : '页面一直在前台';
+    ? t('ui.main.interruptedHiddenSome', {
+      seconds: interrupted.hiddenS,
+      stillHidden: interrupted.hiddenNow ? t('ui.main.interruptedStillHidden') : '',
+    })
+    : t('ui.main.interruptedHiddenNone');
   diagnostics.addDiagnostic({
     code: 'PREVIOUS_RUN_INTERRUPTED',
     severity: 'warning',
-    message: `上一次重建在${where}中断，页面没有收到结束信号（浏览器回收或崩溃了这个页面）。已运行 ${interrupted.elapsedS} 秒，核心内存 ${
-      interrupted.peakMemoryMB ?? '?'
-    } MB，${hidden}，帧转换：${interrupted.conversion ?? '未知'}，${interrupted.cores} 核${
-      interrupted.crossOriginIsolated ? '' : '（未跨源隔离，单线程）'
-    }。`,
-    action: 'Safari 会在页面转入后台时以低得多的内存上限回收它：长时间处理请保持该标签页在前台。完整记录已写入浏览器控制台。',
+    message: t('ui.main.interruptedDiagnosticMessage', {
+      where,
+      elapsed: interrupted.elapsedS,
+      memory: interrupted.peakMemoryMB ?? '?',
+      hidden,
+      conversion: interrupted.conversion ?? t('ui.main.unknownValue'),
+      cores: interrupted.cores,
+      isolation: interrupted.crossOriginIsolated ? '' : t('ui.main.interruptedNotIsolated'),
+    }),
+    action: t('ui.main.interruptedDiagnosticAction'),
     detail: interrupted,
   });
   console.warn('PREVIOUS_RUN_INTERRUPTED', JSON.stringify(interrupted));
-  toast(`上一次重建在${where}中断（${hidden}）。详情见诊断。`, true);
+  toast(t('ui.main.interruptedToast', { where, hidden }), true);
 }
 
 // Stable debugging API exposes state, not a hidden server or cloud path.

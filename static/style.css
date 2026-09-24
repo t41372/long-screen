@@ -99,6 +99,19 @@ a {
   border-radius: 50%;
   display: inline-block;
 }
+.i18n-pending body {
+  visibility: hidden;
+}
+.language-select {
+  background: transparent;
+  border: 0;
+  padding: 8px 6px;
+  font-size: 12px;
+  border-radius: 7px;
+}
+.language-select:hover {
+  background: var(--soft);
+}
 .quiet {
   background: transparent;
   padding: 8px 10px;
@@ -107,6 +120,9 @@ a {
 }
 .quiet:hover {
   background: var(--soft);
+}
+.header-right .quiet {
+  white-space: nowrap;
 }
 #help-btn {
   border: 1px solid var(--line);

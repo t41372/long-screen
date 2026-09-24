@@ -6,6 +6,7 @@ import { core, type Resident, type ResidentFrame, type TemporalIndexHandle, type
 import type { RegionAtlas } from './layers.ts';
 import { union } from './math.ts';
 import { resolveRasterPose } from './raster.ts';
+import { t } from '../i18n/index.ts';
 /** Persisted row shape (`temporal/<canvasId>/<id>` — frozen; do not change the key layout or field order): a
  *  `TemporalRow` (rust/core/src/temporal.rs's `TemporalRecord`, via `TemporalIndexHandle`,
  *  src/core/wasm/temporal.ts) plus the canvas it belongs to. */
@@ -277,11 +278,10 @@ export class Compositor {
           canvasId: p.canvasId,
           region: component.bounds,
           confidence: p.confidence,
-          message:
-            `本帧对齐后的重叠区域共有 ${stats.conflicts.toLocaleString()} 个明显不同的像素；此区域是其中一个冲突分量。可能是动画、内容更新、重排或配准残差。`,
+          message: t('diag.TEMPORAL_OR_ALIGNMENT_CONFLICT.message', { conflicts: stats.conflicts.toLocaleString() }),
           action: this.policy === 'stable'
-            ? '已尽量冻结单一时刻的完整冲突区域；查看橙色诊断和原视频时间点。'
-            : '仅在完整可见时用同一帧更新整块冲突区域；并非全页面同一时刻。',
+            ? t('diag.TEMPORAL_OR_ALIGNMENT_CONFLICT.actionStable')
+            : t('diag.TEMPORAL_OR_ALIGNMENT_CONFLICT.actionRolling'),
         });
       }
       stats.added += patchedPixels;
@@ -363,8 +363,8 @@ export class Compositor {
         frame,
         time: p.time,
         region: decision.rect,
-        message: '这个变化区域从未完整地出现在一个可用视口中；无法保证其所有像素来自同一时刻。',
-        action: '保留已观察内容和明确冲突标记，没有填造未观察部分。',
+        message: t('diag.INCOMPLETE_TEMPORAL_PATCH.message'),
+        action: t('diag.INCOMPLETE_TEMPORAL_PATCH.action'),
       });
     }
     return result;

@@ -63,6 +63,8 @@
     "playwright": "npm:playwright@1.58.2",
     "client-zip": "npm:client-zip@2.5.1",
     "fflate": "npm:fflate@0.8.3",
+    "i18next": "npm:i18next@26.4.2",
+    "i18next-browser-languagedetector": "npm:i18next-browser-languagedetector@8.2.1",
     "mediabunny": "npm:mediabunny@1.59.0"
   }
 }

@@ -6,6 +6,7 @@ import type { CanvasMeta, Diagnostic, MediaInfo, Progress, Project, Settings } f
 import type { Row } from './storage/db.ts';
 import type { CanvasLayout, ExportResult } from './export/project.ts';
 import type { StoredTile } from './storage/tiles.ts';
+import type { Locale } from './i18n/index.ts';
 
 export interface Capabilities {
   worker: true;
@@ -89,6 +90,13 @@ export type WorkerEventName = WorkerEvent['event'];
 export type WorkerReply<K extends CommandName = CommandName> =
   | { id: number; result: Commands[K]['res'] }
   | { id: number; error: string };
+
+/** The page's language, posted once right after the worker is created (src/ui/rpc.ts), before any command: every
+ *  diagnostic, progress message and export text the worker writes from then on is in this locale. */
+export interface LocaleMessage {
+  type: 'locale';
+  locale: Locale;
+}
 
 /** The page answers a worker `frame-request` on this same channel, by posted `type` rather than `event`. */
 export type FrameResponse =

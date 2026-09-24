@@ -14,6 +14,7 @@ import { analysisFactor } from '../core/raster.ts';
 import type { FrameRing, Resident, ResidentFrame, ResidentGray, VotingRing } from '../core/wasm.ts';
 import { AnalysisComputer } from '../core/compute.ts';
 import { DECODED_VIDEO_NOISE } from '../media/source.ts';
+import { t } from '../i18n/index.ts';
 import type { EngineEvents } from './engine.ts';
 /** Every pass, on hitting a decode/analysis/storage failure it cannot recover from, keeps whatever prefix of frames
  * it already committed and reports that instead of failing the whole run. The three passes' wording and detail
@@ -27,16 +28,12 @@ export function prefixOnly(
   frames: number,
   error: unknown,
 ): Diagnostic {
-  const base = pass === 'scan'
-    ? `仅对已经解码的前 ${frames} 帧继续定位和合成`
-    : pass === 'solve'
-    ? `仅对已经求解的前 ${frames} 帧继续渲染`
-    : `仅对已经渲染的前 ${frames} 帧保留结果`;
+  const base = t(`diag.prefixOnly.base.${pass}`, { frames });
   return {
     code,
     severity: 'error',
     message: String(error),
-    action: base + (code === 'PERSISTENCE_PREFIX_ONLY' ? '；存储写入已停止。' : '。'),
+    action: base + (code === 'PERSISTENCE_PREFIX_ONLY' ? t('diag.prefixOnly.suffixPersistence') : t('diag.prefixOnly.suffixDefault')),
     ...(pass === 'scan' ? {} : { detail: { pass, frames } }),
   };
 }
@@ -240,8 +237,8 @@ export class RunContext {
     await this.diagnostics.emit({
       code: 'PASS_FRAME_COUNT_MISMATCH',
       severity: 'error',
-      message: `${pass} 阶段只完成 ${actual}/${expected} 帧；结果被标记为 partial。`,
-      action: '已保留成功提交的前缀；缺失的帧不会被静默当作已处理。',
+      message: t('diag.PASS_FRAME_COUNT_MISMATCH.message', { pass, actual, expected }),
+      action: t('diag.PASS_FRAME_COUNT_MISMATCH.action'),
       detail: { pass, expected, actual },
     });
   }

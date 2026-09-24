@@ -7,6 +7,7 @@ import type { AppState } from './state.ts';
 import { $, humanBytes, timeText, toast } from './dom.ts';
 import { call } from './rpc.ts';
 import { captureNativeFrame, decoderVideo, seek, video, waitVideo, waitVideoOn } from './video.ts';
+import { t } from '../i18n/page.ts';
 import type { Diagnostic, MediaInfo } from '../types.ts';
 
 const MEDIA_HASH_PREFIX = 'long-screen-media-hash:';
@@ -50,7 +51,7 @@ export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagn
 
   async function chooseFile(file: File): Promise<void> {
     if (state.busy) {
-      toast('请先完成或保存当前处理部分。');
+      toast(t('ui.source.busyToast'));
       return;
     }
     state.selectedFile = file;
@@ -67,8 +68,8 @@ export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagn
     video.src = videoURL;
     decoderVideo.src = videoURL;
     $('file-title').textContent = file.name;
-    $('file-subtitle').textContent = `${humanBytes(file.size)} · 未上传 · 正在读取容器与首帧`;
-    $('regions-count').textContent = '自动识别 ↗';
+    $('file-subtitle').textContent = t('ui.source.subtitleReading', { size: humanBytes(file.size) });
+    $('regions-count').textContent = t('page.reconstruct.regionsAuto');
     $<HTMLButtonElement>('start-btn').disabled = false;
     $<HTMLButtonElement>('regions-btn').disabled = true;
     // Native element readiness is tracked for compatibility mode and source-time review; it is not required to
@@ -101,9 +102,16 @@ export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagn
       }
       state.mediaInfo = probe.info;
       state.firstBitmap = probe.bitmap;
-      $('file-subtitle').textContent = `${state.mediaInfo.width} × ${state.mediaInfo.height} · ${timeText(state.mediaInfo.duration)} · ${
-        state.mediaInfo.frameCount ?? '?'
-      } 帧 · ${state.mediaInfo.codec} · ${humanBytes(file.size)}`;
+      $('file-subtitle').textContent = t('ui.source.subtitleDetailed', {
+        width: state.mediaInfo.width,
+        height: state.mediaInfo.height,
+        duration: timeText(state.mediaInfo.duration),
+        frames: state.mediaInfo.frameCount === undefined
+          ? t('ui.count.framesUnknown')
+          : t('ui.count.frames', { count: state.mediaInfo.frameCount, frames: String(state.mediaInfo.frameCount) }),
+        codec: state.mediaInfo.codec,
+        size: humanBytes(file.size),
+      });
       $<HTMLButtonElement>('regions-btn').disabled = false;
       for (const warning of state.mediaInfo.warnings) {
         toast(warning);
@@ -116,8 +124,8 @@ export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagn
       deps.addDiagnostic({
         code: 'PROBE_FAILED',
         severity: 'warning',
-        message: `逐帧解码探测失败：${String(error)}`,
-        action: '将尝试浏览器原生播放器读取元数据。若仍要处理，请在解码方式中选择“近似 · 原生 seek”。',
+        message: t('ui.source.probeFailedMessage', { error: String(error) }),
+        action: t('ui.source.probeFailedAction'),
       });
     }
     try {
@@ -145,12 +153,15 @@ export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagn
       state.mediaInfo = info;
       await seek(0);
       state.firstBitmap = await captureNativeFrame();
-      $('file-subtitle').textContent = `${info.width} × ${info.height} · ${timeText(info.duration)} · ${
-        humanBytes(file.size)
-      } · 仅原生播放器可读`;
+      $('file-subtitle').textContent = t('ui.source.subtitleNativeOnly', {
+        width: info.width,
+        height: info.height,
+        duration: timeText(info.duration),
+        size: humanBytes(file.size),
+      });
       $<HTMLButtonElement>('regions-btn').disabled = false;
     } catch (error) {
-      $('file-subtitle').textContent = `${humanBytes(file.size)} · 逐帧解码与原生预览都不可用`;
+      $('file-subtitle').textContent = t('ui.source.subtitleUnavailable', { size: humanBytes(file.size) });
       toast(String(error), true);
     }
   }

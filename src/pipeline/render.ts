@@ -12,6 +12,7 @@ import { core, type FrameRing, type Resident, type ResidentFrame } from '../core
 import { releaseUnlessHeld } from '../media/pool.ts';
 import { attachedRenderShift, resolveTarget as resolveAttachmentTarget } from './attachments.ts';
 import { consistencyMask, type ConsistencyRecord } from './consistency.ts';
+import { t } from '../i18n/index.ts';
 import { prefixOnly, type RunContext, StorageError } from './context.ts';
 import { isValidPose } from './solve/track.ts';
 /** One placement's ledger row: what canvas it targeted, its final render-time placement, and either its pixel
@@ -151,10 +152,12 @@ export class RenderPass {
       await this.ctx.diagnostics.emit({
         code: 'MEMORY_BUDGET_RAISED',
         severity: 'info',
-        message: `瓦片缓存从预算允许的 ${this.ctx.tiles.maxTiles - raisedTiles} 块提高到 ${this.ctx.tiles.maxTiles} 块（约 ${
-          Math.round(this.ctx.tiles.maxTiles * this.ctx.tiles.size * this.ctx.tiles.size * 4.3 / 1024 / 1024)
-        } MB），以容纳一帧触及的全部瓦片。`,
-        action: '小于单帧覆盖范围的缓存会让每一帧都完整地重新解码与编码所有瓦片；如需更低内存，请降低录屏分辨率。',
+        message: t('diag.MEMORY_BUDGET_RAISED.message', {
+          from: this.ctx.tiles.maxTiles - raisedTiles,
+          to: this.ctx.tiles.maxTiles,
+          mb: Math.round(this.ctx.tiles.maxTiles * this.ctx.tiles.size * this.ctx.tiles.size * 4.3 / 1024 / 1024),
+        }),
+        action: t('diag.MEMORY_BUDGET_RAISED.action'),
         detail: { budgetMB: this.ctx.project.settings.memoryMB, tiles: this.ctx.tiles.maxTiles, raisedBy: raisedTiles },
       });
     }
@@ -305,7 +308,7 @@ export class RenderPass {
         time: p.time,
         frame: frame.index,
         canvasId: p.canvasId,
-        message: '定位计算产生无效数值。已隔离此观察，未将无效坐标写入画布。',
+        message: t('diag.NONFINITE_POSE.message'),
       });
       return {
         // Never carry the invalid x/y into the persisted observation/ row itself — zeroed, same as
@@ -396,8 +399,8 @@ export class RenderPass {
           code: 'MISSING_PLAN',
           severity: 'error',
           frame: frame.index,
-          message: `渲染阶段缺少 plan/${pad(frame.index)}；已停止在已提交的渲染前缀。`,
-          action: '检查本地存储完整性；缺失的求解计划不会被静默当作空观察。',
+          message: t('diag.MISSING_PLAN.message', { index: pad(frame.index) }),
+          action: t('diag.MISSING_PLAN.action'),
           detail: { pass: 'render', frame: frame.index },
         });
         this.stop = true;
@@ -445,7 +448,7 @@ export class RenderPass {
       await this.ctx.report(
         frame.index + 1,
         frame.time,
-        '按观察证据合成原尺寸瓦片；缺口保持透明。',
+        t('progress.render'),
         (frame.index + 1) / Math.max(1, this.ctx.processed),
         latest,
       );

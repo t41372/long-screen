@@ -1,9 +1,12 @@
 /** The typed worker RPC client: one request/response call keyed by `Commands` (src/protocol.ts), a `WorkerEvent`
  *  subscription, and the frame-request bridge the worker uses for compatibility-mode seeks. Command strings are
  *  frozen (tests call `longScreen.rpc('tile'|'open'|'capabilities')` directly) — `call()` keeps that exact name. */
-import type { CommandName, Commands, WorkerEvent, WorkerEventName } from '../protocol.ts';
+import type { CommandName, Commands, LocaleMessage, WorkerEvent, WorkerEventName } from '../protocol.ts';
+import { locale } from '../i18n/page.ts';
 
 const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+// First message on the channel, so it is handled before any command (page.ts has already detected the language).
+worker.postMessage({ type: 'locale', locale: locale() } satisfies LocaleMessage);
 let requestId = 0;
 const requests = new Map<number, { resolve: (value: unknown) => void; reject: (error: Error) => void }>();
 

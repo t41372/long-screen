@@ -9,7 +9,8 @@ import { cleanupExport } from './export/target.ts';
 import { core, coreLoaded, loadPlannedCore, planCore } from './core/wasm.ts';
 import { tileKey } from './storage/tiles.ts';
 import type { StoredTile } from './storage/tiles.ts';
-import type { Capabilities, CommandName, Commands, FrameResponse } from './protocol.ts';
+import type { Capabilities, CommandName, Commands, FrameResponse, LocaleMessage } from './protocol.ts';
+import { isLocale, setLocale } from './i18n/index.ts';
 const scope = globalThis as unknown as {
   postMessage: (message: unknown, transfer?: Transferable[]) => void;
   onmessage: ((e: MessageEvent) => void) | null;
@@ -262,7 +263,11 @@ async function dispatch(type: CommandName, payload: Commands[CommandName]['req']
   return handlers[type](payload as any, database);
 }
 scope.onmessage = (event) => {
-  const m = event.data as FrameResponse | { id: number; type: CommandName; payload?: Record<string, unknown> };
+  const m = event.data as FrameResponse | LocaleMessage | { id: number; type: CommandName; payload?: Record<string, unknown> };
+  if (m.type === 'locale') {
+    if (isLocale(m.locale)) setLocale(m.locale);
+    return;
+  }
   if (m.type === 'frame-response') {
     const pending = frames.get(m.id);
     if (!pending) {

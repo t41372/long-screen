@@ -14,6 +14,7 @@ import { releaseUnlessHeld } from '../media/pool.ts';
 import { encodeRGBA } from '../codec/png.ts';
 import { pad } from '../core/math.ts';
 import { encodeFeatures } from './features-codec.ts';
+import { t } from '../i18n/index.ts';
 import { prefixOnly, type RunContext, StorageError } from './context.ts';
 /** A long-baseline reference frame for slow scrolling, plus the fields it and the current frame carry, as
  * `ScanPass` tracks it: sub-analysis-pixel per-frame motion never clears the layer-evidence threshold, but the
@@ -69,8 +70,13 @@ class ScanPass {
     await this.ctx.diagnostics.emit({
       code: 'COMPUTE_BACKEND',
       severity: 'info',
-      message:
-        `${this.ctx.computer.stats.backend} — ${this.ctx.computer.stats.reason}。Rust 核心：${coreBuild().variant} 构建，${coreBuild().threads} 个计算线程（${coreBuild().reason}）。`,
+      message: t('diag.COMPUTE_BACKEND.message', {
+        backend: this.ctx.computer.stats.backend,
+        reason: this.ctx.computer.stats.reason,
+        variant: coreBuild().variant,
+        threads: coreBuild().threads,
+        coreReason: coreBuild().reason,
+      }),
       detail: { ...this.ctx.computer.stats, core: coreBuild() },
     });
     if (this.ctx.project.settings.framing === 'context') {
@@ -86,7 +92,7 @@ class ScanPass {
           code: 'PRESENTATION_REFERENCE_FAILED',
           severity: 'warning',
           message: String(error),
-          action: '带外框呈现将被跳过；页面坐标下的核心重建不受影响。',
+          action: t('diag.PRESENTATION_REFERENCE_FAILED.action'),
         });
       }
     }
@@ -140,8 +146,8 @@ class ScanPass {
         severity: 'warning',
         time: frame.time,
         frame: frame.index,
-        message: '画面缺乏可辨认纹理。完全相同的空白帧既可能是暂停，也可能是在空白区域移动；像素本身无法区分。',
-        action: '增加有区分度的可见内容或录制更多重叠。零位移只是 best guess。',
+        message: t('diag.LOW_TEXTURE_UNOBSERVABLE.message'),
+        action: t('diag.LOW_TEXTURE_UNOBSERVABLE.action'),
       });
     }
     if (field.unknown) {
@@ -150,7 +156,7 @@ class ScanPass {
         severity: 'warning',
         time: frame.time,
         frame: frame.index,
-        message: '这一观察缺少可靠的视觉对齐依据。定位阶段将尝试历史重定位；仍无法定位时保留独立片段。',
+        message: t('diag.UNRESOLVED_MOTION.message'),
         confidence: 0,
       });
     }
@@ -160,7 +166,7 @@ class ScanPass {
         severity: 'warning',
         time: frame.time,
         frame: frame.index,
-        message: '检测到具有多种合理匹配的重复纹理；连续性只是定位先验，不是已证实的唯一位置。',
+        message: t('diag.AMBIGUOUS_PATTERN.message'),
       });
     }
     if (frame.duration > .12) {
@@ -169,7 +175,7 @@ class ScanPass {
         severity: 'info',
         time: frame.time,
         frame: frame.index,
-        message: '此帧持续时间较长；高速移动期间可能存在从未被采集到的区域。',
+        message: t('diag.TEMPORAL_UNDERSAMPLING.message'),
       });
     }
   }
@@ -224,7 +230,7 @@ class ScanPass {
       releaseUnlessHeld(oldPreviousImage, this.previousImage, this.baseline?.image);
       releaseUnlessHeld(oldBaselineImage, this.previousImage, this.baseline?.image);
       await this.emitFrameDiagnostics(frame, features, field);
-      await this.ctx.report(frame.index + 1, frame.time, '逐帧提取几何证据，学习独立运动区域。');
+      await this.ctx.report(frame.index + 1, frame.time, t('progress.scanFrame'));
       if (this.ctx.stopRequested) {
         this.ctx.honourStop();
         this.stop = true;
@@ -343,21 +349,21 @@ class ScanPass {
       await this.ctx.diagnostics.emit({
         code: 'MANUAL_UNASSIGNED',
         severity: 'warning',
-        message: '手动区域未覆盖的部分被保留为独立的低置信屏幕坐标观察层，没有宣称这些像素已恢复到页面坐标。',
+        message: t('diag.MANUAL_UNASSIGNED.message'),
       });
     }
     if (this.ctx.regions.some((r) => r.kind === 'ignore')) {
       await this.ctx.diagnostics.emit({
         code: 'EXPLICITLY_EXCLUDED_REGION',
         severity: 'warning',
-        message: '按手动设置排除了“忽略”区域。该区域不会贡献到重建结果，这不是自动丢帧。',
+        message: t('diag.EXPLICITLY_EXCLUDED_REGION.message'),
       });
     }
     if (this.ctx.project.settings.regions.length) {
       await this.ctx.diagnostics.emit({
         code: 'MANUAL_REGION_PRIORITY',
         severity: 'info',
-        message: '手动区域重叠时，后绘制区域优先；忽略区域始终排除。其余像素保留在未指定观察层。',
+        message: t('diag.MANUAL_REGION_PRIORITY.message'),
       });
     }
     const moving = this.ctx.regions.filter((r) => r.kind === 'moving').length,
@@ -366,15 +372,15 @@ class ScanPass {
       await this.ctx.diagnostics.emit({
         code: 'AUTOMATIC_LAYER_MASK',
         severity: 'info',
-        message: `自动划分出 ${moving} 个内容区域和 ${fixed} 个固定界面区域。边界来自像素运动统计，而不是 DOM。`,
-        action: '若遮罩归属不合理，可在“区域”里画出精确滚动区后重新处理。',
+        message: t('diag.AUTOMATIC_LAYER_MASK.message', { moving, fixed }),
+        action: t('diag.AUTOMATIC_LAYER_MASK.action'),
       });
     }
     if (moving > 1) {
       await this.ctx.diagnostics.emit({
         code: 'MULTIPLE_SCROLL_LAYERS',
         severity: 'info',
-        message: '多个独立滚动区将分别建立画布，不强制共享一个 scroll offset。',
+        message: t('diag.MULTIPLE_SCROLL_LAYERS.message'),
       });
     }
     await this.ctx.diagnostics.flush();

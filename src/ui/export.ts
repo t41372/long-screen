@@ -3,6 +3,7 @@
 import type { AppState } from './state.ts';
 import { $, humanBytes, storageInfo, toast } from './dom.ts';
 import { call } from './rpc.ts';
+import { t } from '../i18n/page.ts';
 import type { ExportResult } from '../export/project.ts';
 import type { Diagnostic } from '../types.ts';
 import type { Run } from './run.ts';
@@ -11,7 +12,7 @@ import type { TiledViewer } from './viewer.ts';
 /** File name for the downloaded image: the recording's name, not a generic one. */
 function imageFileName(state: AppState): string {
   const stem = (state.project?.name || '').replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]+/g, '_').trim();
-  return `${stem || 'long-screen'}-长图.png`;
+  return `${stem || 'long-screen'}${t('ui.export.imageSuffix')}.png`;
 }
 
 type ExportKind = 'project' | 'png' | 'sheets';
@@ -49,7 +50,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
           if ((error as DOMException).name === 'AbortError') {
             return;
           }
-          toast(`直接保存不可用，改用浏览器下载：${String(error)}`);
+          toast(t('ui.export.savePickerFallback', { error: String(error) }));
         }
       }
       const result: ExportResult = await call('export', {
@@ -70,7 +71,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
         row.className = 'export-download-row';
         a.href = downloadURL;
         a.download = fileName;
-        a.textContent = `保存 ${fileName} · ${humanBytes(result.blob.size)}`;
+        a.textContent = t('ui.export.saveRowLabel', { name: fileName, size: humanBytes(result.blob.size) });
         a.className = 'export-link';
         row.append(a);
         // On phones a download lands in Files; sharing is how an image reaches Photos. A fresh tap is required.
@@ -78,17 +79,17 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
         if (file && navigator.canShare?.({ files: [file] })) {
           const share = document.createElement('button');
           share.className = 'secondary';
-          share.textContent = '分享 / 存到照片';
+          share.textContent = t('ui.export.shareLabel');
           share.onclick = () =>
             void navigator.share({ files: [file] }).catch((error) => {
-              if ((error as DOMException).name !== 'AbortError') toast(`分享失败：${String(error)}`, true);
+              if ((error as DOMException).name !== 'AbortError') toast(t('ui.export.shareFailed', { error: String(error) }), true);
             });
           row.append(share);
         }
         if (result.temporary) {
           const cleanup = document.createElement('button');
           cleanup.className = 'quiet';
-          cleanup.textContent = '保存后清理临时副本';
+          cleanup.textContent = t('ui.export.cleanupLabel');
           cleanup.onclick = () => {
             cleanupTemporary(result.temporary);
             if (downloadURL) URL.revokeObjectURL(downloadURL);
@@ -107,7 +108,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
         code: 'EXPORT_ERROR',
         severity: 'error',
         message: String(error),
-        action: '没有把未完成的导出标记为成功。已提交的项目瓦片仍在本机。',
+        action: t('ui.export.exportErrorAction'),
       });
     } finally {
       run.setBusy(false);
@@ -119,7 +120,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
     const c = viewer.current;
     if (!state.project || state.busy || !c) return;
     if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
-      toast('这个浏览器不支持复制图片；请用“下载长图”。', true);
+      toast(t('ui.export.clipboardUnsupported'), true);
       return;
     }
     run.setBusy(true);
@@ -128,7 +129,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
     const project = state.project;
     const png = call('export', { projectId: project.id, canvasId: c.id, format: 'png', layout: 'single' }).then((r) => {
       temporary = r.temporary;
-      if (!r.blob) throw new Error('没有生成图片');
+      if (!r.blob) throw new Error(t('ui.export.copyNoImage'));
       return new Blob([r.blob], { type: 'image/png' });
     });
     let item: ClipboardItem;
@@ -137,12 +138,12 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
     } catch (error) {
       png.then((b) => b, () => undefined).finally(() => cleanupTemporary(temporary));
       run.setBusy(false);
-      toast(`复制失败：${String(error)}。请改用“下载长图”。`, true);
+      toast(t('ui.export.copyFailedCtor', { error: String(error) }), true);
       return;
     }
     navigator.clipboard.write([item])
-      .then(() => toast(`已复制 ${Math.round(c.bounds.width)} × ${Math.round(c.bounds.height)} 长图，可直接粘贴。`))
-      .catch((error) => toast(`复制失败：${String(error)}。图片可能超出系统剪贴板的限制，请改用“下载长图”。`, true))
+      .then(() => toast(t('ui.export.copySuccess', { width: Math.round(c.bounds.width), height: Math.round(c.bounds.height) })))
+      .catch((error) => toast(t('ui.export.copyFailed', { error: String(error) }), true))
       .finally(() => {
         void png.catch(() => {}).finally(() => cleanupTemporary(temporary));
         run.setBusy(false);

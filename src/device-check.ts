@@ -1,6 +1,7 @@
 /** Device check (static/device-check.html): what this browser and device offer the pipeline and what the GPU path
  *  costs here, as one JSON report to paste back. Nothing leaves the device; a chosen recording is processed
  *  locally and its stored run is deleted afterwards. Not loaded by the app. */
+import { translatePage } from './i18n/page.ts';
 import { AnalysisComputer } from './core/compute.ts';
 import { core, coreBuild, loadPlannedCore, planCore } from './core/wasm.ts';
 import { analysisFactor, downscaleGray } from './core/raster.ts';
@@ -10,6 +11,7 @@ import { deleteProject } from './storage/projects.ts';
 import { openMedia } from './media/source.ts';
 import { DEFAULT_SETTINGS, type Settings } from './types.ts';
 
+translatePage();
 const out = document.getElementById('report') as HTMLPreElement;
 const report: Record<string, unknown> = {};
 const show = () => (out.textContent = JSON.stringify(report, null, 2));

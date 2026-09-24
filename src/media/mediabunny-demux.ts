@@ -2,6 +2,7 @@ import { BlobSource, EncodedPacketSink, Input, MATROSKA, MatroskaInputFormat, MP
 import type { Demuxer, Packet } from './reader.ts';
 import { BlobReader } from './reader.ts';
 import { probeIsobmff } from './isobmff-probe.ts';
+import { t } from '../i18n/index.ts';
 /** Container demuxing on top of mediabunny's packet-level API (`Input` + `BlobSource` + `EncodedPacketSink`).
  *  Decoding itself is still WebCodecs, driven from `source.ts` — but its *output* is not unchanged: mediabunny
  *  reports a video track's `VideoColorSpace` (`colorSpace` on the returned `VideoDecoderConfig`), which the hand-
@@ -103,9 +104,7 @@ export class MediabunnyDemuxer implements Demuxer {
       const probe = await probeIsobmff(this.file);
       probeDuration = probe.duration;
       if (probe.signedCttsV0) {
-        this.warnings.push(
-          'NONSTANDARD_SIGNED_CTTS_V0: 该视频轨道的 ctts box 是 version 0，但包含负的合成时间偏移；ISO 14496-12 仅在 version 1 中定义负偏移。这些偏移按有符号处理（QuickTime/ReplayKit 的常见写法），未被当作异常大的正偏移。',
-        );
+        this.warnings.push(t('media.NONSTANDARD_SIGNED_CTTS_V0'));
       }
     }
     let input: Input | undefined;

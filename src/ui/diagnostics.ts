@@ -6,6 +6,7 @@ import { $, timeText, toast } from './dom.ts';
 import { call } from './rpc.ts';
 import { fileFingerprint, readStoredHash } from './source-file.ts';
 import { seek } from './video.ts';
+import { t } from '../i18n/page.ts';
 import type { Diagnostic, Project, Severity } from '../types.ts';
 import type { Canvases } from './canvases.ts';
 import type { TiledViewer } from './viewer.ts';
@@ -77,7 +78,7 @@ export function createDiagnostics(state: AppState, viewer: TiledViewer, canvases
     if (!rows.length) {
       const empty = document.createElement('div');
       empty.className = 'diagnostic-empty';
-      empty.textContent = diagnosticRows.length ? '当前过滤条件下没有记录。' : '这里会记录定位依据、页面变化、推断和处理错误。';
+      empty.textContent = diagnosticRows.length ? t('ui.diagnostics.emptyFiltered') : t('ui.diagnostics.emptyDefault');
       container.append(empty);
       return;
     }
@@ -92,7 +93,7 @@ export function createDiagnostics(state: AppState, viewer: TiledViewer, canvases
       time.textContent = d.time === undefined ? '' : timeText(d.time);
       header.append(code, time);
       const text = document.createElement('p');
-      text.textContent = d.message + (d.count && d.count > 1 ? `（本类事件累计 ${d.count} 次）` : '');
+      text.textContent = d.message + (d.count && d.count > 1 ? t('ui.diagnostics.occurrenceSuffix', { count: d.count }) : '');
       card.append(header, text);
       if (d.action) {
         const action = document.createElement('p');
@@ -102,7 +103,7 @@ export function createDiagnostics(state: AppState, viewer: TiledViewer, canvases
       }
       if (d.time !== undefined || d.region) {
         const button = document.createElement('button');
-        button.textContent = d.region ? '定位受影响区域 / 查看来源 ↗' : '查看原始时刻 ↗';
+        button.textContent = d.region ? t('ui.diagnostics.locateAction') : t('ui.diagnostics.viewSourceAction');
         button.onclick = () => void showDiagnostic(d);
         card.append(button);
       }
@@ -121,19 +122,23 @@ export function createDiagnostics(state: AppState, viewer: TiledViewer, canvases
       if (
         !state.selectedFile || state.project?.name !== state.selectedFile.name || state.project?.media?.size !== state.selectedFile.size
       ) {
-        toast('原始视频未包含在项目中。请重新选择对应录屏，再通过时间戳查看；合成结果仍保存在本地。');
+        toast(t('ui.diagnostics.noOriginalVideo'));
         return;
       }
       // Name and size alone do not prove this is the same recording. Compare content hashes when we have one.
       const expectedHash = state.project?.id ? readStoredHash(state.project.id) : null;
       if (expectedHash && (await (state.selectedFileHash ?? fileFingerprint(state.selectedFile))) !== expectedHash) {
-        toast('所选文件名称与大小相符，但内容哈希与本项目最初处理的录屏不一致，拒绝作为源时刻证据显示。请重新选择正确的录屏文件。', true);
+        toast(t('ui.diagnostics.hashMismatch'), true);
         return;
       }
       try {
         $<HTMLDialogElement>('source-dialog').showModal();
         await seek(d.time);
-        $('source-caption').textContent = `源帧 ${d.frame ?? '—'} · ${d.time.toFixed(3)} 秒 · ${d.message}`;
+        $('source-caption').textContent = t('ui.diagnostics.sourceCaption', {
+          frame: d.frame ?? '—',
+          time: d.time.toFixed(3),
+          message: d.message,
+        });
       } catch (error) {
         toast(String(error), true);
       }

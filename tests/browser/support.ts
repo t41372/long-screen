@@ -31,6 +31,10 @@ export async function harness(
     webgpu?: boolean;
     /** WebKit only: an ephemeral session, i.e. Safari Private Browsing (in-memory IndexedDB that rejects Blobs, no OPFS). */
     ephemeral?: boolean;
+    /** Playwright context locale, e.g. 'en-US', 'zh-TW', 'ja-JP'. Defaults to 'zh-CN' so existing Chinese-text
+     *  assertions keep working against a browser whose default locale (Playwright otherwise defaults to en-US)
+     *  would now select the English UI. */
+    locale?: string;
   } = {},
 ): Promise<Harness> {
   await rebuildIfStale();
@@ -39,7 +43,11 @@ export async function harness(
     createHandler({ root: `${root}dist`, mounts: { '/fixtures/': `${root}tests/fixtures`, '/test_case/': `${root}test_case` } }),
   );
   const base = `http://${options.hostname || '127.0.0.1'}:${server.addr.port}`;
-  const contextOptions = { viewport: options.viewport || { width: 1440, height: 1000 }, acceptDownloads: true };
+  const contextOptions = {
+    viewport: options.viewport || { width: 1440, height: 1000 },
+    acceptDownloads: true,
+    locale: options.locale || 'zh-CN',
+  };
   let browser: Browser, context: BrowserContext, profile: string | undefined;
   try {
     if (options.browser === 'webkit' && options.ephemeral) {

@@ -24,6 +24,7 @@ import {
 import { releaseUnlessHeld } from '../../media/pool.ts';
 import { type CompactFeatures, decodeFeatures } from '../features-codec.ts';
 import type { ConsistencyRecord } from '../consistency.ts';
+import { t } from '../../i18n/index.ts';
 import { prefixOnly, type RunContext, StopRequested, StorageError } from '../context.ts';
 import { initialState, type RegionState } from './state.ts';
 import { type FrameInput, SolvePass } from './region-step.ts';
@@ -143,7 +144,7 @@ class SolveRun {
     this.previousPlan = plan;
     for (const s of this.states) s.velocity = { x: 0, y: 0 };
     this.solved = frame.index + 1;
-    await this.ctx.report(this.solved, frame.time, '完全相同的观察复用定位；保留源帧与时间记录。', this.solved / this.ctx.project.frames);
+    await this.ctx.report(this.solved, frame.time, t('progress.duplicateReuse'), this.solved / this.ctx.project.frames);
     return true;
   }
   /** One decoded frame's full per-region pass: prepares the shared FrameInput (current native upload, gray,
@@ -219,7 +220,7 @@ class SolveRun {
     releaseUnlessHeld(oldPrevious as RGBA | undefined, this.previous as RGBA | undefined);
     releaseUnlessHeld(image, this.previous as RGBA | undefined);
     this.solved = frame.index + 1;
-    await this.ctx.report(this.solved, frame.time, '原像素精修、历史重定位与二维回环约束。', this.solved / this.ctx.project.frames);
+    await this.ctx.report(this.solved, frame.time, t('progress.solveFrame'), this.solved / this.ctx.project.frames);
   }
   /** The decode/solve loop: mirrors scan()'s and render()'s shape (see this file's header) — decode-step and
    * per-frame body are two separate try blocks so a decoder failure is never blamed on the solver and vice versa.
@@ -255,8 +256,8 @@ class SolveRun {
               code: 'MISSING_SCAN_RECORD',
               severity: 'error',
               frame: frame.index,
-              message: `求解阶段缺少 scan/${pad(frame.index)}；已停止在已提交的求解前缀。`,
-              action: '检查本地存储完整性；缺失的扫描记录不会被当作零位移。',
+              message: t('diag.MISSING_SCAN_RECORD.message', { index: pad(frame.index) }),
+              action: t('diag.MISSING_SCAN_RECORD.action'),
               detail: { pass: 'solve', frame: frame.index },
             });
             break;
@@ -353,7 +354,7 @@ class SolveRun {
   async optimizeAndCleanup(): Promise<void> {
     const ctx = this.ctx;
     ctx.processed = this.solved;
-    ctx.events.progress({ phase: 'optimizing', fraction: 0, frames: this.solved, time: 0, message: '优化磁盘中的位置图，校正回环漂移。' });
+    ctx.events.progress({ phase: 'optimizing', fraction: 0, frames: this.solved, time: 0, message: t('progress.optimizing') });
     // pose-graph.ts only persists relaxed positions once optimize() finishes its loop; a stop mid-relaxation
     // unwinds via StopRequested before that, so the unrelaxed (but already-persisted, pre-optimize) node
     // positions are what render() sees — geometrically consistent, just without this pass's loop-closure fix-up.
@@ -374,9 +375,9 @@ class SolveRun {
       await ctx.diagnostics.emit({
         code: 'GRAPH_RESIDUAL',
         severity: 'warning',
-        message: `位置图最大残差仍有 ${result.residual.toFixed(2)} 原像素；相关接缝可能存在几何不一致。`,
+        message: t('diag.GRAPH_RESIDUAL.message', { residual: result.residual.toFixed(2) }),
         detail: result,
-        action: '检查回环附近的文字与重复纹理。该残差没有被隐藏。',
+        action: t('diag.GRAPH_RESIDUAL.action'),
       });
     }
     await ctx.store.put('graph-summary', { loops: this.graph.loops, ...result });

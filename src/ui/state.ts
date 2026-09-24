@@ -36,4 +36,6 @@ export function syncControls(state: AppState, viewer: TiledViewer): void {
   $<HTMLButtonElement>('export-png').disabled = busy || !viewer.current?.tileCount;
   $<HTMLButtonElement>('export-sheets').disabled = busy || !viewer.current?.tileCount;
   $<HTMLButtonElement>('copy-png').disabled = busy || !viewer.current?.tileCount;
+  // Switching language reloads the page, which would kill a running reconstruction or export.
+  $<HTMLSelectElement>('language-select').disabled = busy;
 }

@@ -2,6 +2,8 @@
  *  `state.manualRegions` for the next `start()` to send as settings.regions. */
 import type { AppState } from './state.ts';
 import { $ } from './dom.ts';
+import { displayName, t } from '../i18n/page.ts';
+import { manualRegionName } from '../i18n/names.ts';
 import type { Region } from '../types.ts';
 
 export function createRegions(state: AppState) {
@@ -36,7 +38,7 @@ export function createRegions(state: AppState) {
     list.replaceChildren();
     draftRegions.forEach((r, i) => {
       const button = document.createElement('button');
-      button.textContent = `${i + 1}. ${r.name} ${r.rect.width}×${r.rect.height} ×`;
+      button.textContent = `${i + 1}. ${displayName(r.name)} ${r.rect.width}×${r.rect.height} ×`;
       button.onclick = () => {
         draftRegions.splice(i, 1);
         drawRegions();
@@ -84,7 +86,7 @@ export function createRegions(state: AppState) {
         const kind = $<HTMLSelectElement>('region-kind').value as Region['kind'];
         draftRegions.push({
           id: `manual-${draftRegions.length}`,
-          name: kind === 'moving' ? `内容区域 ${draftRegions.length + 1}` : kind === 'fixed' ? '固定界面' : '主动忽略',
+          name: manualRegionName(kind, draftRegions.length + 1),
           kind,
           rect: draftRect,
           manual: true,
@@ -105,7 +107,9 @@ export function createRegions(state: AppState) {
     };
     $('save-regions').onclick = () => {
       state.manualRegions = structuredClone(draftRegions);
-      $('regions-count').textContent = state.manualRegions.length ? `${state.manualRegions.length} 个指定区域 ↗` : '自动识别 ↗';
+      $('regions-count').textContent = state.manualRegions.length
+        ? t('ui.count.regions', { count: state.manualRegions.length })
+        : t('page.reconstruct.regionsAuto');
       $<HTMLDialogElement>('regions-dialog').close();
     };
   }

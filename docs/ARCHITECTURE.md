@@ -188,6 +188,12 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 
 - **`src/core/framing.ts`（编排）/ `rust/core/src/framing.rs`（`openFramingSession` 实现）必须保持 O(周长瓦片 + 已观察源瓦片)。** 那个只做网格算术与查找、不碰像素的前置检查，正是为了让大面积装饰背景不会强制一次完整包围盒扫描；去掉它会把稀疏外框变成意外的稠密画布。
 
+### 界面语言
+
+- **共享的 `src/i18n/index.ts` 从不读取 `navigator` 或存储，默认 zh。** Deno 也有 `navigator.language`；共享模块一旦读取它，单测、场景指纹和导出文本就会随主机语言变化。只有页面端的 `src/i18n/page.ts` 检测语言，worker 在收到任何命令之前由页面发来的 `locale` 消息得知语言（`src/ui/rpc.ts`）。
+- **zh 目录里的文案就是持久化文本。** 诊断的 `message`/`action` 按运行时的界面语言写入并持久化，场景指纹按 zh 计算；改动一条 zh 文案会改变指纹，这是需要解释的变化，不是噪声。
+- **区域与画布名称是固定的 zh 词表，只在显示时翻译**（`src/i18n/names.ts`）。`rust/core/src/regions/crops.rs` 按 `固定分隔界面` 这个名字查找分隔带，parity oracle 与已保存的项目也都存着这些名字；在创建时就按界面语言命名会同时破坏这三者。
+
 ### 测试
 
 - **`src/synthetic/verify.ts` 只在覆盖物实际绘制过的像素上记录 overlay 颜色**（与 `RenderedFrame.beneath` 比较）。overlay 的 rect 是包围盒，有些覆盖物只画其中一部分（鼠标指针是 10×16 盒子里的一个箭头）；按整个 rect 记录会把页面坐标的动态内容算成屏幕覆盖物污染，并错误地在 `contaminatedOverlay` 与 `contaminatedDynamic` 之间划分。
@@ -296,6 +302,13 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `source-file.ts` — 选择源录屏：文件输入/拖放、探测 RPC（含原生播放器回退）、内容指纹（供 diagnostics.ts 校验重开文件与项目来源一致）。UI，兼浏览器 API（File）。
 - `video.ts` — 原生 `<video>` seek + 帧捕获原语，供 source-file.ts/diagnostics.ts/compatibility 帧请求桥接共用。UI，兼浏览器 API。
 - `flight.ts` — 崩溃记录器：把重建的最后已知状态写入 localStorage，页面被杀或崩溃后下次加载上报一次并清除。UI，兼 I/O（localStorage）。
+
+### src/i18n（TS 外壳：界面语言）
+
+- `index.ts` — 本 JS 环境（页面、每个 worker、Deno 各一份）唯一的 i18next 实例与有类型的 `t()`；目录内联打包，同步初始化；默认 zh，从不读取 `navigator`。TS 外壳：UI。
+- `page.ts` — 仅页面：加载时选语言（已保存的选择 → 浏览器首选语言 → 英文，任何 zh-* 都选 zh）、按 `data-i18n*` 属性翻译静态页面、语言菜单保存选择并重新加载（打开中的项目在重新加载后重新打开）。检测本身不保存任何东西。TS 外壳：UI，兼 I/O（localStorage）。
+- `names.ts` — 持久化的 zh 区域/画布名称词表到界面语言的显示映射，及手动区域的规范名称。TS 外壳：UI。
+- `catalog.ts`、`zh/*.ts`、`en/*.ts` — 目录。按显示位置分为 `page`（静态页面）、`ui`（页面脚本）、`pipeline`（worker 写出的诊断、进度、导出文本）；每个 en 分区的类型由对应的 zh 分区导出，缺键或多键是编译错误，`tests/unit/i18n.test.ts` 再检查插值变量一致、英文无汉字、静态页面引用的键都存在。TS 外壳（数据）。
 
 ### src/media（TS 外壳：浏览器 API / I/O）
 

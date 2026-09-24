@@ -9,6 +9,7 @@ import { createTarget } from './target.ts';
 import { offlineViewer } from './offline.ts';
 import { encodePNG } from '../codec/png.ts';
 import { rasterRows } from './png.ts';
+import { t as translate } from '../i18n/index.ts';
 export interface ExportResult {
   blob?: Blob;
   name: string;
@@ -97,7 +98,7 @@ export async function exportProject(
         );
       }
       if (++n % 8 === 0) {
-        onProgress(`导出原图与预览瓦片 ${n}`, Math.min(.90, n / Math.max(1, project.tiles * 1.5)));
+        onProgress(translate('exports.tilesProgress', { n }), Math.min(.90, n / Math.max(1, project.tiles * 1.5)));
       }
     }
     for (
@@ -116,9 +117,9 @@ export async function exportProject(
     for (const key of ['graph-summary', 'memory-stats', 'performance']) {
       await zip.add(`${key}.json`, utf8(JSON.stringify(await db.get(key) || {}, null, 2)));
     }
-    onProgress('写入 ZIP64 目录并提交文件', .98);
+    onProgress(translate('exports.zipFinalize'), .98);
     await zip.finish();
-    return { ...await target.result(), message: '已导出原尺寸瓦片、离线查看器、覆盖与质量数据、源帧记录和完整诊断。' };
+    return { ...await target.result(), message: translate('exports.projectDone.message') };
   } catch (error) {
     await target.sink.abort?.(error);
     // A failed export must stop the ZIP writer's still-running internal pump so it never writes into a sink
@@ -164,13 +165,18 @@ export async function exportCanvas(
         const bytes of encodePNG(
           rect.width,
           rect.height,
-          rasterRows(tiles, meta.id, rect, (row) => onProgress(`无缩放编码 ${row} / ${rect.height} 行`, row / rect.height)),
+          rasterRows(
+            tiles,
+            meta.id,
+            rect,
+            (row) => onProgress(translate('exports.encodingSingle', { row, total: rect.height }), row / rect.height),
+          ),
         )
       ) {
         await target.sink.write(bytes);
       }
       await target.sink.close();
-      return { ...await target.result(), message: `已导出 ${rect.width} × ${rect.height} 原尺寸 PNG，缺口保持透明。` };
+      return { ...await target.result(), message: translate('exports.canvasDone.message', { width: rect.width, height: rect.height }) };
     }
     const overlap = 32;
     zip = new ZipWriter(target.sink);
@@ -210,7 +216,7 @@ export async function exportCanvas(
       await zip.add(`sheet_${x}_${y}.png`, encodePNG(bounds.width, bounds.height, rasterRows(tiles, meta.id, bounds)));
       await zip.add(`sheet_${x}_${y}.json`, utf8(JSON.stringify(bounds)));
       await db.delete(row.key);
-      onProgress(`已编码 ${++count} 张原尺寸分页图片`, 0);
+      onProgress(translate('exports.encodingSheet', { count: ++count }), 0);
     }
     await zip.add(
       'manifest.json',
@@ -237,8 +243,8 @@ export async function exportCanvas(
       // so its message must not claim the canvas "exceeded" anything; 'auto' falling into this branch really
       // did exceed the compatible single-image size.
       message: layout === 'sheets'
-        ? `已按分页导出为 ${count} 张原尺寸图片；相邻页最多重叠 ${overlap}px，坐标见 manifest。`
-        : `画布超过单张兼容尺寸，已明确改为 ${count} 张原尺寸图片；相邻页最多重叠 ${overlap}px，坐标见 manifest。`,
+        ? translate('exports.sheetsDone.messagePaged', { count, overlap })
+        : translate('exports.sheetsDone.messageOversize', { count, overlap }),
     };
   } catch (error) {
     await target.sink.abort?.(error);

@@ -9,6 +9,7 @@ import { pad } from '../../core/math.ts';
 import type { PoseNode } from '../../core/pose-graph.ts';
 import { core, type ResidentFrame, type ResidentGray } from '../../core/wasm.ts';
 import { attachmentShift } from '../attachments.ts';
+import { t } from '../../i18n/index.ts';
 import type { RegionState } from './state.ts';
 import {
   attachVerdict,
@@ -170,7 +171,7 @@ async function applyAttachment(pass: SolvePass, state: RegionState, input: Keyfr
     frame: frame.index,
     confidence: global!.confidence,
     detail: attachment,
-    message: '回访证据把一个独立片段整体接回了已有画布；片段内的相对轨迹保持不变。',
+    message: t('diag.FRAGMENT_ATTACHED.message'),
   });
   locals.attachedFrom = state.canvasId;
   locals.attachMatch = global;
@@ -230,10 +231,8 @@ async function applyThinOverlapCorrection(
       stepError,
       weakStep,
     },
-    message: `上一步只有很小的重叠，本帧与已观察内容的匹配相差 ${
-      correction.discrepancy.toFixed(1)
-    }px 且证据更强；已按这一匹配改正当前位置。`,
-    action: '被改正的是本帧及之后的轨迹；此前写入的像素保持原样，可能与改正后的坐标存在接缝。',
+    message: t('diag.TRAJECTORY_CORRECTED.message', { discrepancy: correction.discrepancy.toFixed(1) }),
+    action: t('diag.TRAJECTORY_CORRECTED.action'),
   });
   state.pose = locals.corrected;
   state.weak = false;
@@ -280,7 +279,7 @@ async function connectRelinkOrLoopClosure(
         time: frame.time,
         frame: frame.index,
         confidence: global.confidence,
-        message: '发现可靠的历史重访，已加入全局位置约束；最终合成使用校正后的轨迹。',
+        message: t('diag.LOOP_CLOSURE.message'),
       });
     } else if (loopVerdict.verdict === 'inconsistent') {
       await ctx.diagnostics.emit({
@@ -289,7 +288,7 @@ async function connectRelinkOrLoopClosure(
         time: frame.time,
         frame: frame.index,
         canvasId: state.canvasId,
-        message: `历史匹配与连续轨迹相差 ${discrepancy.toFixed(1)}px；证据冲突，未强加为回环。`,
+        message: t('diag.INCONSISTENT_LOOP_REJECTED.message', { discrepancy: discrepancy.toFixed(1) }),
         confidence: global.confidence,
       });
     } else if (loopVerdict.verdict === 'ambiguous') {
@@ -299,7 +298,7 @@ async function connectRelinkOrLoopClosure(
         time: frame.time,
         frame: frame.index,
         canvasId: state.canvasId,
-        message: '历史检索有多个接近的合理位置；没有把不确定回环当作硬约束。',
+        message: t('diag.AMBIGUOUS_LOOP.message'),
       });
     }
   }

@@ -146,6 +146,16 @@ const FLOORS: [RegExp, number][] = [
   [/^synthetic\/verify\.ts$/, 93],
   [/^synthetic\/world\.ts$/, 96],
   [/^types\.ts$/, 100],
+  [/^i18n\/en\/index\.ts$/, 100],
+  [/^i18n\/en\/page\.ts$/, 100],
+  [/^i18n\/en\/pipeline\.ts$/, 100],
+  [/^i18n\/en\/ui\.ts$/, 100],
+  [/^i18n\/index\.ts$/, 100],
+  [/^i18n\/names\.ts$/, 100],
+  [/^i18n\/zh\/index\.ts$/, 100],
+  [/^i18n\/zh\/page\.ts$/, 100],
+  [/^i18n\/zh\/pipeline\.ts$/, 100],
+  [/^i18n\/zh\/ui\.ts$/, 100],
 ];
 await Deno.remove(dir, { recursive: true }).catch(() => {});
 const test = await new Deno.Command(Deno.execPath(), {
@@ -210,7 +220,18 @@ for (const [pattern] of FLOORS.filter(([pattern]) => !rows.some((r) => pattern.t
 // so a new untested module would otherwise be invisible here. A trailing `/*` matches every file directly under
 // that directory (non-recursive — add the subdirectory explicitly if one appears), for directories that are
 // entirely browser UI, so adding a file there doesn't silently need a coverage.ts edit to stay ungated.
-const BROWSER_ONLY = ['ui/*', 'worker.ts', 'testkit.ts', 'device-check.ts', 'media/convert-worker.ts', 'core/helper.ts', 'protocol.ts'];
+const BROWSER_ONLY = [
+  'ui/*',
+  'worker.ts',
+  'testkit.ts',
+  'device-check.ts',
+  'media/convert-worker.ts',
+  'core/helper.ts',
+  'protocol.ts',
+  // Page-only language detection (reads navigator/localStorage; imported only by the page bundles) and a types-only module.
+  'i18n/page.ts',
+  'i18n/catalog.ts',
+];
 const isBrowserOnly = (file: string) =>
   BROWSER_ONLY.some((entry) =>
     entry.endsWith('/*') ? file.startsWith(entry.slice(0, -1)) && !file.slice(entry.length - 1).includes('/') : file === entry

@@ -3,6 +3,7 @@ import type { Demuxer } from './reader.ts';
 import { MediabunnyDemuxer } from './mediabunny-demux.ts';
 import { type FrameConverter, workerConverter } from './convert.ts';
 import { releaseUnlessHeld } from './pool.ts';
+import { t } from '../i18n/index.ts';
 export async function openDemuxer(file: Blob): Promise<Demuxer> {
   return await new MediabunnyDemuxer(file).init();
 }
@@ -124,7 +125,12 @@ export class PreciseSource implements FrameSource {
         // Nothing has been observed yet: the bitstream, not the container header, defines the pixel grid.
         this.notice(
           'CONTAINER_SIZE_MISMATCH',
-          `容器声明 ${info.codedWidth}×${info.codedHeight}，码流实际为 ${bitstreamWidth}×${bitstreamHeight}；以码流尺寸为准。`,
+          t('media.CONTAINER_SIZE_MISMATCH', {
+            codedWidth: info.codedWidth,
+            codedHeight: info.codedHeight,
+            bitstreamWidth,
+            bitstreamHeight,
+          }),
         );
         info.codedWidth = bitstreamWidth;
         info.codedHeight = bitstreamHeight;
@@ -142,7 +148,12 @@ export class PreciseSource implements FrameSource {
       // already draws into codedWidth×codedHeight, so leaving codedWidth/Height alone is what preserves them.
       this.notice(
         'NON_SQUARE_PIXELS',
-        `该录屏声明非方形像素长宽比（显示尺寸 ${frame.displayWidth}×${frame.displayHeight}，存储尺寸 ${bitstreamWidth}×${bitstreamHeight}）；保留原始存储像素，不做缩放。`,
+        t('media.NON_SQUARE_PIXELS', {
+          displayWidth: frame.displayWidth,
+          displayHeight: frame.displayHeight,
+          bitstreamWidth,
+          bitstreamHeight,
+        }),
       );
     }
   }
@@ -265,13 +276,13 @@ export class PreciseSource implements FrameSource {
             // frame is never yielded, so its already-started prefetch (`early`, if the source was one step ahead
             // of the decoder) would otherwise convert into an image nothing ever releases.
             await early?.then((image) => releaseUnlessHeld(image)).catch(() => {});
-            this.notice('NEGATIVE_TIMESTAMP_SKIPPED', '解码器输出了位于编辑列表起点之前（负时间戳）的帧；按容器语义不展示这些帧。');
+            this.notice('NEGATIVE_TIMESTAMP_SKIPPED', t('media.NEGATIVE_TIMESTAMP_SKIPPED'));
             continue;
           }
           if (frame.timestamp < lastTimestamp) {
             // WebCodecs emits presentation order; a backwards timestamp is a container-metadata anomaly. Keep the
             // decoder's order and report it rather than abandoning the rest of the recording.
-            this.notice('NONMONOTONIC_TIMESTAMP', '容器时间戳出现倒退；已按解码器的展示顺序继续处理，未丢弃观察。');
+            this.notice('NONMONOTONIC_TIMESTAMP', t('media.NONMONOTONIC_TIMESTAMP'));
           } else {
             lastTimestamp = frame.timestamp;
           }

@@ -3,10 +3,11 @@
  *  diagnostic state at once), and the progress bar. */
 import type { AppState } from './state.ts';
 import { syncControls } from './state.ts';
-import { $, NO_COMPRESSION_STREAM, phaseNames, timeText, toast } from './dom.ts';
+import { $, NO_COMPRESSION_STREAM, phaseName, timeText, toast } from './dom.ts';
 import { call } from './rpc.ts';
 import { flightStart } from './flight.ts';
 import { storeHash } from './source-file.ts';
+import { t } from '../i18n/page.ts';
 import { DEFAULT_SETTINGS, type Project, type Settings } from '../types.ts';
 import type { WorkerProgress } from '../protocol.ts';
 import type { Canvases } from './canvases.ts';
@@ -52,7 +53,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     viewer.clear();
     $('empty-state').hidden = false;
     $('canvas-badge').hidden = true;
-    $<HTMLSelectElement>('canvas-select').replaceChildren(new Option('等待重建画布', ''));
+    $<HTMLSelectElement>('canvas-select').replaceChildren(new Option(t('ui.run.waitingCanvasOption'), ''));
     $('frames-metric').textContent = '0';
     $('canvases-metric').textContent = '0';
     $('progress-bar').style.width = '0';
@@ -77,9 +78,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     }
     if (!demo && $<HTMLSelectElement>('decoder').value === 'precise' && state.capabilities && !state.capabilities.webcodecs) {
       toast(
-        !globalThis.isSecureContext
-          ? '浏览器在当前 HTTP 地址未开放 WebCodecs。可选择“近似 · 原生 seek”继续本地测试；精确逐帧解码需要 localhost 或 HTTPS。视频不会上传。'
-          : '当前浏览器没有 WebCodecs。请更新 Safari / iOS，或明确选择可能漏帧的兼容 seek 模式。',
+        !globalThis.isSecureContext ? t('ui.run.webcodecsHttpBlocked') : t('ui.run.webcodecsMissing'),
         true,
       );
       return;
@@ -87,13 +86,13 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     resetView();
     setBusy(true);
     paused = false;
-    $('pause-btn').textContent = '暂停';
-    $('status-title').textContent = '准备逐帧解码';
-    $('progress-message').textContent = '正在读取容器、检查编码支持与本地存储。';
+    $('pause-btn').textContent = t('ui.run.pauseLabel');
+    $('status-title').textContent = t('ui.run.preparingStatus');
+    $('progress-message').textContent = t('ui.run.preparingMessage');
     try {
       const decoder = $<HTMLSelectElement>('decoder').value as 'precise' | 'compatibility';
       if (!demo && decoder === 'compatibility' && (!state.mediaInfo || !state.nativeReady)) {
-        throw new Error('兼容模式需要浏览器原生播放器能够读取这段视频。');
+        throw new Error(t('ui.run.compatibilityNeedsNative'));
       }
       // The worker (src/worker.ts) is the authority on these values: it re-validates analysisSize/memoryMB/tileSize
       // and rejects an unrecognised compute/framing string, so a <select>'s raw .value is trusted here and cast,
@@ -123,7 +122,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
       updateProject(state.project);
     } catch (error) {
       setBusy(false);
-      $('status-title').textContent = '未能开始重建';
+      $('status-title').textContent = t('ui.run.startFailedStatus');
       $('progress-message').textContent = String(error);
       diagnostics.addDiagnostic({ code: 'START_ERROR', severity: 'error', message: String(error) });
       toast(String(error), true);
@@ -140,8 +139,10 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     partial: [1, 0],
   };
   function progress(p: WorkerProgress): void {
-    $('status-title').textContent = phaseNames[p.phase] || p.phase;
-    $('progress-count').textContent = `${p.frames.toLocaleString()} 帧 · ${timeText(p.time)}`;
+    $('status-title').textContent = phaseName(p.phase);
+    $('progress-count').textContent = `${t('ui.count.frames', { count: p.frames, frames: p.frames.toLocaleString() })} · ${
+      timeText(p.time)
+    }`;
     $('progress-message').textContent = p.message;
     const [base, weight] = phaseWeight[p.phase] || [0, 0];
     $('progress-bar').style.width = `${Math.min(100, (base + Math.max(0, p.fraction || 0) * weight) * 100)}%`;
@@ -155,12 +156,12 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     $('pause-btn').onclick = () => {
       void call('pause', { paused: !paused }).then((result) => {
         paused = result.paused;
-        $('pause-btn').textContent = paused ? '继续' : '暂停';
-        $('status-title').textContent = paused ? '已暂停 · 内存状态保留' : '继续处理';
+        $('pause-btn').textContent = paused ? t('ui.run.resumeLabel') : t('ui.run.pauseLabel');
+        $('status-title').textContent = paused ? t('ui.run.pausedStatus') : t('ui.run.resumedStatus');
       }).catch((e) => toast(String(e), true));
     };
     $('stop-btn').onclick = () => {
-      void call('stop').then(() => toast('正在结束当前阶段，并尽可能合成、保存已处理的观察。')).catch((e) => toast(String(e), true));
+      void call('stop').then(() => toast(t('ui.run.stopToast'))).catch((e) => toast(String(e), true));
     };
     globalThis.addEventListener('beforeunload', (e) => {
       if (state.busy) {

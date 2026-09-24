@@ -1,3 +1,4 @@
+import { t } from '../i18n/page.ts';
 import type { CanvasMeta, Rect, TilePayload } from '../types.ts';
 interface Cached {
   bitmap: ImageBitmap | null;
@@ -312,11 +313,11 @@ export class TiledViewer {
       ctx.setLineDash([]);
     }
     this.changed(
-      `${(this.scale * 100).toFixed(this.scale < .01 ? 2 : 0)}% · ${level ? `预览 L${level}（原尺寸未改变）` : '原像素 L0'}${
-        this.overlay && level ? ' · 放大查看质量遮罩' : ''
-      }${this.overlay && !level && unobserved ? ' · 蓝色=无观察证据' : ''}${
-        this.overlay && !level && provisionalSeen ? ' · 紫色=瞬态/浮层内容' : ''
-      }`,
+      `${(this.scale * 100).toFixed(this.scale < .01 ? 2 : 0)}% · ${
+        level ? t('ui.viewer.previewLevel', { level }) : t('ui.viewer.nativeLevel')
+      }${this.overlay && level ? t('ui.viewer.qualityHint') : ''}${
+        this.overlay && !level && unobserved ? t('ui.viewer.unobservedHint') : ''
+      }${this.overlay && !level && provisionalSeen ? t('ui.viewer.provisionalHint') : ''}`,
     );
   }
 }

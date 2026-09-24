@@ -5,6 +5,7 @@ import type { AppState } from './state.ts';
 import { syncControls } from './state.ts';
 import { $, toast } from './dom.ts';
 import { call } from './rpc.ts';
+import { displayName, t } from '../i18n/page.ts';
 import type { CanvasMeta } from '../types.ts';
 import type { TiledViewer } from './viewer.ts';
 
@@ -69,7 +70,7 @@ export function createCanvases(state: AppState, viewer: TiledViewer): Canvases {
     const rank = (c: CanvasMeta) => c.kind === 'presentation' ? -1 : c.kind === 'fixed' ? 1 : 0;
     usable.sort((a, b) => rank(a) - rank(b) || b.observedPixels - a.observedPixels);
     select.replaceChildren(
-      ...usable.map((c) => new Option(`${c.name} · ${Math.round(c.bounds.width)} × ${Math.round(c.bounds.height)}`, c.id)),
+      ...usable.map((c) => new Option(`${displayName(c.name)} · ${Math.round(c.bounds.width)} × ${Math.round(c.bounds.height)}`, c.id)),
     );
     select.value = !selectionTouched && state.project?.settings.framing === 'context' && usable[0].kind === 'presentation'
       ? usable[0].id
@@ -89,9 +90,16 @@ export function createCanvases(state: AppState, viewer: TiledViewer): Canvases {
     }
     $('empty-state').hidden = true;
     $('canvas-badge').hidden = false;
-    $('canvas-badge').textContent = `${
-      c.kind === 'presentation' ? '带框呈现 · 延伸背景非观察证据' : c.kind === 'fixed' ? '固定 / 观察层' : '二维内容层'
-    } · ${c.tileCount} 原图瓦片${c.fragment ? ' · 片段间关系未证实' : ''}`;
+    const kind = c.kind === 'presentation'
+      ? t('ui.canvases.badgePresentation')
+      : c.kind === 'fixed'
+      ? t('ui.canvases.badgeFixed')
+      : t('ui.canvases.badgeMoving');
+    $('canvas-badge').textContent = t('ui.canvases.badge', {
+      kind,
+      count: c.tileCount,
+      fragment: c.fragment ? t('ui.canvases.fragmentNote') : '',
+    });
     // syncControls is idempotent and covers export-png/export-sheets/copy-png (plus start/demo/regions, unaffected
     // by a canvas switch) from viewer.current, which viewer.setCanvas() above has already updated to `c`.
     syncControls(state, viewer);

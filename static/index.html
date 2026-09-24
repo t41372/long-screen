@@ -4,86 +4,103 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1">
     <meta name="theme-color" content="#f7f7f2">
-    <meta name="description" content="从本地屏幕录影重建二维画布。所有处理留在你的浏览器。">
-    <title>Long Screen — 让画面不止一屏</title>
+    <meta name="description" content="从本地屏幕录影重建二维画布。所有处理留在你的浏览器。" data-i18n-attr="content:page.description">
+    <title data-i18n="page.title">Long Screen — 让画面不止一屏</title>
     <link rel="stylesheet" href="./style.css">
+    <!-- Hidden until src/i18n/page.ts has put the text in the visitor's language, so it does not flash in another
+         one first. Set by script, so the page is never hidden without JS; the timeout shows it even if main.js fails. -->
+    <script>
+    document.documentElement.classList.add('i18n-pending');
+    setTimeout(function () {
+      document.documentElement.classList.remove('i18n-pending');
+    }, 3000);
+    </script>
     <link rel="icon" href="./icon.svg" type="image/svg+xml">
   </head>
   <body>
     <header
-      class="app-header"><a class="brand" href="./" aria-label="Long Screen 首页"><svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect x="3" y="3" width="19" height="25" rx="5" stroke="currentColor" stroke-width="2"/><path d="M10 9h17v19H10V9Z" fill="#d8e3d7" stroke="currentColor" stroke-width="2"/><path d="M15 15h7m-7 5h7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Long Screen<span class="brand-tag">CANVAS RECONSTRUCTION</span></span></a><div class="header-right"><span class="privacy"><i></i> 像素留在本机</span><button class="quiet" id="history-btn">本地项目</button><button class="quiet" id="help-btn" aria-label="帮助与能力说明">?</button></div></header>
+      class="app-header"><a class="brand" href="./" aria-label="Long Screen 首页" data-i18n-attr="aria-label:page.header.brandLabel"><svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect x="3" y="3" width="19" height="25" rx="5" stroke="currentColor" stroke-width="2"/><path d="M10 9h17v19H10V9Z" fill="#d8e3d7" stroke="currentColor" stroke-width="2"/><path d="M15 15h7m-7 5h7" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg><span>Long Screen<span class="brand-tag">CANVAS RECONSTRUCTION</span></span></a><div class="header-right"><select id="language-select" class="language-select" aria-label="界面语言" data-i18n-attr="aria-label:language.label"><option value="zh" lang="zh-CN">中文</option><option value="en" lang="en">English</option></select><span class="privacy"><i></i> <span data-i18n="page.header.privacy">像素留在本机</span></span><button class="quiet" id="history-btn" data-i18n="page.header.historyBtn">本地项目</button><button class="quiet" id="help-btn" aria-label="帮助与能力说明" data-i18n-attr="aria-label:page.header.helpLabel">?</button></div></header>
     <main class="workspace">
       <aside class="left-panel">
-<div class="section-eyebrow">01 / OBSERVE</div><h1>让画面<br>不止一屏<span class="orange">。</span></h1><p class="intro">从一段录屏，找回背后的画布。<br>可以往下，也可以往任何方向。</p>
-<label class="drop-zone" id="drop-zone" tabindex="0"><input type="file" id="file-input" accept="video/*,.mp4,.mov,.webm,.mkv" hidden><svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect x="5" y="4" width="22" height="24" rx="5" stroke="currentColor" stroke-width="1.5"/><path d="m13 11 8 5-8 5V11Z" fill="currentColor"/></svg><strong id="file-title">选择或拖入屏幕录影</strong><span id="file-subtitle">MP4 · MOV · WebM · 本地处理</span></label>
-<div class="demo-row"><span>先试一段</span><select id="demo-select" aria-label="内置测试场景"><option value="traversal">二维移动 + 回访</option><option value="vertical">纵向滚动 · 变速 / 暂停 / 手抖</option><option value="horizontal">横向移动</option><option value="diagonal">斜向移动</option><option value="fling">高速 fling</option><option value="revisit">同一区域三次经过</option><option value="panes">两个独立滚动区</option><option value="gap">中途跳跃 / 缺口</option><option value="dynamic">局部动态内容</option><option value="lazy-load">懒加载改变内容</option><option value="zoom">中途 pinch zoom</option><option value="blank">大面积纯色</option><option value="repeated-list">高度重复的列表</option><option value="repeated-list-reversal">重复列表 · 反向（像素级歧义）</option><option value="comic">长条漫画</option><option value="phone">手机竖屏 · 全套界面</option><option value="vfr">可变帧率 / 重复帧</option><option value="retina">2× 高分辨率</option><option value="chrome-everything">六种动态元素并存</option><option value="glimpse">一闪而过的内容</option></select><button id="demo-btn" title="运行内置演示" class="icon-button">↗</button></div>
+<div class="section-eyebrow">01 / OBSERVE</div><h1 data-i18n-html="page.observe.heading">让画面<br>不止一屏<span class="orange">。</span></h1><p class="intro" data-i18n-html="page.observe.intro">从一段录屏，找回背后的画布。<br>可以往下，也可以往任何方向。</p>
+<label class="drop-zone" id="drop-zone" tabindex="0"><input type="file" id="file-input" accept="video/*,.mp4,.mov,.webm,.mkv" hidden><svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect x="5" y="4" width="22" height="24" rx="5" stroke="currentColor" stroke-width="1.5"/><path d="m13 11 8 5-8 5V11Z" fill="currentColor"/></svg><strong id="file-title" data-i18n="page.observe.dropTitle">选择或拖入屏幕录影</strong><span id="file-subtitle" data-i18n="page.observe.dropSubtitle">MP4 · MOV · WebM · 本地处理</span></label>
+<div class="demo-row"><span data-i18n="page.observe.demoLabel">先试一段</span><select id="demo-select" aria-label="内置测试场景" data-i18n-attr="aria-label:page.observe.demoSelectLabel"><option value="traversal" data-i18n="page.observe.demo.traversal">二维移动 + 回访</option><option value="vertical" data-i18n="page.observe.demo.vertical">纵向滚动 · 变速 / 暂停 / 手抖</option><option value="horizontal" data-i18n="page.observe.demo.horizontal">横向移动</option><option value="diagonal" data-i18n="page.observe.demo.diagonal">斜向移动</option><option value="fling" data-i18n="page.observe.demo.fling">高速 fling</option><option value="revisit" data-i18n="page.observe.demo.revisit">同一区域三次经过</option><option value="panes" data-i18n="page.observe.demo.panes">两个独立滚动区</option><option value="gap" data-i18n="page.observe.demo.gap">中途跳跃 / 缺口</option><option value="dynamic" data-i18n="page.observe.demo.dynamic">局部动态内容</option><option value="lazy-load" data-i18n="page.observe.demo.lazyLoad">懒加载改变内容</option><option value="zoom" data-i18n="page.observe.demo.zoom">中途 pinch zoom</option><option value="blank" data-i18n="page.observe.demo.blank">大面积纯色</option><option value="repeated-list" data-i18n="page.observe.demo.repeatedList">高度重复的列表</option><option value="repeated-list-reversal" data-i18n="page.observe.demo.repeatedListReversal">重复列表 · 反向（像素级歧义）</option><option value="comic" data-i18n="page.observe.demo.comic">长条漫画</option><option value="phone" data-i18n="page.observe.demo.phone">手机竖屏 · 全套界面</option><option value="vfr" data-i18n="page.observe.demo.vfr">可变帧率 / 重复帧</option><option value="retina" data-i18n="page.observe.demo.retina">2× 高分辨率</option><option value="chrome-everything" data-i18n="page.observe.demo.chromeEverything">六种动态元素并存</option><option value="glimpse" data-i18n="page.observe.demo.glimpse">一闪而过的内容</option></select><button id="demo-btn" title="运行内置演示" class="icon-button" data-i18n-attr="title:page.observe.demoRunTitle">↗</button></div>
 <div class="divider"></div><div class="section-eyebrow">02 / RECONSTRUCT</div>
-<div class="setting-row"><label for="policy">时间冲突</label><select id="policy"><option value="stable">保留稳定的完整观察</option><option value="latest">优先较新的完整观察</option></select></div>
-<div class="setting-row"><label for="framing">输出外框</label><select id="framing"><option value="context">保留外框 · 参考界面</option><option value="region">只保留内容区域与留白</option></select></div>
-<button id="regions-btn" class="setting-button" disabled><span>独立运动区域</span><span id="regions-count">自动识别 ↗</span></button>
-<details class="advanced"><summary>分析与资源设置 <span>＋</span></summary><div class="setting-row"><label for="analysis-size">分析长边</label><select id="analysis-size"><option>320</option><option>480</option><option selected>640</option><option>960</option><option>1280</option></select></div><div class="setting-row"><label for="memory">工作缓存预算</label><select id="memory"><option value="64">64 MB</option><option value="128" selected>128 MB</option><option value="256">256 MB</option><option value="512">512 MB</option></select></div><div class="setting-row"><label for="compute">分析加速</label><select id="compute"><option value="auto">自动实测 · WebGPU / CPU</option><option value="webgpu">WebGPU 分析 · CPU 配准</option><option value="cpu">仅 CPU</option></select></div><p class="hint">GPU 只加速分析缩图；匹配和像素合成仍用 CPU。自动模式包含传输与回读实测，较慢时不强行用 GPU。</p><div class="setting-row"><label for="decoder">解码方式</label><select id="decoder"><option value="precise">逐帧 · WebCodecs</option><option value="compatibility">近似 · 原生 seek</option></select></div><p class="hint">分析缩图不改变输出像素。预算不包括浏览器 / 解码器 / GPU 的额外内存。兼容 seek 模式可能漏掉短暂内容。</p></details>
-<button id="start-btn" class="primary" disabled>重建二维画布 <span>→</span></button><div class="run-controls" hidden id="run-controls"><button id="pause-btn" class="secondary">暂停</button><button id="stop-btn" class="secondary">保存已处理部分</button></div>
-<div class="storage-note"><span id="storage-status">正在检查本地存储…</span><button id="persist-btn" class="text-button">保留数据</button></div>
-<div class="left-bottom"><span class="tiny-dot"></span><span>不上传 · 无云端推理 · 无外部模型</span></div>
+<div class="setting-row"><label for="policy" data-i18n="page.reconstruct.policyLabel">时间冲突</label><select id="policy"><option value="stable" data-i18n="page.reconstruct.policyStable">保留稳定的完整观察</option><option value="latest" data-i18n="page.reconstruct.policyLatest">优先较新的完整观察</option></select></div>
+<div class="setting-row"><label for="framing" data-i18n="page.reconstruct.framingLabel">输出外框</label><select id="framing"><option value="context" data-i18n="page.reconstruct.framingContext">保留外框 · 参考界面</option><option value="region" data-i18n="page.reconstruct.framingRegion">只保留内容区域与留白</option></select></div>
+<button id="regions-btn" class="setting-button" disabled><span data-i18n="page.reconstruct.regionsLabel">独立运动区域</span><span id="regions-count" data-i18n="page.reconstruct.regionsAuto">自动识别 ↗</span></button>
+<details class="advanced"><summary data-i18n-html="page.reconstruct.advancedSummary">分析与资源设置 <span>＋</span></summary><div class="setting-row"><label for="analysis-size" data-i18n="page.reconstruct.analysisSizeLabel">分析长边</label><select id="analysis-size"><option>320</option><option>480</option><option selected>640</option><option>960</option><option>1280</option></select></div><div class="setting-row"><label for="memory" data-i18n="page.reconstruct.memoryLabel">工作缓存预算</label><select id="memory"><option value="64">64 MB</option><option value="128" selected>128 MB</option><option value="256">256 MB</option><option value="512">512 MB</option></select></div><div class="setting-row"><label for="compute" data-i18n="page.reconstruct.computeLabel">分析加速</label><select id="compute"><option value="auto" data-i18n="page.reconstruct.computeAuto">自动实测 · WebGPU / CPU</option><option value="webgpu" data-i18n="page.reconstruct.computeWebgpu">WebGPU 分析 · CPU 配准</option><option value="cpu" data-i18n="page.reconstruct.computeCpu">仅 CPU</option></select></div><p class="hint" data-i18n="page.reconstruct.computeHint">GPU 只加速分析缩图；匹配和像素合成仍用 CPU。自动模式包含传输与回读实测，较慢时不强行用 GPU。</p><div class="setting-row"><label for="decoder" data-i18n="page.reconstruct.decoderLabel">解码方式</label><select id="decoder"><option value="precise" data-i18n="page.reconstruct.decoderPrecise">逐帧 · WebCodecs</option><option value="compatibility" data-i18n="page.reconstruct.decoderCompatibility">近似 · 原生 seek</option></select></div><p class="hint" data-i18n="page.reconstruct.decoderHint">分析缩图不改变输出像素。预算不包括浏览器 / 解码器 / GPU 的额外内存。兼容 seek 模式可能漏掉短暂内容。</p></details>
+<button id="start-btn" class="primary" disabled data-i18n-html="page.reconstruct.startBtn">重建二维画布 <span>→</span></button><div class="run-controls" hidden id="run-controls"><button id="pause-btn" class="secondary" data-i18n="page.reconstruct.pauseBtn">暂停</button><button id="stop-btn" class="secondary" data-i18n="page.reconstruct.stopBtn">保存已处理部分</button></div>
+<div class="storage-note"><span id="storage-status" data-i18n="page.reconstruct.storageChecking">正在检查本地存储…</span><button id="persist-btn" class="text-button" data-i18n="page.reconstruct.persistBtn">保留数据</button></div>
+<div class="left-bottom"><span class="tiny-dot"></span><span data-i18n="page.reconstruct.footerNote">不上传 · 无云端推理 · 无外部模型</span></div>
       </aside>
-      <section class="center-panel" aria-label="重建画布">
+      <section class="center-panel" aria-label="重建画布" data-i18n-attr="aria-label:page.canvas.ariaLabel">
         <div class="canvas-toolbar">
           <div
-            class="canvas-heading"><span class="section-eyebrow">THE LATENT CANVAS</span><select id="canvas-select" aria-label="选择重建画布"><option value="">等待观察</option></select></div>
+            class="canvas-heading"><span class="section-eyebrow">THE LATENT CANVAS</span><select id="canvas-select" aria-label="选择重建画布" data-i18n-attr="aria-label:page.canvas.selectAriaLabel"><option value="" data-i18n="page.canvas.waitingOption">等待观察</option></select></div>
           <div
-            class="canvas-tools"><label class="quality-toggle"><input type="checkbox" id="quality-toggle"> 质量遮罩</label><button id="fit-btn" class="quiet" title="适应窗口">适应</button><button id="native-btn" class="quiet" title="原尺寸">1:1</button></div>
+            class="canvas-tools"><label class="quality-toggle"><input type="checkbox" id="quality-toggle"> <span data-i18n="page.canvas.qualityMask">质量遮罩</span></label><button id="fit-btn" class="quiet" title="适应窗口" data-i18n-attr="title:page.canvas.fitTitle" data-i18n="page.canvas.fitBtn">适应</button><button id="native-btn" class="quiet" title="原尺寸" data-i18n-attr="title:page.canvas.nativeTitle">1:1</button></div>
         </div>
         <div class="stage" id="stage">
-          <canvas id="viewer" aria-label="可拖动和缩放的稀疏二维画布"></canvas>
+          <canvas id="viewer" aria-label="可拖动和缩放的稀疏二维画布" data-i18n-attr="aria-label:page.canvas.viewerAriaLabel"></canvas>
           <div class="empty-state"
-            id="empty-state"><div class="canvas-art" aria-hidden="true"><div class="art-grid"></div><div class="art-paper rear"><i></i><b></b><b></b><b></b><em></em></div><div class="art-paper front"><small>FIELD NOTES / 001</small><h2>A bigger picture.</h2><p>Every observation<br>belongs somewhere.</p><div class="art-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><span class="art-corner c1"></span><span class="art-corner c2"></span><div class="art-caption"><span>↔</span> MORE THAN A STITCH</div></div><h2>不是接长，是重建。</h2><p>回滚的内容只出现一次。<br>未看见的地方，留给空白。</p><span class="empty-hint">选择录屏，或试试左侧的二维移动示例</span></div>
+            id="empty-state"><div class="canvas-art" aria-hidden="true"><div class="art-grid"></div><div class="art-paper rear"><i></i><b></b><b></b><b></b><em></em></div><div class="art-paper front"><small>FIELD NOTES / 001</small><h2>A bigger picture.</h2><p>Every observation<br>belongs somewhere.</p><div class="art-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div><span class="art-corner c1"></span><span class="art-corner c2"></span><div class="art-caption"><span>↔</span> MORE THAN A STITCH</div></div><h2 data-i18n="page.canvas.emptyTitle">不是接长，是重建。</h2><p data-i18n-html="page.canvas.emptyBody">回滚的内容只出现一次。<br>未看见的地方，留给空白。</p><span class="empty-hint" data-i18n="page.canvas.emptyHint">选择录屏，或试试左侧的二维移动示例</span></div>
           <div
-            class="zoom-controls"><button id="zoom-out" aria-label="缩小">−</button><span id="zoom-label">100%</span><button id="zoom-in" aria-label="放大">＋</button></div>
+            class="zoom-controls"><button id="zoom-out" aria-label="缩小" data-i18n-attr="aria-label:page.canvas.zoomOutLabel">−</button><span id="zoom-label">100%</span><button id="zoom-in" aria-label="放大" data-i18n-attr="aria-label:page.canvas.zoomInLabel">＋</button></div>
           <div class="canvas-badge" id="canvas-badge" hidden></div>
         </div>
         <div class="progress-panel">
           <div
-            class="progress-top"><div><span class="status-dot" id="status-dot"></span><strong id="status-title">准备好发现更大的画面</strong></div><span id="progress-count">LOCAL FIRST</span></div>
+            class="progress-top"><div><span class="status-dot" id="status-dot"></span><strong id="status-title" data-i18n="page.canvas.statusReady">准备好发现更大的画面</strong></div><span id="progress-count">LOCAL FIRST</span></div>
           <div class="progress-track">
             <div id="progress-bar"></div>
           </div>
           <div
-            class="progress-bottom"><span id="progress-message">逐帧观察 → 全局定位 → 原尺寸合成</span><span id="lod-label">棋盘格代表未观察区域</span></div>
+            class="progress-bottom"><span id="progress-message" data-i18n="page.canvas.progressMessageDefault">逐帧观察 → 全局定位 → 原尺寸合成</span><span id="lod-label" data-i18n="page.canvas.lodLabel">棋盘格代表未观察区域</span></div>
         </div>
       </section>
       <aside
-        class="right-panel"><div class="section-eyebrow">03 / UNDERSTAND</div><div class="panel-title"><h2>证据与不确定性</h2><span id="warning-count" class="count-badge">0</span></div><p class="panel-desc">结果不必完美，但不确定的地方<br>一定要看得见。</p>
-<div class="metrics"><div><span id="frames-metric">—</span><small>已合成帧</small></div><div><span id="canvases-metric">—</span><small>独立画布</small></div></div><div class="coverage-card"><span class="legend-square"></span><p>透明 ≠ 白色页面<br><small>表示未观察到的空间，不会补造内容。</small></p></div>
-<div class="diagnostics-header"><strong>诊断记录</strong><select id="diagnostic-filter" aria-label="诊断过滤"><option value="all">全部</option><option value="issues">警告 / 错误</option></select></div><div class="diagnostics" id="diagnostics" role="log" aria-label="处理诊断"><div class="diagnostic-empty">这里会记录定位依据、页面变化、<br>推断和处理错误。</div></div><button id="more-diagnostics" class="quiet" hidden>加载更多诊断</button>
-<div class="export-panel"><button id="export-png" class="primary dark" disabled>下载长图 · PNG <span>↓</span></button><button id="copy-png" class="secondary full" disabled>复制长图</button><p>当前画布的一整张原尺寸图片，不缩小、不分页。</p><details class="export-advanced"><summary>高级导出</summary><button id="export-project" class="secondary full" disabled>导出完整项目 · ZIP</button><p>原尺寸瓦片 + 离线查看器 + 覆盖/质量数据 + 完整诊断，供存档或排查。</p><button id="export-sheets" class="secondary full" disabled>分页导出 · 多张 PNG（ZIP）</button><p>超长画布按兼容尺寸拆成多张原尺寸 PNG，页间重叠 32px，附世界坐标清单；不缩小。</p></details><div id="export-download"></div></div>
+        class="right-panel"><div class="section-eyebrow">03 / UNDERSTAND</div><div class="panel-title"><h2 data-i18n="page.understand.heading">证据与不确定性</h2><span id="warning-count" class="count-badge">0</span></div><p class="panel-desc" data-i18n-html="page.understand.desc">结果不必完美，但不确定的地方<br>一定要看得见。</p>
+<div class="metrics"><div><span id="frames-metric">—</span><small data-i18n="page.understand.framesLabel">已合成帧</small></div><div><span id="canvases-metric">—</span><small data-i18n="page.understand.canvasesLabel">独立画布</small></div></div><div class="coverage-card"><span class="legend-square"></span><p data-i18n-html="page.understand.coverageBody">透明 ≠ 白色页面<br><small>表示未观察到的空间，不会补造内容。</small></p></div>
+<div class="diagnostics-header"><strong data-i18n="page.understand.diagnosticsHeading">诊断记录</strong><select id="diagnostic-filter" aria-label="诊断过滤" data-i18n-attr="aria-label:page.understand.filterAriaLabel"><option value="all" data-i18n="page.understand.filterAll">全部</option><option value="issues" data-i18n="page.understand.filterIssues">警告 / 错误</option></select></div><div class="diagnostics" id="diagnostics" role="log" aria-label="处理诊断" data-i18n-attr="aria-label:page.understand.diagnosticsAriaLabel"><div class="diagnostic-empty" data-i18n-html="page.understand.diagnosticsEmpty">这里会记录定位依据、页面变化、<br>推断和处理错误。</div></div><button id="more-diagnostics" class="quiet" hidden data-i18n="page.understand.moreDiagnostics">加载更多诊断</button>
+<div class="export-panel"><button id="export-png" class="primary dark" disabled data-i18n-html="page.export.downloadPng">下载长图 · PNG <span>↓</span></button><button id="copy-png" class="secondary full" disabled data-i18n="page.export.copyPng">复制长图</button><p data-i18n="page.export.pngNote">当前画布的一整张原尺寸图片，不缩小、不分页。</p><details class="export-advanced"><summary data-i18n="page.export.advancedSummary">高级导出</summary><button id="export-project" class="secondary full" disabled data-i18n="page.export.exportProject">导出完整项目 · ZIP</button><p data-i18n="page.export.projectNote">原尺寸瓦片 + 离线查看器 + 覆盖/质量数据 + 完整诊断，供存档或排查。</p><button id="export-sheets" class="secondary full" disabled data-i18n="page.export.exportSheets">分页导出 · 多张 PNG（ZIP）</button><p data-i18n="page.export.sheetsNote">超长画布按兼容尺寸拆成多张原尺寸 PNG，页间重叠 32px，附世界坐标清单；不缩小。</p></details><div id="export-download"></div></div>
       </aside>
     </main>
     <div id="toast" role="alert" hidden></div>
     <dialog
-      id="history-dialog"><div class="dialog-header"><h2>本地项目</h2><button class="quiet" data-close="history-dialog">×</button></div><p class="hint">保存在当前浏览器，不是云端备份。原始录影不复制到项目中。</p><div id="history-list"></div><button id="more-projects" class="quiet" hidden>加载更多</button></dialog>
+      id="history-dialog"><div class="dialog-header"><h2 data-i18n="page.history.title">本地项目</h2><button class="quiet" data-close="history-dialog">×</button></div><p class="hint" data-i18n="page.history.hint">保存在当前浏览器，不是云端备份。原始录影不复制到项目中。</p><div id="history-list"></div><button id="more-projects" class="quiet" hidden data-i18n="page.history.moreProjects">加载更多</button></dialog>
     <dialog id="help-dialog">
-      <div class="dialog-header"><h2>一张有来源的画布</h2><button class="quiet" data-close="help-dialog">×</button></div>
+      <div
+        class="dialog-header"><h2 data-i18n="page.help.title">一张有来源的画布</h2><button class="quiet" data-close="help-dialog">×</button></div>
       <div class="help-copy">
-        <h3>哪些像素被保留？</h3>
-        <p>精确模式逐帧解码。所有完成处理的观察都有时间戳和合成记录。分析可以缩图，最终合成与导出保持原始像素尺度。</p>
-        <h3>外框与自然留白</h3>
-        <p>默认保留整个捲动区域的背景、边距和留白，不裁到文字边界。带外框视图额外保留一帧参考界面：侧栏文字、工具图示以原尺寸出现一次，扩展处仅续接装饰背景，不属于重建证据。原始内容层始终单独保留。其他独立 pane 不会被假装拼成同一轨迹。</p>
-        <h3>这里不是“万能页面理解”</h3>
-        <p>运动分层、重复纹理消歧和动态区域归属都是视觉推断。比例变化、无重叠或不能共存的布局可能成为独立片段；这些片段之间不被宣称已经对齐。置信度不是经过校准的正确概率。</p>
-        <h3>长录屏与存储</h3>
-        <p>采用三次解码扫描，以磁盘空间和计算时间换取有限内存。请保持页面打开。中断后已提交的结果仍在本机，但当前实现不支持从中断帧续算。</p>
-        <h3>浏览器与格式</h3>
-        <p>需要 IndexedDB、OffscreenCanvas、CompressionStream。本机开发可直接用 HTTP localhost，无需证书；手机访问局域网 HTTP 时可选择近似 seek 测试，但可能漏帧。浏览器通常只在 localhost 或 HTTPS 开放 WebCodecs 精确解码与磁盘导出接口，这与上传无关。精确解码还需要设备支持相应 codec；MP4/MOV/WebM 容器不等于设备能解码其所有编码。</p>
-        <h3>怎么得到更好的结果？</h3>
-        <p>保留足够重叠；遇到低纹理区域稍慢移动。多个 pane 或悬浮层识别不准时，用“独立运动区域”手动画出区域再处理。所有诊断可从完整项目导出。</p>
-        <h3>开源授权</h3>
-        <p>本项目自身代码之外，Wasm 核心与前端资源中打包的第三方依赖及其许可见 <a href="./THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener">开源授权说明</a>（构建时生成）。</p>
+        <h3 data-i18n="page.help.pixelsHeading">哪些像素被保留？</h3>
+        <p
+          data-i18n="page.help.pixelsBody">精确模式逐帧解码。所有完成处理的观察都有时间戳和合成记录。分析可以缩图，最终合成与导出保持原始像素尺度。</p>
+        <h3 data-i18n="page.help.frameHeading">外框与自然留白</h3>
+        <p
+          data-i18n="page.help.frameBody">默认保留整个捲动区域的背景、边距和留白，不裁到文字边界。带外框视图额外保留一帧参考界面：侧栏文字、工具图示以原尺寸出现一次，扩展处仅续接装饰背景，不属于重建证据。原始内容层始终单独保留。其他独立 pane 不会被假装拼成同一轨迹。</p>
+        <h3 data-i18n="page.help.scopeHeading">这里不是“万能页面理解”</h3>
+        <p
+          data-i18n="page.help.scopeBody">运动分层、重复纹理消歧和动态区域归属都是视觉推断。比例变化、无重叠或不能共存的布局可能成为独立片段；这些片段之间不被宣称已经对齐。置信度不是经过校准的正确概率。</p>
+        <h3 data-i18n="page.help.storageHeading">长录屏与存储</h3>
+        <p
+          data-i18n="page.help.storageBody">采用三次解码扫描，以磁盘空间和计算时间换取有限内存。请保持页面打开。中断后已提交的结果仍在本机，但当前实现不支持从中断帧续算。</p>
+        <h3 data-i18n="page.help.browserHeading">浏览器与格式</h3>
+        <p
+          data-i18n="page.help.browserBody">需要 IndexedDB、OffscreenCanvas、CompressionStream。本机开发可直接用 HTTP localhost，无需证书；手机访问局域网 HTTP 时可选择近似 seek 测试，但可能漏帧。浏览器通常只在 localhost 或 HTTPS 开放 WebCodecs 精确解码与磁盘导出接口，这与上传无关。精确解码还需要设备支持相应 codec；MP4/MOV/WebM 容器不等于设备能解码其所有编码。</p>
+        <h3 data-i18n="page.help.tipsHeading">怎么得到更好的结果？</h3>
+        <p
+          data-i18n="page.help.tipsBody">保留足够重叠；遇到低纹理区域稍慢移动。多个 pane 或悬浮层识别不准时，用“独立运动区域”手动画出区域再处理。所有诊断可从完整项目导出。</p>
+        <h3 data-i18n="page.help.licenseHeading">开源授权</h3>
+        <p
+          data-i18n-html="page.help.licenseBody">本项目自身代码之外，Wasm 核心与前端资源中打包的第三方依赖及其许可见 <a href="./THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener">开源授权说明</a>（构建时生成）。</p>
       </div>
     </dialog>
     <dialog id="regions-dialog"
-      class="wide-dialog"><div class="dialog-header"><h2>指定独立运动区域</h2><button class="quiet" data-close="regions-dialog">×</button></div><p class="hint">在画面上拖出矩形。每个“内容”区域独立重建。未框选区域会明确保留为单独的低置信观察层；“忽略”区域是主动排除。</p><div class="region-tools"><select id="region-kind"><option value="moving">内容 · 独立滚动</option><option value="fixed">固定界面</option><option value="ignore">忽略 · 主动排除</option></select><button id="clear-regions" class="quiet">恢复自动识别</button></div><canvas id="region-canvas"></canvas><div id="region-list"></div><button id="save-regions" class="primary">使用这些区域</button></dialog>
+      class="wide-dialog"><div class="dialog-header"><h2 data-i18n="page.regions.title">指定独立运动区域</h2><button class="quiet" data-close="regions-dialog">×</button></div><p class="hint" data-i18n="page.regions.hint">在画面上拖出矩形。每个“内容”区域独立重建。未框选区域会明确保留为单独的低置信观察层；“忽略”区域是主动排除。</p><div class="region-tools"><select id="region-kind"><option value="moving" data-i18n="page.regions.kindMoving">内容 · 独立滚动</option><option value="fixed" data-i18n="page.regions.kindFixed">固定界面</option><option value="ignore" data-i18n="page.regions.kindIgnore">忽略 · 主动排除</option></select><button id="clear-regions" class="quiet" data-i18n="page.regions.clearBtn">恢复自动识别</button></div><canvas id="region-canvas"></canvas><div id="region-list"></div><button id="save-regions" class="primary" data-i18n="page.regions.saveBtn">使用这些区域</button></dialog>
     <dialog id="source-dialog" class="wide-dialog">
-      <div class="dialog-header"><h2>原始观察</h2><button class="quiet" data-close="source-dialog">×</button></div>
+      <div
+        class="dialog-header"><h2 data-i18n="page.source.title">原始观察</h2><button class="quiet" data-close="source-dialog">×</button></div>
       <video id="source-video" controls playsinline muted preload="metadata"></video>
       <p id="source-caption" class="hint"></p>
     </dialog>

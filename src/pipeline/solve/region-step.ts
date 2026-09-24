@@ -9,6 +9,7 @@ import type { PoseGraph } from '../../core/pose-graph.ts';
 import type { KeyframeIndex } from '../../core/keyframes.ts';
 import type { LabelMask, ResidentFrame, ResidentGray, VotingRing } from '../../core/wasm.ts';
 import { attachmentShift, resolveTarget as resolveAttachmentTarget } from '../attachments.ts';
+import { t } from '../../i18n/index.ts';
 import type { RunContext } from '../context.ts';
 import { type Decision, newCanvas, type RegionState } from './state.ts';
 import {
@@ -268,9 +269,7 @@ export class SolvePass {
         time: frame.time,
         frame: frame.index,
         canvasId: state.canvasId,
-        message: `约 ${
-          Math.round((1 - est.contentChange.agreement) * 100)
-        }% 的纹理区块与整体位移不一致（动画、视频、懒加载或重排）；位移由一致区块决定，冲突区域在合成时单独处理。`,
+        message: t('diag.PARTIAL_CONTENT_CHANGE.message', { percent: Math.round((1 - est.contentChange.agreement) * 100) }),
       });
     }
   }
@@ -345,8 +344,8 @@ export class SolvePass {
         frame: frame.index,
         canvasId: state.canvasId,
         confidence: locals.confidence,
-        message: '两帧之间移动很快，只剩很小的重叠可供对齐。位移取自这一小块证据；在周期性排版中，相邻周期同样能解释这些像素。',
-        action: '若之后的回访给出更强的证据，这段轨迹会被整体改正并记录。',
+        message: t('diag.THIN_OVERLAP_STEP.message'),
+        action: t('diag.THIN_OVERLAP_STEP.action'),
       });
     }
     if (locals.uncertain) {
@@ -364,9 +363,9 @@ export class SolvePass {
           height: locals.r.rect.height,
         },
         message: locals.ambiguous
-          ? '重复纹理使多个位移都能解释像素；采用与运动连续性最一致的解，这是 best guess 而非唯一正确对齐。'
-          : '这一区域采用了低置信度的位置推断；相关像素会在质量遮罩中标记。',
-        action: '连续轨迹和已有锚点用于 best guess，不代表唯一正确对齐。',
+          ? t('diag.LOW_CONFIDENCE_PLACEMENT.messageAmbiguous')
+          : t('diag.LOW_CONFIDENCE_PLACEMENT.messageLowConfidence'),
+        action: t('diag.LOW_CONFIDENCE_PLACEMENT.action'),
       });
     }
   }
@@ -383,7 +382,7 @@ export class SolvePass {
       frame: frame.index,
       canvasId: state.canvasId,
       confidence: locals.confidence,
-      message: '两帧几乎相同但缺少可验证的特征对应；按暂停（零位移）处理，这是 best guess。',
+      message: t('diag.LOW_CONFIDENCE_PLACEMENT.messageStatic'),
     });
   }
   /** decision === 'blind': skip this observation, fixed confidence, an UNOBSERVABLE_FRAME diagnostic. */
@@ -399,8 +398,8 @@ export class SolvePass {
       time: frame.time,
       frame: frame.index,
       canvasId: state.canvasId || undefined,
-      message: '这一帧在该区域没有可辨认纹理：空白帧既可能是暂停，也可能是在空白区域移动，像素本身无法区分。它不会被画到任何位置。',
-      action: '若空白之后的内容无法与之前的观察重叠，将保留为独立片段，而不是猜测中间距离。',
+      message: t('diag.UNOBSERVABLE_FRAME.message'),
+      action: t('diag.UNOBSERVABLE_FRAME.action'),
     });
   }
   /** decision === 'lost': a keyframe-index revisit search either relocalises onto an existing canvas
@@ -449,7 +448,7 @@ export class SolvePass {
           error: match.error,
           offset: match.offset,
         },
-        message: '通过历史视觉锚点重新定位到已观察画布，未把回访内容追加成长图。',
+        message: t('diag.RELOCALIZED.message'),
       });
     } else {
       // Name the cause: a magnification change is a different pixel grid, not a lost trajectory.
@@ -470,10 +469,8 @@ export class SolvePass {
         frame: frame.index,
         confidence: locals.confidence,
         detail: scale,
-        message: scale
-          ? `检测到约 ${scale.scale.toFixed(2)}× 的比例/布局变换，已按原像素保留独立片段；没有偷偷缩放混合。`
-          : '无法确认与原画布的相对位置，已保留独立可导出片段。两个片段之间可能重叠，也可能存在真实缺口。',
-        action: '跨片段关系尚未证实；后续回访若能可靠匹配，片段会被整体接回。重新录制时增加重叠，或用区域设置隔离变化组件。',
+        message: scale ? t('diag.SCALE_CHANGE_FRAGMENT.message', { scale: scale.scale.toFixed(2) }) : t('diag.UNPLACED_FRAGMENT.message'),
+        action: scale ? t('diag.SCALE_CHANGE_FRAGMENT.action') : t('diag.UNPLACED_FRAGMENT.action'),
       });
     }
   }
@@ -491,7 +488,7 @@ export class SolvePass {
       severity: 'error',
       time: frame.time,
       frame: frame.index,
-      message: '定位计算产生无效数值。已隔离此观察，未将无效坐标写入画布。',
+      message: t('diag.NONFINITE_POSE.message'),
     });
     state.fragment++;
     state.pose = { x: 0, y: 0 };
@@ -529,7 +526,7 @@ export class SolvePass {
         time: frame.time,
         canvasId: state.canvasId,
         region: occlusions[0],
-        message: '顶端纹理支持屏幕固定而非页面位移；本次观察的固定遮挡不写入移动画布。原始参考界面保留在外框呈现中。',
+        message: t('diag.STICKY_OCCLUSION.message'),
       });
     }
     const placement: Placement = {
