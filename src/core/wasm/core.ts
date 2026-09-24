@@ -387,27 +387,43 @@ export class Core {
   estimateMotion(a: Gray, b: Gray, matches: Match[], featureCount: number): MotionField {
     return motion.estimateMotion(this, a, b, matches, featureCount);
   }
+  /** No frame resizing and no averaging of text at the seam. `mask` restricts both frames to one region's atlas
+   *  membership. */
   refineNative(
     a: FrameInput,
     b: FrameInput,
     guess: { x: number; y: number },
     region: Rect,
-    mask: LabelMask | undefined,
-    radius: number,
+    mask?: LabelMask,
+    radius = 3,
   ): RefinementResult {
     return motion.refineNative(this, a, b, guess, region, mask, radius);
   }
+  /** Measures how well keyframe patches (region-local, in the keyframe's frame) align in the current native
+   *  frame at `guess` (current → keyframe), refining on the native raster. */
   refinePatches(
     patches: PatchInput[],
     native: Gray | ResidentGray,
     region: Rect,
     guess: { x: number; y: number },
-    radius: number,
+    radius = 3,
   ): RefinementResult {
     return motion.refinePatches(this, patches, native, region, guess, radius);
   }
   resampleGray(g: Gray, scale: number): Gray {
     return motion.resampleGray(this, g, scale);
+  }
+  extractPatches(native: Gray | ResidentGray, region: Rect, features: Point[], factor: number, count = 24, size = 32): PatchInput[] {
+    return motion.extractPatches(this, native, region, features, factor, count, size);
+  }
+  probeScale(
+    previous: Gray,
+    current: Gray,
+    currentFeatures: Feature[],
+    roi?: Rect,
+    scales?: number[],
+  ): { scale: number; error: number } | undefined {
+    return motion.probeScale(this, previous, current, currentFeatures, roi, scales);
   }
   /** Plans the frame-wide observation buffers once; each `compositeTile` call then only moves one tile. */
   prepareObservation(obs: CompositeObservation, tileSize: number): PreparedObservation {

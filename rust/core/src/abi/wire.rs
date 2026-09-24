@@ -31,6 +31,11 @@ pub const LEARNER_MOTION_BYTES: usize = 32;
 /// Learner field descriptor: u32 motions ptr, u32 motion count, u32 labels ptr, u32 confidence ptr,
 /// u32 dynamic ptr, u32 cols, u32 rows, u32 unknown, f64 difference.
 pub const LEARNER_FIELD_BYTES: usize = 40;
+/// Serialised 2-D point for `ls_extract_patches`'/`ls_probe_scale`'s feature lists: f64 x, f64 y.
+pub const POINT_BYTES: usize = 16;
+/// One `ls_extract_patches` output patch header (data follows immediately, `size × size` bytes): f64 x, f64 y,
+/// u32 size, u32 padding.
+pub const EXTRACTED_PATCH_HEADER_BYTES: usize = 24;
 
 /// A little-endian view over one adapter-owned descriptor, replacing the `u = |i| u32::from_le_bytes(..)`
 /// closure each ABI function used to redefine.

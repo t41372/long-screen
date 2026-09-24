@@ -844,6 +844,121 @@ pub fn refine_patches(
     }
 }
 
+/// One `extractPatches` output patch: region-local native pixels plus its `size × size` luma data.
+pub struct ExtractedPatch {
+    pub x: f64,
+    pub y: f64,
+    pub size: usize,
+    pub data: Vec<u8>,
+}
+
+/// Native-resolution texture samples around `features` (analysis-resolution points, scaled by `factor`),
+/// non-overlapping, clamped to `region`, first `count` accepted in feature order. `native` is the FULL native
+/// luma plane (`native_width × native_height`); a caller-supplied `region` that would read outside it is
+/// rejected (empty result) instead of indexing past the plane — the historical TS never validated this because a
+/// JS typed-array read past the end just returns `undefined`, but a Rust slice index would panic.
+#[allow(clippy::too_many_arguments)]
+pub fn extract_patches(
+    native: &[u8],
+    native_width: usize,
+    native_height: usize,
+    region: Rect,
+    features: &[(f64, f64)],
+    factor: f64,
+    count: usize,
+    size: usize,
+) -> Vec<ExtractedPatch> {
+    let mut out: Vec<ExtractedPatch> = Vec::new();
+    let (rx, ry, rw, rh) = (
+        js_round(region.x),
+        js_round(region.y),
+        js_round(region.width),
+        js_round(region.height),
+    );
+    if (rw as f64) < size as f64 + 2.0 || (rh as f64) < size as f64 + 2.0 {
+        return out;
+    }
+    if rx < 0 || ry < 0 || (rx + rw) as usize > native_width || (ry + rh) as usize > native_height {
+        return out;
+    }
+    let mut taken: Vec<(f64, f64)> = Vec::new();
+    for &(fx, fy) in features {
+        if out.len() >= count {
+            break;
+        }
+        let x = (js_round(fx * factor) as f64 - size as f64 / 2.0)
+            .clamp(0.0, (rw - size as i32) as f64);
+        let y = (js_round(fy * factor) as f64 - size as f64 / 2.0)
+            .clamp(0.0, (rh - size as i32) as f64);
+        if taken
+            .iter()
+            .any(|&(tx, ty)| (tx - x).abs() < size as f64 && (ty - y).abs() < size as f64)
+        {
+            continue;
+        }
+        taken.push((x, y));
+        let mut data = vec![0u8; size * size];
+        for row in 0..size {
+            let src = ((ry + y as i32 + row as i32) as i64 * native_width as i64
+                + (rx + x as i32) as i64) as usize;
+            data[row * size..row * size + size].copy_from_slice(&native[src..src + size]);
+        }
+        out.push(ExtractedPatch { x, y, size, data });
+    }
+    out
+}
+
+/// When translation fails, asks explicitly whether `previous` (resampled at each candidate scale) explains
+/// `current` — fuses `resampleGray` + `extractFeatures(320)` + `matchFeatures` + `translationHypotheses(4)` +
+/// the support/audit gates into one call per candidate scale, exactly the historical TS loop's order. First
+/// strict minimum by `agreeingError` in scale order (matches the TS `!best || audit.agreeingError < best.error`).
+pub fn probe_scale(
+    previous: Gray<'_>,
+    current: Gray<'_>,
+    current_features: &[crate::features::Feature],
+    roi: Option<Rect>,
+    scales: &[f64],
+) -> Option<(f64, f64)> {
+    let mut best: Option<(f64, f64)> = None;
+    for &scale in scales {
+        let (sw, sh, sdata) = resample_gray(previous, scale);
+        let scaled_features = crate::features::extract_features(&sdata, sw, sh, 320, None);
+        let matches = crate::features::match_features(&scaled_features, current_features, true);
+        let match_points: Vec<MatchPoints> = matches
+            .iter()
+            .map(|m| MatchPoints {
+                ax: scaled_features[m.a as usize].x as f64,
+                ay: scaled_features[m.a as usize].y as f64,
+                bx: current_features[m.b as usize].x as f64,
+                by: current_features[m.b as usize].y as f64,
+                unique: m.unique,
+            })
+            .collect();
+        let scaled_gray = Gray {
+            width: sw,
+            height: sh,
+            data: &sdata,
+        };
+        for m in translation_hypotheses(&match_points, 4) {
+            if m.support < 8 {
+                continue;
+            }
+            let audit = audit_translation(scaled_gray, current, m.x, m.y, roi, true);
+            if audit.samples < 200
+                || !audit.error.is_finite()
+                || audit.agreement < 0.5
+                || audit.agreeing_error > 10.0
+            {
+                continue;
+            }
+            if best.is_none_or(|(_, e)| audit.agreeing_error < e) {
+                best = Some((scale, audit.agreeing_error));
+            }
+        }
+    }
+    best
+}
+
 /// Bilinear resample of an analysis image (probe only; output pixels are never resampled).
 pub fn resample_gray(g: Gray<'_>, scale: f64) -> (usize, usize, Vec<u8>) {
     let width = 2usize.max(js_round(g.width as f64 * scale) as usize);
@@ -999,6 +1114,56 @@ mod tests {
             }
             let _ = resample_gray(ga, 2.0);
             let _ = resample_gray(ga, 0.5);
+            let features: Vec<(f64, f64)> = fb.iter().map(|f| (f.x as f64, f.y as f64)).collect();
+            let patches = extract_patches(&b, w, h, region, &features, 1.0, 24, 32);
+            assert!(patches.len() <= 24);
+            for p in &patches {
+                assert_eq!(p.data.len(), 32 * 32);
+                assert!(p.x >= 0.0 && p.y >= 0.0);
+            }
+            let _ = refine_patches(
+                &patches
+                    .iter()
+                    .map(|p| Patch {
+                        x: p.x as i32,
+                        y: p.y as i32,
+                        size: p.size,
+                        data: &p.data,
+                    })
+                    .collect::<Vec<_>>(),
+                Gray {
+                    width: w,
+                    height: h,
+                    data: &b,
+                },
+                region,
+                Point {
+                    x: -(dx as f64),
+                    y: -(dy as f64),
+                },
+                3,
+            );
+            // A degenerate region (too small for one patch) yields nothing, not a panic.
+            assert!(extract_patches(
+                &b,
+                w,
+                h,
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 10.0,
+                    height: 10.0
+                },
+                &features,
+                1.0,
+                24,
+                32
+            )
+            .is_empty());
+            let probe = probe_scale(ga, gb, &fb, None, &[1.0, 1.1, 0.9]);
+            if let Some((scale, error)) = probe {
+                assert!(scale > 0.0 && error.is_finite());
+            }
         }
     }
 }

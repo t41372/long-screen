@@ -11,8 +11,10 @@
 //!   2. `STATUS_OK` / `STATUS_BAD_ARGUMENT` / `STATUS_BAD_FILTER − filter_byte`: `ls_png_decode` only.
 //!   3. A non-negative count or length, `STATUS_BAD_ARGUMENT` on failure: extraction/matching exports
 //!      (`ls_extract_features`, `ls_match_features`, `ls_feature_words`, `ls_translation_hypotheses`,
-//!      `ls_sticky_occlusions`, `ls_voting_push`/`_drain`/`_pop`, `ls_learner_len`, `ls_keyframes_evaluate_candidates`),
-//!      plus `ls_voting_peek`, which additionally returns −2 for "no pending record" (not a bad argument).
+//!      `ls_sticky_occlusions`, `ls_voting_push`/`_drain`/`_pop`, `ls_learner_len`, `ls_keyframes_evaluate_candidates`,
+//!      `ls_extract_patches`), plus `ls_voting_peek`, which additionally returns −2 for "no pending record" (not
+//!      a bad argument), and `ls_probe_scale`, whose count is 0 or 1 (no candidate passed the gates / one did,
+//!      written to `out`).
 //!   4. A handle (> 0) or `STATUS_BAD_ARGUMENT`: `ls_learner_new`, `ls_voting_new`, `ls_pose_graph_new`,
 //!      `ls_temporal_index_new`, `ls_png_encode`.
 //!   5. A plain numeric result with its own out-of-band sentinel, no status code: `ls_stationary_boundary`
@@ -57,9 +59,9 @@ pub extern "C" fn ls_layout(which: u32) -> u32 {
     use layers::LEARNER_ARRAY_COUNT;
     use regions::{REGIONS_FINISH_DESC_BYTES, REGION_HEADER_BYTES};
     use wire::{
-        COMPOSITE_HEADER_BYTES, LEARNER_FIELD_BYTES, LEARNER_MOTION_BYTES, MATCH_POINT_BYTES,
-        MOTION_BYTES, MOTION_FIELD_HEADER_BYTES, PATCH_BYTES, REFINEMENT_BYTES,
-        VOTING_REGION_BYTES,
+        COMPOSITE_HEADER_BYTES, EXTRACTED_PATCH_HEADER_BYTES, LEARNER_FIELD_BYTES,
+        LEARNER_MOTION_BYTES, MATCH_POINT_BYTES, MOTION_BYTES, MOTION_FIELD_HEADER_BYTES,
+        PATCH_BYTES, POINT_BYTES, REFINEMENT_BYTES, VOTING_REGION_BYTES,
     };
     (match which {
         0 => MATCH_POINT_BYTES,
@@ -76,6 +78,8 @@ pub extern "C" fn ls_layout(which: u32) -> u32 {
         11 => REGION_HEADER_BYTES,
         12 => LEARNER_ARRAY_COUNT,
         13 => LAYOUT_BYTES,
+        14 => POINT_BYTES,
+        15 => EXTRACTED_PATCH_HEADER_BYTES,
         _ => 0,
     }) as u32
 }

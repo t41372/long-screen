@@ -2,8 +2,8 @@
  *  a single deterministic noise page cropped into analysis-sized windows, its RGBA view, and the two-frame motion
  *  field helper every layer-learning test drives with. Kept here (not duplicated per file) so the split files stay
  *  exact behavioural mirrors of the original, unified test. */
-import { extractFeatures } from '../../src/core/features.ts';
 import { estimateMotion } from '../../src/core/motion.ts';
+import { core } from '../../src/core/wasm.ts';
 import { clamp, rng } from '../../src/core/math.ts';
 import { referenceRegionContains } from './reference/layers.ts';
 import type { Gray, Motion, MotionField, Rect, Region, RGBA } from '../../src/types.ts';
@@ -28,7 +28,7 @@ export const rgba = (g: Gray): RGBA => ({
 
 /** Two-frame motion field, feature-driven, used by every layer-learning test to feed LayerLearner.add(). */
 export function fieldFor(prev: Gray, cur: Gray) {
-  return estimateMotion(prev, cur, undefined, extractFeatures(prev), extractFeatures(cur));
+  return estimateMotion(prev, cur, undefined, core().extractFeatures(prev, 480), core().extractFeatures(cur, 480));
 }
 
 /** Former src/core/raster.ts exports with no production caller left (final-verify-report.md item 12): kept here

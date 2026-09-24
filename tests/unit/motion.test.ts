@@ -1,8 +1,7 @@
 import '../support/core.ts';
 import { assert, assertEquals, assertThrows } from '@std/assert';
-import { extractFeatures, grayscale, matchFeatures } from '../../src/core/features.ts';
 import { core } from '../../src/core/wasm.ts';
-import { estimateMotion, extractPatches, probeScale, refineNative, refinePatches } from '../../src/core/motion.ts';
+import { estimateMotion } from '../../src/core/motion.ts';
 import { crop, rgba } from '../support/pixel-fixtures.ts';
 import type { Gray, Match } from '../../src/types.ts';
 import { makeWorld } from '../../src/synthetic/world.ts';
@@ -67,45 +66,45 @@ Deno.test('motion: verify/audit/refine on analysis images', () => {
 });
 Deno.test('motion: native refinement returns integer offsets, errors and runner-up gaps; degenerate masks never produce NaN', () => {
   const a = rgba(crop(100, 100)), b = rgba(crop(117, 123));
-  const p = refineNative(a, b, { x: 17.2, y: 22.7 }, { x: 0, y: 0, width: 320, height: 240 });
+  const p = core().refineNative(a, b, { x: 17.2, y: 22.7 }, { x: 0, y: 0, width: 320, height: 240 });
   assertEquals([p.x, p.y], [17, 23]);
   assert(p.error < 1 && p.runnerUp > 20 && p.samples > 100);
-  const masked = refineNative(a, b, { x: 17, y: 23 }, { x: 0, y: 0, width: 320, height: 240 }, {
+  const masked = core().refineNative(a, b, { x: 17, y: 23 }, { x: 0, y: 0, width: 320, height: 240 }, {
     labels: new Uint8Array(320 * 240),
     code: 1,
   });
   assertEquals(masked.error, Infinity);
   const tiny = { width: 20, height: 20, data: new Uint8ClampedArray(1600) };
-  const q = refineNative(tiny, tiny, { x: 0, y: 40 }, { x: 0, y: 0, width: 20, height: 3 });
+  const q = core().refineNative(tiny, tiny, { x: 0, y: 40 }, { x: 0, y: 0, width: 20, height: 3 });
   assert(Number.isFinite(q.x) && Number.isFinite(q.y) && q.error === Infinity);
-  const other = refineNative(a, { ...b, width: 100 }, { x: 0, y: 0 }, { x: 0, y: 0, width: 10, height: 10 });
+  const other = core().refineNative(a, { ...b, width: 100 }, { x: 0, y: 0 }, { x: 0, y: 0, width: 10, height: 10 });
   assertEquals(other.error, Infinity);
   const stripe = new Uint8Array(320 * 240);
   for (let y = 0; y < 240; y++) for (let x = 0; x < 6; x++) stripe[y * 320 + x] = 1;
-  const mostlyMasked = refineNative(a, b, { x: 17, y: 23 }, { x: 0, y: 0, width: 320, height: 240 }, { labels: stripe, code: 1 });
+  const mostlyMasked = core().refineNative(a, b, { x: 17, y: 23 }, { x: 0, y: 0, width: 320, height: 240 }, { labels: stripe, code: 1 });
   assert(!Number.isFinite(mostlyMasked.error) || mostlyMasked.error >= 0);
 });
 Deno.test('motion: keyframe patches measure revisits at native precision', () => {
-  const native = crop(0, 0, 400, 300), region = { x: 0, y: 0, width: 400, height: 300 }, features = extractFeatures(native, 60);
-  const patches = extractPatches(native, region, features, 1);
+  const native = crop(0, 0, 400, 300), region = { x: 0, y: 0, width: 400, height: 300 }, features = core().extractFeatures(native, 60);
+  const patches = core().extractPatches(native, region, features, 1);
   assert(patches.length >= 10 && patches.every((p) => p.data.length === 1024));
-  assertEquals(extractPatches(native, { x: 0, y: 0, width: 20, height: 20 }, features, 1).length, 0);
+  assertEquals(core().extractPatches(native, { x: 0, y: 0, width: 20, height: 20 }, features, 1).length, 0);
   // The viewport moved by (9, 6): keyframe-local content now sits 9 px left and 6 px up, so the displacement is (+9, +6).
   const moved = crop(9, 6, 400, 300);
-  const r = refinePatches(patches, moved, region, { x: 8, y: 7 }, 3);
+  const r = core().refinePatches(patches, moved, region, { x: 8, y: 7 }, 3);
   assertEquals([r.x, r.y], [9, 6]);
   assert(r.error < 1 && r.runnerUp > 10);
-  assertEquals(refinePatches([], moved, region, { x: 0, y: 0 }).error, Infinity);
+  assertEquals(core().refinePatches([], moved, region, { x: 0, y: 0 }).error, Infinity);
   assert(
-    refinePatches(patches, moved, region, { x: 200, y: 200 }).error === Infinity ||
-      refinePatches(patches, moved, region, { x: 200, y: 200 }).error > 20,
+    core().refinePatches(patches, moved, region, { x: 200, y: 200 }).error === Infinity ||
+      core().refinePatches(patches, moved, region, { x: 200, y: 200 }).error > 20,
   );
 });
 Deno.test('motion: scale detection and explicit magnification probe', () => {
-  const a = crop(40, 40, 300, 220), features = extractFeatures(a), matches = matchFeatures(features, features);
+  const a = crop(40, 40, 300, 220), features = core().extractFeatures(a, 480), matches = core().matchFeatures(features, features, true);
   assertEquals(core().detectScale(matches), 1);
   assertEquals(core().detectScale([]), 1);
-  const page = makeWorld(700, 500, 5, 'cards', 2), g: Gray = { width: 700, height: 500, data: grayscale(page.data, 700, 500).data };
+  const page = makeWorld(700, 500, 5, 'cards', 2), g: Gray = { width: 700, height: 500, data: core().grayscale(page.data, 700, 500).data };
   const zoomed = core().resampleGray(g, 1.25), cropped = { width: 640, height: 448, data: new Uint8Array(640 * 448) };
   for (let y = 0; y < 448; y++) {
     cropped.data.set(zoomed.data.subarray(y * zoomed.width, y * zoomed.width + 640), y * 640);
@@ -114,8 +113,8 @@ Deno.test('motion: scale detection and explicit magnification probe', () => {
   for (let y = 0; y < 448; y++) {
     base.data.set(g.data.subarray(y * 700, y * 700 + 640), y * 640);
   }
-  const probe = probeScale(base, cropped, extractFeatures(cropped));
+  const probe = core().probeScale(base, cropped, core().extractFeatures(cropped, 480));
   assert(probe && Math.abs(probe.scale - 1.25) < .01, JSON.stringify(probe));
-  assertEquals(probeScale(base, crop(0, 0, 640, 448), extractFeatures(crop(0, 0, 640, 448))), undefined);
+  assertEquals(core().probeScale(base, crop(0, 0, 640, 448), core().extractFeatures(crop(0, 0, 640, 448), 480)), undefined);
   assertEquals(core().resampleGray({ width: 1, height: 1, data: new Uint8Array([7]) }, 3).width, 3);
 });

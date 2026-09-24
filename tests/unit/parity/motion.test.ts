@@ -6,7 +6,6 @@ import * as reference from '../../support/reference/kernels.ts';
 import type { Gray } from '../../../src/types.ts';
 import * as motionReference from '../../support/reference/motion.ts';
 import { RegionAtlas } from '../../../src/core/layers.ts';
-import { extractPatches } from '../../../src/core/motion.ts';
 import { rgbaOf, textureGray } from '../../support/parity-fixtures.ts';
 
 const sameNumber = (a: number, b: number, what: string) => {
@@ -103,6 +102,10 @@ Deno.test('core parity: motion hypotheses, audits, refinement and per-cell field
       atlas.dispose();
     }
     const native = reference.grayscale(rb.data, w, h), patches = motionReference.extractPatches(native, region, fb.slice(0, 40), 1);
+    assertEquals(core.extractPatches(native, region, fb.slice(0, 40), 1), patches);
+    // A region too small for one patch, and one that would read outside the native plane: both empty, not a panic.
+    assertEquals(core.extractPatches(native, { x: 0, y: 0, width: 10, height: 10 }, fb.slice(0, 40), 1), []);
+    assertEquals(core.extractPatches(native, { x: w - 5, y: 0, width: 40, height: 40 }, fb.slice(0, 40), 1), []);
     for (const guess of [{ x: -dx + .2, y: -dy }, { x: 5, y: -5 }]) {
       const r1 = core.refinePatches(patches, native, region, guess, 3),
         r2 = motionReference.refinePatches(patches, native, region, guess, 3);
@@ -122,7 +125,7 @@ Deno.test('core parity: motion hypotheses, audits, refinement and per-cell field
       frame.write(rb.data);
       core.grayscaleInto(frame, plane);
       assertEquals(plane.bytes(), native.data);
-      const residentPatches = extractPatches(plane, region, fb.slice(0, 40), 1);
+      const residentPatches = core.extractPatches(plane, region, fb.slice(0, 40), 1);
       assertEquals(residentPatches, motionReference.extractPatches(native, region, fb.slice(0, 40), 1));
       for (const guess of [{ x: -dx + .2, y: -dy }, { x: 5, y: -5 }]) {
         assertEquals(core.refinePatches(patches, plane, region, guess, 3), core.refinePatches(patches, native, region, guess, 3));
@@ -136,5 +139,14 @@ Deno.test('core parity: motion hypotheses, audits, refinement and per-cell field
       plane.free();
     }
     for (const scale of [1.1, 1 / 1.25, 2, .5]) assertEquals(core.resampleGray(a, scale), motionReference.resampleGray(a, scale));
+    // probeScale: no scale change here (a/b are same-size crops), so both sides agree on "nothing found"; a
+    // roi variant and a tiny scale list exercise the gates without depending on a real magnification fixture.
+    for (const roi of [undefined, { x: 10.5, y: 7, width: w / 2, height: h / 2 }]) {
+      assertEquals(core.probeScale(a, b, fb, roi), motionReference.probeScale(a, b, fb, roi));
+      assertEquals(
+        core.probeScale(a, b, fb, roi, [1, 1.1, .9]),
+        motionReference.probeScale(a, b, fb, roi, [1, 1.1, .9]),
+      );
+    }
   }
 });

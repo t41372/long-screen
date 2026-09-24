@@ -3,8 +3,8 @@
 // Every kernel below runs in the Rust core; this loads the workspace build the tests use.
 import '../tests/support/core.ts';
 import { analysisFactor, downscaleGray } from '../src/core/raster.ts';
-import { extractFeatures } from '../src/core/features.ts';
 import { estimateMotion } from '../src/core/motion.ts';
+import { core } from '../src/core/wasm.ts';
 import { LayerLearner } from '../src/core/layers.ts';
 import type { Feature, Gray, MotionField, RGBA } from '../src/types.ts';
 const file = Deno.args[0], every = Number(Deno.args[1] || 4), analysisSize = Number(Deno.args[2] || 640);
@@ -75,7 +75,7 @@ while (true) {
   }
   const image: RGBA = { width, height, data: new Uint8ClampedArray(frameBuf) };
   filled = 0;
-  const g = downscaleGray(image, factor), features = extractFeatures(g);
+  const g = downscaleGray(image, factor), features = core().extractFeatures(g, 480);
   learner ??= new LayerLearner(g.width, g.height);
   if (previous) {
     const field = estimateMotion(previous, g, lastField, previousFeatures, features);

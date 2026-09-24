@@ -24,11 +24,6 @@ export function downscaleGray(image: RGBA | ResidentFrame, factor: number): Gray
   }
   return core().downscaleGray(image, factor);
 }
-/** 2:1 preview reduction with alpha weighting (Rust core), so unobserved (transparent) neighbours never darken observed pixels. */
-export function halveRGBA(image: RGBA): RGBA {
-  return core().halveRGBA(image);
-}
-
 /** Exact observation equality. Small or single-frame content updates must never be discarded by a similarity threshold. */
 export function equalRGBA(a: RGBA, b: RGBA): boolean {
   if (a.width !== b.width || a.height !== b.height) return false;

@@ -9,7 +9,7 @@ import * as ref from '../../support/reference/track.ts';
 import type { Feature, Gray, Match, Point, Region } from '../../../src/types.ts';
 import * as kernelsRef from '../../support/reference/kernels.ts';
 import { rgbaOf, textureGray } from '../../support/parity-fixtures.ts';
-import { extractPatches } from '../../../src/core/motion.ts';
+import type { PatchInput } from '../../../src/core/wasm.ts';
 import * as trackPipeline from '../../../src/pipeline/solve/track.ts';
 import { evaluateCandidates, type Keyframe } from '../../../src/core/keyframes.ts';
 
@@ -397,7 +397,7 @@ async function reacquireCase(w: number, h: number, seed: number, dx: number | un
   const anchorRGBA = rgbaOf(anchorGray), currentRGBAData = rgbaOf(ownGray).data;
   const anchorNative = core.grayscale(anchorRGBA.data, w, h);
   const currentNative = core.grayscale(currentRGBAData, w, h);
-  const anchorPatches = extractPatches(anchorNative, { x: 0, y: 0, width: w, height: h }, anchorFeatures, 1);
+  const anchorPatches = core.extractPatches(anchorNative, { x: 0, y: 0, width: w, height: h }, anchorFeatures, 1);
   return { anchorFeatures, ownFeatures, anchorPatches, currentNative, currentRGBAData, anchorGray, ownGray };
 }
 
@@ -515,7 +515,7 @@ Deno.test('core parity: track.driftCorrection matches the frozen oracle (correct
   }
 });
 
-function kf(id: string, x: number, y: number, features: Feature[], gray: Gray, patches: ReturnType<typeof extractPatches>): Keyframe {
+function kf(id: string, x: number, y: number, features: Feature[], gray: Gray, patches: PatchInput[]): Keyframe {
   return {
     id,
     node: `${id}-node`,
@@ -601,7 +601,7 @@ Deno.test('core parity: keyframes.evaluateCandidates matches the frozen oracle (
     const n0 = core.grayscale(rgbaOf(g0).data, w, h),
       n1 = core.grayscale(rgbaOf(g1).data, w, h),
       nq = core.grayscale(rgbaOf(gq).data, w, h);
-    const p0 = extractPatches(n0, region, f0, 1), p1 = extractPatches(n1, region, f1, 1);
+    const p0 = core.extractPatches(n0, region, f0, 1), p1 = core.extractPatches(n1, region, f1, 1);
     const keyframes = [kf('r0', 0, 0, f0, g0, p0), kf('r1', 60, 0, f1, g1, p1)];
     const q = { features: fq, gray: gq, native: () => nq, roi, region, factor: 1, radius };
     const refResult = ref.evaluateCandidates(keyframes, q, empty);

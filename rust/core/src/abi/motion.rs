@@ -1,16 +1,17 @@
 //! Translation/scale hypotheses, verification, refinement (native and patch-based) and motion-field
 //! estimation.
 
+use crate::abi::features::read_features;
 use crate::abi::memory::{slice, slice_mut};
 use crate::abi::wire::{
-    read_optional_rect, read_rect, MATCH_POINT_BYTES, MOTION_BYTES, MOTION_FIELD_HEADER_BYTES,
-    PATCH_BYTES, REFINEMENT_BYTES,
+    read_optional_rect, read_rect, EXTRACTED_PATCH_HEADER_BYTES, MATCH_POINT_BYTES, MOTION_BYTES,
+    MOTION_FIELD_HEADER_BYTES, PATCH_BYTES, POINT_BYTES, REFINEMENT_BYTES,
 };
 use crate::abi::STATUS_BAD_ARGUMENT;
 use crate::motion::{
-    audit_translation, detect_scale, estimate_motion, refine_native, refine_patches,
-    refine_translation, resample_gray, translation_hypotheses, verify_translation, Gray,
-    MatchPoints, Motion, NativeRefinement, Patch, Point,
+    audit_translation, detect_scale, estimate_motion, extract_patches, probe_scale, refine_native,
+    refine_patches, refine_translation, resample_gray, translation_hypotheses, verify_translation,
+    Gray, MatchPoints, Motion, NativeRefinement, Patch, Point,
 };
 
 /// # Safety
@@ -365,4 +366,132 @@ pub extern "C" fn ls_resample_gray(
     };
     dst.copy_from_slice(&data);
     crate::abi::STATUS_OK
+}
+
+/// Reads `count` serialised `(f64 x, f64 y)` points (`POINT_BYTES` each).
+/// # Safety
+/// `ptr` points at `count × POINT_BYTES` readable bytes.
+unsafe fn read_points(ptr: u32, count: u32) -> Option<Vec<(f64, f64)>> {
+    let bytes = slice(ptr, count as usize * POINT_BYTES)?;
+    Some(
+        bytes
+            .chunks_exact(POINT_BYTES)
+            .map(|c| {
+                (
+                    f64::from_le_bytes(c[0..8].try_into().unwrap()),
+                    f64::from_le_bytes(c[8..16].try_into().unwrap()),
+                )
+            })
+            .collect(),
+    )
+}
+
+/// `extractPatches` in one call: `native` is the full native luma plane (`width × height`), `region` a 32-byte
+/// rect, `features` a `feature_count`-long list of `(x, y)` points (`POINT_BYTES` each — analysis pixels, scaled
+/// by `factor`). `out` holds up to `count` patches, each `EXTRACTED_PATCH_HEADER_BYTES + size × size` bytes wide
+/// (fixed stride: every patch shares `size`). Returns the patch count actually written.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn ls_extract_patches(
+    native: u32,
+    width: u32,
+    height: u32,
+    region: u32,
+    features: u32,
+    feature_count: u32,
+    factor: f64,
+    count: u32,
+    size: u32,
+    out: u32,
+) -> i32 {
+    let (w, h, sz, cnt) = (
+        width as usize,
+        height as usize,
+        size as usize,
+        count as usize,
+    );
+    // SAFETY: adapter-owned buffers, bounds checked.
+    let (Some(native_bytes), Some(region_bytes), Some(points)) = (
+        unsafe { slice(native, w * h) },
+        unsafe { slice(region, 32) },
+        unsafe { read_points(features, feature_count) },
+    ) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let patches = extract_patches(
+        native_bytes,
+        w,
+        h,
+        read_rect(region_bytes),
+        &points,
+        factor,
+        cnt,
+        sz,
+    );
+    let stride = EXTRACTED_PATCH_HEADER_BYTES + sz * sz;
+    // SAFETY: adapter-sized output, computed with the same stride formula.
+    let Some(dst) = (unsafe { slice_mut(out, patches.len() * stride) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    for (i, p) in patches.iter().enumerate() {
+        let o = i * stride;
+        dst[o..o + 8].copy_from_slice(&p.x.to_le_bytes());
+        dst[o + 8..o + 16].copy_from_slice(&p.y.to_le_bytes());
+        dst[o + 16..o + 20].copy_from_slice(&(p.size as u32).to_le_bytes());
+        dst[o + 20..o + 24].fill(0);
+        dst[o + 24..o + 24 + sz * sz].copy_from_slice(&p.data);
+    }
+    patches.len() as i32
+}
+
+/// `probeScale` in one call: `previous`/`current` are analysis-resolution grey images (possibly different
+/// sizes), `current_features` a serialised `Feature` list (`FEATURE_BYTES` each, from `ls_extract_features`),
+/// `roi` zero or a 32-byte rect, `scales` a `scale_count`-long list of f64 candidate scales. `out` receives
+/// `(f64 scale, f64 error)`. Returns 1 when a candidate passed the gates (result in `out`), 0 when none did,
+/// `STATUS_BAD_ARGUMENT` on a malformed request.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn ls_probe_scale(
+    previous: u32,
+    pw: u32,
+    ph: u32,
+    current: u32,
+    cw: u32,
+    ch: u32,
+    current_features: u32,
+    feature_count: u32,
+    roi: u32,
+    scales: u32,
+    scale_count: u32,
+    out: u32,
+) -> i32 {
+    // SAFETY: adapter-owned buffers, bounds checked.
+    let (Some(previous), Some(current), Some(feature_bytes), Ok(roi), Some(scale_bytes), Some(dst)) = (
+        unsafe { read_gray(previous, pw, ph) },
+        unsafe { read_gray(current, cw, ch) },
+        unsafe {
+            slice(
+                current_features,
+                feature_count as usize * crate::abi::wire::FEATURE_BYTES,
+            )
+        },
+        unsafe { read_optional_rect(roi) },
+        unsafe { slice(scales, scale_count as usize * 8) },
+        unsafe { slice_mut(out, 16) },
+    ) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let current_features = read_features(feature_bytes);
+    let scales: Vec<f64> = scale_bytes
+        .chunks_exact(8)
+        .map(|c| f64::from_le_bytes(c.try_into().unwrap()))
+        .collect();
+    match probe_scale(previous, current, &current_features, roi, &scales) {
+        Some((scale, error)) => {
+            dst[0..8].copy_from_slice(&scale.to_le_bytes());
+            dst[8..16].copy_from_slice(&error.to_le_bytes());
+            1
+        }
+        None => 0,
+    }
 }

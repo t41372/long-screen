@@ -1,9 +1,19 @@
 /** Translation/scale hypotheses, verification, refinement, and motion-field estimation (mirrors
  *  `rust/core/src/abi/motion.rs`). */
-import type { Gray, Match, Motion, MotionField, Rect } from '../../types.ts';
+import type { Feature, Gray, Match, Motion, MotionField, Point, Rect } from '../../types.ts';
 import type { Core, LabelMask, PatchInput, RefinementResult } from './core.ts';
 import { type FrameInput, Resident, ResidentFrame, ResidentGray } from './memory.ts';
-import { MATCH_POINT_BYTES, MOTION_BYTES, MOTION_CELL, MOTION_FIELD_HEADER, PATCH_BYTES, REFINEMENT_BYTES } from './exports.ts';
+import { writeFeatures } from './features.ts';
+import {
+  EXTRACTED_PATCH_HEADER_BYTES,
+  MATCH_POINT_BYTES,
+  MOTION_BYTES,
+  MOTION_CELL,
+  MOTION_FIELD_HEADER,
+  PATCH_BYTES,
+  POINT_BYTES,
+  REFINEMENT_BYTES,
+} from './exports.ts';
 
 function writeMatches(core: Core, ptr: number, matches: Match[]): void {
   const view = new DataView(core.exports.memory.buffer, ptr, matches.length * MATCH_POINT_BYTES);
@@ -230,4 +240,97 @@ export function resampleGray(core: Core, g: Gray, scale: number): Gray {
   core.writeBytes(input, g.data);
   core.check(core.exports.ls_resample_gray(input, g.width, g.height, scale, output), 'resampleGray');
   return { width, height, data: core.readBytes(output, width * height) };
+}
+/** Non-overlapping `size×size` native texture samples around `features` (analysis-resolution points scaled by
+ *  `factor`), clamped to `region`, first `count` accepted in feature order — `rust/core/src/motion.rs::extract_patches`.
+ *  `native` may be the resident luma plane a solve pass already holds in core memory (its pointer is used
+ *  directly) or a plain `Gray` (copied into scratch first). */
+export function extractPatches(
+  core: Core,
+  native: Gray | ResidentGray,
+  region: Rect,
+  features: Point[],
+  factor: number,
+  count = 24,
+  size = 32,
+): PatchInput[] {
+  const resident = native instanceof ResidentGray;
+  const [scratch, rect, flist, output] = core.scratch([
+    resident ? 0 : (native as Gray).data.byteLength,
+    32,
+    features.length * POINT_BYTES,
+    count * (EXTRACTED_PATCH_HEADER_BYTES + size * size),
+  ]);
+  let pn = scratch;
+  if (native instanceof ResidentGray) pn = native.ptr;
+  else core.writeBytes(scratch, native.data);
+  core.writeRect(rect, region);
+  const view = new DataView(core.exports.memory.buffer, flist, Math.max(1, features.length * POINT_BYTES));
+  features.forEach((f, i) => {
+    view.setFloat64(i * POINT_BYTES, f.x, true);
+    view.setFloat64(i * POINT_BYTES + 8, f.y, true);
+  });
+  const returned = core.check(
+    core.exports.ls_extract_patches(pn, native.width, native.height, rect, flist, features.length, factor, count, size, output),
+    'extractPatches',
+  );
+  const stride = EXTRACTED_PATCH_HEADER_BYTES + size * size;
+  const bytes = core.readBytes(output, returned * stride), dv = new DataView(bytes.buffer);
+  const out: PatchInput[] = new Array(returned);
+  for (let i = 0; i < returned; i++) {
+    const o = i * stride;
+    out[i] = {
+      x: dv.getFloat64(o, true),
+      y: dv.getFloat64(o + 8, true),
+      size: dv.getUint32(o + 16, true),
+      data: bytes.slice(o + 24, o + 24 + size * size),
+    };
+  }
+  return out;
+}
+/** When translation fails, asks explicitly whether `previous` (resampled at each candidate scale) explains
+ *  `current` — `rust/core/src/motion.rs::probe_scale`, fusing the whole per-scale resample/extract/match/
+ *  hypothesis/audit loop into one call. */
+export function probeScale(
+  core: Core,
+  previous: Gray,
+  current: Gray,
+  currentFeatures: Feature[],
+  roi?: Rect,
+  scales = [1.1, 1.25, 1.5, 2, 1 / 1.1, 1 / 1.25, 1 / 1.5, 1 / 2],
+): { scale: number; error: number } | undefined {
+  const [pp, pc, pf, rect, ps, output] = core.scratch([
+    previous.data.byteLength,
+    current.data.byteLength,
+    currentFeatures.length * core.featureBytes,
+    32,
+    scales.length * 8,
+    16,
+  ]);
+  core.writeBytes(pp, previous.data);
+  core.writeBytes(pc, current.data);
+  writeFeatures(core, pf, currentFeatures);
+  if (roi) core.writeRect(rect, roi);
+  const scaleView = new DataView(core.exports.memory.buffer, ps, scales.length * 8);
+  scales.forEach((s, i) => scaleView.setFloat64(i * 8, s, true));
+  const found = core.check(
+    core.exports.ls_probe_scale(
+      pp,
+      previous.width,
+      previous.height,
+      pc,
+      current.width,
+      current.height,
+      pf,
+      currentFeatures.length,
+      roi ? rect : 0,
+      ps,
+      scales.length,
+      output,
+    ),
+    'probeScale',
+  );
+  if (!found) return undefined;
+  const view = new DataView(core.readBytes(output, 16).buffer);
+  return { scale: view.getFloat64(0, true), error: view.getFloat64(8, true) };
 }

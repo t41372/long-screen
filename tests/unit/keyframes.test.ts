@@ -1,8 +1,7 @@
 import '../support/core.ts';
 import { assert, assertEquals } from '@std/assert';
-import { extractFeatures, grayscale } from '../../src/core/features.ts';
-import { extractPatches } from '../../src/core/motion.ts';
 import { KeyframeIndex } from '../../src/core/keyframes.ts';
+import { core } from '../../src/core/wasm.ts';
 import { MemoryKV } from '../../src/storage/db.ts';
 import type { Gray } from '../../src/types.ts';
 import { makeWorld } from '../../src/synthetic/world.ts';
@@ -12,7 +11,7 @@ Deno.test('keyframes: relocalization finds a revisit at native precision and ref
     index = new KeyframeIndex(db, async (m) => {
       warnings.push(m);
     });
-  const page = makeWorld(900, 1400, 77, 'article'), g = grayscale(page.data, 900, 1400);
+  const page = makeWorld(900, 1400, 77, 'article'), g = core().grayscale(page.data, 900, 1400);
   const view = (x: number, y: number): Gray => {
     const data = new Uint8Array(640 * 400);
     for (let row = 0; row < 400; row++) {
@@ -22,7 +21,7 @@ Deno.test('keyframes: relocalization finds a revisit at native precision and ref
   };
   const region = { x: 0, y: 0, width: 640, height: 400 }, roi = region;
   for (const [frame, x, y] of [[0, 0, 0], [10, 0, 300], [20, 100, 700]] as [number, number, number][]) {
-    const gray = view(x, y), features = extractFeatures(gray);
+    const gray = view(x, y), features = core().extractFeatures(gray, 480);
     await index.add({
       id: `body/${frame}`,
       node: `body-part-0/${frame}`,
@@ -35,10 +34,10 @@ Deno.test('keyframes: relocalization finds a revisit at native precision and ref
       y,
       scaleX: 1,
       scaleY: 1,
-      patches: extractPatches(gray, region, features, 1),
+      patches: core().extractPatches(gray, region, features, 1),
     });
   }
-  const current = view(37, 323), features = extractFeatures(current);
+  const current = view(37, 323), features = core().extractFeatures(current, 480);
   const found = await index.find({ features, gray: current, native: current, layer: 'body', frame: 60, roi, region, factor: 1, radius: 3 });
   assert(found && !found.ambiguous, JSON.stringify(found && { ...found, keyframe: found.keyframe.id }));
   assertEquals([found!.keyframe.x + found!.offset.x, found!.keyframe.y + found!.offset.y], [37, 323]);
@@ -77,7 +76,7 @@ Deno.test('keyframes: relocalization finds a revisit at native precision and ref
     undefined,
   );
   // Identical repeated rows: two keyframes one period apart both explain the observation.
-  const list = makeWorld(900, 1400, 131, 'list'), lg = grayscale(list.data, 900, 1400);
+  const list = makeWorld(900, 1400, 131, 'list'), lg = core().grayscale(list.data, 900, 1400);
   const lview = (y: number): Gray => {
     const data = new Uint8Array(640 * 400);
     for (let row = 0; row < 400; row++) data.set(lg.data.subarray((y + row) * 900, (y + row) * 900 + 640), row * 640);
@@ -85,7 +84,7 @@ Deno.test('keyframes: relocalization finds a revisit at native precision and ref
   };
   const repeated = new KeyframeIndex(db, async () => {});
   for (const [frame, y] of [[0, 200], [30, 244], [60, 288]] as [number, number][]) {
-    const gray = lview(y), f = extractFeatures(gray);
+    const gray = lview(y), f = core().extractFeatures(gray, 480);
     await repeated.add({
       id: `list/${frame}`,
       node: `list-part-0/${frame}`,
@@ -98,12 +97,12 @@ Deno.test('keyframes: relocalization finds a revisit at native precision and ref
       y,
       scaleX: 1,
       scaleY: 1,
-      patches: extractPatches(gray, region, f, 1),
+      patches: core().extractPatches(gray, region, f, 1),
     });
   }
   const probe = lview(222),
     match = await repeated.find({
-      features: extractFeatures(probe),
+      features: core().extractFeatures(probe, 480),
       gray: probe,
       native: probe,
       layer: 'list',
@@ -123,7 +122,7 @@ Deno.test('keyframes: a densely keyframed long scroll spreads candidate retrieva
     });
   const region = { x: 0, y: 0, width: 640, height: 400 }, COUNT = 150, STEP = 3, BASE = 200;
   function sliding(seed: number): (y: number) => Gray {
-    const page = makeWorld(900, 1400, seed, 'article'), g = grayscale(page.data, 900, 1400);
+    const page = makeWorld(900, 1400, seed, 'article'), g = core().grayscale(page.data, 900, 1400);
     return (y: number): Gray => {
       const data = new Uint8Array(640 * 400);
       for (let row = 0; row < 400; row++) {
@@ -137,7 +136,7 @@ Deno.test('keyframes: a densely keyframed long scroll spreads candidate retrieva
   // comfortably past both the 48-candidate forward budget and the 96-entry retrieval budget, on a single layer.
   const view = sliding(555);
   for (let i = 0; i < COUNT; i++) {
-    const y = BASE + i * STEP, gray = view(y), features = extractFeatures(gray);
+    const y = BASE + i * STEP, gray = view(y), features = core().extractFeatures(gray, 480);
     await index.add({
       id: `body/${i}`,
       node: `body-part-0/${i}`,
@@ -150,13 +149,13 @@ Deno.test('keyframes: a densely keyframed long scroll spreads candidate retrieva
       y,
       scaleX: 1,
       scaleY: 1,
-      patches: extractPatches(gray, region, features, 1),
+      patches: core().extractPatches(gray, region, features, 1),
     });
   }
   // Revisit precisely where the LATE keyframe (index 120) was minted. A forward-only scan of an over-full posting
   // can only ever surface the earliest-indexed keyframes on a word this repetitive, so without the reverse "spread"
   // scan this revisit could never be matched against its true, late-indexed keyframe.
-  const targetY = BASE + 120 * STEP, query = view(targetY), qf = extractFeatures(query);
+  const targetY = BASE + 120 * STEP, query = view(targetY), qf = core().extractFeatures(query, 480);
   const found = await index.find({
     features: qf,
     gray: query,
@@ -189,7 +188,7 @@ Deno.test('keyframes: a densely keyframed long scroll spreads candidate retrieva
   // A second layer, equally repetitive, gets its own independent single warning.
   const view2 = sliding(556);
   for (let i = 0; i < COUNT; i++) {
-    const y = BASE + i * STEP, gray = view2(y), features = extractFeatures(gray);
+    const y = BASE + i * STEP, gray = view2(y), features = core().extractFeatures(gray, 480);
     await index.add({
       id: `other/${i}`,
       node: `other-part-0/${i}`,
@@ -202,10 +201,10 @@ Deno.test('keyframes: a densely keyframed long scroll spreads candidate retrieva
       y,
       scaleX: 1,
       scaleY: 1,
-      patches: extractPatches(gray, region, features, 1),
+      patches: core().extractPatches(gray, region, features, 1),
     });
   }
-  const query2 = view2(targetY), qf2 = extractFeatures(query2);
+  const query2 = view2(targetY), qf2 = core().extractFeatures(query2, 480);
   const foundOther = await index.find({
     features: qf2,
     gray: query2,
@@ -224,13 +223,13 @@ Deno.test('keyframes: a densely keyframed long scroll spreads candidate retrieva
 Deno.test('keyframes: canonical resolves a fragment-space rival to the same place as its attachment target (not ambiguous), and stays ambiguous when they genuinely differ', async () => {
   const db = new MemoryKV(), index = new KeyframeIndex(db, async () => {});
   const region = { x: 0, y: 0, width: 640, height: 400 };
-  const page = makeWorld(900, 1400, 900, 'article'), g = grayscale(page.data, 900, 1400);
+  const page = makeWorld(900, 1400, 900, 'article'), g = core().grayscale(page.data, 900, 1400);
   const view = (y: number): Gray => {
     const data = new Uint8Array(640 * 400);
     for (let row = 0; row < 400; row++) data.set(g.data.subarray((y + row) * 900, (y + row) * 900 + 640), row * 640);
     return { width: 640, height: 400, data };
   };
-  const shared = view(300), features = extractFeatures(shared), patches = extractPatches(shared, region, features, 1);
+  const shared = view(300), features = core().extractFeatures(shared, 480), patches = core().extractPatches(shared, region, features, 1);
   // Same physical content, recorded twice: once under a fragment's own raw canvasId/coordinates (as first observed,
   // before it was attached), once under the main canvas it was later attached to. A raw-coordinate comparison would
   // see these as two different places; `canonical` maps the fragment into the main canvas's coordinate space.
@@ -262,7 +261,7 @@ Deno.test('keyframes: canonical resolves a fragment-space rival to the same plac
     scaleY: 1,
     patches,
   });
-  const query = view(300), qf = extractFeatures(query);
+  const query = view(300), qf = core().extractFeatures(query, 480);
   const samePlace = await index.find({
     features: qf,
     gray: query,

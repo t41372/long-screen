@@ -7,12 +7,12 @@ import type { Feature, Gray, Match, Point, Region, RGBA } from '../../../src/typ
 import { auditTranslation, detectScale, probeScale, translationHypotheses } from './motion.ts';
 // refineNative/refinePatches: NOT re-frozen here. Both this oracle and its own callers (track.ts's resident-plane
 // fast path) need to accept `ResidentFrame`/`ResidentGray`, which the plain-`Gray`/`RGBA` frozen `./motion.ts`
-// copies do not model; imported live from the production module, whose own parity is covered separately
-// (tests/unit/parity/motion.test.ts).
-import { type NativeRefinement, type Patch, refineNative, refinePatches } from '../../../src/core/motion.ts';
+// copies do not model; called live through `core()` (both are one-call Rust kernels, not TS algorithm code),
+// whose own parity is covered separately (tests/unit/parity/motion.test.ts).
+import type { NativeRefinement, Patch } from '../../../src/core/motion.ts';
 import { referenceRegionContains as regionContains } from './layers.ts';
 import { matchFeatures } from './kernels.ts';
-import type { LabelMask, ResidentFrame, ResidentGray } from '../../../src/core/wasm.ts';
+import { core, type LabelMask, type ResidentFrame, type ResidentGray } from '../../../src/core/wasm.ts';
 import type { Keyframe, Relocalization } from '../../../src/core/keyframes.ts';
 /** Region-step.ts's own-features/texture/prior-matches setup (was inline decision logic in the shell). */
 export function ownFeaturesOf(
@@ -144,7 +144,7 @@ export function odometry(inputs: OdometryInputs): OdometryEstimate {
       Math.min(a.audit.error, a.audit.agreeingError) + prior(a.m) - Math.min(b.audit.error, b.audit.agreeingError) - prior(b.m)
     );
   const refined = scored.slice(0, 6).map((v) => {
-    const n = refineNative(previous, current, { x: v.m.x * f, y: v.m.y * f }, rect, mask, radius);
+    const n = core().refineNative(previous, current, { x: v.m.x * f, y: v.m.y * f }, rect, mask, radius);
     return { ...v, n, key: n.error + .02 * Math.hypot(n.x - velocity.x, n.y - velocity.y) };
   }).filter((v) => Number.isFinite(v.n.error)).sort((a, b) => a.key - b.key);
   const best = refined[0];
@@ -191,7 +191,7 @@ export function reacquire(inputs: ReacquireInputs): { n: NativeRefinement; ambig
   const matches = matchFeatures(anchorFeatures, ownFeatures), models = translationHypotheses(matches, 8).filter((m) => m.support >= 6);
   const options = models.slice(0, 4).map((m) => ({
     m,
-    n: refinePatches(anchorPatches, native(), rect, { x: m.x * f, y: m.y * f }, radius),
+    n: core().refinePatches(anchorPatches, native(), rect, { x: m.x * f, y: m.y * f }, radius),
   })).filter((v) => v.n.error < 12).sort((a, b) => a.n.error - b.n.error);
   const top = options[0];
   if (top && !options.some((v) => v !== top && Math.hypot(v.n.x - top.n.x, v.n.y - top.n.y) > 2 && v.n.error < top.n.error + 2)) {
@@ -213,7 +213,7 @@ export interface DriftCorrectionInputs {
 export function driftCorrection(inputs: DriftCorrectionInputs): { pose: Point; confidence: number } | undefined {
   const { anchor, pose, native, rect, radius, confidence } = inputs;
   const expected = { x: pose.x - anchor.x, y: pose.y - anchor.y };
-  const n = refinePatches(anchor.patches, native(), rect, expected, radius);
+  const n = core().refinePatches(anchor.patches, native(), rect, expected, radius);
   if (n.error < 12 && n.runnerUp > n.error + 1.5) {
     return { pose: { x: anchor.x + n.x, y: anchor.y + n.y }, confidence: Math.max(confidence, .96 * Math.exp(-n.error / 20)) };
   }
@@ -344,7 +344,7 @@ export function evaluateCandidates(
       if (audit.overlap < .22 || !Number.isFinite(audit.error) || (audit.mismatch > .12 && audit.agreement < .5)) {
         continue;
       }
-      const refined = refinePatches(k.patches, typeof native === 'function' ? native() : native, region, {
+      const refined = core().refinePatches(k.patches, typeof native === 'function' ? native() : native, region, {
         x: m.x * factor,
         y: m.y * factor,
       }, radius);

@@ -1,7 +1,7 @@
 import '../support/core.ts';
 import { assert, assertEquals, assertThrows } from '@std/assert';
-import { grayscale } from '../../src/core/features.ts';
 import { LayerLearner, RegionAtlas, stationaryBoundary, stickyOcclusions } from '../../src/core/layers.ts';
+import { core } from '../../src/core/wasm.ts';
 import { contains } from '../../src/core/math.ts';
 import { referenceRegionContains as regionContains } from '../support/reference/layers.ts';
 import { fixedBand } from '../../src/synthetic/scenarios.ts';
@@ -25,7 +25,7 @@ import { pad } from '../../src/core/math.ts';
 Deno.test('layers: non-divisible native geometry owns every content pixel; regionContains matches floor(x/factor)', () => {
   const factor = 6, aw = 640, ah = 300;
   const left = makeWorld(300, 1400, 21, 'cards'), right = makeWorld(300, 1400, 22, 'article');
-  const gl = grayscale(left.data, 300, 1400), gr = grayscale(right.data, 300, 1400);
+  const gl = core().grayscale(left.data, 300, 1400), gr = core().grayscale(right.data, 300, 1400);
   const frame = (a: number, b: number): Gray => {
     const data = new Uint8Array(aw * ah).fill(60);
     for (let y = 0; y < ah; y++) {
@@ -166,7 +166,7 @@ Deno.test('layers: learner separates a stationary band from scrolling content wi
   const frame = (offset: number): Gray => {
     const data = new Uint8Array(400 * 300);
     data.set(header);
-    const g = grayscale(page.data, 400, 1200);
+    const g = core().grayscale(page.data, 400, 1200);
     for (let y = 37; y < 300; y++) {
       data.set(g.data.subarray((offset + y - 37) * 400, (offset + y - 37) * 400 + 400), y * 400);
     }
@@ -262,7 +262,7 @@ Deno.test('layers: uninformative input yields a single moving region; manual reg
 });
 Deno.test('layers: two independently moving panes are split at a native-precision divider', () => {
   const left = makeWorld(300, 1400, 21, 'cards'), right = makeWorld(300, 1400, 22, 'article');
-  const gl = grayscale(left.data, 300, 1400), gr = grayscale(right.data, 300, 1400);
+  const gl = core().grayscale(left.data, 300, 1400), gr = core().grayscale(right.data, 300, 1400);
   const frame = (a: number, b: number): Gray => {
     const data = new Uint8Array(640 * 300).fill(60);
     for (let y = 0; y < 300; y++) {

@@ -193,6 +193,32 @@ export interface CoreExports {
     out: number,
   ): number;
   ls_resample_gray(gray: number, width: number, height: number, scale: number, out: number): number;
+  ls_extract_patches(
+    native: number,
+    width: number,
+    height: number,
+    region: number,
+    features: number,
+    featureCount: number,
+    factor: number,
+    count: number,
+    size: number,
+    out: number,
+  ): number;
+  ls_probe_scale(
+    previous: number,
+    pw: number,
+    ph: number,
+    current: number,
+    cw: number,
+    ch: number,
+    currentFeatures: number,
+    featureCount: number,
+    roi: number,
+    scales: number,
+    scaleCount: number,
+    out: number,
+  ): number;
   ls_composite_tile(tile: number, observation: number, world: number, ox: number, oy: number, tx: number, ty: number, out: number): number;
   ls_voting_new(
     factor: number,
@@ -446,6 +472,10 @@ export const LAYOUT_BYTES = 104;
 /** Named accumulator arrays `rust/core/src/abi/learner.rs::learner_array` recognises — must match
  *  `./learner.ts`'s `LEARNER_ARRAYS.length` (selector 14, "counts", is separate and not part of this count). */
 export const LEARNER_ARRAY_COUNT = 14;
+/** `ls_extract_patches`'/`ls_probe_scale`'s serialised `(x, y)` feature point: f64, f64. */
+export const POINT_BYTES = 16;
+/** One `ls_extract_patches` output patch header, immediately followed by its `size × size` data bytes. */
+export const EXTRACTED_PATCH_HEADER_BYTES = 24;
 
 /** Selector → constant, in the order `rust/core/src/abi/mod.rs::ls_layout` matches them. */
 const LAYOUT = [
@@ -463,6 +493,8 @@ const LAYOUT = [
   REGION_HEADER_BYTES,
   LEARNER_ARRAY_COUNT,
   LAYOUT_BYTES,
+  POINT_BYTES,
+  EXTRACTED_PATCH_HEADER_BYTES,
 ];
 
 /** Throws a clear error the moment a Rust/TS byte-layout constant has drifted, instead of a wrong answer or an

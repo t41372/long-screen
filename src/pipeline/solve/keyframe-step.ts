@@ -4,11 +4,10 @@
 // loop-closure bookkeeping that a new keyframe triggers — applying track.ts's pure decisions in the original
 // order. Not an algorithm awaiting a Rust port itself; see track.ts's header for what is.
 import type { Attachment, CanvasMeta, Feature, Gray, Point, Region, RGBA, ScanRecord } from '../../types.ts';
-import { extractPatches } from '../../core/motion.ts';
 import type { Keyframe, KeyframeIndex } from '../../core/keyframes.ts';
 import { pad } from '../../core/math.ts';
 import type { PoseNode } from '../../core/pose-graph.ts';
-import type { ResidentFrame, ResidentGray } from '../../core/wasm.ts';
+import { core, type ResidentFrame, type ResidentGray } from '../../core/wasm.ts';
 import { attachmentShift } from '../attachments.ts';
 import type { RegionState } from './state.ts';
 import {
@@ -309,7 +308,9 @@ async function mintKeyframe(pass: SolvePass, state: RegionState, input: Keyframe
     y: state.pose.y,
     scaleX: f,
     scaleY: f,
-    patches: r.kind === 'moving' ? extractPatches(native(), r.rect, ownFeatures.map((p) => ({ x: p.x - roi.x, y: p.y - roi.y })), f) : [],
+    patches: r.kind === 'moving'
+      ? core().extractPatches(native(), r.rect, ownFeatures.map((p) => ({ x: p.x - roi.x, y: p.y - roi.y })), f)
+      : [],
   };
   state.anchor = k;
   if (r.kind === 'moving') {

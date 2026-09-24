@@ -20,8 +20,7 @@
 // (R1/R2) is why tests/support/reference/track.ts could freeze the pre-port functions' outputs as a TS oracle
 // (tests/unit/parity/track.test.ts checks the Rust replacements against it).
 import type { Feature, Gray, Match, Point, Region, RGBA } from '../../types.ts';
-import { type NativeRefinement, type Patch, probeScale } from '../../core/motion.ts';
-import { matchFeatures } from '../../core/features.ts';
+import type { NativeRefinement, Patch } from '../../core/motion.ts';
 import { core, type LabelMask, type ResidentFrame, type ResidentGray } from '../../core/wasm.ts';
 /** Region-step.ts's own-features/texture/prior-matches setup (R1: was inline decision logic in the shell). */
 export function ownFeaturesOf(
@@ -36,7 +35,7 @@ export function isTextured(ownFeatures: Feature[]): boolean {
   return ownFeatures.length >= 8;
 }
 export function priorMatchesOf(kind: Region['kind'], previousFeatures: Feature[] | undefined, ownFeatures: Feature[]): Match[] {
-  return kind === 'moving' ? matchFeatures(previousFeatures || [], ownFeatures) : [];
+  return kind === 'moving' ? core().matchFeatures(previousFeatures || [], ownFeatures, true) : [];
 }
 export type GateTag = 'start' | 'fixed-init' | 'fixed' | 'blind' | 'lost' | 'odometry';
 /** The branch region-step.ts's stepRegion() takes before any tracking math runs: whether the canvas is only now
@@ -92,7 +91,7 @@ export function fragmentCause(
     case 'zoom-change':
       return { scale: fieldZoom, error: 0 };
     case 'probe-scale':
-      return probeScale(previousGray!, g, ownFeatures, roi);
+      return core().probeScale(previousGray!, g, ownFeatures, roi);
     default:
       return undefined;
   }

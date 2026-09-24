@@ -73,7 +73,10 @@ pub enum Kind {
 }
 
 /// Constructed region, the Rust analogue of `Region` (types.ts). `mask` is always analysis-resolution
-/// (`mask_width × mask_height`); `RegionAtlas` looks it up through `region::Region` (region.rs), not this type.
+/// (`mask_width × mask_height`); `RegionAtlas.labels` (`src/core/layers.ts`) is built by
+/// `regions::atlas::label_atlas` over `region::Region<&[u8]>` (region.rs's generic `Region`, instantiated with a
+/// borrowed mask — see `regions/atlas.rs`'s `AtlasRegion`), constructed directly from the wire request in
+/// `abi::regions::ls_regions_label_atlas`. It never goes through this type.
 pub struct RegionOut {
     pub id: String,
     pub name: String,

@@ -10,7 +10,6 @@ import { assertEquals } from '@std/assert';
 import '../tests/support/core.ts';
 import { core, coreBuild } from '../src/core/wasm.ts';
 import { analysisFactor, downscaleGray } from '../src/core/raster.ts';
-import { extractFeatures, grayscale, matchFeatures } from '../src/core/features.ts';
 import { estimateMotion } from '../src/core/motion.ts';
 import { RegionAtlas } from '../src/core/layers.ts';
 import type { Feature, Gray, MotionField, Region, RGBA } from '../src/types.ts';
@@ -105,12 +104,12 @@ const sameFeatures = (x: Feature[], y: Feature[]) =>
     y.map((f) => ({ ...f, descriptor: [...f.descriptor] })),
   );
 
-bench('grayscale (native)', () => ts.grayscale(frames[0].data, W, H), () => grayscale(frames[0].data, W, H), sameGray);
+bench('grayscale (native)', () => ts.grayscale(frames[0].data, W, H), () => core().grayscale(frames[0].data, W, H), sameGray);
 bench(`downscaleGray (f=${F})`, () => ts.downscaleGray(frames[0], F), () => downscaleGray(frames[0], F), sameGray);
 const grays = frames.map((f) => downscaleGray(f, F));
-bench('extractFeatures', () => ts.extractFeatures(grays[1]), () => extractFeatures(grays[1]), sameFeatures);
-const fa = extractFeatures(grays[0]), fb = extractFeatures(grays[1]);
-bench('matchFeatures', () => ts.matchFeatures(fa, fb), () => matchFeatures(fa, fb), sameJSON);
+bench('extractFeatures', () => ts.extractFeatures(grays[1]), () => core().extractFeatures(grays[1], 480), sameFeatures);
+const fa = core().extractFeatures(grays[0], 480), fb = core().extractFeatures(grays[1], 480);
+bench('matchFeatures', () => ts.matchFeatures(fa, fb), () => core().matchFeatures(fa, fb, true), sameJSON);
 bench(
   'estimateMotion',
   () => tsMotion.estimateMotion(grays[0], grays[1], undefined, fa, fb),

@@ -1,6 +1,7 @@
 import '../support/core.ts';
 import { assert, assertEquals, assertThrows } from '@std/assert';
-import { analysisFactor, downscaleGray, halveRGBA, resolveRasterPose } from '../../src/core/raster.ts';
+import { analysisFactor, downscaleGray, resolveRasterPose } from '../../src/core/raster.ts';
+import { core } from '../../src/core/wasm.ts';
 import { referenceRegionContains as regionContains } from '../support/reference/layers.ts';
 import { cropRGBA, downscaleRGBA, meanAbsoluteDifference, thumbnail } from '../support/pixel-fixtures.ts';
 import type { Gray, Region, RGBA } from '../../src/types.ts';
@@ -81,9 +82,9 @@ Deno.test('raster: integer analysis factor, exact box downscale, crops, previews
   assertEquals([...c.data], [0, 0, 0, 255, 255, 255, 255, 255]);
   assertThrows(() => cropRGBA(image, { x: 3, y: 0, width: 2, height: 1 }));
   const transparent: RGBA = { width: 2, height: 2, data: new Uint8ClampedArray([100, 100, 100, 255, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) };
-  const half = halveRGBA(transparent);
+  const half = core().halveRGBA(transparent);
   assertEquals([...half.data], [100, 100, 100, 64]);
-  assertEquals([...halveRGBA({ width: 1, height: 1, data: new Uint8ClampedArray(4) }).data], [0, 0, 0, 0]);
+  assertEquals([...core().halveRGBA({ width: 1, height: 1, data: new Uint8ClampedArray(4) }).data], [0, 0, 0, 0]);
   assertEquals(meanAbsoluteDifference(image, image), 0);
   assertEquals(meanAbsoluteDifference(image, c), 255);
 });
