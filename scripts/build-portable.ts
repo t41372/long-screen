@@ -21,6 +21,7 @@
  *     never gets past the probe; routing file reads through the page would need changes under src/.
  *
  *  Every path below is resolved from this script's own location, like scripts/build.ts. */
+import { encodeBase64 } from '@std/encoding/base64';
 import { fromFileUrl, join } from '@std/path';
 import { zipSync } from 'fflate';
 
@@ -42,14 +43,15 @@ async function readDist(rel: string, binary?: true): Promise<string | Uint8Array
   }
 }
 
-try {
-  await Deno.stat(join(dist, 'assets', 'testkit.js'));
+const isDevBuild = await Deno.stat(join(dist, 'assets', 'testkit.js')).then(() => true, (error) => {
+  if (error instanceof Deno.errors.NotFound) return false;
+  throw error;
+});
+if (isDevBuild) {
   throw new Error(
     'dist/ is a dev build (dist/assets/testkit.js exists, which ships source-map links). Run `deno task build:portable` — ' +
       'it rebuilds dist/ with `deno task build:prod` first.',
   );
-} catch (error) {
-  if (!(error instanceof Deno.errors.NotFound)) throw error;
 }
 
 // --- 1/2: read + wrap the three bundles the portable page actually loads (main, worker, convert-worker; the
@@ -58,16 +60,28 @@ const html = await readDist('index.html');
 const css = await readDist('style.css');
 const icon = await readDist('icon.svg');
 const notices = await readDist('THIRD_PARTY_NOTICES.txt');
-const bundleNames = ['main.js', 'worker.js', 'convert-worker.js'] as const;
+// `resolvesAssets`: the bundle locates a sibling asset (worker.js, the Wasm core, convert-worker.js) through
+// `new URL('./x', import.meta.url)`, so the rewrite below must actually hit it; a bundle that stopped doing so
+// would otherwise ship with those lookups resolving against the blob: URL and missing the shim's tables.
+const bundles = [['main.js', true], ['worker.js', true], ['convert-worker.js', false]] as const;
 const wrappedScripts: Record<string, string> = {};
-for (const name of bundleNames) {
-  const code = (await readDist(`assets/${name}`)).replaceAll('import.meta.url', '__LS_BASE__');
+for (const [name, resolvesAssets] of bundles) {
+  const source = await readDist(`assets/${name}`);
+  if (resolvesAssets && !source.includes('import.meta.url')) {
+    throw new Error(`dist/assets/${name}: expected at least one import.meta.url to rewrite, found none.`);
+  }
+  const code = source.replaceAll('import.meta.url', '__LS_BASE__');
   if (code.includes('import.meta')) {
     throw new Error(`dist/assets/${name}: an import.meta reference survived the import.meta.url rewrite.`);
   }
+  // A dynamic import() still parses in a classic script, so the parse check below cannot catch it, but it fails at
+  // runtime on file:// like any other module load. The lookbehind skips a method named import (`x.import(`).
+  if (/(?<![.\w$])import\s*\(/.test(code)) {
+    throw new Error(`dist/assets/${name}: contains a dynamic import(), which cannot load from file://.`);
+  }
   const wrapped = `((__LS_BASE__) => {"use strict";\n${code}\n})(new URL("assets/${name}", self.__LS_PAGE__).href);`;
   try {
-    new Function(wrapped); // parses only, never runs — catches leftover import/export/top-level-await.
+    new Function(wrapped); // parses only, never runs — catches leftover static import/export/top-level-await.
   } catch (error) {
     throw new Error(`dist/assets/${name} did not parse as a classic script after wrapping: ${(error as Error).message}`);
   }
@@ -121,6 +135,9 @@ function installPortable(payload: PortablePayload, pageHref: string): void {
     }
     return nativeFetch(input as RequestInfo, init);
   }) as typeof fetch;
+  // One blob URL per script per context: `workerConverter` starts a convert worker for every opened source, and
+  // each blob carries the whole payload (~2 MB), so rebuilding and never revoking one per construction leaks.
+  const blobURLs: Record<string, string> = {};
   const NativeWorker = self.Worker;
   if (typeof NativeWorker === 'function') {
     self.Worker = class extends NativeWorker {
@@ -131,10 +148,13 @@ function installPortable(payload: PortablePayload, pageHref: string): void {
           super(url as string | URL, options);
           return;
         }
-        const prelude = `(${installPortable.toString()})(${JSON.stringify(payload)}, ${JSON.stringify(pageHref)});\n`;
-        const blob = new Blob([prelude + payload.scripts[name]], { type: 'text/javascript' });
-        const blobURL = URL.createObjectURL(blob);
-        super(blobURL, { ...options, type: 'classic' });
+        blobURLs[name] ??= URL.createObjectURL(
+          new Blob([
+            `(${installPortable.toString()})(${JSON.stringify(payload)}, ${JSON.stringify(pageHref)});\n`,
+            payload.scripts[name],
+          ], { type: 'text/javascript' }),
+        );
+        super(blobURLs[name], { ...options, type: 'classic' });
       }
     } as unknown as typeof Worker;
   }
@@ -146,7 +166,7 @@ interface PortablePayload {
 
 // --- 5: HTML. Every replacement must match exactly once, so drift after a future fix round fails the build loudly
 // instead of silently shipping a page that still points at ./assets/. ---
-function replaceOnce(text: string, needle: string, replacement: string, label: string): string {
+function replaceOnce(text: string, needle: string, replacement: string, label = needle): string {
   const parts = text.split(needle);
   if (parts.length !== 2) {
     throw new Error(`dist/index.html: expected exactly one occurrence of ${label}, found ${parts.length - 1}.`);
@@ -155,18 +175,8 @@ function replaceOnce(text: string, needle: string, replacement: string, label: s
 }
 if (css.includes('</style')) throw new Error('dist/style.css contains a literal "</style" — cannot inline it as <style>.');
 let page = html;
-page = replaceOnce(
-  page,
-  '<link rel="stylesheet" href="./style.css">',
-  `<style>${css}</style>`,
-  '<link rel="stylesheet" href="./style.css">',
-);
-page = replaceOnce(
-  page,
-  'href="./icon.svg"',
-  `href="data:image/svg+xml;base64,${encodeBase64(new TextEncoder().encode(icon))}"`,
-  'href="./icon.svg"',
-);
+page = replaceOnce(page, '<link rel="stylesheet" href="./style.css">', `<style>${css}</style>`);
+page = replaceOnce(page, 'href="./icon.svg"', `href="data:image/svg+xml;base64,${encodeBase64(icon)}"`);
 page = replaceOnce(page, 'href="./"', 'href=""', 'the brand link href="./"');
 const bootstrap = `<script type="application/json" id="long-screen-portable">${payloadJSON}</script>
 <script>(function () {
@@ -179,38 +189,41 @@ const bootstrap = `<script type="application/json" id="long-screen-portable">${p
   s.onerror = function () { console.error('long-screen portable: main.js blob script failed to load'); };
   document.body.appendChild(s);
 })();</script>`;
-page = replaceOnce(
-  page,
-  '<script type="module" src="./assets/main.js"></script>',
-  bootstrap,
-  '<script type="module" src="./assets/main.js">',
-);
+page = replaceOnce(page, '<script type="module" src="./assets/main.js"></script>', bootstrap);
 const hash = await gitShortHash(root);
 const stamp = new Date().toISOString();
-page = replaceOnce(page, '<!doctype html>', `<!doctype html>\n<!-- Long Screen portable build · ${hash} · ${stamp} -->`, '<!doctype html>');
+page = replaceOnce(page, '<!doctype html>', `<!doctype html>\n<!-- Long Screen portable build · ${hash} · ${stamp} -->`);
 if (page.includes('./assets/')) throw new Error('dist/index.html: a ./assets/ reference survived rewriting.');
 if (/src="\.\//.test(page)) throw new Error('dist/index.html: a src="./..." reference survived rewriting.');
 if (/href="\.\/(?!THIRD_PARTY_NOTICES\.txt")/.test(page)) {
   throw new Error('dist/index.html: a href="./..." reference (other than THIRD_PARTY_NOTICES.txt) survived rewriting.');
 }
 
-// --- 6: write dist-portable/. ---
-await Deno.remove(out, { recursive: true }).catch(() => {});
+// --- 6: write dist-portable/. Only this script's own outputs are replaced (the folder and earlier zips), so
+// anything else kept in dist-portable/ survives a rebuild. ---
 const folder = join(out, 'long-screen');
+await Deno.remove(folder, { recursive: true }).catch((error) => {
+  if (!(error instanceof Deno.errors.NotFound)) throw error;
+});
 await Deno.mkdir(folder, { recursive: true });
+for await (const entry of Deno.readDir(out)) {
+  if (entry.isFile && /^long-screen-portable-.*\.zip$/.test(entry.name)) await Deno.remove(join(out, entry.name));
+}
+const encoder = new TextEncoder();
+const pageBytes = encoder.encode(page);
+const noticesBytes = encoder.encode(notices);
+const readmeBytes = encoder.encode('\uFEFF' + readmeText(hash, stamp).replaceAll('\n', '\r\n'));
 const htmlPath = join(folder, 'long-screen.html');
-await Deno.writeTextFile(htmlPath, page);
 const noticesPath = join(folder, 'THIRD_PARTY_NOTICES.txt');
-await Deno.writeTextFile(noticesPath, notices);
-const readme = readmeText(hash, stamp);
 const readmePath = join(folder, 'README.txt');
-const readmeBytes = new TextEncoder().encode('﻿' + readme.replaceAll('\n', '\r\n'));
+await Deno.writeFile(htmlPath, pageBytes);
+await Deno.writeFile(noticesPath, noticesBytes);
 await Deno.writeFile(readmePath, readmeBytes);
 
 const zipped = zipSync({
   'long-screen': {
-    'long-screen.html': new TextEncoder().encode(page),
-    'THIRD_PARTY_NOTICES.txt': new TextEncoder().encode(notices),
+    'long-screen.html': pageBytes,
+    'THIRD_PARTY_NOTICES.txt': noticesBytes,
     'README.txt': readmeBytes,
   },
 });
@@ -223,18 +236,20 @@ for (const p of [htmlPath, noticesPath, readmePath, zipPath]) {
 }
 console.log('Built dist-portable/ — a single file/folder that opens over file:// (double-click, no server).');
 
+/** HEAD's short hash, with `-dirty` when the working tree differs from it — modified or staged files, or untracked
+ *  ones a build may pick up (scripts/build.ts copies everything under static/) — so a build of uncommitted changes is
+ *  never labelled (and its zip named) as if it were that commit. A failing git command fails the build rather than
+ *  being read as either answer. */
 async function gitShortHash(cwd: string): Promise<string> {
-  const result = await new Deno.Command('git', { args: ['rev-parse', '--short', 'HEAD'], cwd, stdout: 'piped', stderr: 'piped' }).output();
-  if (!result.success) throw new Error('git rev-parse --short HEAD failed; is this a git checkout?');
-  return new TextDecoder().decode(result.stdout).trim();
-}
-function encodeBase64(bytes: Uint8Array): string {
-  let binary = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
+  const git = async (...args: string[]): Promise<string> => {
+    const result = await new Deno.Command('git', { args, cwd, stdout: 'piped', stderr: 'piped' }).output();
+    if (!result.success) {
+      throw new Error(`git ${args.join(' ')} failed (is this a git checkout?): ${new TextDecoder().decode(result.stderr).trim()}`);
+    }
+    return new TextDecoder().decode(result.stdout).trim();
+  };
+  const hash = await git('rev-parse', '--short', 'HEAD');
+  return await git('status', '--porcelain') ? `${hash}-dirty` : hash;
 }
 function readmeText(hash: string, stamp: string): string {
   const date = stamp.slice(0, 10);

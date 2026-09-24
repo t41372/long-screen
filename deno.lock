@@ -3,6 +3,7 @@
   "specifiers": {
     "jsr:@std/assert@1": "1.0.19",
     "jsr:@std/cli@^1.0.32": "1.0.32",
+    "jsr:@std/encoding@1": "1.0.11",
     "jsr:@std/encoding@^1.0.11": "1.0.11",
     "jsr:@std/fmt@^1.0.10": "1.0.10",
     "jsr:@std/fs@1": "1.0.24",
@@ -54,7 +55,7 @@
       "integrity": "73a98e05ff58aa18bea562d286172e6c815b1eddd4fcab194beda19e3683b88c",
       "dependencies": [
         "jsr:@std/cli",
-        "jsr:@std/encoding",
+        "jsr:@std/encoding@^1.0.11",
         "jsr:@std/fmt",
         "jsr:@std/fs@^1.0.24",
         "jsr:@std/html",
@@ -141,6 +142,7 @@
   "workspace": {
     "dependencies": [
       "jsr:@std/assert@1",
+      "jsr:@std/encoding@1",
       "jsr:@std/fs@1",
       "jsr:@std/http@1",
       "jsr:@std/path@1",
