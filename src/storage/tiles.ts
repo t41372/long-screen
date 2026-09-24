@@ -214,7 +214,15 @@ export class TileStore {
     // clean one rather than resuming into (possibly inconsistent) leftovers.
     await deletePrefix(this.db, `pyramid-todo/${meta.id}/`);
     const size = this.size;
-    const maxLevel = Math.max(0, Math.ceil(Math.log2(Math.max(meta.bounds.width, meta.bounds.height) / size)));
+    // How many times `size` must double to reach or pass the larger bound dimension — `ceil(log2(dimension /
+    // size))` (clamped to 0), computed by repeated doubling instead of `Math.log2`: a floating-point log/exp
+    // implementation is not guaranteed bit-identical across engines, and a wrong level count here would change
+    // how many pyramid levels get built, not just round a display value. Loop count is small in practice (tile
+    // sizes are at least tens of pixels; `size` doubles each step) and bounded by `POSE_BOUND`'s addressable
+    // canvas range regardless.
+    const maxDimension = Math.max(meta.bounds.width, meta.bounds.height);
+    let maxLevel = 0;
+    for (let scale = size; scale < maxDimension; scale *= 2) maxLevel++;
     try {
       for (let level = 1; level <= maxLevel; level++) {
         for await (const row of iterate<TileIndex>(this.db, `tile-index/${meta.id}/${level - 1}/`)) {

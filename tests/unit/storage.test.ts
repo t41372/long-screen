@@ -157,6 +157,45 @@ Deno.test('tiles: codec rejects mismatched stored sizes; pyramid halves observed
   assertEquals(flat.maxLevel, 0);
   assertEquals(QUALITY_BLOCK, 16);
 });
+// buildPyramid's level count is `ceil(log2(maxDimension / size))` clamped to 0, computed by repeated doubling
+// instead of `Math.log2` (a floating-point log/exp implementation is not guaranteed bit-identical across
+// engines). These pin the boundary cases a doubling loop could get off-by-one on: exactly at `size`, one pixel
+// under and over each power-of-two multiple of `size`.
+Deno.test('tiles: buildPyramid level count at exact and near power-of-two boundaries of the tile size', async () => {
+  const size = 64;
+  const metaWithWidth = (width: number): CanvasMeta => ({
+    id: `w${width}`,
+    layer: 'l',
+    name: 'w',
+    kind: 'moving',
+    bounds: { x: 0, y: 0, width, height: 1 },
+    tileCount: 0,
+    observedPixels: 0,
+    uncertainPixels: 0,
+    conflictPixels: 0,
+    provisionalPixels: 0,
+    maxLevel: 0,
+    fragment: 0,
+    firstTime: 0,
+    lastTime: 0,
+  });
+  for (
+    const [width, expectedLevel] of [
+      [1, 0],
+      [size - 1, 0],
+      [size, 0], // ratio exactly 1: log2(1) = 0, no ceiling needed
+      [size + 1, 1], // one pixel over: must round UP to the next level, not stay at 0
+      [size * 2, 1], // ratio exactly 2: log2(2) = 1 exactly
+      [size * 2 + 1, 2],
+      [size * 4, 2],
+      [size * 4 + 1, 3],
+    ] as const
+  ) {
+    const db = new MemoryKV(), tiles = new TileStore(db, size, 64), meta = metaWithWidth(width);
+    await tiles.buildPyramid(meta, async () => {});
+    assertEquals(meta.maxLevel, expectedLevel, `width=${width}`);
+  }
+});
 Deno.test('tiles: buildPyramid clears its pyramid-todo/ work queue at start and even when it fails partway (F28)', async () => {
   let fail = false;
   const flaky: TileCodec = {

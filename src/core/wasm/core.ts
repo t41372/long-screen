@@ -536,14 +536,17 @@ export class Core {
     return track.reacquire(this, this.exports, inputs);
   }
   /** `track.ts::driftCorrection` fused into one call. */
-  trackDriftCorrection(inputs: track.DriftCorrectionInputs): { pose: Point | undefined; error: number; filledNative: boolean } {
+  trackDriftCorrection(
+    inputs: track.DriftCorrectionInputs,
+  ): { pose: Point | undefined; error: number; filledNative: boolean; confidenceFloor: number } {
     return track.driftCorrection(this, this.exports, inputs);
   }
-  /** `keyframes.ts::evaluateCandidates` fused into one call. */
+  /** `keyframes.ts::evaluateCandidates` fused into one call, including its confidence formula and
+   *  score/sort/strong-best/rival-ambiguity selection. */
   keyframesEvaluateCandidates(
     keyframes: track.EvaluateCandidatesKeyframe[],
     q: track.EvaluateCandidatesQuery,
-  ): { results: track.EvaluateCandidatesResult[]; filledNative: boolean } {
+  ): { result: track.EvaluateCandidatesResult | undefined; filledNative: boolean } {
     return track.evaluateCandidates(this, this.exports, keyframes, q);
   }
   /** `solve/track.ts::ownFeaturesOf`'s region-membership feature filter, moved out of TS. */

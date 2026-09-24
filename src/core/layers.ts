@@ -1,10 +1,13 @@
 import type { Gray, MotionField, Rect, Region, RGBA } from '../types.ts';
-import { norm } from './math.ts';
 import { core, type LearnerAccumulators, type LearnerHandle, type Resident, ResidentFrame } from './wasm.ts';
 /** A field carries real evidence only once some model moved more than analysis jitter and is reasonably well matched;
- * shared by per-frame and long-baseline (frame t−k vs t) evidence so both are held to the same bar. */
+ * shared by per-frame and long-baseline (frame t−k vs t) evidence so both are held to the same bar. `x*x + y*y > 1`
+ * (not `norm(m) > 1`, i.e. not `Math.hypot(m.x, m.y) > 1`): squaring and comparing is equivalent for this gate (both
+ * sides are non-negative) and uses only basic IEEE add/multiply, which every engine computes identically, unlike
+ * `Math.hypot`'s over/underflow-avoiding algorithm, whose implementation is not standardised bit-for-bit. */
 export function informativeField(field: MotionField): boolean {
-  return !field.unknown && field.difference >= .2 && field.motions.some((m) => norm(m) > 1 && m.confidence > .3);
+  return !field.unknown && field.difference >= .2 &&
+    field.motions.some((m) => m.x * m.x + m.y * m.y > 1 && m.confidence > .3);
 }
 /** Learns screen-space motion discontinuities across the WHOLE recording. Per-frame accumulation runs in the
  *  Rust core (rust/core/src/layers.rs) through a `LearnerHandle`; `finish()` reads the accumulators back once and

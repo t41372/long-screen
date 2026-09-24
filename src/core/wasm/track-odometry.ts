@@ -126,21 +126,13 @@ export function odometry(core: Core, exports: CoreExports, inputs: OdometryInput
   const hasContentChange = view.getUint32(40, true) === 1;
   const decision = ODOMETRY_DECISION_TAGS[tag], ambiguous = view.getUint32(24, true) === 1, weakStep = view.getUint32(28, true) === 1;
   const stepError = view.getFloat64(32, true);
-  // WHY this multiply stays in TS: on 'tracked', `confidence` off the wire is
-  // the RAW hypothesis confidence (`rust/core/src/track.rs`'s `OdometryEstimate.confidence` doc comment) —
-  // `Math.exp(-stepError / 20)` runs HERE, in TS, for bit-identity with the historical TS confidence formula.
-  // Rust libm's `exp` rounds the last bit differently from V8's `Math.exp` on some inputs (confirmed by the
-  // differential harness: `stepError` is a continuous, effectively-arbitrary float, unlike the few small-integer-
-  // ratio `.exp()` inputs already in motion.rs, which never hit a rounding boundary in the 24×11 differential
-  // suite). Moving this multiply into Rust too is a separate, deliberately-verified behaviour change, not a
-  // consequence of "fuse into one call" — don't do it as a drive-by.
-  const confidence = decision === 'tracked'
-    ? Math.max(.05, view.getFloat64(16, true)) * Math.exp(-stepError / 20) * (ambiguous ? .6 : 1) * (weakStep ? .5 : 1)
-    : view.getFloat64(16, true);
+  // The 'tracked' confidence (including the exp(-stepError / 20) factor) is fully computed in Rust
+  // (rust/core/src/track/odometry.rs's `odometry` — see its WHY comment) with `f64::exp`, a software libm
+  // identical on every engine, rather than finished here with the host's own `Math.exp`.
   return {
     decision,
     delta: { x: view.getFloat64(0, true), y: view.getFloat64(8, true) },
-    confidence,
+    confidence: view.getFloat64(16, true),
     ambiguous,
     weakStep,
     stepError,

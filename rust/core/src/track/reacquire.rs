@@ -37,10 +37,10 @@ pub fn reacquire_hypotheses(anchor_features: &[Feature], own_features: &[Feature
         .collect()
 }
 
-/// `track.ts::reacquire`'s output; `confidence` is the raw hypothesis confidence (`top.m.confidence`), not the
-/// TS original's `Math.max(.05, …) * Math.exp(-top.n.error / 20) * (ambiguous ? .6 : 1)` — that multiply stays
-/// in `src/core/wasm/track.ts`, on the host's own `Math.exp`, for the same bit-exactness reason as
-/// `OdometryEstimate.confidence` (see that struct's doc comment and the WHY comment at its one TS call site).
+/// `track.ts::reacquire`'s output; `confidence` is the fully computed
+/// `top.m.confidence.max(0.05) * exp(-top.n.error / 20) * (ambiguous ? 0.6 : 1)`, using `f64::exp` (a software
+/// libm, identical on every engine — see `odometry.rs`'s `OdometryEstimate.confidence` doc comment for why this
+/// is no longer finished by the TS caller with `Math.exp`).
 pub struct ReacquireEstimate {
     pub x: i32,
     pub y: i32,
@@ -93,22 +93,31 @@ pub fn reacquire_refine(
     if has_rival {
         return None;
     }
+    let ambiguous = top_m.ambiguous;
+    // `f64::max(0.05)` returns `0.05` for a NaN `confidence` where `Math.max(.05, NaN)` returns `NaN` (see
+    // odometry.rs's `OdometryEstimate.confidence` doc comment for the same difference and why it is kept) —
+    // never observed in practice, since `top_m.confidence` comes from `translation_hypotheses`, which never
+    // produces NaN.
+    let confidence = top_m.confidence.max(0.05)
+        * (-top_n.error / 20.0).exp()
+        * if ambiguous { 0.6 } else { 1.0 };
     Some(ReacquireEstimate {
         x: top_n.x,
         y: top_n.y,
-        ambiguous: top_m.ambiguous,
-        confidence: top_m.confidence,
+        ambiguous,
+        confidence,
         error: top_n.error,
     })
 }
 
-/// `track.ts::driftCorrection`'s output; `error` lets the TS caller finish
-/// `Math.max(confidence, .96 * Math.exp(-error / 20))` on the host's own `Math.exp` (same bit-exactness reason
-/// as `ReacquireEstimate.confidence`).
+/// `track.ts::driftCorrection`'s output. `confidence_floor` is `0.96 * exp(-error / 20)` (`f64::exp`, identical
+/// on every engine); the TS caller takes `Math.max(carriedInConfidence, confidenceFloor)`, a plain comparison
+/// with no transcendental function left to vary between engines.
 pub struct DriftEstimate {
     pub x: f64,
     pub y: f64,
     pub error: f64,
+    pub confidence_floor: f64,
 }
 
 /// `track.ts::driftCorrection`. Unlike `reacquire`, there is no gate: the original always evaluates `native()`
@@ -132,6 +141,7 @@ pub fn drift_correction(
             x: anchor.0 + n.x as f64,
             y: anchor.1 + n.y as f64,
             error: n.error,
+            confidence_floor: 0.96 * (-n.error / 20.0).exp(),
         })
     } else {
         None

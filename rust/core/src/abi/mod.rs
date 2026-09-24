@@ -58,6 +58,8 @@ pub extern "C" fn ls_layout(which: u32) -> u32 {
     use framing::LAYOUT_BYTES;
     use layers::LEARNER_ARRAY_COUNT;
     use regions::{REGIONS_FINISH_DESC_BYTES, REGION_HEADER_BYTES};
+    use track_keyframes::{CANDIDATE_RECORD_BYTES, KEYFRAME_BYTES};
+    use track_reacquire::TRACK_DRIFT_CORRECTION_OUT_BYTES;
     use wire::{
         COMPOSITE_HEADER_BYTES, EXTRACTED_PATCH_HEADER_BYTES, LEARNER_FIELD_BYTES,
         LEARNER_MOTION_BYTES, MATCH_POINT_BYTES, MOTION_BYTES, MOTION_FIELD_HEADER_BYTES,
@@ -80,6 +82,9 @@ pub extern "C" fn ls_layout(which: u32) -> u32 {
         13 => LAYOUT_BYTES,
         14 => POINT_BYTES,
         15 => EXTRACTED_PATCH_HEADER_BYTES,
+        16 => KEYFRAME_BYTES,
+        17 => CANDIDATE_RECORD_BYTES,
+        18 => TRACK_DRIFT_CORRECTION_OUT_BYTES,
         _ => 0,
     }) as u32
 }

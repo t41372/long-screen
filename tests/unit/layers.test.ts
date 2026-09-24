@@ -1,6 +1,6 @@
 import '../support/core.ts';
 import { assert, assertEquals, assertThrows } from '@std/assert';
-import { LayerLearner, RegionAtlas, stationaryBoundary, stickyOcclusions } from '../../src/core/layers.ts';
+import { informativeField, LayerLearner, RegionAtlas, stationaryBoundary, stickyOcclusions } from '../../src/core/layers.ts';
 import { core } from '../../src/core/wasm.ts';
 import { contains } from '../../src/core/math.ts';
 import { referenceRegionContains as regionContains } from '../support/reference/layers.ts';
@@ -17,7 +17,7 @@ import {
 } from '../../src/synthetic/world.ts';
 import { runScenario, verifyLayer } from '../support/run.ts';
 import { fieldFor, regionMotion, rgba } from '../support/pixel-fixtures.ts';
-import type { FramePlan, Gray, Point, Region, ScanRecord } from '../../src/types.ts';
+import type { FramePlan, Gray, Motion, MotionField, Point, Region, ScanRecord } from '../../src/types.ts';
 import { pad } from '../../src/core/math.ts';
 // F7: the downscale truth is floor(x/factor); nativeWidth/nativeHeight are NOT exact multiples of factor here
 // (3843 = 640×6+3, 1802 = 300×6+2), reproducing a mask bbox that touches the last analysis row/column while the
@@ -562,4 +562,29 @@ Deno.test('geometry: a per-pane zoom fragments only the zooming pane, not its co
     // run.atlas (src/core/layers.ts's RegionAtlas) owns a core-resident buffer that nothing else frees.
     run.dispose();
   }
+});
+Deno.test('layers: informativeField compares squared motion length, not Math.hypot, at the norm=1 boundary', () => {
+  const motion = (x: number, y: number): Motion => ({ x, y, support: 10, unique: 6, confidence: 0.5, error: 0, ambiguous: false });
+  const field = (m: Motion): MotionField => ({
+    motions: [m],
+    labels: new Uint8Array(0),
+    confidence: new Uint8Array(0),
+    dynamic: new Uint8Array(0),
+    cols: 1,
+    rows: 1,
+    cell: 1,
+    difference: 1,
+    featureCount: 0,
+    unknown: false,
+    zoom: 1,
+  });
+  // A 3-4-5 triangle scaled to norm exactly 1 (0.6² + 0.8² = 1): not informative (`> 1`, not `>= 1`).
+  assert(!informativeField(field(motion(0.6, 0.8))), 'norm exactly 1 must not be informative');
+  // The smallest representable step past 1 on either axis clears the gate.
+  assert(informativeField(field(motion(0.6 + Number.EPSILON * 4, 0.8))), 'norm just over 1 must be informative');
+  // A motion whose x/y are individually small but whose squared sum still exceeds 1 (this is exactly the case
+  // `Math.hypot`'s overflow-avoiding algorithm and a plain `x*x + y*y` could in principle disagree on near a
+  // boundary) — chosen well clear of any such boundary to assert the ordinary "moved enough" case still passes.
+  assert(informativeField(field(motion(3, 4))), 'norm 5 must be informative');
+  assert(!informativeField(field(motion(0, 0))), 'zero motion must not be informative');
 });

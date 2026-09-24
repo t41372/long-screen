@@ -476,6 +476,11 @@ export const LEARNER_ARRAY_COUNT = 14;
 export const POINT_BYTES = 16;
 /** One `ls_extract_patches` output patch header, immediately followed by its `size × size` data bytes. */
 export const EXTRACTED_PATCH_HEADER_BYTES = 24;
+/** `ls_keyframes_evaluate_candidates`'s per-keyframe descriptor and its single chosen-candidate output record
+ *  (`rust/core/src/abi/track_keyframes.rs::KEYFRAME_BYTES`/`CANDIDATE_RECORD_BYTES`). */
+export const KEYFRAME_BYTES = 64, CANDIDATE_RECORD_BYTES = 56;
+/** `ls_track_drift_correction`'s output record (`rust/core/src/abi/track_reacquire.rs::TRACK_DRIFT_CORRECTION_OUT_BYTES`). */
+export const TRACK_DRIFT_CORRECTION_OUT_BYTES = 40;
 
 /** Selector → constant, in the order `rust/core/src/abi/mod.rs::ls_layout` matches them. */
 const LAYOUT = [
@@ -495,6 +500,9 @@ const LAYOUT = [
   LAYOUT_BYTES,
   POINT_BYTES,
   EXTRACTED_PATCH_HEADER_BYTES,
+  KEYFRAME_BYTES,
+  CANDIDATE_RECORD_BYTES,
+  TRACK_DRIFT_CORRECTION_OUT_BYTES,
 ];
 
 /** Throws a clear error the moment a Rust/TS byte-layout constant has drifted, instead of a wrong answer or an

@@ -6,9 +6,10 @@
 // Each is a thin call into src/core/wasm/track*.ts under its original name and signature. A stateful cross-frame
 // tracker handle was measured and not built: it gave no measurable gain over these per-call fusions. Keyframe
 // candidate scoring lives in src/core/keyframes.ts and is bound the same way.
-// What deliberately remains TypeScript here: the final `Math.exp` factor of the odometry/re-acquisition/drift
-// confidences (V8's exp and Rust's libm exp differ by one ULP on some inputs, and these values must stay bit-identical
-// with the historical output — see each WHY comment); isTextured (a bare `.length >= 8`), priorMatchesOf (match glue
+// The odometry/re-acquisition/drift confidences (including their `exp()` factor) are fully computed in Rust, with
+// `f64::exp` — a software libm, identical on every JS engine, unlike `Math.exp`, so the same recording reaches
+// the same confidence (and, at a threshold, the same decision) in every browser (see docs/ARCHITECTURE.md §十二).
+// What deliberately remains TypeScript here: isTextured (a bare `.length >= 8`), priorMatchesOf (match glue
 // over the Rust matchFeatures kernel) and gate() (a six-way dispatch with no pixel, patch or feature work of its own).
 // ownFeaturesOf is a thin call into the Rust per-region feature filter (rust/core/src/region.rs::filter_features),
 // kept here because it is this shell's per-region setup. tests/support/reference/track.ts freezes the pre-port
@@ -79,7 +80,7 @@ export const NONFINITE_CONFIDENCE = 0;
 const MAX_SUPPORTED_FRAME_DIMENSION = 2 ** 16;
 export const POSE_BOUND = CANVAS_PIXEL_BOUND - MAX_SUPPORTED_FRAME_DIMENSION;
 export function isValidPose(p: Point): boolean {
-  return Number.isFinite(p.x) && Number.isFinite(p.y) && Math.abs(p.x) <= POSE_BOUND && Math.abs(p.y) <= POSE_BOUND;
+  return Number.isFinite(p.x) && Number.isFinite(p.y) && Math.abs(p.x) < POSE_BOUND && Math.abs(p.y) < POSE_BOUND;
 }
 export function relocalizeVerdict(
   match: { ambiguous: boolean; confidence: number } | undefined,
@@ -206,12 +207,12 @@ export interface DriftCorrectionInputs {
  * view — fused into one Rust call. */
 export function driftCorrection(inputs: DriftCorrectionInputs): { pose: Point; confidence: number } | undefined {
   const { markNativeFilled, confidence, ...rest } = inputs;
-  const { pose, error, filledNative } = core().trackDriftCorrection(rest);
+  const { pose, filledNative, confidenceFloor } = core().trackDriftCorrection(rest);
   if (filledNative) markNativeFilled();
   if (!pose) return undefined;
-  // Math.exp finished in TS on the host's own implementation — see src/core/wasm/track.ts's WHY comment at
-  // OdometryEstimate's confidence field (same bit-exactness reason).
-  return { pose, confidence: Math.max(confidence, .96 * Math.exp(-error / 20)) };
+  // `confidenceFloor` (`0.96 * exp(-error / 20)`) is computed in Rust with `f64::exp`, identical on every
+  // engine (rust/core/src/track/reacquire.rs's `drift_correction`); only a plain `Math.max` is left here.
+  return { pose, confidence: Math.max(confidence, confidenceFloor) };
 }
 /** Whether this frame mints a new keyframe. `lastNodeFrame` undefined means no node exists yet for this region
  * (R2: replaces the -Infinity sentinel the original used for "no prior node" when computing framesSinceLastNode —

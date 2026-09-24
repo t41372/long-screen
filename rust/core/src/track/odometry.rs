@@ -28,10 +28,9 @@ pub struct ContentChange {
 pub struct OdometryEstimate {
     pub decision: OdometryDecision,
     pub delta: (f64, f64),
-    /// On `Tracked`: the raw hypothesis confidence (`best.m.confidence`), NOT the TS original's fully computed
-    /// step confidence — `src/core/wasm/track.ts` finishes `Math.max(.05, …) * Math.exp(-stepError / 20) * …`
-    /// so that multiply runs on the host's own `Math.exp`, bit-exact with the TS original (see the
-    /// comment at this field's one call site below). On `Static`/`Lost`: the input `confidence`, unchanged.
+    /// On `Tracked`: the fully computed step confidence (`best.m.confidence.max(0.05) * exp(-stepError / 20) *
+    /// ambiguous/weakStep factors`) — see the comment at this field's one call site below for why the `exp`
+    /// factor is finished here rather than by the TS caller. On `Static`/`Lost`: the input `confidence`, unchanged.
     pub confidence: f64,
     pub ambiguous: bool,
     pub weak_step: bool,
@@ -186,17 +185,24 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
             } else {
                 None
             };
-            // `confidence` here is the raw hypothesis confidence (`best.m.confidence`), NOT the TS original's
-            // `Math.max(.05, best.m.confidence) * Math.exp(-best.n.error / 20) * ...` — that last multiply
-            // stays in `src/core/wasm/track.ts` so it runs on the SAME `Math.exp` the differential harness's
-            // TS original uses (V8's, not Rust libm's, which can round the last bit differently for
-            // this call's continuous, effectively-arbitrary `stepError` input; unlike the few other `.exp()`
-            // call sites in `motion.rs`, whose inputs are small integer ratios that never land on a rounding
-            // boundary in practice).
+            // Finished here, in Rust, with `f64::exp` (a software libm, identical across every engine) rather
+            // than by the TS caller with `Math.exp`: JS engines' `Math.exp` implementations differ in the last
+            // bit on some inputs, and `stepError` is a continuous, effectively-arbitrary float, so finishing this
+            // multiply in TS would let the same recording reach a different confidence — and, at a threshold, a
+            // different decision — in Chrome vs. Safari (see docs/ARCHITECTURE.md §十二).
+            // `f64::max` also differs from `Math.max` on a NaN `confidence` (never observed in practice —
+            // `best_m.confidence` comes from `translation_hypotheses`, which never produces NaN): Rust's
+            // `max(0.05)` returns `0.05` for a NaN input, where `Math.max(.05, NaN)` returns `NaN`. Rust's
+            // behaviour is the more robust of the two (a floor, not a NaN that then poisons every factor
+            // multiplied against it), so this is kept rather than reproduced.
+            let confidence = best_m.confidence.max(0.05)
+                * (-step_error / 20.0).exp()
+                * if ambiguous { 0.6 } else { 1.0 }
+                * if weak_step { 0.5 } else { 1.0 };
             return OdometryEstimate {
                 decision: OdometryDecision::Tracked,
                 delta,
-                confidence: best_m.confidence,
+                confidence,
                 ambiguous,
                 weak_step,
                 step_error,

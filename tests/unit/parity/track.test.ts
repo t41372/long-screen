@@ -2,7 +2,7 @@
  *  TS oracle they replace (tests/support/reference/track.ts). Runs on whichever build `LONGSCREEN_CORE` selects
  *  (scalar/simd/threads — see tests/support/core.ts). Covers the stateless verdicts and the fused odometry,
  *  reacquire and driftCorrection calls. */
-import { assert, assertEquals } from '@std/assert';
+import { assert, assertAlmostEquals, assertEquals } from '@std/assert';
 import { ensureCore } from '../../support/core.ts';
 import { rng } from '../../../src/core/math.ts';
 import * as ref from '../../support/reference/track.ts';
@@ -12,6 +12,13 @@ import { rgbaOf, textureGray } from '../../support/parity-fixtures.ts';
 import type { PatchInput } from '../../../src/core/wasm.ts';
 import * as trackPipeline from '../../../src/pipeline/solve/track.ts';
 import { evaluateCandidates, type Keyframe } from '../../../src/core/keyframes.ts';
+/** `f64::exp` (Rust libm, used by the odometry/reacquire/driftCorrection confidence formulas) and V8's `Math.exp`
+ * (the frozen reference oracle in tests/support/reference/track.ts, never updated to call the Rust core) can
+ * differ by a handful of ULP of an `f64` on some inputs — that is the whole reason these confidences moved into
+ * Rust (bit-identity across JS engines was dropped as a gate; see docs/ARCHITECTURE.md §十二). `1e-13` is about
+ * three orders of magnitude looser than a few ULP of a value in `[0, 1]` (a few ULP there is ~1e-16), enough
+ * headroom for that specific rounding difference without tolerating a wrong formula. */
+const EXP_CONFIDENCE_TOLERANCE = 1e-13;
 
 Deno.test('core parity: track.uncertainty matches the frozen oracle', async () => {
   const core = await ensureCore();
@@ -366,9 +373,7 @@ Deno.test('core parity: track.odometry matches the frozen oracle (tracked, stati
     const what = `case ${i} (dx=${c.dx} dy=${c.dy} masked=${c.region === maskedRegion})`;
     assertEquals(rustResult.decision, refResult.decision, what);
     assertEquals([rustResult.delta.x, rustResult.delta.y], [refResult.delta.x, refResult.delta.y], `${what} delta`);
-    // Bit-exact, not `sameNumber`: the tracked-branch confidence formula's `Math.exp` runs in TS (this engine's
-    // own V8), matching the reference oracle exactly — see wasm/track.ts's odometry() comment.
-    assertEquals(rustResult.confidence, refResult.confidence, `${what} confidence`);
+    assertAlmostEquals(rustResult.confidence, refResult.confidence, EXP_CONFIDENCE_TOLERANCE, `${what} confidence`);
     assertEquals(rustResult.ambiguous, refResult.ambiguous, `${what} ambiguous`);
     assertEquals(rustResult.weakStep, refResult.weakStep, `${what} weakStep`);
     assertEquals(rustResult.stepError, refResult.stepError, `${what} stepError`);
@@ -450,7 +455,7 @@ Deno.test('core parity: track.reacquire matches the frozen oracle (found, no can
       assertEquals(result!.n.x, refResult.n.x, `${what} x`);
       assertEquals(result!.n.y, refResult.n.y, `${what} y`);
       assertEquals(result!.ambiguous, refResult.ambiguous, `${what} ambiguous`);
-      assertEquals(result!.confidence, refResult.confidence, `${what} confidence`);
+      assertAlmostEquals(result!.confidence, refResult.confidence, EXP_CONFIDENCE_TOLERANCE, `${what} confidence`);
     }
     // `filledNative` is true whenever `reacquire_hypotheses` found ANY candidate (support >= 6), even if the
     // subsequent native refinement then rejects it (error too high, or a rival) — "found" and "filled" are
@@ -507,7 +512,7 @@ Deno.test('core parity: track.driftCorrection matches the frozen oracle (correct
     assertEquals(!!result, !!refResult, `${what} found`);
     if (refResult) {
       assertEquals(result!.pose, refResult.pose, `${what} pose`);
-      assertEquals(result!.confidence, refResult.confidence, `${what} confidence`);
+      assertAlmostEquals(result!.confidence, refResult.confidence, EXP_CONFIDENCE_TOLERANCE, `${what} confidence`);
     }
     assertEquals(filledNative, !c.preFilled, `${what} filledNative`);
     residentFrame.free();
@@ -532,6 +537,22 @@ function kf(id: string, x: number, y: number, features: Feature[], gray: Gray, p
   };
 }
 
+/** `evaluateCandidates` no longer returns a `strong` field (Rust's `select_candidate` only ever returns a
+ * strong candidate, so the field would always be `true`); the frozen oracle still has it. Confidence now comes
+ * from Rust's `f64::exp`, not the oracle's `Math.exp`, so it compares within `EXP_CONFIDENCE_TOLERANCE`; every
+ * other field compares exactly. */
+function assertRelocalizationMatches(
+  actual: ReturnType<typeof evaluateCandidates>,
+  expected: ReturnType<typeof ref.evaluateCandidates>,
+  what: string,
+): void {
+  assertEquals(!!actual, !!expected, `${what} found`);
+  if (!actual || !expected) return;
+  const { strong: _strong, confidence: expectedConfidence, ...expectedRest } = expected;
+  const { confidence: actualConfidence, ...actualRest } = actual;
+  assertEquals(actualRest, expectedRest, what);
+  assertAlmostEquals(actualConfidence, expectedConfidence, EXP_CONFIDENCE_TOLERANCE, `${what} confidence`);
+}
 Deno.test('core parity: keyframes.evaluateCandidates matches the frozen oracle (found, ambiguous rival, no match, resident lazy fill)', async () => {
   const core = await ensureCore();
   const w = 220, h = 150, region = { x: 0, y: 0, width: w, height: h }, roi = region, radius = 3;
@@ -545,7 +566,7 @@ Deno.test('core parity: keyframes.evaluateCandidates matches the frozen oracle (
     const q = { features: c.ownFeatures, gray: c.ownGray, roi, region, factor: 1, radius };
     const refResult = ref.evaluateCandidates(keyframes, { ...q, native: () => c.currentNative }, empty);
     const prodEager = evaluateCandidates(keyframes, { ...q, native: () => c.currentNative }, empty);
-    assertEquals(prodEager, refResult, 'case 1 (non-resident, eager)');
+    assertRelocalizationMatches(prodEager, refResult, 'case 1 (non-resident, eager)');
     assert(refResult && refResult.strong, 'case 1 expected a strong match from the frozen oracle');
 
     const residentFrame = core.frame(w, h);
@@ -562,7 +583,7 @@ Deno.test('core parity: keyframes.evaluateCandidates matches the frozen oracle (
         filledNative = true;
       },
     }, empty);
-    assertEquals(prodResident, refResult, 'case 1 (resident lazy fill)');
+    assertRelocalizationMatches(prodResident, refResult, 'case 1 (resident lazy fill)');
     assert(filledNative, 'case 1 resident: a strong candidate exists, so the lazy fill must have run');
     residentFrame.free();
     plane.free();
@@ -574,7 +595,11 @@ Deno.test('core parity: keyframes.evaluateCandidates matches the frozen oracle (
     const c = await reacquireCase(w, h, 6002, 6, -4);
     const keyframes = [kf('b', 0, 0, c.anchorFeatures, c.anchorGray, c.anchorPatches)];
     const q = { features: c.ownFeatures.slice(0, 3), gray: c.ownGray, native: () => c.currentNative, roi, region, factor: 1, radius };
-    assertEquals(evaluateCandidates(keyframes, q, empty), ref.evaluateCandidates(keyframes, q, empty), 'case 2 (too few matches)');
+    assertRelocalizationMatches(
+      evaluateCandidates(keyframes, q, empty),
+      ref.evaluateCandidates(keyframes, q, empty),
+      'case 2 (too few matches)',
+    );
   }
 
   // Case 3: an unrelated query matches no keyframe at all — no candidate should ever pass the audit.
@@ -582,7 +607,7 @@ Deno.test('core parity: keyframes.evaluateCandidates matches the frozen oracle (
     const c = await reacquireCase(w, h, 6003, undefined, undefined);
     const keyframes = [kf('c', 0, 0, c.anchorFeatures, c.anchorGray, c.anchorPatches)];
     const q = { features: c.ownFeatures, gray: c.ownGray, native: () => c.currentNative, roi, region, factor: 1, radius };
-    assertEquals(evaluateCandidates(keyframes, q, empty), ref.evaluateCandidates(keyframes, q, empty), 'case 3 (no match)');
+    assertRelocalizationMatches(evaluateCandidates(keyframes, q, empty), ref.evaluateCandidates(keyframes, q, empty), 'case 3 (no match)');
   }
 
   // Case 4: two keyframes cropped from the same repeating texture, one period apart, both plausibly explain the
@@ -606,7 +631,33 @@ Deno.test('core parity: keyframes.evaluateCandidates matches the frozen oracle (
     const q = { features: fq, gray: gq, native: () => nq, roi, region, factor: 1, radius };
     const refResult = ref.evaluateCandidates(keyframes, q, empty);
     const prodResult = evaluateCandidates(keyframes, q, empty);
-    assertEquals(prodResult, refResult, 'case 4 (rival)');
+    assertRelocalizationMatches(prodResult, refResult, 'case 4 (rival)');
     assert(refResult?.ambiguous, 'case 4 expected the frozen oracle to mark this rival pair ambiguous');
+
+    // Case 5: the same rival pair, but with a NON-EMPTY canonical map this time — exercises the canonical
+    // canvas-index interning (keyframes.ts) and Rust's canvas-index rival check together, not just the
+    // canvas-less distance check case 4 already covers.
+    // 5a: canonical resolves both keyframes to distinct target canvases (still two different canvases, just via
+    // the map instead of their own raw canvasId) — still a rival, same as case 4.
+    const distinctCanonical = new Map([
+      ['r0-canvas', { canvasId: 'target-a', dx: 0, dy: 0 }],
+      ['r1-canvas', { canvasId: 'target-b', dx: 0, dy: 0 }],
+    ]);
+    const refDistinct = ref.evaluateCandidates(keyframes, q, distinctCanonical);
+    const prodDistinct = evaluateCandidates(keyframes, q, distinctCanonical);
+    assertRelocalizationMatches(prodDistinct, refDistinct, 'case 5a (distinct canonical canvases)');
+    assert(refDistinct?.ambiguous, 'case 5a expected the frozen oracle to still mark this pair ambiguous');
+
+    // 5b: canonical resolves r1 onto r0's canvas with dx=0 — r1's own pose (60) plus its best offset against
+    // this query (-30, the period one crop over) already lands at the same absolute position as r0's pose (0)
+    // plus ITS best offset (+30, the same period the other way): 60 + -30 = 0 + 30 = 30. No canonical dx is
+    // needed to make them coincide, only the shared canvas — the rival's resolved position now matches the
+    // best's, so the canvas-and-distance rival test must clear it, even though the SAME pair was a rival in
+    // case 4/5a (there, r1 stayed on its own raw canvasId, so the canvas check alone kept it a rival).
+    const mergedCanonical = new Map([['r1-canvas', { canvasId: 'r0-canvas', dx: 0, dy: 0 }]]);
+    const refMerged = ref.evaluateCandidates(keyframes, q, mergedCanonical);
+    const prodMerged = evaluateCandidates(keyframes, q, mergedCanonical);
+    assertRelocalizationMatches(prodMerged, refMerged, 'case 5b (merged canonical canvas)');
+    assert(refMerged && !refMerged.ambiguous, 'case 5b expected merging onto the same canonical canvas to resolve the rival');
   }
 });

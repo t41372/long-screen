@@ -4,7 +4,7 @@
 import type { Feature, Gray, Point, Rect } from '../../types.ts';
 import type { Core, PatchInput, RefinementResult } from './core.ts';
 import type { CoreExports } from './exports.ts';
-import { PATCH_BYTES } from './exports.ts';
+import { PATCH_BYTES, TRACK_DRIFT_CORRECTION_OUT_BYTES } from './exports.ts';
 import { writeFeatures } from './features.ts';
 import type { FrameInput, ResidentGray } from './memory.ts';
 import { b2, resolveNative, writePatches } from './track.ts';
@@ -73,15 +73,13 @@ export function reacquire(
   const filledNative = view.getUint32(36, true) === 1;
   if (tag === 0) return { result: undefined, filledNative };
   const ambiguous = view.getUint32(8, true) === 1, error = view.getFloat64(24, true);
-  // `confidence` off the wire is the RAW hypothesis confidence (rust/core/src/track.rs's `ReacquireEstimate` doc
-  // comment); Math.exp finished here on the host's own implementation, same bit-exactness reason as
-  // OdometryEstimate's confidence field.
-  const confidence = Math.max(.05, view.getFloat64(16, true)) * Math.exp(-error / 20) * (ambiguous ? .6 : 1);
+  // `confidence` off the wire is fully computed in Rust (rust/core/src/track/reacquire.rs's `reacquire_refine`)
+  // with `f64::exp`, identical on every engine — see `track-odometry.ts`'s comment at the same call shape.
   return {
     result: {
       n: { x: view.getInt32(0, true), y: view.getInt32(4, true), error, samples: 0, runnerUp: 0 },
       ambiguous,
-      confidence,
+      confidence: view.getFloat64(16, true),
     },
     filledNative,
   };
@@ -104,7 +102,7 @@ export function driftCorrection(
   core: Core,
   exports: CoreExports,
   inputs: DriftCorrectionInputs,
-): { pose: Point | undefined; error: number; filledNative: boolean } {
+): { pose: Point | undefined; error: number; filledNative: boolean; confidenceFloor: number } {
   const { anchor, pose, current, nativePlane, nativeFilled, native, rect, radius } = inputs;
   const src = resolveNative(current, nativePlane, native);
   const ptr = core.scratch([
@@ -138,7 +136,14 @@ export function driftCorrection(
   if (tag === -1) throw new Error('CORE_BAD_ARGUMENT: driftCorrection.');
   const bytes = core.readBytes(pOut, TRACK_DRIFT_CORRECTION_OUT_BYTES), view = new DataView(bytes.buffer);
   const filledNative = view.getUint32(24, true) === 1;
-  if (tag === 0) return { pose: undefined, error: Infinity, filledNative };
-  return { pose: { x: view.getFloat64(0, true), y: view.getFloat64(8, true) }, error: view.getFloat64(16, true), filledNative };
+  if (tag === 0) return { pose: undefined, error: Infinity, filledNative, confidenceFloor: 0 };
+  return {
+    pose: { x: view.getFloat64(0, true), y: view.getFloat64(8, true) },
+    error: view.getFloat64(16, true),
+    filledNative,
+    // `0.96 * exp(-error / 20)`, computed in Rust with `f64::exp` (identical on every engine) — the TS caller
+    // (pipeline/solve/track.ts's `driftCorrection`) only takes `Math.max(confidence, confidenceFloor)` with it,
+    // a plain comparison with no transcendental function left to vary between engines.
+    confidenceFloor: view.getFloat64(32, true),
+  };
 }
-const TRACK_DRIFT_CORRECTION_OUT_BYTES = 32;

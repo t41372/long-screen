@@ -11,8 +11,9 @@
     "check": "deno check src/**/*.ts main.ts scripts/**/*.ts tests/**/*.ts",
     "test": {
       "command": "deno test --allow-read --allow-write --allow-env --parallel tests/unit",
-      "dependencies": ["build:core"]
+      "dependencies": ["build:core", "test:rust"]
     },
+    "test:rust": "cd rust && cargo test --lib",
     "test:browser": "deno test --allow-all tests/browser",
     "coverage": {
       "command": "deno run --allow-read --allow-write --allow-run --allow-env scripts/coverage.ts",

@@ -60,12 +60,12 @@ export interface RelocalizationQuery {
    * target are recognised as the same physical place instead of scoring each other as rivals. */
   canonical?: (canvasId: string) => { canvasId: string; dx: number; dy: number };
 }
-/** Candidate evaluation core of find(): hypothesis matching, analysis audit and native-patch refinement run in
- * one Rust call (`core().keyframesEvaluateCandidates`); the `Math.exp` confidence formula and the
- * scoring/rival/ambiguity resolution stay here in TS — the sort/best/rival selection needs the exact
- * host-`Math.exp`'d confidence as its sort key (see `rust/core/src/track.rs::RefinedCandidate`'s doc comment).
- * `canonical` is a precomputed map from the candidate canvasIds the async half already touched, built once
- * per query rather than recomputed per `position()` invocation. */
+/** Candidate evaluation core of find(): hypothesis matching, analysis audit, native-patch refinement, the
+ * confidence formula and the score/sort/strong-best/rival-ambiguity selection all run in one Rust call
+ * (`core().keyframesEvaluateCandidates`) — this function is now I/O and marshalling glue: intern each
+ * candidate's already-resolved canonical canvas (`canonical`, a precomputed map from the candidate canvasIds
+ * the async half already touched, built once per query) into a per-keyframe index, and translate Rust's chosen
+ * candidate back into a `Relocalization`. */
 export function evaluateCandidates(
   keyframes: Keyframe[],
   q: {
@@ -82,13 +82,37 @@ export function evaluateCandidates(
     radius: number;
   },
   canonical: Map<string, { canvasId: string; dx: number; dy: number }>,
-): (Relocalization & { strong: boolean }) | undefined {
+): Relocalization | undefined {
   if (keyframes.length === 0) {
     return undefined;
   }
   const { features, gray, native, roi, region, factor, radius, current, nativePlane, nativeFilled, markNativeFilled } = q;
-  const { results: audited, filledNative } = core().keyframesEvaluateCandidates(
-    keyframes.map((k) => ({ features: k.features, gray: k.gray, patches: k.patches })),
+  // A keyframe's resolved canvas (its own canvasId, or the canonical target it attaches onto) must intern to the
+  // SAME index for every keyframe that resolves to it, so Rust's rival check (comparing indices) matches the
+  // original `position().canvas !== bp.canvas` string comparison exactly.
+  const canvasIndex = new Map<string, number>();
+  const internCanvas = (id: string): number => {
+    let idx = canvasIndex.get(id);
+    if (idx === undefined) {
+      idx = canvasIndex.size;
+      canvasIndex.set(id, idx);
+    }
+    return idx;
+  };
+  const { result, filledNative } = core().keyframesEvaluateCandidates(
+    keyframes.map((k) => {
+      const resolved = canonical.get(k.canvasId);
+      return {
+        features: k.features,
+        gray: k.gray,
+        patches: k.patches,
+        x: k.x,
+        y: k.y,
+        canonicalIdx: internCanvas(resolved ? resolved.canvasId : k.canvasId),
+        dx: resolved?.dx ?? 0,
+        dy: resolved?.dy ?? 0,
+      };
+    }),
     {
       features,
       gray,
@@ -105,48 +129,19 @@ export function evaluateCandidates(
   if (filledNative) {
     markNativeFilled?.();
   }
-  if (audited.length === 0) {
+  if (!result) {
     return undefined;
   }
-  const results: (Relocalization & { strong: boolean })[] = audited.map((r) => ({
-    keyframe: keyframes[r.keyframeIndex],
-    offset: { x: r.x, y: r.y },
-    // Math.exp finished in TS on the host's own implementation, same bit-exactness reason as `OdometryEstimate`'s
-    // confidence field (see rust/core/src/track.rs::RefinedCandidate's doc comment).
-    confidence: Math.min(.95, .45 + .5 * (1 - Math.exp(-r.unique / 7))) * Math.exp(-r.error / 20),
-    ambiguous: r.ambiguous,
-    support: r.support,
-    unique: r.unique,
-    error: r.error,
-    analysisError: r.analysisError,
-    strong: r.strong,
-  }));
-  // Intentional TS, not an unported kernel: the score/sort/best/rival-ambiguity
-  // selection below needs the exact host-`Math.exp`'d confidence (line 118) as its sort key for bit-exactness —
-  // see this function's own doc comment. `.8`/`6` (the rival test just below) are the measured thresholds this
-  // selection has always used: a rival must score within 80% of the best AND either resolve to a different
-  // canvas or land more than 6 native pixels away to count as a competing explanation.
-  const score = (r: Relocalization) => (r.support * .25 + r.unique) * r.confidence;
-  results.sort((a, b) => score(b) - score(a));
-  const best = results.find((r) => r.strong);
-  if (!best) {
-    return undefined;
-  }
-  const position = (r: Relocalization) => {
-    const x = r.keyframe.x + r.offset.x, y = r.keyframe.y + r.offset.y;
-    const c = canonical.get(r.keyframe.canvasId);
-    return c ? { canvas: c.canvasId, x: x + c.dx, y: y + c.dy } : { canvas: r.keyframe.canvasId, x, y };
+  return {
+    keyframe: keyframes[result.keyframeIndex],
+    offset: { x: result.x, y: result.y },
+    confidence: result.confidence,
+    ambiguous: result.ambiguous,
+    support: result.support,
+    unique: result.unique,
+    error: result.error,
+    analysisError: result.analysisError,
   };
-  const bp = position(best);
-  // Any other plausible place, weak or strong, that lands somewhere else makes the revisit ambiguous. Repeated cards look alike.
-  const rival = results.find((r) =>
-    r !== best && (position(r).canvas !== bp.canvas || Math.hypot(position(r).x - bp.x, position(r).y - bp.y) > 6) &&
-    score(r) > score(best) * .8
-  );
-  if (rival || best.ambiguous) {
-    best.ambiguous = true;
-  }
-  return best;
 }
 export class KeyframeIndex {
   private warnedLayers = new Set<string>();

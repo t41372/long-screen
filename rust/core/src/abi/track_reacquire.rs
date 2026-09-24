@@ -97,8 +97,9 @@ pub extern "C" fn ls_track_reacquire(
     }
 }
 
-/// `ls_track_drift_correction`'s `out` layout (32 bytes): f64 x, f64 y, f64 error, u32 filledNative, u32 padding.
-const TRACK_DRIFT_CORRECTION_OUT_BYTES: usize = 32;
+/// `ls_track_drift_correction`'s `out` layout (40 bytes): f64 x, f64 y, f64 error, u32 filledNative, u32 padding,
+/// f64 confidenceFloor.
+pub(crate) const TRACK_DRIFT_CORRECTION_OUT_BYTES: usize = 40;
 
 /// `track.ts::driftCorrection` — no gate (the original always evaluates `native()`), so this always
 /// resolves native luma (lazy fill, see `resolve_native`) before the one patch refinement. Returns `1`
@@ -159,6 +160,7 @@ pub extern "C" fn ls_track_drift_correction(
             dst[0..8].copy_from_slice(&r.x.to_le_bytes());
             dst[8..16].copy_from_slice(&r.y.to_le_bytes());
             dst[16..24].copy_from_slice(&r.error.to_le_bytes());
+            dst[32..40].copy_from_slice(&r.confidence_floor.to_le_bytes());
             1
         }
         None => 0,
