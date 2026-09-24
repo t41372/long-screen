@@ -2,15 +2,25 @@
  *  mirroring `rust/core/src/abi/track.rs`. Every export here is a single call over plain scalars/buffers — no
  *  handles, no state carried across calls (a stateful per-region tracker was measured in R4c 3b-iii and NOT
  *  built: no measurable gain over these per-call fusions). `has*`/`*EqCanvas` booleans are `0`/`1`; multi-way
- *  verdicts come back as small tags decoded into the TS union types `track.ts` already exports. */
-import type { Feature, Gray, Match, Point, Rect, Region } from '../../types.ts';
-import type { Core, LabelMask, PatchInput, RefinementResult } from './core.ts';
+ *  verdicts come back as small tags decoded into the TS union types `track.ts` already exports.
+ *
+ *  Hub module for the track trio (R6-B, final-verify-report.md item 10: this was one 717-line file): the
+ *  stateless verdicts above plus the region/native-luma marshalling helpers `track-odometry.ts`
+ *  (`writeRegion`)/`track-reacquire.ts`/`track-keyframes.ts` (`b2`, `writePatches`, `resolveNative`) share.
+ *  Split into `track-odometry.ts` (`odometry`), `track-reacquire.ts` (`reacquire`/`driftCorrection`),
+ *  `track-keyframes.ts` (`evaluateCandidates`); `wasm/core.ts`'s `import * as track from './track.ts'` needs
+ *  no edit — re-exported here via `export *`. */
+import type { Feature, Gray, Match, Point, Region } from '../../types.ts';
+import type { Core, PatchInput } from './core.ts';
 import type { CoreExports } from './exports.ts';
 import { MATCH_POINT_BYTES, PATCH_BYTES, VOTING_REGION_BYTES } from './exports.ts';
-import { writeFeatures } from './features.ts';
-import { type FrameInput, Resident, ResidentFrame, ResidentGray } from './memory.ts';
+import { readFeatures, writeFeatures } from './features.ts';
+import { type FrameInput, ResidentFrame, ResidentGray } from './memory.ts';
+export * from './track-odometry.ts';
+export * from './track-reacquire.ts';
+export * from './track-keyframes.ts';
 
-const b = (v: boolean) => (v ? 1 : 0);
+export const b = (v: boolean) => (v ? 1 : 0);
 
 export function uncertainty(exports: CoreExports, confidence: number, ambiguous: boolean, weakStep: boolean): boolean {
   return exports.ls_track_uncertainty(confidence, b(ambiguous), b(weakStep)) !== 0;
@@ -201,7 +211,7 @@ export function regionZoom(core: Core, exports: CoreExports, kindMoving: boolean
  *  `VOTING_REGION_BYTES` wire format `wasm/voting.ts::votingRing` writes once per solve pass, written here
  *  every call (R4c 3b-i keeps this simple; only the rare fallback path — the fast native refinement failed —
  *  actually reads it core-side). */
-function writeRegion(core: Core, base: number, exclusions: number, crop: number, mask: number, r: Region): void {
+export function writeRegion(core: Core, base: number, exclusions: number, crop: number, mask: number, r: Region): void {
   core.writeRect(base, r.rect);
   const view = new DataView(core.exports.memory.buffer, base, VOTING_REGION_BYTES);
   (r.exclusions || []).forEach((e, k) => core.writeRect(exclusions + k * 32, e));
@@ -223,150 +233,41 @@ function writeRegion(core: Core, base: number, exclusions: number, crop: number,
   view.setUint32(60, useMask ? r.factor || 0 : 0, true);
 }
 
-export interface OdometryEstimate {
-  decision: 'tracked' | 'static' | 'lost';
-  delta: Point;
-  confidence: number;
-  ambiguous: boolean;
-  weakStep: boolean;
-  stepError: number;
-  contentChange?: { agreement: number; blocks: number };
-}
-const ODOMETRY_DECISION_TAGS: OdometryEstimate['decision'][] = ['tracked', 'static', 'lost'];
-/** `ls_track_odometry`'s `out` layout (`TRACK_ODOMETRY_OUT_BYTES` in `abi/track.rs`). */
-const TRACK_ODOMETRY_OUT_BYTES = 64;
-
-export interface OdometryInputs {
-  f: number;
-  radius: number;
-  mask: LabelMask | undefined;
-  roi: Rect;
-  rect: Rect;
-  region: Region;
-  image: { width: number; height: number };
-  previous: FrameInput;
-  current: FrameInput;
-  previousGray: Gray;
-  g: Gray;
-  velocity: Point;
-  previousFeatures: Feature[];
-  ownFeatures: Feature[];
-  confidence: number;
-}
-/** `track.ts::odometry`, fused into one call (R4c 3b-i): `matchFeatures` + `translationHypotheses` + the
- *  audit filter/sort + up to 6 native refinements + rival detection + confidence, falling back core-side to
- *  the difference sample that decides `static` vs `lost`. Cross-frame state (`state.previousFeatures`, the
- *  region's velocity) is still owned by the shell; this call is stateless like every other `track.*` export. */
-export function odometry(core: Core, exports: CoreExports, inputs: OdometryInputs): OdometryEstimate {
-  const {
-    f,
-    radius,
-    mask,
-    roi,
-    rect,
-    region,
-    image,
-    previous,
-    current,
-    previousGray,
-    g,
-    velocity,
-    previousFeatures,
-    ownFeatures,
-    confidence: inputConfidence,
-  } = inputs;
-  const frameBytes = (fr: FrameInput) => fr instanceof ResidentFrame ? 0 : fr.data.byteLength;
-  const residentLabels = mask?.labels instanceof Resident ? mask.labels : undefined;
-  if (residentLabels && residentLabels.length !== image.width * image.height) {
-    throw new Error('CORE_BAD_ARGUMENT: resident labels do not match the frame.');
-  }
+/** `src/pipeline/solve/track.ts::ownFeaturesOf` (R6-B: moved out of TS — final-verify-report.md item 13, the one
+ *  production caller of the former TS `regionContains`, now `rust/core/src/region.rs::filter_features`). Reuses
+ *  `writeRegion`'s wire format (`ls_track_odometry`'s own `region` argument). */
+export function filterFeatures(
+  core: Core,
+  exports: CoreExports,
+  features: Feature[],
+  region: Region,
+  factor: number,
+  nativeWidth: number,
+  nativeHeight: number,
+): Feature[] {
+  if (!features.length) return [];
   const ptr = core.scratch([
-    frameBytes(previous),
-    frameBytes(current),
-    previousGray.data.byteLength,
-    g.data.byteLength,
-    previousFeatures.length * core.featureBytes,
-    ownFeatures.length * core.featureBytes,
-    32,
-    32,
+    features.length * core.featureBytes,
     VOTING_REGION_BYTES,
     (region.exclusions?.length || 0) * 32,
     region.crop ? 32 : 0,
     region.mask && !region.solid ? region.mask.byteLength : 0,
-    mask && !residentLabels ? (mask.labels as Uint8Array).byteLength : 0,
-    TRACK_ODOMETRY_OUT_BYTES,
+    features.length * core.featureBytes,
   ]);
-  const [pPrev, pCur, pPrevGray, pG, pPrevFeat, pOwnFeat, pRoi, pRect, pRegion, pExcl, pCrop, pMask, pLabels, pOut] = ptr;
-  const ra = core.placeFrame(previous, pPrev), rb = core.placeFrame(current, pCur);
-  core.writeBytes(pPrevGray, previousGray.data);
-  core.writeBytes(pG, g.data);
-  writeFeatures(core, pPrevFeat, previousFeatures);
-  writeFeatures(core, pOwnFeat, ownFeatures);
-  core.writeRect(pRoi, roi);
-  core.writeRect(pRect, rect);
+  const [pFeat, pRegion, pExcl, pCrop, pMask, pOut] = ptr;
+  writeFeatures(core, pFeat, features);
   writeRegion(core, pRegion, pExcl, pCrop, pMask, region);
-  let labels = 0;
-  if (residentLabels) labels = residentLabels.ptr;
-  else if (mask) {
-    core.writeBytes(pLabels, mask.labels as Uint8Array);
-    labels = pLabels;
-  }
-  const tag = exports.ls_track_odometry(
-    ra,
-    rb,
-    image.width,
-    image.height,
-    pPrevGray,
-    pG,
-    previousGray.width,
-    previousGray.height,
-    pPrevFeat,
-    previousFeatures.length,
-    pOwnFeat,
-    ownFeatures.length,
-    pRoi,
-    pRect,
-    pRegion,
-    labels,
-    mask?.code ?? 0,
-    f,
-    radius,
-    velocity.x,
-    velocity.y,
-    inputConfidence,
-    pOut,
+  const count = core.check(
+    exports.ls_region_filter_features(pFeat, features.length, pRegion, factor, nativeWidth, nativeHeight, pOut),
+    'filterFeatures',
   );
-  if (tag === -1) throw new Error('CORE_BAD_ARGUMENT: odometry.');
-  const bytes = core.readBytes(pOut, TRACK_ODOMETRY_OUT_BYTES), view = new DataView(bytes.buffer);
-  const hasContentChange = view.getUint32(40, true) === 1;
-  const decision = ODOMETRY_DECISION_TAGS[tag], ambiguous = view.getUint32(24, true) === 1, weakStep = view.getUint32(28, true) === 1;
-  const stepError = view.getFloat64(32, true);
-  // WHY this multiply stays in TS (architecture decision, R4c 3b-i): on 'tracked', `confidence` off the wire is
-  // the RAW hypothesis confidence (`rust/core/src/track.rs`'s `OdometryEstimate.confidence` doc comment) —
-  // `Math.exp(-stepError / 20)` runs HERE, in TS, for bit-identity with the historical TS confidence formula.
-  // Rust libm's `exp` rounds the last bit differently from V8's `Math.exp` on some inputs (confirmed by the
-  // differential harness: `stepError` is a continuous, effectively-arbitrary float, unlike the few small-integer-
-  // ratio `.exp()` inputs already in motion.rs, which never hit a rounding boundary in the 24×11 differential
-  // suite). Moving this multiply into Rust too is a separate, deliberately-verified behaviour change, not a
-  // consequence of "fuse into one call" — don't do it as a drive-by.
-  const confidence = decision === 'tracked'
-    ? Math.max(.05, view.getFloat64(16, true)) * Math.exp(-stepError / 20) * (ambiguous ? .6 : 1) * (weakStep ? .5 : 1)
-    : view.getFloat64(16, true);
-  return {
-    decision,
-    delta: { x: view.getFloat64(0, true), y: view.getFloat64(8, true) },
-    confidence,
-    ambiguous,
-    weakStep,
-    stepError,
-    ...(hasContentChange ? { contentChange: { agreement: view.getFloat64(48, true), blocks: view.getUint32(56, true) } } : {}),
-  };
+  return readFeatures(core, pOut, count);
 }
 
-function b2(v: boolean) {
+export function b2(v: boolean) {
   return v ? 1 : 0;
 }
-function writePatches(core: Core, listPtr: number, dataPtrs: number[], patches: PatchInput[]): void {
+export function writePatches(core: Core, listPtr: number, dataPtrs: number[], patches: PatchInput[]): void {
   const view = new DataView(core.exports.memory.buffer, listPtr, Math.max(1, patches.length * PATCH_BYTES));
   patches.forEach((p, i) => {
     if (p.data.byteLength !== p.size * p.size) throw new Error('CORE_BAD_ARGUMENT: patch data does not match its size.');
@@ -393,7 +294,7 @@ function writePatches(core: Core, listPtr: number, dataPtrs: number[], patches: 
  *  frame independently (exactly what the frozen engine's `native` thunk does) and hand back a `ResidentGray`
  *  here. `alreadyFilled: true` on THAT result (not `nativeFilled`, which is meaningless for a plane that is not
  *  the shared per-frame memo) tells the caller never to report this as "I filled the memo". */
-function resolveNative(
+export function resolveNative(
   current: FrameInput | undefined,
   nativePlane: ResidentGray | undefined,
   native: () => Gray | ResidentGray,
@@ -440,278 +341,4 @@ function resolveNative(
     alreadyFilled: false,
     fallback: result,
   };
-}
-
-export interface ReacquireEstimate {
-  n: RefinementResult;
-  ambiguous: boolean;
-  confidence: number;
-}
-export interface ReacquireInputs {
-  anchorFeatures: Feature[];
-  ownFeatures: Feature[];
-  anchorPatches: PatchInput[];
-  current: FrameInput;
-  nativePlane: ResidentGray | undefined;
-  nativeFilled: boolean;
-  native: () => Gray | ResidentGray;
-  rect: Rect;
-  f: number;
-  radius: number;
-}
-/** `track.ts::reacquire`, fused into one call (R4c 3b-ii). `filledNative` tells the caller whether to update
- *  the SAME per-frame `native()` memo `solve.ts` owns (see `FrameInput.markNativeFilled`). */
-export function reacquire(
-  core: Core,
-  exports: CoreExports,
-  inputs: ReacquireInputs,
-): { result: ReacquireEstimate | undefined; filledNative: boolean } {
-  const { anchorFeatures, ownFeatures, anchorPatches, current, nativePlane, nativeFilled, native, rect, f, radius } = inputs;
-  const src = resolveNative(current, nativePlane, native);
-  const ptr = core.scratch([
-    anchorFeatures.length * core.featureBytes,
-    ownFeatures.length * core.featureBytes,
-    anchorPatches.length * PATCH_BYTES,
-    32,
-    src.scratchBytes,
-    TRACK_REACQUIRE_OUT_BYTES,
-    ...anchorPatches.map((p) => p.data.byteLength),
-  ]);
-  const [pAnchorFeat, pOwnFeat, pPatchList, pRect, pFallback, pOut] = ptr, dataPtrs = ptr.slice(6);
-  writeFeatures(core, pAnchorFeat, anchorFeatures);
-  writeFeatures(core, pOwnFeat, ownFeatures);
-  writePatches(core, pPatchList, dataPtrs, anchorPatches);
-  core.writeRect(pRect, rect);
-  if (src.mode === 0) core.writeBytes(pFallback, src.fallback!.data);
-  const tag = exports.ls_track_reacquire(
-    pAnchorFeat,
-    anchorFeatures.length,
-    pOwnFeat,
-    ownFeatures.length,
-    pPatchList,
-    anchorPatches.length,
-    pRect,
-    f,
-    radius,
-    src.mode,
-    src.mode === 0 ? pFallback : src.ptr,
-    src.currentFramePtr,
-    b2(nativeFilled || src.alreadyFilled),
-    src.width,
-    src.height,
-    pOut,
-  );
-  if (tag === -1) throw new Error('CORE_BAD_ARGUMENT: reacquire.');
-  const bytes = core.readBytes(pOut, TRACK_REACQUIRE_OUT_BYTES), view = new DataView(bytes.buffer);
-  const filledNative = view.getUint32(36, true) === 1;
-  if (tag === 0) return { result: undefined, filledNative };
-  const ambiguous = view.getUint32(8, true) === 1, error = view.getFloat64(24, true);
-  // `confidence` off the wire is the RAW hypothesis confidence (rust/core/src/track.rs's `ReacquireEstimate` doc
-  // comment); Math.exp finished here on the host's own implementation, same bit-exactness reason as
-  // OdometryEstimate's confidence field.
-  const confidence = Math.max(.05, view.getFloat64(16, true)) * Math.exp(-error / 20) * (ambiguous ? .6 : 1);
-  return {
-    result: {
-      n: { x: view.getInt32(0, true), y: view.getInt32(4, true), error, samples: 0, runnerUp: 0 },
-      ambiguous,
-      confidence,
-    },
-    filledNative,
-  };
-}
-const TRACK_REACQUIRE_OUT_BYTES = 40;
-
-export interface DriftCorrectionInputs {
-  anchor: { x: number; y: number; patches: PatchInput[] };
-  pose: Point;
-  current: FrameInput;
-  nativePlane: ResidentGray | undefined;
-  nativeFilled: boolean;
-  native: () => Gray | ResidentGray;
-  rect: Rect;
-  radius: number;
-}
-/** `track.ts::driftCorrection`, fused into one call (R4c 3b-ii). No gate: the original always evaluates
- *  `native()`, so `filledNative` is true here whenever the resident plane wasn't already filled this frame. */
-export function driftCorrection(
-  core: Core,
-  exports: CoreExports,
-  inputs: DriftCorrectionInputs,
-): { pose: Point | undefined; error: number; filledNative: boolean } {
-  const { anchor, pose, current, nativePlane, nativeFilled, native, rect, radius } = inputs;
-  const src = resolveNative(current, nativePlane, native);
-  const ptr = core.scratch([
-    anchor.patches.length * PATCH_BYTES,
-    32,
-    src.scratchBytes,
-    TRACK_DRIFT_CORRECTION_OUT_BYTES,
-    ...anchor.patches.map((p) => p.data.byteLength),
-  ]);
-  const [pPatchList, pRect, pFallback, pOut] = ptr, dataPtrs = ptr.slice(4);
-  writePatches(core, pPatchList, dataPtrs, anchor.patches);
-  core.writeRect(pRect, rect);
-  if (src.mode === 0) core.writeBytes(pFallback, src.fallback!.data);
-  const tag = exports.ls_track_drift_correction(
-    pPatchList,
-    anchor.patches.length,
-    pRect,
-    anchor.x,
-    anchor.y,
-    pose.x,
-    pose.y,
-    radius,
-    src.mode,
-    src.mode === 0 ? pFallback : src.ptr,
-    src.currentFramePtr,
-    b2(nativeFilled || src.alreadyFilled),
-    src.width,
-    src.height,
-    pOut,
-  );
-  if (tag === -1) throw new Error('CORE_BAD_ARGUMENT: driftCorrection.');
-  const bytes = core.readBytes(pOut, TRACK_DRIFT_CORRECTION_OUT_BYTES), view = new DataView(bytes.buffer);
-  const filledNative = view.getUint32(24, true) === 1;
-  if (tag === 0) return { pose: undefined, error: Infinity, filledNative };
-  return { pose: { x: view.getFloat64(0, true), y: view.getFloat64(8, true) }, error: view.getFloat64(16, true), filledNative };
-}
-const TRACK_DRIFT_CORRECTION_OUT_BYTES = 32;
-
-export interface EvaluateCandidatesKeyframe {
-  features: Feature[];
-  gray: Gray;
-  patches: PatchInput[];
-}
-export interface EvaluateCandidatesQuery {
-  features: Feature[];
-  gray: Gray;
-  roi: Rect;
-  region: Rect;
-  factor: number;
-  radius: number;
-  /** See `ReacquireInputs.current`'s doc comment for the resident-lazy-fill contract — `undefined` here means
-   *  the caller has no resident frame to offer at all (R4d step 4: direct `evaluateCandidates`/`find()` callers
-   *  in tests, which do not go through `solve.ts`'s frame loop); `resolveNative` treats that exactly like any
-   *  other non-resident `current` (mode 0, `native()` called eagerly). */
-  current: FrameInput | undefined;
-  nativePlane: ResidentGray | undefined;
-  nativeFilled: boolean;
-  native: () => Gray | ResidentGray;
-}
-export interface EvaluateCandidatesResult {
-  keyframeIndex: number;
-  x: number;
-  y: number;
-  support: number;
-  unique: number;
-  ambiguous: boolean;
-  strong: boolean;
-  error: number;
-  analysisError: number;
-}
-/** `ls_keyframes_evaluate_candidates`'s per-keyframe descriptor (this module's own wire format — see
- *  `rust/core/src/abi/track.rs::KEYFRAME_BYTES`): u32 featuresPtr, featureCount, patchesPtr, patchCount,
- *  grayPtr, grayWidth, grayHeight, padding. */
-const KEYFRAME_BYTES = 32;
-const CANDIDATE_HEADER_BYTES = 8;
-const CANDIDATE_RECORD_BYTES = 48;
-
-/** `keyframes.ts::evaluateCandidates` fused into one call (R4d step 4): match + hypothesis + analysis-scale
- *  audit for every keyframe, then — only if at least one candidate passed the audit — the lazy native-plane
- *  fill (same rule as `reacquire`/`driftCorrection`) and native-patch refinement. Returns the audited-and-
- *  refined candidate list, not the final pick: `keyframes.ts` finishes the `Math.exp` confidence formula and
- *  the sort/best/rival selection in TS (see `rust/core/src/track.rs::RefinedCandidate`'s doc comment — that
- *  selection needs the exact host-`Math.exp`'d confidence as its sort key, so it cannot move to Rust without
- *  a second bit-exactness risk on top of `OdometryEstimate.confidence`'s). */
-export function evaluateCandidates(
-  core: Core,
-  exports: CoreExports,
-  keyframes: EvaluateCandidatesKeyframe[],
-  q: EvaluateCandidatesQuery,
-): { results: EvaluateCandidatesResult[]; filledNative: boolean } {
-  const { features, gray, roi, region, factor, radius, current, nativePlane, nativeFilled, native } = q;
-  const src = resolveNative(current, nativePlane, native);
-  const maxRecords = keyframes.length * 8;
-  const perKeyframeSizes = keyframes.flatMap((k) => [
-    k.features.length * core.featureBytes,
-    k.patches.length * PATCH_BYTES,
-    k.gray.data.byteLength,
-    ...k.patches.map((p) => p.data.byteLength),
-  ]);
-  const ptr = core.scratch([
-    keyframes.length * KEYFRAME_BYTES,
-    features.length * core.featureBytes,
-    gray.data.byteLength,
-    32,
-    32,
-    src.scratchBytes,
-    CANDIDATE_HEADER_BYTES + maxRecords * CANDIDATE_RECORD_BYTES,
-    ...perKeyframeSizes,
-  ]);
-  const [pKeyframes, pFeatures, pGray, pRoi, pRegion, pFallback, pOut] = ptr;
-  let cursor = 7;
-  const desc = new DataView(core.exports.memory.buffer);
-  for (let i = 0; i < keyframes.length; i++) {
-    const k = keyframes[i];
-    const featuresPtr = ptr[cursor++], patchListPtr = ptr[cursor++], grayPtr = ptr[cursor++];
-    const dataPtrs = k.patches.map(() => ptr[cursor++]);
-    writeFeatures(core, featuresPtr, k.features);
-    writePatches(core, patchListPtr, dataPtrs, k.patches);
-    core.writeBytes(grayPtr, k.gray.data);
-    const base = pKeyframes + i * KEYFRAME_BYTES;
-    desc.setUint32(base, featuresPtr, true);
-    desc.setUint32(base + 4, k.features.length, true);
-    desc.setUint32(base + 8, patchListPtr, true);
-    desc.setUint32(base + 12, k.patches.length, true);
-    desc.setUint32(base + 16, grayPtr, true);
-    desc.setUint32(base + 20, k.gray.width, true);
-    desc.setUint32(base + 24, k.gray.height, true);
-    desc.setUint32(base + 28, 0, true);
-  }
-  writeFeatures(core, pFeatures, features);
-  core.writeBytes(pGray, gray.data);
-  core.writeRect(pRoi, roi);
-  core.writeRect(pRegion, region);
-  if (src.mode === 0) core.writeBytes(pFallback, src.fallback!.data);
-  const count = exports.ls_keyframes_evaluate_candidates(
-    pKeyframes,
-    keyframes.length,
-    pFeatures,
-    features.length,
-    pGray,
-    gray.width,
-    gray.height,
-    pRoi,
-    pRegion,
-    factor,
-    radius,
-    src.mode,
-    src.mode === 0 ? pFallback : src.ptr,
-    src.currentFramePtr,
-    b(nativeFilled || src.alreadyFilled),
-    src.width,
-    src.height,
-    pOut,
-  );
-  if (count === -1) throw new Error('CORE_BAD_ARGUMENT: evaluate candidates.');
-  if (count === 0) return { results: [], filledNative: false };
-  const headerBytes = core.readBytes(pOut, CANDIDATE_HEADER_BYTES);
-  const filledNative = new DataView(headerBytes.buffer, headerBytes.byteOffset, CANDIDATE_HEADER_BYTES).getUint32(0, true) === 1;
-  const recordBytes = core.readBytes(pOut + CANDIDATE_HEADER_BYTES, count * CANDIDATE_RECORD_BYTES);
-  const rview = new DataView(recordBytes.buffer, recordBytes.byteOffset, count * CANDIDATE_RECORD_BYTES);
-  const results: EvaluateCandidatesResult[] = [];
-  for (let i = 0; i < count; i++) {
-    const o = i * CANDIDATE_RECORD_BYTES;
-    results.push({
-      keyframeIndex: rview.getUint32(o, true),
-      x: rview.getInt32(o + 4, true),
-      y: rview.getInt32(o + 8, true),
-      support: rview.getUint32(o + 12, true),
-      unique: rview.getUint32(o + 16, true),
-      ambiguous: rview.getUint32(o + 20, true) === 1,
-      strong: rview.getUint32(o + 24, true) === 1,
-      error: rview.getFloat64(o + 32, true),
-      analysisError: rview.getFloat64(o + 40, true),
-    });
-  }
-  return { results, filledNative };
 }

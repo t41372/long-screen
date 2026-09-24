@@ -116,6 +116,10 @@ export class LayerLearner {
     return core().finishRegions(this.width, this.height, this.cell, this.acc, nativeWidth, nativeHeight, factor, this.reference);
   }
 }
+/** R6-B (final-verify-report.md item 13): this TS copy's one production caller, `solve/track.ts::ownFeaturesOf`,
+ *  now calls `rust/core/src/region.rs::filter_features` instead — see that module's doc comment. This function
+ *  stays only for `regionMotion` below (test-only, final-verify-report.md item 12: not this round's job) and for
+ *  tests exercising the Rust port's parity against it (`tests/unit/parity/regions.test.ts`). */
 export function regionContains(region: Region, x: number, y: number, nativeWidth: number, nativeHeight: number): boolean {
   if (!contains(region.rect, x, y) || region.exclusions?.some((r) => contains(r, x, y))) {
     return false;

@@ -7,7 +7,7 @@
 // core (see its header and docs/history/2026-09-rust-migration-log.md "已在 Rust 核心中"); region-step.ts's
 // stepRegion() applies them in the original order. Everything in this file is orchestration shell, unambiguously
 // not awaiting a port.
-import type { Attachment, Feature, FramePlan, Gray, Placement, Point, RGBA, ScanRecord } from '../../types.ts';
+import type { Attachment, Feature, FramePlan, Gray, Placement, RGBA, ScanRecord } from '../../types.ts';
 import { deletePrefix } from '../../storage/db.ts';
 import { extractFeatures, grayscale } from '../../core/features.ts';
 import { PoseGraph } from '../../core/pose-graph.ts';
@@ -15,12 +15,11 @@ import { KeyframeIndex } from '../../core/keyframes.ts';
 import { pad } from '../../core/math.ts';
 import { core, ResidentFrame, type ResidentGray, type VotingRecord } from '../../core/wasm.ts';
 import { releaseUnlessHeld } from '../../media/pool.ts';
-import { attachmentShift, resolveTarget as resolveAttachmentTarget } from '../attachments.ts';
 import { type CompactFeatures, decodeFeatures } from '../features-codec.ts';
 import type { ConsistencyRecord } from '../consistency.ts';
 import { prefixOnly, type RunContext, StopRequested, StorageError } from '../context.ts';
 import { initialState } from './state.ts';
-import { type FrameInput, type SolvePass, stepRegion } from './region-step.ts';
+import { type FrameInput, SolvePass } from './region-step.ts';
 export async function solve(ctx: RunContext): Promise<void> {
   ctx.phase = 'solving';
   ctx.project.status = 'solving';
@@ -76,34 +75,10 @@ export async function solve(ctx: RunContext): Promise<void> {
       }
     }
   };
-  const resolveTarget = (id: string): string => resolveAttachmentTarget(attachments, id);
   // A keyframe minted on a fragment before it was attached still carries the fragment's raw canvasId and raw x/y;
-  // canonicalCanvas/canonicalPose translate that into the canvas and pose it is actually observed at today, so
-  // revisit geometry and rival scoring compare like with like instead of raw-vs-canonical mismatches.
-  const canonicalCanvas = (id: string): string => resolveTarget(id);
-  const canonicalPose = (k: Point & { canvasId: string }): Point => {
-    const shift = attachmentShift(attachments, k.canvasId);
-    return { x: k.x + shift.x, y: k.y + shift.y };
-  };
-  const canonical = (id: string) => {
-    const shift = attachmentShift(attachments, id);
-    return { canvasId: resolveTarget(id), dx: shift.x, dy: shift.y };
-  };
-  const pass: SolvePass = {
-    ctx,
-    graph,
-    index,
-    attachments,
-    f,
-    radius,
-    residentLabels,
-    voting,
-    votingSlot,
-    resolveTarget,
-    canonicalCanvas,
-    canonicalPose,
-    canonical,
-  };
+  // SolvePass's canonicalCanvas/canonicalPose translate that into the canvas and pose it is actually observed at
+  // today, so revisit geometry and rival scoring compare like with like instead of raw-vs-canonical mismatches.
+  const pass = new SolvePass(ctx, graph, index, attachments, f, radius, residentLabels, voting, votingSlot);
   const it = ctx.source.frames();
   let storageFailed = false;
   try {
@@ -207,7 +182,7 @@ export async function solve(ctx: RunContext): Promise<void> {
           voting: votingState,
         };
         for (const state of states) {
-          placements.push(await stepRegion(pass, state, input));
+          placements.push(await pass.stepRegion(state, input));
         }
         // This frame joins the ring (unless it had no moving-region evidence at all) only after every state's
         // voting comparisons above have already used it as a "current" frame against older partners; eviction

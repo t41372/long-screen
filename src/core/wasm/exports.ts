@@ -265,6 +265,15 @@ export interface CoreExports {
   ls_regions_read_cells(handle: number, out: number): number;
   ls_regions_manual_uncovered(rects: number, count: number, nativeWidth: number, nativeHeight: number): number;
   ls_regions_label_atlas(regions: number, count: number, width: number, height: number, labelsOut: number, countsOut: number): number;
+  ls_region_filter_features(
+    features: number,
+    count: number,
+    region: number,
+    factor: number,
+    nativeWidth: number,
+    nativeHeight: number,
+    out: number,
+  ): number;
   ls_pose_graph_new(
     xs: number,
     ys: number,

@@ -1,20 +1,23 @@
-//! `extern "C"` surface for `crate::track` (R4b phase 3a: the stateless tracking verdicts) plus keyframe
-//! candidate scoring (R4d step 4). The stateless verdicts (`ls_track_uncertainty` through
-//! `ls_track_region_zoom`) are scalar-in/scalar-or-small-buffer-out and cannot fail on a bad argument (there is
-//! no pointer to validate except `ls_track_region_zoom`'s match buffer), so those use no status convention — a
-//! boolean is `0`/`1` in an `i32`, a multi-way verdict is a small tag, and `Option<f64>` uses `f64::NAN` as its
-//! "none" sentinel (every real result here is finite, matching `ls_detect_scale`'s own convention that it never
-//! returns NaN). `ls_track_odometry`/`ls_track_reacquire`/`ls_track_drift_correction`/
-//! `ls_keyframes_evaluate_candidates` (R4c/R4d, added later) DO validate adapter-owned buffer pointers and DO
-//! use `STATUS_BAD_ARGUMENT` on failure — see each export's own doc comment for its success-path convention.
+//! `extern "C"` surface for `crate::track`'s stateless tracking verdicts (R4b phase 3a): hub module for the
+//! track trio's ABI layer plus the shared buffer-marshalling helpers `track_reacquire`/`track_keyframes` both
+//! need (`read_patches`, `fill_native_plane`, `resolve_native`). Split (R6-B, final-verify-report.md item 10:
+//! this was one 842-line file) into `track_odometry` (`ls_track_odometry`), `track_reacquire`
+//! (`ls_track_reacquire`/`ls_track_drift_correction`), `track_keyframes` (`ls_keyframes_evaluate_candidates`);
+//! `extern "C"` names are resolved by the linker, so no call-site elsewhere changes.
+//!
+//! The stateless verdicts here (`ls_track_uncertainty` through `ls_track_region_zoom`) are
+//! scalar-in/scalar-or-small-buffer-out and cannot fail on a bad argument (there is no pointer to validate
+//! except `ls_track_region_zoom`'s match buffer), so those use no status convention — a boolean is `0`/`1` in
+//! an `i32`, a multi-way verdict is a small tag, and `Option<f64>` uses `f64::NAN` as its "none" sentinel
+//! (every real result here is finite, matching `ls_detect_scale`'s own convention that it never returns NaN).
+//! `ls_track_odometry`/`ls_track_reacquire`/`ls_track_drift_correction`/`ls_keyframes_evaluate_candidates`
+//! (in the sibling modules) DO validate adapter-owned buffer pointers and DO use `STATUS_BAD_ARGUMENT` on
+//! failure — see each export's own doc comment for its success-path convention.
 
-use super::features::read_features;
 use super::motion::read_match_points;
 use crate::abi::memory::{slice, slice_mut};
-use crate::abi::voting::read_voting_regions;
-use crate::abi::wire::{read_rect, FEATURE_BYTES, PATCH_BYTES};
+use crate::abi::wire::PATCH_BYTES;
 use crate::abi::{STATUS_BAD_ARGUMENT, STATUS_OK};
-use crate::features::Feature;
 use crate::motion::{Gray, Patch};
 use crate::track;
 
@@ -280,154 +283,10 @@ pub extern "C" fn ls_track_region_zoom(kind_moving: u32, matches: u32, count: u3
     }
 }
 
-/// `ls_track_odometry`'s `out` layout (`TRACK_ODOMETRY_OUT_BYTES` in `src/core/wasm/track.ts`): f64 delta.x,
-/// f64 delta.y, f64 confidence, u32 ambiguous, u32 weakStep, f64 stepError, u32 hasContentChange, u32 padding,
-/// f64 contentChange.agreement, u32 contentChange.blocks, u32 padding (64 bytes total).
-const TRACK_ODOMETRY_OUT_BYTES: usize = 64;
-
-/// R4c 3b-i: `track.ts::odometry` fused into one call — `matchFeatures` + `translationHypotheses` + the audit
-/// filter/sort + up to 6 native refinements with the velocity prior + rival detection + confidence, falling
-/// back (only when no hypothesis refines below the native-error threshold) to the analysis-grid difference
-/// sample that decides `static` vs `lost`. `previous`/`current` are full native RGBA frames
-/// (`image_width × image_height × 4` bytes); `previous_gray`/`g` are analysis-resolution luma
-/// (`gray_width × gray_height` bytes). `region == 0` means "no region" (the difference-sample fallback then
-/// treats every sample as contained, matching `Region::contains`'s own no-mask shortcut — every `'moving'`
-/// region odometry actually runs against always carries a real region, so this is a defensive fallback, not a
-/// path exercised in practice). Returns the decision tag (0 tracked, 1 static, 2 lost) or `STATUS_BAD_ARGUMENT`.
-#[no_mangle]
-#[allow(clippy::too_many_arguments)]
-pub extern "C" fn ls_track_odometry(
-    previous: u32,
-    current: u32,
-    image_width: u32,
-    image_height: u32,
-    previous_gray: u32,
-    g: u32,
-    gray_width: u32,
-    gray_height: u32,
-    previous_features: u32,
-    previous_feature_count: u32,
-    own_features: u32,
-    own_feature_count: u32,
-    roi: u32,
-    rect: u32,
-    region: u32,
-    labels: u32,
-    code: u32,
-    f: f64,
-    radius: u32,
-    vx: f64,
-    vy: f64,
-    confidence: f64,
-    out: u32,
-) -> i32 {
-    let (iw, ih) = (image_width as usize, image_height as usize);
-    let (gw, gh) = (gray_width as usize, gray_height as usize);
-    // SAFETY: every buffer is adapter-owned; every length is bounds checked before the slice is trusted.
-    let (
-        Some(previous_bytes),
-        Some(current_bytes),
-        Some(previous_gray_bytes),
-        Some(g_bytes),
-        Some(previous_feature_bytes),
-        Some(own_feature_bytes),
-        Some(dst),
-    ) = (
-        unsafe { slice(previous, iw * ih * 4) },
-        unsafe { slice(current, iw * ih * 4) },
-        unsafe { slice(previous_gray, gw * gh) },
-        unsafe { slice(g, gw * gh) },
-        unsafe {
-            slice(
-                previous_features,
-                previous_feature_count as usize * FEATURE_BYTES,
-            )
-        },
-        unsafe { slice(own_features, own_feature_count as usize * FEATURE_BYTES) },
-        unsafe { slice_mut(out, TRACK_ODOMETRY_OUT_BYTES) },
-    )
-    else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    // SAFETY: `roi`/`rect` each point at one 32-byte rect (never optional for this call).
-    let (Some(roi_bytes), Some(rect_bytes)) =
-        (unsafe { slice(roi, 32) }, unsafe { slice(rect, 32) })
-    else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let region_defs = if region == 0 {
-        None
-    } else {
-        // SAFETY: one `VOTING_REGION_BYTES` region descriptor, bounds checked by `read_voting_regions`.
-        match unsafe { read_voting_regions(region, 1) } {
-            Some(defs) => Some(defs),
-            None => return STATUS_BAD_ARGUMENT,
-        }
-    };
-    let mask = if labels == 0 {
-        None
-    } else {
-        // SAFETY: label plane covers the native frame.
-        match unsafe { slice(labels, iw * ih) } {
-            Some(l) => Some((l, code as u8)),
-            None => return STATUS_BAD_ARGUMENT,
-        }
-    };
-    let previous_features = read_features(previous_feature_bytes);
-    let own_features = read_features(own_feature_bytes);
-    let result = track::odometry(track::OdometryInputs {
-        f,
-        radius: radius as i32,
-        mask,
-        roi: read_rect(roi_bytes),
-        rect: read_rect(rect_bytes),
-        region: region_defs.as_ref().map(|defs| &defs[0]),
-        image_width: iw as f64,
-        image_height: ih as f64,
-        previous: previous_bytes,
-        current: current_bytes,
-        previous_gray: Gray {
-            width: gw,
-            height: gh,
-            data: previous_gray_bytes,
-        },
-        g: Gray {
-            width: gw,
-            height: gh,
-            data: g_bytes,
-        },
-        velocity: (vx, vy),
-        previous_features: &previous_features,
-        own_features: &own_features,
-        confidence,
-    });
-    dst[0..8].copy_from_slice(&result.delta.0.to_le_bytes());
-    dst[8..16].copy_from_slice(&result.delta.1.to_le_bytes());
-    dst[16..24].copy_from_slice(&result.confidence.to_le_bytes());
-    dst[24..28].copy_from_slice(&(result.ambiguous as u32).to_le_bytes());
-    dst[28..32].copy_from_slice(&(result.weak_step as u32).to_le_bytes());
-    dst[32..40].copy_from_slice(&result.step_error.to_le_bytes());
-    match &result.content_change {
-        Some(c) => {
-            dst[40..44].copy_from_slice(&1u32.to_le_bytes());
-            dst[44..48].fill(0);
-            dst[48..56].copy_from_slice(&c.agreement.to_le_bytes());
-            dst[56..60].copy_from_slice(&c.blocks.to_le_bytes());
-            dst[60..64].fill(0);
-        }
-        None => dst[40..64].fill(0),
-    }
-    match result.decision {
-        track::OdometryDecision::Tracked => 0,
-        track::OdometryDecision::Static => 1,
-        track::OdometryDecision::Lost => 2,
-    }
-}
-
 /// # Safety
 /// `ptr` points at `count × PATCH_BYTES` descriptors (`rust/core/src/abi/motion.rs::ls_refine_patches`'s wire
 /// format) whose `data` pointers each cover `size × size` readable bytes.
-unsafe fn read_patches<'a>(ptr: u32, count: u32) -> Option<Vec<Patch<'a>>> {
+pub(crate) unsafe fn read_patches<'a>(ptr: u32, count: u32) -> Option<Vec<Patch<'a>>> {
     let bytes = slice(ptr, count as usize * PATCH_BYTES)?;
     let mut out = Vec::with_capacity(count as usize);
     for c in bytes.chunks_exact(PATCH_BYTES) {
@@ -452,7 +311,7 @@ unsafe fn read_patches<'a>(ptr: u32, count: u32) -> Option<Vec<Patch<'a>>> {
 /// # Safety
 /// `current_frame` points at `native_width × native_height × 4` readable bytes; `native_plane` at
 /// `native_width × native_height` writable bytes.
-unsafe fn fill_native_plane(
+pub(crate) unsafe fn fill_native_plane(
     current_frame: u32,
     native_plane: u32,
     native_width: u32,
@@ -480,7 +339,7 @@ unsafe fn fill_native_plane(
 /// # Safety
 /// See `fill_native_plane`; in mode 0, `native_ptr` points at `native_width × native_height` readable bytes.
 #[allow(clippy::too_many_arguments)]
-unsafe fn resolve_native<'a>(
+pub(crate) unsafe fn resolve_native<'a>(
     native_mode: u32,
     native_ptr: u32,
     current_frame_ptr: u32,
@@ -517,326 +376,4 @@ unsafe fn resolve_native<'a>(
         },
         filled_now,
     ))
-}
-
-/// `ls_track_reacquire`'s `out` layout (36 bytes): i32 x, i32 y, u32 ambiguous, u32 padding, f64 confidence,
-/// f64 error, u32 filledNative, u32 padding.
-const TRACK_REACQUIRE_OUT_BYTES: usize = 40;
-
-/// R4c 3b-ii: `track.ts::reacquire` — `matchFeatures` + `translationHypotheses` (no native luma needed; see
-/// `crate::track::reacquire_hypotheses`), then, only when that found a candidate, the native-plane lazy fill
-/// (see `resolve_native`) and up to 4 patch refinements + rival rejection (`crate::track::reacquire_refine`).
-/// Returns `1` (found), `0` (no candidate, or a rival rejected the top one), or `STATUS_BAD_ARGUMENT`.
-#[no_mangle]
-#[allow(clippy::too_many_arguments)]
-pub extern "C" fn ls_track_reacquire(
-    anchor_features: u32,
-    anchor_feature_count: u32,
-    own_features: u32,
-    own_feature_count: u32,
-    anchor_patches: u32,
-    patch_count: u32,
-    rect: u32,
-    f: f64,
-    radius: u32,
-    native_mode: u32,
-    native_ptr: u32,
-    current_frame_ptr: u32,
-    already_filled: u32,
-    native_width: u32,
-    native_height: u32,
-    out: u32,
-) -> i32 {
-    // SAFETY: adapter-owned buffers, bounds checked.
-    let (Some(anchor_bytes), Some(own_bytes), Some(rect_bytes), Some(dst)) = (
-        unsafe {
-            slice(
-                anchor_features,
-                anchor_feature_count as usize * FEATURE_BYTES,
-            )
-        },
-        unsafe { slice(own_features, own_feature_count as usize * FEATURE_BYTES) },
-        unsafe { slice(rect, 32) },
-        unsafe { slice_mut(out, TRACK_REACQUIRE_OUT_BYTES) },
-    ) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    dst.fill(0);
-    let anchor_features_v = read_features(anchor_bytes);
-    let own_features_v = read_features(own_bytes);
-    let models = track::reacquire_hypotheses(&anchor_features_v, &own_features_v);
-    if models.is_empty() {
-        return 0;
-    }
-    // SAFETY: bounds checked inside; a bad pointer here is the caller's error, not "no candidate".
-    let Some((native, filled_now)) = (unsafe {
-        resolve_native(
-            native_mode,
-            native_ptr,
-            current_frame_ptr,
-            already_filled,
-            native_width,
-            native_height,
-        )
-    }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    dst[36..40].copy_from_slice(&(filled_now as u32).to_le_bytes());
-    // SAFETY: adapter-owned patch descriptors, bounds checked.
-    let Some(patches) = (unsafe { read_patches(anchor_patches, patch_count) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    match track::reacquire_refine(
-        &models,
-        &patches,
-        native,
-        read_rect(rect_bytes),
-        f,
-        radius as i32,
-    ) {
-        Some(r) => {
-            dst[0..4].copy_from_slice(&r.x.to_le_bytes());
-            dst[4..8].copy_from_slice(&r.y.to_le_bytes());
-            dst[8..12].copy_from_slice(&(r.ambiguous as u32).to_le_bytes());
-            dst[16..24].copy_from_slice(&r.confidence.to_le_bytes());
-            dst[24..32].copy_from_slice(&r.error.to_le_bytes());
-            1
-        }
-        None => 0,
-    }
-}
-
-/// `ls_track_drift_correction`'s `out` layout (32 bytes): f64 x, f64 y, f64 error, u32 filledNative, u32 padding.
-const TRACK_DRIFT_CORRECTION_OUT_BYTES: usize = 32;
-
-/// R4c 3b-ii: `track.ts::driftCorrection` — no gate (the original always evaluates `native()`), so this always
-/// resolves native luma (lazy fill, see `resolve_native`) before the one patch refinement. Returns `1`
-/// (corrected), `0` (not corrected), or `STATUS_BAD_ARGUMENT`.
-#[no_mangle]
-#[allow(clippy::too_many_arguments)]
-pub extern "C" fn ls_track_drift_correction(
-    anchor_patches: u32,
-    patch_count: u32,
-    rect: u32,
-    ax: f64,
-    ay: f64,
-    px: f64,
-    py: f64,
-    radius: u32,
-    native_mode: u32,
-    native_ptr: u32,
-    current_frame_ptr: u32,
-    already_filled: u32,
-    native_width: u32,
-    native_height: u32,
-    out: u32,
-) -> i32 {
-    // SAFETY: adapter-owned buffers, bounds checked.
-    let (Some(rect_bytes), Some(dst)) = (unsafe { slice(rect, 32) }, unsafe {
-        slice_mut(out, TRACK_DRIFT_CORRECTION_OUT_BYTES)
-    }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    dst.fill(0);
-    // SAFETY: bounds checked inside.
-    let Some((native, filled_now)) = (unsafe {
-        resolve_native(
-            native_mode,
-            native_ptr,
-            current_frame_ptr,
-            already_filled,
-            native_width,
-            native_height,
-        )
-    }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    dst[24..28].copy_from_slice(&(filled_now as u32).to_le_bytes());
-    // SAFETY: adapter-owned patch descriptors, bounds checked.
-    let Some(patches) = (unsafe { read_patches(anchor_patches, patch_count) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    match track::drift_correction(
-        &patches,
-        native,
-        read_rect(rect_bytes),
-        (ax, ay),
-        (px, py),
-        radius as i32,
-    ) {
-        Some(r) => {
-            dst[0..8].copy_from_slice(&r.x.to_le_bytes());
-            dst[8..16].copy_from_slice(&r.y.to_le_bytes());
-            dst[16..24].copy_from_slice(&r.error.to_le_bytes());
-            1
-        }
-        None => 0,
-    }
-}
-
-/// `ls_keyframes_evaluate_candidates`'s per-keyframe descriptor (this module's own wire format, 32 bytes): u32
-/// featuresPtr, featureCount, patchesPtr, patchCount, grayPtr, grayWidth, grayHeight, padding.
-const KEYFRAME_BYTES: usize = 32;
-
-/// One keyframe's owned/borrowed pieces, read from the wire (features owned — `read_features` allocates; gray
-/// and patches borrow adapter memory).
-type CandidateRaw<'a> = (Vec<Feature>, Vec<Patch<'a>>, Gray<'a>);
-
-/// # Safety
-/// `ptr` points at `count × KEYFRAME_BYTES` descriptors (this module's wire format, doc'd at
-/// `ls_keyframes_evaluate_candidates`); each descriptor's `featuresPtr`/`patchesPtr`/`grayPtr` must cover the
-/// byte ranges its counts/dimensions imply (patches per `read_patches`'s own contract).
-unsafe fn read_candidate_keyframes<'a>(ptr: u32, count: u32) -> Option<Vec<CandidateRaw<'a>>> {
-    let bytes = slice(ptr, count as usize * KEYFRAME_BYTES)?;
-    let mut out = Vec::with_capacity(count as usize);
-    for c in bytes.chunks_exact(KEYFRAME_BYTES) {
-        let features_ptr = u32::from_le_bytes(c[0..4].try_into().unwrap());
-        let feature_count = u32::from_le_bytes(c[4..8].try_into().unwrap());
-        let patches_ptr = u32::from_le_bytes(c[8..12].try_into().unwrap());
-        let patch_count = u32::from_le_bytes(c[12..16].try_into().unwrap());
-        let gray_ptr = u32::from_le_bytes(c[16..20].try_into().unwrap());
-        let gray_width = u32::from_le_bytes(c[20..24].try_into().unwrap());
-        let gray_height = u32::from_le_bytes(c[24..28].try_into().unwrap());
-        let feature_bytes = slice(features_ptr, feature_count as usize * FEATURE_BYTES)?;
-        let features = read_features(feature_bytes);
-        let patches = read_patches(patches_ptr, patch_count)?;
-        let gray_data = slice(gray_ptr, gray_width as usize * gray_height as usize)?;
-        out.push((
-            features,
-            patches,
-            Gray {
-                width: gray_width as usize,
-                height: gray_height as usize,
-                data: gray_data,
-            },
-        ));
-    }
-    Some(out)
-}
-
-/// `ls_keyframes_evaluate_candidates`'s `out` header (8 bytes): u32 filledNative, u32 padding — only meaningful
-/// when the return value is > 0 (a `0` return never touches native, see this export's doc comment).
-const CANDIDATE_HEADER_BYTES: usize = 8;
-/// One returned candidate record (48 bytes), following the header: u32 keyframeIndex, i32 x, i32 y, u32
-/// support, u32 unique, u32 ambiguous, u32 strong, u32 padding, f64 error, f64 analysisError.
-const CANDIDATE_RECORD_BYTES: usize = 48;
-
-/// R4d step 4: `keyframes.ts::evaluateCandidates` fused into one call — the audit phase (match + hypotheses +
-/// the analysis-scale audit, no native luma; `crate::track::evaluate_candidates_audit`) over every keyframe,
-/// THEN, only if at least one candidate passed the audit, the lazy native-plane fill (`resolve_native`, shared
-/// with `ls_track_reacquire`/`ls_track_drift_correction`) and native-patch refinement
-/// (`crate::track::evaluate_candidates_refine`). Returns the audited-and-refined candidate list, NOT the final
-/// pick — `keyframes.ts` finishes the `Math.exp` confidence formula and the sort/best/rival selection in TS
-/// (see `crate::track::RefinedCandidate`'s doc comment for why). `out` must have room for a
-/// `CANDIDATE_HEADER_BYTES`-byte header plus `keyframe_count × 8` records (the same `models.slice(0, 8)` cap
-/// `evaluate_candidates_audit` applies per keyframe). Returns the candidate count (`0` means "no candidate
-/// passed the audit"; native luma was never touched) or `STATUS_BAD_ARGUMENT`.
-#[no_mangle]
-#[allow(clippy::too_many_arguments)]
-pub extern "C" fn ls_keyframes_evaluate_candidates(
-    keyframes: u32,
-    keyframe_count: u32,
-    features: u32,
-    feature_count: u32,
-    gray: u32,
-    gray_width: u32,
-    gray_height: u32,
-    roi: u32,
-    region: u32,
-    factor: f64,
-    radius: u32,
-    native_mode: u32,
-    native_ptr: u32,
-    current_frame_ptr: u32,
-    already_filled: u32,
-    native_width: u32,
-    native_height: u32,
-    out: u32,
-) -> i32 {
-    let (gw, gh) = (gray_width as usize, gray_height as usize);
-    // SAFETY: adapter-owned buffers, bounds checked.
-    let (Some(feature_bytes), Some(gray_bytes), Some(roi_bytes), Some(region_bytes)) = (
-        unsafe { slice(features, feature_count as usize * FEATURE_BYTES) },
-        unsafe { slice(gray, gw * gh) },
-        unsafe { slice(roi, 32) },
-        unsafe { slice(region, 32) },
-    ) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    // SAFETY: this module's own wire format (KEYFRAME_BYTES), bounds checked inside.
-    let Some(raw_keyframes) = (unsafe { read_candidate_keyframes(keyframes, keyframe_count) })
-    else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let query_features = read_features(feature_bytes);
-    let query_gray = Gray {
-        width: gw,
-        height: gh,
-        data: gray_bytes,
-    };
-    let candidate_keyframes: Vec<track::CandidateKeyframe> = raw_keyframes
-        .iter()
-        .map(|(features, patches, gray)| track::CandidateKeyframe {
-            features,
-            gray: *gray,
-            patches,
-        })
-        .collect();
-    let audited = track::evaluate_candidates_audit(
-        &candidate_keyframes,
-        &query_features,
-        query_gray,
-        read_rect(roi_bytes),
-        factor,
-    );
-    if audited.is_empty() {
-        return 0;
-    }
-    // SAFETY: bounds checked inside; a bad pointer here is the caller's error, not "no candidate".
-    let Some((native, filled_now)) = (unsafe {
-        resolve_native(
-            native_mode,
-            native_ptr,
-            current_frame_ptr,
-            already_filled,
-            native_width,
-            native_height,
-        )
-    }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let refined = track::evaluate_candidates_refine(
-        &audited,
-        &candidate_keyframes,
-        native,
-        read_rect(region_bytes),
-        radius as i32,
-    );
-    // SAFETY: caller sized `out` for the header plus `keyframe_count × 8` records (this export's doc comment).
-    let Some(dst) = (unsafe {
-        slice_mut(
-            out,
-            CANDIDATE_HEADER_BYTES + refined.len() * CANDIDATE_RECORD_BYTES,
-        )
-    }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    dst[0..4].copy_from_slice(&(filled_now as u32).to_le_bytes());
-    dst[4..8].fill(0);
-    for (r, d) in refined
-        .iter()
-        .zip(dst[CANDIDATE_HEADER_BYTES..].chunks_exact_mut(CANDIDATE_RECORD_BYTES))
-    {
-        d[0..4].copy_from_slice(&(r.keyframe_index as u32).to_le_bytes());
-        d[4..8].copy_from_slice(&r.x.to_le_bytes());
-        d[8..12].copy_from_slice(&r.y.to_le_bytes());
-        d[12..16].copy_from_slice(&r.support.to_le_bytes());
-        d[16..20].copy_from_slice(&r.unique.to_le_bytes());
-        d[20..24].copy_from_slice(&(r.ambiguous as u32).to_le_bytes());
-        d[24..28].copy_from_slice(&(r.strong as u32).to_le_bytes());
-        d[28..32].fill(0);
-        d[32..40].copy_from_slice(&r.error.to_le_bytes());
-        d[40..48].copy_from_slice(&r.analysis_error.to_le_bytes());
-    }
-    refined.len() as i32
 }

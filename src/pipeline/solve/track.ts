@@ -10,15 +10,17 @@
 // (src/core/keyframes.ts, bound through src/core/wasm/track.ts too) — R4d step 4 ported it the same way. Every
 // `Math.exp` these functions' TS halves still finish (driftCorrection's/reacquire's/odometry's confidence
 // multiply) is a deliberate bit-exactness choice, not unported logic — see each one's own WHY comment.
-// STILL TS below (not this round's job — see spec-r4d): ownFeaturesOf/isTextured/priorMatchesOf (R1: named so
-// the shell's own inline setup has one home; ownFeaturesOf/priorMatchesOf are geometry/match glue over
-// already-Rust kernels (regionContains, matchFeatures), isTextured is a bare `.length >= 8`) and gate() (a
-// six-way branch with no native/patch/feature work of its own — the shell's dispatch, not tracking math). This
-// split (R1/R2) is why tests/support/reference/track.ts could freeze the pre-port functions' outputs as a TS
-// oracle (tests/unit/parity/track.test.ts checks the Rust replacements against it).
+// STILL TS below (not this round's job — see spec-r4d): isTextured/priorMatchesOf (R1: named so the shell's own
+// inline setup has one home; priorMatchesOf is match glue over an already-Rust kernel (matchFeatures), isTextured
+// is a bare `.length >= 8`) and gate() (a six-way branch with no native/patch/feature work of its own — the
+// shell's dispatch, not tracking math). ownFeaturesOf used to filter through a TS `regionContains` copy too; R6-B
+// moved that filter into Rust (final-verify-report.md item 13 — `rust/core/src/region.rs::filter_features`, bound
+// through `core().filterFeatures`), so this function is now a thin call, kept here (not inlined at its one call
+// site in region-step.ts) because it is still this shell's own per-region setup, not tracking math. This split
+// (R1/R2) is why tests/support/reference/track.ts could freeze the pre-port functions' outputs as a TS oracle
+// (tests/unit/parity/track.test.ts checks the Rust replacements against it).
 import type { Feature, Gray, Match, Point, Region, RGBA } from '../../types.ts';
 import { type NativeRefinement, type Patch, probeScale } from '../../core/motion.ts';
-import { regionContains } from '../../core/layers.ts';
 import { matchFeatures } from '../../core/features.ts';
 import { core, type LabelMask, type ResidentFrame, type ResidentGray } from '../../core/wasm.ts';
 /** Region-step.ts's own-features/texture/prior-matches setup (R1: was inline decision logic in the shell). */
@@ -28,7 +30,7 @@ export function ownFeaturesOf(
   f: number,
   image: { width: number; height: number },
 ): Feature[] {
-  return features.filter((p) => regionContains(r, p.x * f, p.y * f, image.width, image.height));
+  return core().filterFeatures(features, r, f, image.width, image.height);
 }
 export function isTextured(ownFeatures: Feature[]): boolean {
   return ownFeatures.length >= 8;

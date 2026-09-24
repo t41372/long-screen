@@ -34,6 +34,9 @@ mod raster;
 mod regions;
 mod temporal;
 mod track;
+mod track_keyframes;
+mod track_odometry;
+mod track_reacquire;
 pub(crate) mod voting;
 pub(crate) mod wire;
 

@@ -531,6 +531,10 @@ export class Core {
   ): { results: track.EvaluateCandidatesResult[]; filledNative: boolean } {
     return track.evaluateCandidates(this, this.exports, keyframes, q);
   }
+  /** `solve/track.ts::ownFeaturesOf` (R6-B: moved out of TS, final-verify-report.md item 13). */
+  filterFeatures(features: Feature[], region: Region, factor: number, nativeWidth: number, nativeHeight: number): Feature[] {
+    return track.filterFeatures(this, this.exports, features, region, factor, nativeWidth, nativeHeight);
+  }
 
   /** `buildFramedCanvas`'s `frameLayout()`. */
   frameLayout(source: { width: number; height: number }, pane: Rect, boundsWidth: number, boundsHeight: number): FrameLayout {

@@ -2,68 +2,17 @@
 //! ownership, first-containing-region-wins, plus the per-code pixel counts `RegionAtlas.count()` needs — computed
 //! in the same pass so the adapter never scans the label plane a second time in TS.
 //!
-//! `AtlasRegion`/`AtlasMask` borrow their mask bytes from the caller (they only need to live for this one call,
-//! unlike `region::Region`/`Mask`, which `voting.rs`'s Ring retains across many calls and therefore must own).
-//! Membership logic is `region::Region::contains`'s (mirrored here, not shared, to keep that borrow); a change to
-//! one must be mirrored in the other — `tests/unit/parity/regions.test.ts` exercises both through the ABI and
-//! would catch a drift.
+//! `AtlasRegion`/`AtlasMask` are `crate::region::Region`/`Mask` instantiated over borrowed mask bytes (`&'a [u8]`)
+//! instead of the default `Vec<u8>` — they only need to live for this one `label_atlas` call, unlike
+//! `voting.rs`'s Ring, which retains a region across many calls and must own its mask. Membership logic (Region's
+//! `contains()`) is shared, not mirrored (R6-B unified what used to be two copies — final-verify-report.md item
+//! 13); `tests/unit/parity/regions.test.ts` still exercises both instantiations through the ABI.
 
-use crate::geometry::{js_ceil, js_floor, Rect};
+use crate::geometry::{js_ceil, js_floor};
+use crate::region::{Mask, Region};
 
-pub struct AtlasMask<'a> {
-    pub width: usize,
-    pub height: usize,
-    /// Integer analysis factor the mask was built at; 0 selects the legacy ratio lookup.
-    pub factor: u32,
-    pub data: &'a [u8],
-}
-
-pub struct AtlasRegion<'a> {
-    pub rect: Rect,
-    pub exclusions: Vec<Rect>,
-    pub crop: Option<Rect>,
-    pub solid: bool,
-    pub mask: Option<AtlasMask<'a>>,
-}
-
-#[inline]
-fn clamp_index(value: i32, len: usize) -> usize {
-    value.clamp(0, len as i32 - 1) as usize
-}
-
-impl AtlasRegion<'_> {
-    /// Mirrors `region::Region::contains` exactly (see the module doc comment for why it is not shared).
-    fn contains(&self, x: f64, y: f64, native_width: f64, native_height: f64) -> bool {
-        if !self.rect.contains(x, y) || self.exclusions.iter().any(|r| r.contains(x, y)) {
-            return false;
-        }
-        if self.crop.is_some_and(|c| !c.contains(x, y)) {
-            return false;
-        }
-        if self.solid {
-            return true;
-        }
-        let Some(mask) = &self.mask else {
-            return true;
-        };
-        let (xx, yy) = if mask.factor > 0 {
-            let f = mask.factor as f64;
-            (
-                clamp_index(js_floor(x / f), mask.width),
-                clamp_index(js_floor(y / f), mask.height),
-            )
-        } else {
-            (
-                clamp_index(js_floor(x * mask.width as f64 / native_width), mask.width),
-                clamp_index(
-                    js_floor(y * mask.height as f64 / native_height),
-                    mask.height,
-                ),
-            )
-        };
-        mask.data[yy * mask.width + xx] != 0
-    }
-}
+pub type AtlasMask<'a> = Mask<&'a [u8]>;
+pub type AtlasRegion<'a> = Region<&'a [u8]>;
 
 /// Fills `out` (`width × height` bytes, adapter-owned — written directly, never allocated here) with
 /// `RegionAtlas.labels`: 0 = owned by no region, otherwise `index + 1` into `regions`. Returns the per-code pixel
