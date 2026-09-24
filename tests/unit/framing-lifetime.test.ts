@@ -4,14 +4,14 @@ import { core } from '../../src/core/wasm.ts';
 import type { Region, RGBA } from '../../src/types.ts';
 
 Deno.test(
-  'framing: openFramingSession frees what it already allocated when a later step throws (final-review item 5)',
+  'framing: openFramingSession frees what it already allocated when a later step throws',
   () => {
     // Regression: openFramingSession (src/core/wasm/framing.ts) makes several PERSISTENT core allocations
     // (sourceFrame, bgRows, bgColumns, and — via uploadRegions — one descriptor plus per-region
     // exclusions/crop/mask buffers) before returning a FramingSession whose dispose() frees them all. A throw
     // partway through — a bad ls_frame_backgrounds status, or (here) uploadRegions rejecting a region whose
-    // mask byte length does not match its declared maskWidth*maskHeight — used to leave every allocation made
-    // so far unfreed: nothing was ever returned for a caller to call dispose() on.
+    // mask byte length does not match its declared maskWidth*maskHeight — must not leave every allocation made
+    // so far unfreed: nothing is ever returned for a caller to call dispose() on in that case.
     const c = core();
     const source: RGBA = { width: 16, height: 16, data: new Uint8ClampedArray(16 * 16 * 4) };
     const layout = c.frameLayout(source, { x: 0, y: 0, width: 16, height: 16 }, 16, 16);

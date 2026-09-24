@@ -18,7 +18,7 @@ pub type AtlasRegion<'a> = Region<&'a [u8]>;
 /// `RegionAtlas.labels`: 0 = owned by no region, otherwise `index + 1` into `regions`. Returns the per-code pixel
 /// counts (`regions.len() + 1` entries, index 0 unused), or `None` when there are more than 254 regions (one
 /// label byte can only encode 254 non-zero codes) — the ABI turns that into a status the adapter surfaces as the
-/// same error `RegionAtlas`'s TS constructor used to throw, never a panic across the boundary.
+/// same error `RegionAtlas`'s TS constructor throws (src/core/layers.ts), never a panic across the boundary.
 pub fn label_atlas(
     regions: &[AtlasRegion],
     width: usize,

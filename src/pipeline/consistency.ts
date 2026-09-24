@@ -55,10 +55,10 @@ export interface ConsistencyOptions {
  *    wrong, and gets the last word wherever it reached a verdict at all.
  *  - the ±1-frame native check is a PAIRWISE DISAGREEMENT signal. When this frame and its neighbour show
  *    different content at the same world position, one of the two is wrong — the comparison itself cannot say
- *    which. Treating both as wrong is what used to condemn a run's genuinely-clean last frame because its only
- *    neighbour happened to be under a floating button, and with it the chance to heal that neighbour's
- *    provisional pixel (docs/ARCHITECTURE.md §七, world pixel (314, 3198) on `phone`). So a disagreement now
- *    only condemns this frame when the evidence is symmetric: every available neighbour disagrees, or the one
+ *    which. Treating both as wrong would condemn a run's genuinely-clean last frame whenever its only neighbour
+ *    happens to be under a floating button, losing with it the chance to heal that neighbour's provisional pixel
+ *    too (docs/ARCHITECTURE.md §七, world pixel (314, 3198) on `phone`). So a disagreement only condemns this
+ *    frame when the evidence is symmetric: every available neighbour disagrees, or the one
  *    that does carries its own positive voting verdict at that world position and is therefore trustworthy.
  *
  *  Truth table for one pixel, first matching row wins (`own verdict` is THIS frame's voting verdict at this

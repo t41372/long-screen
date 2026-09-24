@@ -33,7 +33,7 @@ interface Entry {
 interface Pending {
   entry: Entry;
   /** Resolved once `client-zip` has pulled the *next* entry from `source()`, i.e. once this one has been fully
-   *  produced into its output stream — the same point at which the old writer's `add()` used to resolve. */
+   *  produced into its output stream — the point past which `add()` is safe to call again with a new entry. */
   resolveConsumed: () => void;
 }
 /** Store-only ZIP, automatically ZIP64 when needed, streamed through `client-zip` (npm, MIT, 0 deps) straight into

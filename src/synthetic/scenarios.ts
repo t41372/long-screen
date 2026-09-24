@@ -663,7 +663,7 @@ export function buildScenario(name: ScenarioName | string): Scenario {
       const world = makeWorld(2400, 2600, 181, 'cards', 4);
       const path = linearPath([{ x: 0, y: 0 }, { x: 200, y: 900 }, { x: 400, y: 300 }], [14, 12]);
       // No overlay or dynamic here; at this scenario's factor (4, the largest any scenario uses),
-      // solve()'s displacement-spread consistency voting (docs/ARCHITECTURE.md §七) used to leave a small,
+      // solve()'s displacement-spread consistency voting (docs/ARCHITECTURE.md §七) would leave a small,
       // scattered residual of unhealed flags even with the local-search radius scaled to the analysis factor
       // and the strictest (6/6 unanimous) finalisation threshold — root-caused to genuine downscaleGray
       // box-filter PHASE noise: the box-filter grid is fixed to SCREEN pixel 0,0 in every frame, not to world

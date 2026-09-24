@@ -849,12 +849,12 @@ Deno.test("compositor: dispose() before the trailing flush() (render.ts's actual
   assertEquals(withDispose.length, 1);
 });
 Deno.test(
-  'temporal ABI: ls_temporal_flush_take rejects a wrong count before draining the index (final-review item 3)',
+  'temporal ABI: ls_temporal_flush_take rejects a wrong count before draining the index',
   async () => {
-    // Regression for rust/core/src/abi/temporal.rs::ls_temporal_flush_take, which used to call
-    // TemporalIndex::flush_take() (which drains `dirty`/`deleted`) BEFORE checking the caller's counts against
-    // it, so a bad count silently lost every dirty/deleted row instead of returning an error with the index
-    // unchanged. Reaches Compositor's private per-canvas handle the way this suite already reaches other
+    // Regression for rust/core/src/abi/temporal.rs::ls_temporal_flush_take, which must check the caller's counts
+    // against the index BEFORE calling TemporalIndex::flush_take() (which drains `dirty`/`deleted`): checking
+    // after would let a bad count silently lose every dirty/deleted row instead of returning an error with the
+    // index unchanged. Reaches Compositor's private per-canvas handle the way this suite already reaches other
     // private state (tests may reach private members through casts).
     const width = B, region = makeRegion({ x: 0, y: 0, width, height: B });
     const db = new MemoryKV(), tiles = new TileStore(db, width, 8), atlas = new RegionAtlas([region], width, B);
@@ -889,7 +889,7 @@ Deno.test(
 );
 Deno.test(
   'temporal ABI: ls_overwrite_tile returns a status (not a wasm trap) for a block whose pixel footprint falls ' +
-    'outside the source frame, tile buffers unchanged (final-review item 3)',
+    'outside the source frame, tile buffers unchanged',
   () => {
     // Regression for rust/core/src/abi/temporal.rs::ls_overwrite_tile / rust/core/src/temporal.rs::overwrite_tile,
     // which indexed `blocks` into `rgba`/`tile.pixels`/`tile.owner` unchecked -- a bad block made the exported
@@ -931,10 +931,10 @@ Deno.test(
   },
 );
 Deno.test(
-  'compositor: add() on a canvas already dispose()d throws instead of silently losing its stashed rows (final-review item 5)',
+  'compositor: add() on a canvas already dispose()d throws instead of silently losing its stashed rows',
   async () => {
-    // Regression: temporalIndex() used to build a fresh Rust-resident index from a plain KV scan whenever
-    // this.temporal had no live handle for a canvas -- true both for a canvas never touched yet AND for one
+    // Regression: temporalIndex() must not build a fresh Rust-resident index from a plain KV scan whenever
+    // this.temporal has no live handle for a canvas — true both for a canvas never touched yet AND for one
     // dispose() already drained into `stashed`. The second case is a bug, not ordinary lazy init: `stashed`
     // holds dirty/deleted rows dispose() pulled out of the freed Rust index specifically because they are NOT
     // in KV yet (flush() hasn't run), so a fresh KV-only reload would silently come up short. Unreachable in

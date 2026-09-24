@@ -5,10 +5,10 @@ import { iterate, MemoryKV } from '../../src/storage/db.ts';
 import { type CanvasMeta, DEFAULT_SETTINGS, type Progress } from '../../src/types.ts';
 import { buildScenario } from '../../src/synthetic/scenarios.ts';
 import { ScenarioSource } from '../../src/synthetic/source.ts';
-// The `stopped` latch: render()'s own stop check used to reset `stopRequested` to false right after honouring it,
-// which erased the signal run() needs to skip the framing and pyramid stages — a stop mid-render used to still run
-// both of those stages to completion. This drives a stop from the progress callback, the moment it first observes
-// the 'rendering' phase, and checks all three symptoms: status, no framed canvas, no pyramid levels.
+// The `stopped` latch: render()'s own stop check must not reset `stopRequested` to false right after honouring it —
+// doing so would erase the signal run() needs to skip the framing and pyramid stages, letting a stop mid-render
+// still run both of those stages to completion. This drives a stop from the progress callback, the moment it first
+// observes the 'rendering' phase, and checks all three symptoms: status, no framed canvas, no pyramid levels.
 Deno.test('engine stop: a stop requested while rendering yields partial status with no framing or pyramid stage', async () => {
   const scenario = buildScenario('traversal'), db = new MemoryKV(), source = new ScenarioSource(scenario);
   let stopSignalled = false;

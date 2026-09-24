@@ -1,4 +1,4 @@
-/** Guards against final-review item 6's bug class: on the threads build, `exports.memory.buffer` is a
+/** Guards against a shared-memory-view bug class: on the threads build, `exports.memory.buffer` is a
  *  `SharedArrayBuffer`, and `ArrayBuffer.prototype.slice`/`SharedArrayBuffer.prototype.slice` return the SAME
  *  buffer type as their receiver — a "copy" of a `SharedArrayBuffer` is still shared, unlike `core.readBytes()`
  *  (a `TypedArray.slice()`, which always allocates a plain `ArrayBuffer`). `wasm/regions.ts` shipped two call

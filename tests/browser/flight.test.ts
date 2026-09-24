@@ -40,11 +40,29 @@ Deno.test({
       assert(recorded?.state === 'running' && recorded.phase, `no running record before the kill: ${JSON.stringify(recorded)}`);
       assertEquals(recorded.hiddenTimes, 1);
       assert(recorded.hiddenNow, 'the record must say the page was hidden when it died');
+      // A reload fires a real `pagehide` then a real `visibilitychange` to hidden (verified in Chrome and WebKit),
+      // on the SAME document.visibilityState this test already forced to 'hidden' above — src/ui/flight.ts must not
+      // count that trailing, teardown-only visibilitychange as a second backgrounding, or `hiddenTimes`/`hiddenS`
+      // on the record the next load recovers would drift from what was true when the tab actually went to the
+      // background. src/ui/main.ts logs the full recovered record via `console.warn('PREVIOUS_RUN_INTERRUPTED',
+      // JSON.stringify(interrupted))`; capture that instead of re-deriving it from DOM text.
+      const interruptedLogged = new Promise<Record<string, unknown>>((resolve) => {
+        page.on('console', (msg) => {
+          if (msg.text().startsWith('PREVIOUS_RUN_INTERRUPTED')) {
+            resolve(JSON.parse(msg.text().slice('PREVIOUS_RUN_INTERRUPTED '.length)));
+          }
+        });
+      });
       await page.reload();
       await page.waitForFunction('!!window.longScreen');
       await page.waitForFunction(`/PREVIOUS_RUN_INTERRUPTED/.test(${diagnosticText})`, null, { timeout: 10000 });
       const text = await page.evaluate(diagnosticText) as string;
       assert(text.includes('中断') && text.includes('帧转换') && text.includes('后台'), text.slice(0, 400));
+      const interrupted = await interruptedLogged;
+      // Exactly the hidden count/duration recorded before the reload: the reload's own visibilitychange must not
+      // have counted as a second, spurious backgrounding.
+      assertEquals(interrupted.hiddenTimes, 1);
+      assertEquals(interrupted.hiddenS, recorded.hiddenS);
       assertEquals(await page.evaluate(() => localStorage.getItem('long-screen.flight')), null, 'the report is shown once');
       // A run that finishes: nothing to report on the next load.
       await page.selectOption('#demo-select', 'gap');
@@ -62,6 +80,38 @@ Deno.test({
       assert(!/PREVIOUS_RUN_INTERRUPTED/.test(await page.evaluate(diagnosticText) as string), 'false alarm after a finished run');
       // A kill aborts the worker's run without its finally blocks, which is exactly the case being reported.
       assertEquals(h.errors, []);
+    } finally {
+      await h.close();
+    }
+  },
+});
+Deno.test({
+  name: 'browser UI: a bfcache round trip (persisted pagehide + pageshow) does not disable the hidden-time recorder',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const h = await harness();
+    try {
+      const page = h.page;
+      await page.goto(h.base + '/');
+      await page.waitForFunction('!!window.longScreen');
+      await page.selectOption('#demo-select', 'comic');
+      await page.click('#demo-btn');
+      await page.waitForFunction(`/帧/.test(document.querySelector('#progress-count')?.textContent || '')`, null, { timeout: 60000 });
+      // A bfcache-eligible navigation fires `pagehide` with `persisted: true` (the page is frozen, not unloaded)
+      // and, on returning, `pageshow`. src/ui/flight.ts's `visibilitychange` listener must not stay disabled by
+      // that pagehide once pageshow has fired — dispatch the pair, then a real backgrounding, and the backgrounding
+      // must still be counted.
+      await page.evaluate(() => {
+        dispatchEvent(new PageTransitionEvent('pagehide', { persisted: true }));
+        dispatchEvent(new PageTransitionEvent('pageshow', { persisted: true }));
+        Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+      const recorded = await page.evaluate(() => JSON.parse(localStorage.getItem('long-screen.flight') || 'null'));
+      assert(recorded?.state === 'running', `no running record after the bfcache round trip: ${JSON.stringify(recorded)}`);
+      assertEquals(recorded.hiddenTimes, 1, 'the backgrounding after a persisted pagehide+pageshow must still be recorded');
+      assert(recorded.hiddenNow, 'the record must say the page is hidden');
     } finally {
       await h.close();
     }

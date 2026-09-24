@@ -532,7 +532,7 @@ export function resampleGray(g: Gray, scale: number): Gray {
     data = new Uint8Array(width * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      // ORACLE FIX (mirrors rust/core): clamp to the image; a 1-pixel source used to read undefined (→ 0) neighbours.
+      // ORACLE FIX (mirrors rust/core): clamp to the image, or a 1-pixel source reads undefined (→ 0) neighbours.
       const sx = Math.max(0, Math.min(g.width - 1.001, x / scale)),
         sy = Math.max(0, Math.min(g.height - 1.001, y / scale)),
         x0 = Math.floor(sx),

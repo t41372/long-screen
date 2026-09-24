@@ -71,7 +71,7 @@ class CanvasMetaCache {
 }
 /** Per-pass state, as fields rather than closed-over locals; the small methods below are the pass's sub-steps.
  * See the file header for the one-frame-lookahead ordering `run()` must preserve exactly. */
-class RenderPass {
+export class RenderPass {
   private graph!: PoseGraph;
   private compositor!: Compositor;
   private regionMap!: Map<string, Region>;
@@ -104,7 +104,9 @@ class RenderPass {
   // holds).
   private pending: FrameImage | undefined;
   private pendingPrev: RGBA | undefined;
-  constructor(private readonly ctx: RunContext) {
+  // Defaults to the real clock in production; a test supplies a fake so checkpointFlush()'s 1200 ms gate is a
+  // deterministic branch instead of a wall-clock race under `deno test --parallel`.
+  constructor(private readonly ctx: RunContext, private readonly now: () => number = () => performance.now()) {
     // No ctx-mutating or fallible work here: `render()` runs phase/status/persist() BEFORE constructing this
     // pass, so a persist() failure at the very start of the run never leaves a compositor/frame-ring/mask
     // allocated that nothing would go on to free (see setup(), which does the rest in the original order).
@@ -133,7 +135,7 @@ class RenderPass {
     this.residentLabels = this.ctx.atlas!.resident;
     this.residentMask = this.ctx.residentMask = core().alloc(frameW * frameH);
     this.fixedPixels = this.ctx.fixedPixels;
-    this.lastFlush = performance.now();
+    this.lastFlush = this.now();
     const fixedBytes = this.ctx.regions.filter((r) => r.kind === 'fixed').reduce(
       (n, r) => n + Math.ceil(r.rect.width) * Math.ceil(r.rect.height) * 4,
       0,
@@ -247,9 +249,9 @@ class RenderPass {
    * very end of the pass), not per placement — only tiles untouched since the previous checkpoint are written,
    * since the active footprint is repainted every frame and would otherwise be re-encoded on every checkpoint. */
   private async checkpointFlush(): Promise<void> {
-    if (performance.now() - this.lastFlush >= 1200) {
+    if (this.now() - this.lastFlush >= 1200) {
       const settledBefore = this.lastFlush;
-      this.lastFlush = performance.now();
+      this.lastFlush = this.now();
       await this.ctx.tiles.flush(settledBefore);
       await this.compositor.flush();
       await this.ctx.diagnostics.flush();

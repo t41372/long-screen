@@ -1,7 +1,7 @@
 /** FROZEN copy of the small pure-math primitives every reference oracle in this directory needs (`src/core/
  *  math.ts` plus `src/core/raster.ts::resolveRasterPose`), so no oracle has to import live src/ code to get
- *  them. Not used by production code. Do not "fix" this — a behaviour change belongs with the production copy,
- *  in a new round. */
+ *  them. Not used by production code. Do not "fix" this — a behaviour change belongs with the production copy;
+ *  this file exists precisely so a bug shared by both would still show up as a parity mismatch. */
 import type { Point, Rect } from '../../../src/types.ts';
 export const clamp = (n: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, n));
 export const median = (values: number[]): number => {

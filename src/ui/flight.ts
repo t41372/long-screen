@@ -27,6 +27,20 @@ export interface FlightRecord {
   hiddenTimes: number;
 }
 let record: FlightRecord | undefined, startedAt = 0, hiddenSince: number | undefined, lastWrite = 0;
+// A page reload or close fires `pagehide` BEFORE the `visibilitychange` to 'hidden' that unloading also triggers
+// (verified in Chrome and WebKit: both fire pagehide, then visibilitychange, in that order — see the HTML
+// Standard's "unloading document cleanup steps"). That trailing visibilitychange is teardown, not the tab being
+// backgrounded, so it must not count as another hidden period once pagehide has already fired. A bfcache-eligible
+// pagehide (`event.persisted`) does not unload the page at all — the page can come back via `pageshow` with its
+// JS state intact — so `unloading` must clear on `pageshow`, or every backgrounding after one bfcache round trip
+// would go unrecorded for the rest of the page's life.
+let unloading = false;
+addEventListener('pagehide', (e) => {
+  unloading = !e.persisted;
+});
+addEventListener('pageshow', () => {
+  unloading = false;
+});
 const write = (force = false) => {
   if (!record || (!force && performance.now() - lastWrite < WRITE_INTERVAL_MS)) return;
   lastWrite = performance.now();
@@ -41,7 +55,7 @@ const write = (force = false) => {
   }
 };
 document.addEventListener('visibilitychange', () => {
-  if (!record) return;
+  if (!record || unloading) return;
   if (document.visibilityState === 'hidden') {
     hiddenSince = performance.now();
     record.hiddenTimes++;

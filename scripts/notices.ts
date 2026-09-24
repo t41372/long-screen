@@ -3,9 +3,9 @@
  *  what actually ships:
  *   - Rust: `cargo about generate --format json` (rust/**'s own dependency graph via `cargo metadata`) when
  *     `cargo-about` (https://github.com/EmbarkStudios/cargo-about) is on PATH — `cargo install --locked cargo-about
- *     --features cli` installs it; scripts/notices-about.toml is its config (kept outside rust/, which belongs to
- *     another workstream this round). Falls back to `cargo metadata` + each crate's vendored license file in the
- *     local cargo registry cache when cargo-about isn't installed.
+ *     --features cli` installs it; scripts/notices-about.toml is its config, kept beside this script (the only
+ *     thing that reads it) rather than inside rust/, which is the Rust crate itself. Falls back to `cargo metadata`
+ *     + each crate's vendored license file in the local cargo registry cache when cargo-about isn't installed.
  *   - JS: `deno info --json <entry>` for every bundle entry point (the same list scripts/build.ts bundles), which
  *     gives the resolved module graph; any specifier that isn't a local `file://` module is a bundled dependency.
  *     License text comes from the local npm/jsr cache (both already downloaded for the build to have worked at

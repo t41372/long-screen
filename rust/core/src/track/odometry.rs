@@ -30,7 +30,7 @@ pub struct OdometryEstimate {
     pub delta: (f64, f64),
     /// On `Tracked`: the raw hypothesis confidence (`best.m.confidence`), NOT the TS original's fully computed
     /// step confidence — `src/core/wasm/track.ts` finishes `Math.max(.05, …) * Math.exp(-stepError / 20) * …`
-    /// so that multiply runs on the host's own `Math.exp`, bit-exact with the pre-refactor engine (see the
+    /// so that multiply runs on the host's own `Math.exp`, bit-exact with the TS original (see the
     /// comment at this field's one call site below). On `Static`/`Lost`: the input `confidence`, unchanged.
     pub confidence: f64,
     pub ambiguous: bool,
@@ -189,7 +189,7 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
             // `confidence` here is the raw hypothesis confidence (`best.m.confidence`), NOT the TS original's
             // `Math.max(.05, best.m.confidence) * Math.exp(-best.n.error / 20) * ...` — that last multiply
             // stays in `src/core/wasm/track.ts` so it runs on the SAME `Math.exp` the differential harness's
-            // pre-refactor engine uses (V8's, not Rust libm's, which can round the last bit differently for
+            // TS original uses (V8's, not Rust libm's, which can round the last bit differently for
             // this call's continuous, effectively-arbitrary `stepError` input; unlike the few other `.exp()`
             // call sites in `motion.rs`, whose inputs are small integer ratios that never land on a rounding
             // boundary in practice).

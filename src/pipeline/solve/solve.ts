@@ -1,12 +1,11 @@
 // Shell around the solve pass: setup (pose graph, keyframe index, per-region states, frame ring, atlas label
 // plane, native luma plane, voting ring), the frame loop (duplicate-frame shortcut, per-frame preparation, one
 // stepRegion() call per region), plan/consistency batching, voting push/drain, trailing commits, pass-mismatch
-// accounting, graph optimise, scratch deletion. The per-region tracking DECISIONS this loop used to compute inline
-// (hypothesis scoring, audit acceptance, native refinement choice, the confidence formula, anchor re-acquisition,
-// keyframe/revisit/attachment/loop-closure decisions) now live in track.ts, most of them thin calls into the Rust
-// core (see its header and docs/history/2026-09-rust-migration-log.md "已在 Rust 核心中"); region-step.ts's
-// stepRegion() applies them in the original order. Everything in this file is orchestration shell, unambiguously
-// not awaiting a port.
+// accounting, graph optimise, scratch deletion. The per-region tracking DECISIONS (hypothesis scoring, audit
+// acceptance, native refinement choice, the confidence formula, anchor re-acquisition, keyframe/revisit/
+// attachment/loop-closure decisions) live in track.ts, most of them thin calls into the Rust core (see its
+// header and docs/history/2026-09-rust-migration-log.md "已在 Rust 核心中"); region-step.ts's stepRegion() applies
+// them in a fixed order. Everything in this file is orchestration shell, unambiguously not awaiting a port.
 import type { Attachment, Feature, FramePlan, Gray, Placement, RGBA, ScanRecord } from '../../types.ts';
 import { deletePrefix } from '../../storage/db.ts';
 import type { RegionAtlas } from '../../core/layers.ts';
@@ -33,8 +32,9 @@ import { type FrameInput, SolvePass } from './region-step.ts';
 // against partners whose world displacement clears Dmin. Only the moving regions take part. The ring is freed in
 // the finally of this pass.
 const CONSISTENCY_RING_BYTES = 24 * 1024 * 1024;
-/** All per-pass state solve() used to close over, now fields; the small methods below are exactly the sub-steps
- * solve()'s single ~320-line body used to inline. Mirrors scan.ts's ScanPass / render.ts's RenderPass shape. */
+/** All per-pass state as fields rather than closed-over locals, so the small methods below can each be one
+ * sub-step of the pass instead of one large inline body. Mirrors scan.ts's ScanPass / render.ts's RenderPass
+ * shape. */
 class SolveRun {
   graph!: PoseGraph;
   index!: KeyframeIndex;

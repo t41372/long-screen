@@ -316,8 +316,8 @@ export class ReferenceCompositor {
         const result = await this.resolveTemporal(image, region, p, frame, component.bounds, component.blocks, world, consistent);
         patchedPixels += result.added;
         patchedTiles += result.newTiles;
-        // A pixel count now (F8/F12 fix); this used to fold in a block count instead, understating conflict
-        // pixels by roughly a factor of 256 (one QUALITY_BLOCK). Still coarser than a mismatch-pixel count
+        // A pixel count (F8/F12 fix) — folding in a block count instead understates conflict pixels by roughly
+        // a factor of 256 (one QUALITY_BLOCK). Still coarser than a mismatch-pixel count
         // (see PatchResult.conflictPixels): every pixel this patch rewrote, not only the ones that differed.
         patchedConflictPixels += result.conflictPixels;
         patchedProvisional += result.provisionalPixels;

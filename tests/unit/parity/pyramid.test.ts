@@ -1,6 +1,6 @@
 /** Byte-exact parity between `core().assemblePyramidParent` (rust/core/src/pyramid.rs) and the frozen TS loop
- *  `TileStore.buildPyramid` used to run: halve each present child (reference.halveRGBA, the same frozen kernel
- *  tests/unit/parity/kernels.test.ts checks) and copy it into its quadrant of a zero-initialised parent tile. */
+ *  `TileStore.buildPyramid` runs: halves each present child (reference.halveRGBA, the same frozen kernel
+ *  tests/unit/parity/kernels.test.ts checks) and copies it into its quadrant of a zero-initialised parent tile. */
 import { assertEquals } from '@std/assert';
 import { ensureCore } from '../../support/core.ts';
 import * as reference from '../../support/reference/kernels.ts';

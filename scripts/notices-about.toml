@@ -1,6 +1,6 @@
 # cargo-about config for scripts/notices.ts (`cargo about generate --format json -c scripts/notices-about.toml
-# --manifest-path rust/Cargo.toml --workspace`). Kept outside rust/ deliberately: rust/** belongs to a different
-# workstream's file ownership this round.
+# --manifest-path rust/Cargo.toml --workspace`). Kept beside that script rather than inside rust/, since rust/ is
+# the Rust crate itself and this file is a JS build-tooling concern.
 #
 # Only permissive/attribution-only SPDX ids are pre-accepted; anything else — including copyleft licenses that
 # would need legal review before shipping compiled into a Wasm binary — makes cargo-about fail the license

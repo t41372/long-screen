@@ -11,7 +11,8 @@
  *  Deploying dist/: it is a static site — upload it as-is to any static host that serves a `_headers` file
  *  (Cloudflare Pages, Netlify; static/_headers is copied in verbatim and sets the COOP/COEP/CORP headers the
  *  threaded Wasm core needs, plus caching). `--production` (deno task build:prod) drops the test-only harness and
- *  source maps and minifies; use that build for a real deploy. Full docs land in a later refactor round. */
+ *  source maps and minifies; use that build for a real deploy. See README.md's deployment section for hosting
+ *  requirements (the 304-response header caveat in particular). */
 import { copy, ensureDir } from '@std/fs';
 import { fromFileUrl, join } from '@std/path';
 import { generateNotices } from './notices.ts';

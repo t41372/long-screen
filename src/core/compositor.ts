@@ -106,8 +106,8 @@ export class Compositor {
     }
   }
   /** Loads a canvas's persisted temporal records once, into a fresh Rust-resident index; afterwards that index
-   *  is authoritative. Rows are handed over in KV scan (ascending id) order, exactly the order the in-memory
-   *  index used to build itself in. Throws if `canvasId` was already `dispose()`d: silently building a new
+   *  is authoritative. Rows are handed over in KV scan (ascending id) order, the same order an in-memory index
+   *  would build itself in. Throws if `canvasId` was already `dispose()`d: silently building a new
    *  Rust-resident index from KV alone would leave out the still-unflushed rows `dispose()` drained into
    *  `stashed` (a fresh KV scan cannot see them — they are not persisted yet), producing an index that looks
    *  authoritative but has quietly lost pending edits instead of surfacing the "add() after dispose()" bug

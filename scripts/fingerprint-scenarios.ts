@@ -1,8 +1,10 @@
-/** Refactor-equivalence fingerprint: runs every synthetic scenario through the Engine and hashes EVERY row the run
+/** Change-detector fingerprint: runs every synthetic scenario through the Engine and hashes EVERY row the run
  *  persisted (tiles, evidence, plans, observations, consistency verdicts, diagnostics, canvases, graph, regions…),
- *  normalised only for the random run id and wall-clock fields. A first-class repo script (not an external tool),
- *  so any tree can fingerprint itself with its own deno.json/config (no --config flag needed) and no <root>
- *  argument.
+ *  normalised only for the random run id and wall-clock fields. Not a pixel-identity gate — a changed row is
+ *  expected whenever a fix changes what gets persisted; compare-fingerprints.ts's output is the list of exactly
+ *  which rows changed, for a person to explain against the change that caused it. A first-class repo script (not
+ *  an external tool), so any tree can fingerprint itself with its own deno.json/config (no --config flag needed)
+ *  and no <root> argument.
  *
  *  Usage: deno run -A scripts/fingerprint-scenarios.ts <out.json> [--root <otherRepoRoot>] [--pixels] [scenario…]
  *  Without --root, fingerprints this checkout (dynamic-imports its own modules, resolved relative to this script).

@@ -1,6 +1,6 @@
 //! Byte layouts shared across the ABI: size constants, a little-endian reader over adapter-owned buffers, and
-//! rect (de)serialisation. `Reader` replaces the `u = |i| u32::from_le_bytes(..)` closure that used to be
-//! redefined at each call site.
+//! rect (de)serialisation. `Reader` is the one little-endian reader every ABI function shares, instead of each
+//! one redefining its own `u = |i| u32::from_le_bytes(..)` closure.
 
 use crate::abi::STATUS_BAD_ARGUMENT;
 use crate::features::DESCRIPTOR_WORDS;
@@ -37,8 +37,8 @@ pub const POINT_BYTES: usize = 16;
 /// u32 size, u32 padding.
 pub const EXTRACTED_PATCH_HEADER_BYTES: usize = 24;
 
-/// A little-endian view over one adapter-owned descriptor, replacing the `u = |i| u32::from_le_bytes(..)`
-/// closure each ABI function used to redefine.
+/// A little-endian view over one adapter-owned descriptor, shared instead of each ABI function redefining its
+/// own `u = |i| u32::from_le_bytes(..)` closure.
 pub(crate) struct Reader<'a>(pub &'a [u8]);
 
 impl Reader<'_> {
@@ -71,8 +71,8 @@ pub(crate) fn read_rects(bytes: &[u8]) -> Vec<Rect> {
         .collect()
 }
 
-/// One optional rect: `ptr` zero means none, otherwise it points at one 32-byte rect. Used at every call site
-/// that used to hand-roll this as an `if ptr == 0 { None } else { ... }` with its own error shape.
+/// One optional rect: `ptr` zero means none, otherwise it points at one 32-byte rect. Shared by every call site
+/// that needs this, instead of each one hand-rolling `if ptr == 0 { None } else { ... }` with its own error shape.
 ///
 /// # Safety
 /// `ptr` is zero or points at 32 readable bytes.

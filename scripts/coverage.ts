@@ -1,14 +1,18 @@
 /** Runs the unit tests with coverage and enforces per-file LINE-coverage floors, so coverage can only ratchet upward.
  *  The floors are the numbers actually reached today, not aspirations; `deno task coverage` fails if any file drops below its floor. */
+import { formatFloorChanges, needsRewrite, reconcileFloors, renderFloorsBlock } from './coverage-floors.ts';
 const dir = '.coverage';
 /** Everything that ships: src/ plus the server entry point. Tests, scripts and the synthetic fixtures generator are not gated. */
 const INCLUDE = '--include=^file:.*/(src/.*|main\\.ts)$';
 /** Line-coverage floors, each set to floor(today's measured value) so a file can only improve. `deno task coverage --update-floors`
- *  rewrites this block from the latest run; review the diff, because lowering a floor hides a regression.
+ *  reconciles this block against the latest run (scripts/coverage-floors.ts): it raises a floor that improved, adds
+ *  one for a newly-measured file, and drops an entry for a file no longer on disk — it never lowers a floor to
+ *  match a drop in measured coverage. A drop is printed and left in place instead, because it needs a person to
+ *  review why coverage fell and hand-edit the floor down with a reason.
  *  `storage/db.ts` (IndexedDB) and `export/target.ts` (OPFS) cannot execute under Deno and are covered by the browser suite;
  *  every uncovered line in `storage/db.ts` is the `Database` class itself (the IndexedDB adapter).
- *  Line coverage is also a property of the layout: the whole-tree `deno fmt` split one-line statements into several, so an
- *  unexecuted branch that used to share one covered line now counts as several uncovered lines. Every floor was re-seeded to
+ *  Line coverage is also a property of the layout: a `deno fmt`-formatted branch whose statements sit on several lines
+ *  (rather than sharing one) counts its unexecuted lines separately. Every floor was re-seeded to
  *  floor(measured) on the formatted tree (core/compositor.ts 100→98, pipeline/engine.ts 91→87, core/compute.ts 97→95,
  *  storage/db.ts 61→58, export/target.ts 30→26 moved with no code or test change; the rest moved up).
  *  `main.ts`'s floor was lowered from 83: the server gained realpath containment (tested) and `deno task start` gained a
@@ -47,17 +51,17 @@ const INCLUDE = '--include=^file:.*/(src/.*|main\\.ts)$';
  *  only production caller when `extractPatches` moved to Rust (commit d029e6b) — `window()` is real, working code
  *  with no caller left in `src`, not removed dead code, so the same test file adds a direct call to it too; the floor
  *  is restored to 90 rather than lowered. Ran `--update-floors` once on a scratch copy of this file to see its
- *  output (73 entries, all matching the numbers above) but did not accept it: it rewrites the whole FLOORS block
- *  from the run's measured numbers with no diff review and exits 1 even on a clean rewrite (the exit reflects the
- *  *old* floors it just replaced, not the new ones), so a scripted `--update-floors && commit` would silently accept
- *  every regression above; that is a documented trap (the comment on this block already says "review the diff"), not
- *  a bug to fix in the script — every floor in this block was instead reviewed and typed in by hand.
- *  `pipeline/render.ts` 89→87: no source or test change touched this file since the 89 floor was set (only a
- *  comment-only commit) and re-running `deno task coverage` on an unmodified tree measured anywhere from 87.1% to
- *  89.3% across runs — `RenderPass.checkpointFlush()`'s `performance.now() - this.lastFlush >= 1200` gate and the
- *  fault-injection catch blocks in `run()`/`processFrame()` are timing- and scheduling-sensitive under
- *  `deno test --parallel`, so which side of a few branches a given run takes is not fully deterministic; lowered
- *  to floor(worst observed) rather than chasing a number that moves without a code change. */
+ *  output (73 entries, all matching the numbers above) but did not accept it, and instead reviewed and typed in
+ *  every floor by hand: `--update-floors` reconciles the FLOORS block from measured coverage
+ *  (scripts/coverage-floors.ts) — it raises a floor, adds one for a new file, and drops one for a file no longer on
+ *  disk, but never lowers a floor to match a regression (that is reported and left for a person to review and
+ *  hand-edit with a reason), and it skips writing the file at all when there is nothing to raise, add or remove.
+ *  `pipeline/render.ts` 87→89: reading `performance.now()` directly inside `RenderPass.checkpointFlush()`'s
+ *  1200 ms gate made which side of the gate a `deno test --parallel` run hit wall-clock-dependent, and line
+ *  coverage swung 87.1–89.3% across runs; the floor was lowered to floor(worst observed). `RenderPass` now takes
+ *  its clock as a constructor argument (defaulting to `performance.now` in production, injected as a fake in
+ *  tests/unit/render-checkpoint-flush.test.ts), so a direct test always exercises both branches regardless of
+ *  timing; re-measured at a stable 89.3% across five consecutive runs, restoring the floor to 89. */
 const FLOORS: [RegExp, number][] = [
   [/^codec\/crc\.ts$/, 100],
   [/^codec\/png\.ts$/, 96],
@@ -116,7 +120,7 @@ const FLOORS: [RegExp, number][] = [
   [/^pipeline\/engine\.ts$/, 78],
   [/^pipeline\/features-codec\.ts$/, 100],
   [/^pipeline\/presentation\.ts$/, 87],
-  [/^pipeline\/render\.ts$/, 87],
+  [/^pipeline\/render\.ts$/, 89],
   [/^pipeline\/scan\.ts$/, 89],
   [/^pipeline\/solve\/keyframe-step\.ts$/, 95],
   [/^pipeline\/solve\/region-step\.ts$/, 96],
@@ -163,19 +167,29 @@ for (const raw of text.split('\n')) {
 if (rows.length < 20) {
   throw new Error(`Coverage table parsed only ${rows.length} rows; the report format changed and the gate would silently pass.`);
 }
-let failed = false;
+// Kept apart from `otherFailed` below so `--update-floors` can recompute just this half against the reconciled
+// floors, without losing (or being masked by) the unrelated "file absent from the report" check.
+const updateFloors = Deno.args.includes('--update-floors');
+let floorsFailed = false;
 const summary: Record<string, { line: number; branch: number; fn: number; floor: number; ok: boolean }> = {};
 for (const row of rows) {
   const rule = FLOORS.find(([pattern]) => pattern.test(row.file));
   if (!rule) {
-    failed = true;
-    console.error(`No coverage floor recorded for ${row.file} (line ${row.line}%). Add one to scripts/coverage.ts.`);
+    floorsFailed = true;
+    // Under --update-floors a missing floor is about to be added, not a failure worth printing; the change
+    // summary below reports it as `+ <file>` instead.
+    if (!updateFloors) {
+      console.error(`No coverage floor recorded for ${row.file} (line ${row.line}%). Add one to scripts/coverage.ts.`);
+    }
   }
   const floor = rule ? rule[1] : 0, ok = row.line >= floor;
   summary[row.file] = { line: row.line, branch: row.branch, fn: row.fn, floor, ok };
   if (!ok) {
-    failed = true;
-    console.error(`Line coverage dropped: ${row.file} ${row.line}% < floor ${floor}%`);
+    floorsFailed = true;
+    // Under --update-floors a drop is reported once, by the change summary below (`! <file>`), not here too.
+    if (!updateFloors) {
+      console.error(`Line coverage dropped: ${row.file} ${row.line}% < floor ${floor}%`);
+    }
   }
 }
 for (const [pattern] of FLOORS.filter(([pattern]) => !rows.some((r) => pattern.test(r.file)))) {
@@ -196,8 +210,9 @@ for await (const entry of walk('src')) {
   onDisk.push(entry);
 }
 const unreported = onDisk.filter((f) => !rows.some((r) => r.file === f) && !isBrowserOnly(f));
+let otherFailed = false;
 if (unreported.length) {
-  failed = true;
+  otherFailed = true;
   console.error(`Source files absent from the coverage report and not declared browser-only: ${unreported.join(', ')}`);
 }
 async function* walk(dir: string): AsyncGenerator<string> {
@@ -233,24 +248,50 @@ const lcov = await new Deno.Command(Deno.execPath(), {
 if (!lcov.success) {
   console.error('lcov export failed');
 }
-if (Deno.args.includes('--update-floors')) {
-  // Rewrites the FLOORS block in this file from the run that just finished. Review the diff: a lowered floor hides a regression.
-  const source = await Deno.readTextFile('scripts/coverage.ts');
-  const entries = rows.slice().sort((a, b) => a.file.localeCompare(b.file)).map((r) =>
-    `[/^${r.file.replace(/\./g, '\\.').replace(/\//g, '\\/')}$/, ${Math.floor(r.line)}]`
+if (updateFloors) {
+  // Reconciles the FLOORS block against this run's measured numbers (scripts/coverage-floors.ts): raises a floor
+  // that improved, adds one for a newly-measured file, drops an entry for a file no longer on disk, and leaves a
+  // drop in place (reported, not applied) for a person to review and hand-edit with a reason.
+  const { entries, changes } = reconcileFloors(
+    FLOORS.map(([pattern, floor]) => ({ pattern: pattern.source, floor })),
+    rows.map((r) => ({ file: r.file, line: r.line })),
+    onDisk,
   );
-  const grouped: string[] = [];
-  for (let i = 0; i < entries.length; i += 3) {
-    grouped.push('    ' + entries.slice(i, i + 3).join(', ') + ',');
+  console.log(changes.length ? 'Coverage floor changes:' : 'No coverage floor changes.');
+  for (const line of formatFloorChanges(changes)) {
+    console.log(line);
   }
-  const begin = source.indexOf('const FLOORS: [RegExp, number][] = ['), stop = source.indexOf('];', begin) + 2;
-  await Deno.writeTextFile(
-    'scripts/coverage.ts',
-    source.slice(0, begin) + 'const FLOORS: [RegExp, number][] = [\n' + grouped.join('\n') + '\n];' + source.slice(stop),
-  );
-  console.log(`Rewrote ${entries.length} coverage floors from this run.`);
+  if (needsRewrite(changes)) {
+    // Written in exactly the layout `deno fmt` already normalises a multi-line array literal to (one entry per
+    // line, two-space indent — see renderFloorsBlock's doc comment), so writing this file never leaves it needing
+    // a second `deno fmt` pass to match what gets committed.
+    const source = await Deno.readTextFile('scripts/coverage.ts');
+    const begin = source.indexOf('const FLOORS: [RegExp, number][] = ['), stop = source.indexOf('];', begin) + 2;
+    await Deno.writeTextFile(
+      'scripts/coverage.ts',
+      source.slice(0, begin) + 'const FLOORS: [RegExp, number][] = [\n' + renderFloorsBlock(entries) + '\n];' + source.slice(stop),
+    );
+  } else {
+    console.log('Nothing to raise, add or remove; scripts/coverage.ts left untouched.');
+  }
+  // Re-check against the RECONCILED floors, not the stale ones this run started with: a raise, or a new file's
+  // floor(measured), always passes; a drop stays parked at its old, higher floor, so the gate keeps failing on it
+  // (as it would have anyway) until the drop is reviewed and the floor is hand-edited down with a reason. Already
+  // reported once above by formatFloorChanges, so no further per-row message here.
+  floorsFailed = false;
+  const reconciled: [RegExp, number][] = entries.map((e) => [new RegExp(e.pattern), e.floor]);
+  for (const row of rows) {
+    const rule = reconciled.find(([pattern]) => pattern.test(row.file));
+    const floor = rule ? rule[1] : 0;
+    if (row.line < floor) {
+      floorsFailed = true;
+    }
+  }
+  if (floorsFailed) {
+    console.error('One or more floors need a hand edit — see the drop(s) above.');
+  }
 }
-if (failed) {
+if (floorsFailed || otherFailed) {
   Deno.exit(1);
 }
 console.log(`Line coverage at or above every recorded floor (${rows.length} files).`);

@@ -39,8 +39,8 @@ export function allocOrThrow(exports: CoreExports, length: number, label: string
   return ptr;
 }
 
-/** Runs its cleanup at most once, guarding the repeated "already freed" checks every resident wrapper's
- *  `free()` used to hand-roll. */
+/** Runs its cleanup at most once, so every resident wrapper's `free()` shares this "already freed" check
+ *  instead of hand-rolling its own. */
 export class FreeGuard {
   private done = false;
   once(dispose: () => void): void {

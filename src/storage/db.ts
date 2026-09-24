@@ -29,8 +29,8 @@ const isStoredBlob = (value: unknown): value is StoredBlob => isPlainObject(valu
  *  it cannot catch a caller that persisted a live core view by mistake; real IndexedDB rejects a `put()` whose
  *  value contains a `SharedArrayBuffer` with a `DataCloneError`. `MemoryKV.put` (Deno's IndexedDB stand-in for
  *  tests) checks this explicitly so that bug class — e.g. `wasm/regions.ts`'s `exports.memory.buffer.slice()`,
- *  which on shared memory returns another `SharedArrayBuffer` instead of a copy (final-review item 6) — fails a
- *  `deno task test` run under `LONGSCREEN_CORE=threads` instead of only a real browser. Every value this store
+ *  which on shared memory returns another `SharedArrayBuffer` instead of a copy — fails a `deno task test` run
+ *  under `LONGSCREEN_CORE=threads` instead of only a real browser. Every value this store
  *  actually holds (tiles, temporal rows, diagnostics, features…) is a plain object/array tree of primitives,
  *  typed arrays and `Blob`s (`toStorable`'s doc comment above), so this only needs to walk those shapes — not
  *  every possible JS value. */

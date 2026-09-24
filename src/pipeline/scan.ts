@@ -42,7 +42,7 @@ class ScanPass {
   private storageFailed = false;
   private endedNaturally = false;
   // Set by analyzeFrame() once a stop request was honoured or a per-frame failure ended the pass, so run()'s
-  // loop can break right after the call that set it, exactly where the inlined body used to `break` itself.
+  // loop can break right after the call that set it, without threading a stop signal back through a return value.
   private stop = false;
   constructor(private readonly ctx: RunContext) {}
   /** The first-frame branch (no `previous` gray frame yet): a zero-motion field standing in until frame 1 has
