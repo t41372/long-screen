@@ -24,6 +24,15 @@ import {
   labelAtlasResident as labelAtlasResidentImpl,
   manualUncovered,
 } from './regions.ts';
+import {
+  type PoseGraphEdges,
+  poseGraphFree as poseGraphFreeImpl,
+  poseGraphNew as poseGraphNewImpl,
+  type PoseGraphNodes,
+  poseGraphPass as poseGraphPassImpl,
+  poseGraphRead as poseGraphReadImpl,
+  poseGraphResidual as poseGraphResidualImpl,
+} from './pose-graph.ts';
 
 export interface RefinementResult {
   x: number;
@@ -374,5 +383,22 @@ export class Core {
    *  plane (never copied out and back), plus the per-code pixel counts. Caller owns the returned `resident`. */
   labelAtlasResident(regions: Region[], width: number, height: number): { resident: Resident; counts: Uint32Array } {
     return labelAtlasResidentImpl(this, this.exports, regions, width, height);
+  }
+  /** Pose-graph relaxation (`src/core/pose-graph.ts::PoseGraph.optimize`): a handle per call, one Gauss-Seidel
+   *  sweep per `poseGraphPass`. */
+  poseGraphNew(nodes: PoseGraphNodes, edges: PoseGraphEdges): number {
+    return poseGraphNewImpl(this, this.exports, nodes, edges);
+  }
+  poseGraphPass(handle: number, reverse: boolean): number {
+    return poseGraphPassImpl(this.exports, handle, reverse);
+  }
+  poseGraphResidual(handle: number): number {
+    return poseGraphResidualImpl(this.exports, handle);
+  }
+  poseGraphRead(handle: number, count: number): { x: Float64Array; y: Float64Array } {
+    return poseGraphReadImpl(this, this.exports, handle, count);
+  }
+  poseGraphFree(handle: number): void {
+    poseGraphFreeImpl(this.exports, handle);
   }
 }

@@ -27,6 +27,7 @@ mod learner;
 mod memory;
 mod motion;
 mod png;
+mod pose_graph;
 mod raster;
 mod regions;
 mod voting;

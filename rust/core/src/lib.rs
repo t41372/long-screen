@@ -18,6 +18,7 @@ pub mod layers;
 pub mod motion;
 pub mod png;
 pub mod pool;
+pub mod pose_graph;
 pub mod raster;
 pub mod region;
 pub mod regions;

@@ -190,6 +190,22 @@ export interface CoreExports {
   ls_regions_read_cells(handle: number, out: number): number;
   ls_regions_manual_uncovered(rects: number, count: number, nativeWidth: number, nativeHeight: number): number;
   ls_regions_label_atlas(regions: number, count: number, width: number, height: number, labelsOut: number, countsOut: number): number;
+  ls_pose_graph_new(
+    xs: number,
+    ys: number,
+    pinned: number,
+    nodeCount: number,
+    offsets: number,
+    other: number,
+    dx: number,
+    dy: number,
+    weight: number,
+    edgeCount: number,
+  ): number;
+  ls_pose_graph_pass(handle: number, reverse: number): number;
+  ls_pose_graph_residual(handle: number): number;
+  ls_pose_graph_read(handle: number, xsOut: number, ysOut: number): number;
+  ls_pose_graph_free(handle: number): void;
 }
 
 /** Byte layouts shared with `rust/core/src/abi/wire.rs`. Asserted against the live module's `ls_layout` once

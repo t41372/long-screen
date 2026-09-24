@@ -2,6 +2,7 @@ import type { Point } from '../types.ts';
 import type { KV } from '../storage/db.ts';
 import { iterate } from '../storage/db.ts';
 import { clamp, pad } from './math.ts';
+import { core } from './wasm.ts';
 export interface PoseEdge {
   other: string;
   dx: number;
@@ -151,63 +152,62 @@ export class PoseGraph {
     if (!this.loops) {
       return { residual: 0, iterations: 0 };
     }
-    const all = [...this.nodes.values()];
-    let iterations = 0, updates = 0;
-    for (; iterations < 200; iterations++) {
-      let maxChange = 0;
-      const order = iterations % 2 === 1 ? [...all].reverse() : all;
-      for (const node of order) {
-        if (node.pinned) {
-          continue;
-        }
-        const edges = this.adjacency.get(node.id);
-        if (!edges || !edges.length) {
-          continue;
-        }
-        let x = 0, y = 0, total = 0;
-        for (const edge of edges) {
-          const other = this.nodes.get(edge.other);
-          if (!other) {
-            continue;
-          }
-          const residual = Math.hypot(other.x - node.x - edge.dx, other.y - node.y - edge.dy),
-            weight = edge.weight * Math.min(1, 6 / Math.max(1e-6, residual));
-          x += (other.x - edge.dx) * weight;
-          y += (other.y - edge.dy) * weight;
-          total += weight;
-        }
-        if (!total) {
-          continue;
-        }
-        const px = x / total, py = y / total;
-        maxChange = Math.max(maxChange, Math.hypot(node.x - px, node.y - py));
-        node.x = px;
-        node.y = py;
-        if (++updates % 256 === 0) {
-          await checkpoint();
+    // Hand the whole graph to the Rust core as plain arrays (rust/core/src/pose_graph.rs): `all` fixes the node
+    // order (this Map's iteration/hydration order) that both the CSR adjacency below and the write-back after the
+    // loop rely on; `index` resolves each edge's string id to that same order once, so the core never sees ids.
+    const all = [...this.nodes.values()], index = new Map<string, number>();
+    all.forEach((n, i) => index.set(n.id, i));
+    const xs = new Float64Array(all.length), ys = new Float64Array(all.length), pinned = new Uint8Array(all.length);
+    const offsets = new Uint32Array(all.length + 1);
+    const other: number[] = [], dx: number[] = [], dy: number[] = [], weight: number[] = [];
+    all.forEach((n, i) => {
+      xs[i] = n.x;
+      ys[i] = n.y;
+      pinned[i] = n.pinned ? 1 : 0;
+      offsets[i] = other.length;
+      // `this.adjacency.get(n.id)` returns the same array `connect()` builds (hydration order, then any
+      // in-session pushes appended after): the CSR below preserves that order edge-for-edge.
+      for (const edge of this.adjacency.get(n.id) || []) {
+        other.push(index.get(edge.other) ?? -1);
+        dx.push(edge.dx);
+        dy.push(edge.dy);
+        weight.push(edge.weight);
+      }
+    });
+    offsets[all.length] = other.length;
+    const handle = core().poseGraphNew(
+      { x: xs, y: ys, pinned },
+      { offsets, other: Int32Array.from(other), dx: Float64Array.from(dx), dy: Float64Array.from(dy), weight: Float64Array.from(weight) },
+    );
+    let iterations = 0;
+    try {
+      // One core call per Gauss-Seidel sweep (not per iteration budget of 200, nor per node): `checkpoint()` has
+      // no persisted side effect of its own (it only awaits a pause and may flip `stopRequested`), so calling it
+      // once per sweep — rather than the original's "every 256 node updates" — changes only how finely a real
+      // stop/pause is observed mid-relaxation, never what gets computed or (on a normal finish) persisted.
+      for (; iterations < 200; iterations++) {
+        const maxChange = core().poseGraphPass(handle, iterations % 2 === 1);
+        await checkpoint();
+        if (maxChange < .04) {
+          iterations++;
+          break;
         }
       }
-      if (maxChange < .04) {
-        iterations++;
-        break;
-      }
+      const residual = core().poseGraphResidual(handle);
+      const { x: outX, y: outY } = core().poseGraphRead(handle, all.length);
+      const moved: PoseNode[] = [];
+      all.forEach((n, i) => {
+        if (!n.pinned && (this.adjacency.get(n.id) || []).length) {
+          n.x = outX[i];
+          n.y = outY[i];
+          moved.push(n);
+        }
+      });
+      await this.flush(moved);
+      return { residual, iterations };
+    } finally {
+      core().poseGraphFree(handle);
     }
-    const moved = all.filter((n) => !n.pinned && (this.adjacency.get(n.id) || []).length);
-    await this.flush(moved);
-    let residual = 0;
-    for (const node of all) {
-      const edges = this.adjacency.get(node.id);
-      if (!edges) {
-        continue;
-      }
-      for (const edge of edges) {
-        const other = this.nodes.get(edge.other);
-        if (other) {
-          residual = Math.max(residual, Math.hypot(other.x - node.x - edge.dx, other.y - node.y - edge.dy));
-        }
-      }
-    }
-    return { residual, iterations };
   }
   async correction(id: string, frame: number): Promise<Point> {
     await this.hydrate();
