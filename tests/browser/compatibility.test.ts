@@ -21,8 +21,7 @@ for (const browser of ['chromium', 'webkit'] as const) {
         });
         await page.goto(h.base);
         await page.waitForFunction('!!window.longScreen');
-        await page.selectOption('#demo-select', 'glimpse');
-        await page.click('#demo-btn');
+        await page.evaluate('longScreen.startDemo("glimpse")');
         await page.waitForFunction('["complete", "partial", "error"].includes(longScreen.getProject()?.status)', null, { timeout: 600000 });
         const project = await page.evaluate<Project>('longScreen.getProject()');
         assertEquals(project.status, 'complete', JSON.stringify(project));
@@ -58,6 +57,8 @@ for (const browser of ['chromium', 'webkit'] as const) {
         assertEquals(await page.evaluate('typeof crypto.randomUUID'), 'undefined');
         await page.setInputFiles('#file-input', `${root}tests/fixtures/scroll.mp4`);
         await page.waitForFunction('!document.querySelector("#regions-btn").disabled', null, { timeout: 60000 });
+        // The settings sit behind the printer's dial.
+        await page.click('#knobs-btn');
         await page.click('details.advanced > summary');
         await page.selectOption('#decoder', 'compatibility');
         await page.click('#start-btn');

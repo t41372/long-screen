@@ -14,6 +14,14 @@ export function toast(message: string, error = false): void {
   toastTimer = setTimeout(() => el.hidden = true, error ? 16000 : 9000);
 }
 
+/** Spreads the receipt (the viewer) out over the page, or puts it back. Callers that keep a canvas on screen refit
+ *  the viewer afterwards, since its size just changed. */
+export function setReceiptOpen(open: boolean): void {
+  document.body.classList.toggle('receipt-open', open);
+  $('receipt-backdrop').hidden = !open;
+  $('expand-btn').setAttribute('aria-pressed', String(open));
+}
+
 export const humanBytes = (n: number) => n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : `${(n / 1e6).toFixed(1)} MB`;
 export const timeText = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
 

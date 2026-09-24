@@ -84,6 +84,8 @@ export function createCanvases(state: AppState, viewer: TiledViewer): Canvases {
     if (!c) {
       return;
     }
+    // Before setCanvas: `has-result` gives the receipt its full height, and setCanvas fits to the size it measures.
+    document.body.classList.add('has-result');
     viewer.setCanvas(c, state.project?.settings.tileSize || 512);
     if (fit) {
       viewer.fit();

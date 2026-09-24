@@ -292,7 +292,7 @@ Deno.test('export: the single layout writes one PNG of the whole canvas even whe
   }
 });
 // The 'sheets' layout is the explicit UI entry point for the paged ZIP (restored to the UI after b93d2ea made
-// "下载长图" always send 'single'): it must always page, even a canvas that would otherwise fit one PNG under
+// "下载大截图" always send 'single'): it must always page, even a canvas that would otherwise fit one PNG under
 // 'auto' — that canvas still gets a ZIP, just with exactly one sheet plus its manifest, not silently a PNG.
 Deno.test('export: the sheets layout always pages, even a canvas that would fit one PNG under auto (one sheet + manifest)', async () => {
   const { p, store, meta } = await project(), target = fakeHandle();

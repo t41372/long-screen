@@ -109,8 +109,7 @@ Deno.test({
       const page = h.page;
       await page.goto(h.base + '/');
       await page.waitForFunction('!!window.longScreen');
-      await page.selectOption('#demo-select', 'gap');
-      await page.click('#demo-btn');
+      await page.evaluate('longScreen.startDemo("gap")');
       await page.waitForFunction(
         'longScreen.getProject()?.name === "demo-gap.generated" && ["complete","error","partial"].includes(longScreen.getProject()?.status)',
         null,
@@ -147,6 +146,124 @@ Deno.test({
       assertEquals(h.external, []);
     } finally {
       await h.close();
+    }
+  },
+});
+Deno.test({
+  name: 'browser UI: the demo key puts the sample recording on the screen and prints the whole board from it',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const h = await harness();
+    try {
+      const page = h.page;
+      await page.goto(h.base + '/');
+      await page.waitForFunction('!!window.longScreen');
+      // The same path as a user's file: fetched from static/demo/, chosen, shown on the screen, then run. The chip in the
+      // intro sentence is the one way in.
+      await page.click('#demo-cta');
+      await page.waitForFunction(() => document.querySelector('#file-title')?.textContent === '示例录屏.mp4', null, { timeout: 30000 });
+      assert(await page.evaluate(() => !!document.querySelector<HTMLVideoElement>('#preview-video')?.src), 'the screen plays the sample');
+      await page.waitForFunction(
+        'longScreen.getProject()?.name === "示例录屏.mp4" && ["complete","error","partial"].includes(longScreen.getProject()?.status)',
+        null,
+        { timeout: 240000 },
+      );
+      const project = await page.evaluate('longScreen.getProject()') as { status: string; renderedFrames: number; error?: string };
+      assertEquals(project.status, 'complete', project.error);
+      assertEquals(project.renderedFrames, 343);
+      const canvases = await page.evaluate(
+        'longScreen.getCanvases().map(c => ({ kind: c.kind, w: Math.round(c.bounds.width), h: Math.round(c.bounds.height) }))',
+      );
+      assertEquals(canvases, [{ kind: 'moving', w: 2400, h: 1500 }]);
+      await page.waitForFunction('!document.querySelector("#export-png").disabled', null, { timeout: 30000 });
+      // Spread out, the print sits above its backdrop: the middle of the stage is the viewer, not the blur.
+      await page.click('#expand-btn');
+      const onTop = await page.evaluate(() => {
+        const r = document.querySelector('#stage')!.getBoundingClientRect();
+        return document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)?.id;
+      });
+      assertEquals(onTop, 'viewer');
+      await page.keyboard.press('Escape');
+      assertEquals(h.errors, []);
+      assertEquals(h.external, []);
+    } finally {
+      await h.close();
+    }
+  },
+});
+Deno.test({
+  name: 'browser UI: the clear key takes the recording out and empties the print, the log and the LCD',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const h = await harness();
+    try {
+      const page = h.page;
+      await page.goto(h.base + '/');
+      await page.waitForFunction('!!window.longScreen');
+      await page.setInputFiles('#file-input', `${new URL('../fixtures/scroll.mp4', import.meta.url).pathname}`);
+      await page.waitForFunction(() => document.querySelector('#file-subtitle')?.textContent?.includes('avc1'), null, { timeout: 30000 });
+      await page.click('#start-btn');
+      await page.waitForFunction('["complete","error","partial"].includes(longScreen.getProject()?.status)', null, { timeout: 180000 });
+      await page.waitForFunction('!document.querySelector("#export-png").disabled', null, { timeout: 30000 });
+      await page.click('#clear-btn');
+      const after = await page.evaluate(() => ({
+        project: (globalThis as unknown as { longScreen: { getProject(): unknown } }).longScreen.getProject() ?? null,
+        result: document.body.classList.contains('has-result'),
+        title: document.querySelector('#file-title')?.textContent,
+        screen: document.querySelector('#preview-video')?.hasAttribute('src'),
+        start: (document.querySelector('#start-btn') as HTMLButtonElement).disabled,
+        exportPng: (document.querySelector('#export-png') as HTMLButtonElement).disabled,
+        log: document.querySelector('#diagnostics')?.textContent,
+        count: document.querySelector('#progress-count')?.textContent,
+      }));
+      assertEquals(after.project, null);
+      assertEquals(after.result, false);
+      assertEquals(after.title, '还没放录屏');
+      assertEquals(after.screen, false);
+      assertEquals(after.start, true, 'nothing to print');
+      assertEquals(after.exportPng, true);
+      assert(after.log?.includes('都会记在这里'), after.log ?? '');
+      assertEquals(after.count, '');
+      // The same file can go straight back in.
+      await page.setInputFiles('#file-input', `${new URL('../fixtures/scroll.mp4', import.meta.url).pathname}`);
+      await page.waitForFunction(() => document.querySelector('#file-title')?.textContent === 'scroll.mp4', null, { timeout: 30000 });
+      assertEquals(h.errors, []);
+      assertEquals(h.external, []);
+    } finally {
+      await h.close();
+    }
+  },
+});
+Deno.test({
+  name: 'browser UI: the settings flap opens where there is room and scrolls, so every setting can be reached',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    // A short window with the dial mid-screen (below it) and near the bottom (above it): the flap must stay inside
+    // the window either way, and its last setting must scroll into view.
+    for (const scroll of [300, 0]) {
+      const h = await harness({ viewport: { width: 1000, height: 880 } });
+      try {
+        const page = h.page;
+        await page.goto(h.base + '/');
+        await page.waitForFunction('!!window.longScreen');
+        await page.evaluate((y) => scrollTo(0, y), scroll);
+        await page.click('#knobs-btn');
+        await page.evaluate(() => (document.querySelector('details.advanced') as HTMLDetailsElement).open = true);
+        const box = await page.evaluate(() => {
+          const flap = document.querySelector('#knobs')!, rect = flap.getBoundingClientRect();
+          flap.scrollTop = flap.scrollHeight;
+          const last = document.querySelector('#decoder')!.getBoundingClientRect();
+          return { top: rect.top, bottom: rect.bottom, lastTop: last.top, lastBottom: last.bottom, height: innerHeight };
+        });
+        assert(box.top >= 0 && box.bottom <= box.height, JSON.stringify(box));
+        assert(box.lastTop >= box.top && box.lastBottom <= box.bottom, JSON.stringify(box));
+        assertEquals(h.errors, []);
+      } finally {
+        await h.close();
+      }
     }
   },
 });

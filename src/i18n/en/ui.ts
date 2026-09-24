@@ -50,18 +50,18 @@ export const uiSections: Catalog<typeof zh> = {
       sourceCaption: 'Source frame {{frame}} · {{time}}s · {{message}}',
     },
     export: {
-      imageSuffix: '-long-image',
+      imageSuffix: '-screenshot',
       savePickerFallback: 'Direct save is unavailable; using the browser download instead: {{error}}',
       saveRowLabel: 'Save {{name}} · {{size}}',
       shareLabel: 'Share / save to Photos',
       shareFailed: 'Share failed: {{error}}',
       cleanupLabel: 'Clean up temporary copy after saving',
       exportErrorAction: 'An unfinished export was not marked as successful. Project tiles already committed are still on this device.',
-      clipboardUnsupported: 'This browser cannot copy images; use “Download long image” instead.',
+      clipboardUnsupported: 'This browser cannot copy images; use “Take the screenshot” instead.',
       copyNoImage: 'No image was generated',
-      copyFailedCtor: 'Copy failed: {{error}}. Use “Download long image” instead.',
+      copyFailedCtor: 'Copy failed: {{error}}. Use “Take the screenshot” instead.',
       copySuccess: 'Copied a {{width}} × {{height}} long image; paste it directly.',
-      copyFailed: 'Copy failed: {{error}}. The image may exceed the system clipboard limit; use “Download long image” instead.',
+      copyFailed: 'Copy failed: {{error}}. The image may exceed the system clipboard limit; use “Take the screenshot” instead.',
     },
     history: {
       busyToast: 'Finish the current run first.',
@@ -153,6 +153,19 @@ export const uiSections: Catalog<typeof zh> = {
         mpegts: 'an MPEG-TS video',
         unknown: 'an unrecognised file',
       },
+    },
+    demo: {
+      fileName: 'sample-recording.mp4',
+      loadFailed: 'The sample recording could not be loaded: {{error}}',
+    },
+    feedback: {
+      issueBody:
+        '**What happened?**\n\n\n**What did you expect?**\n\n\n**About the recording** (what page, how you moved, roughly how long; a screenshot helps, but hide anything private)\n\n\n' +
+        '---\nFilled in by Long Screen, edit or delete as you like:\n- Browser: {{browser}}\n- Opened from: {{page}}\n- Multithreaded core (cross-origin isolated): {{threads}}\n- Warnings in the run log: {{warnings}}\n',
+      portable: 'portable build (local file)',
+      yes: 'yes',
+      no: 'no',
+      none: 'none',
     },
     viewer: {
       previewLevel: 'Preview L{{level}} (native size unchanged)',

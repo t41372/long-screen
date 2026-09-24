@@ -1,4 +1,4 @@
-/** "下载长图" (one native-size PNG) and "导出完整项目" (the archival ZIP), plus "复制长图" to the clipboard. Both
+/** "下载大截图" (one native-size PNG) and "导出完整项目" (the archival ZIP), plus "复制大截图" to the clipboard. Both
  *  downloads prefer a native save-file picker and fall back to an anchor download / OPFS temporary copy. */
 import type { AppState } from './state.ts';
 import { $, humanBytes, storageInfo, toast } from './dom.ts';

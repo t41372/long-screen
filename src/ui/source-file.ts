@@ -6,7 +6,7 @@
 import type { AppState } from './state.ts';
 import { $, humanBytes, timeText, toast } from './dom.ts';
 import { call } from './rpc.ts';
-import { captureNativeFrame, decoderVideo, seek, video, waitVideo, waitVideoOn } from './video.ts';
+import { captureNativeFrame, decoderVideo, preview, seek, video, waitVideo, waitVideoOn } from './video.ts';
 import { t } from '../i18n/page.ts';
 import type { Diagnostic, MediaInfo } from '../types.ts';
 import { sniffSource, type SourceSniff } from '../media/sniff.ts';
@@ -41,6 +41,8 @@ export function storeHash(projectId: string, hash: string): void {
 
 export interface SourceFile {
   chooseFile(file: File): Promise<void>;
+  /** Takes the recording out: the screen and the slot go back to empty, as on first load. */
+  clear(): void;
   wire(): void;
 }
 
@@ -85,6 +87,8 @@ export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagn
     videoURL = URL.createObjectURL(file);
     video.src = videoURL;
     decoderVideo.src = videoURL;
+    preview.src = videoURL;
+    void preview.play().catch(() => {});
     $('file-title').textContent = file.name;
     $('file-subtitle').textContent = t('ui.source.subtitleReading', { size: humanBytes(file.size) });
     $('regions-count').textContent = t('page.reconstruct.regionsAuto');
@@ -150,6 +154,9 @@ export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagn
       if (video.readyState < 2) {
         await waitVideo('loadeddata');
       }
+      if (state.selectedFile !== chosen) {
+        return;
+      }
       if (!Number.isFinite(video.duration) || video.duration <= 0) {
         throw new Error('Native player does not expose a finite duration.');
       }
@@ -170,7 +177,12 @@ export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagn
       };
       state.mediaInfo = info;
       await seek(0);
-      state.firstBitmap = await captureNativeFrame();
+      const bitmap = await captureNativeFrame();
+      if (state.selectedFile !== chosen) {
+        bitmap.close();
+        return;
+      }
+      state.firstBitmap = bitmap;
       $('file-subtitle').textContent = t('ui.source.subtitleNativeOnly', {
         width: info.width,
         height: info.height,
@@ -179,6 +191,9 @@ export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagn
       });
       $<HTMLButtonElement>('regions-btn').disabled = false;
     } catch (error) {
+      if (state.selectedFile !== chosen) {
+        return;
+      }
       $('file-subtitle').textContent = t('ui.source.subtitleUnavailable', { size: humanBytes(file.size) });
       toast(t('ui.source.unreadableToast', { reason: String(error) }), true);
     }
@@ -211,5 +226,30 @@ export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagn
       }
     };
   }
-  return { chooseFile, wire };
+  function clear(): void {
+    // A pick still being sniffed or probed is dropped: chooseFile checks `choices` and `state.selectedFile`.
+    choices++;
+    readinessAbort?.abort();
+    state.selectedFile = undefined;
+    state.selectedFileHash = undefined;
+    state.mediaInfo = undefined;
+    state.nativeReady = false;
+    state.manualRegions = [];
+    state.firstBitmap?.close();
+    state.firstBitmap = undefined;
+    for (const el of [preview, video, decoderVideo]) {
+      el.removeAttribute('src');
+      el.load();
+    }
+    if (videoURL) {
+      URL.revokeObjectURL(videoURL);
+      videoURL = undefined;
+    }
+    // Lets the same file be chosen again: an unchanged <input type=file> value fires no change event.
+    $<HTMLInputElement>('file-input').value = '';
+    $('file-title').textContent = t('page.observe.dropTitle');
+    $('file-subtitle').textContent = t('page.observe.dropSubtitle');
+    $('regions-count').textContent = t('page.reconstruct.regionsAuto');
+  }
+  return { chooseFile, clear, wire };
 }

@@ -3,10 +3,10 @@
  *  this file, and everything it imports from src/ui/**, is the "thin TypeScript" shell over the Rust core. */
 // First import: picks the page language before any other module can produce text.
 import { t, takeReopenProject, translatePage, wireLanguageSelect } from '../i18n/page.ts';
-import { $, NO_COMPRESSION_STREAM, phaseName, storageInfo, toast } from './dom.ts';
+import { $, NO_COMPRESSION_STREAM, phaseName, setReceiptOpen, storageInfo, toast } from './dom.ts';
 import { call, on, onError, onFrameRequest, onMessageError } from './rpc.ts';
 import { TiledViewer } from './viewer.ts';
-import { createState } from './state.ts';
+import { createState, syncControls } from './state.ts';
 import { captureFrame, decoderVideo, seekOn, video } from './video.ts';
 import { createCanvases } from './canvases.ts';
 import { createDiagnostics } from './diagnostics.ts';
@@ -49,10 +49,61 @@ history.wire();
 regions.wire();
 exporter.wire();
 
+/** The one demo: a recording that wanders around a page. It takes the same path as a user's file — onto the screen, a
+ *  moment to watch it move, then Print — so what it shows is the real flow. */
+async function playDemo(): Promise<void> {
+  if (state.busy) {
+    return;
+  }
+  const response = await fetch(new URL('./demo/sample.mp4', location.href));
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const file = new File([await response.blob()], t('ui.demo.fileName'), { type: 'video/mp4' });
+  await sourceFile.chooseFile(file);
+  if (state.selectedFile !== file) {
+    return;
+  }
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  if (state.selectedFile === file && !state.busy) {
+    await run.start();
+  }
+}
+// SMIL ignores prefers-reduced-motion: each animated illustration then stays a still at its `data-still` moment.
+if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  for (const svg of document.querySelectorAll<SVGSVGElement>('svg[data-still]')) {
+    svg.setCurrentTime(Number(svg.dataset.still));
+    svg.pauseAnimations();
+  }
+}
+// Clear: the printer goes back to how it was on first load. The project stays in 历史记录 (history).
+$('clear-btn').onclick = () => {
+  if (state.busy) {
+    return;
+  }
+  sourceFile.clear();
+  run.resetView();
+  $('status-title').textContent = t('page.canvas.statusReady');
+  $('progress-message').textContent = t('page.canvas.progressMessageDefault');
+  $('progress-count').textContent = '';
+  syncControls(state, viewer);
+};
+$('demo-cta').onclick = () => void playDemo().catch((error) => toast(t('ui.demo.loadFailed', { error: String(error) }), true));
+
 $('fit-btn').onclick = () => viewer.fit();
 $('native-btn').onclick = () => viewer.native();
 $('zoom-in').onclick = () => viewer.zoom(1.3);
 $('zoom-out').onclick = () => viewer.zoom(1 / 1.3);
+// The viewer's ResizeObserver refits a canvas it is following and keeps the view of one the user zoomed into.
+const spreadReceipt = (open: boolean) => setReceiptOpen(open);
+$('expand-btn').onclick = () => spreadReceipt(!document.body.classList.contains('receipt-open'));
+$('receipt-backdrop').onclick = () => spreadReceipt(false);
+addEventListener('keydown', (e) => {
+  // An open modal dialog handles its own Escape.
+  if (e.key === 'Escape' && document.body.classList.contains('receipt-open') && !document.querySelector('dialog[open]')) {
+    spreadReceipt(false);
+  }
+});
 $<HTMLInputElement>('quality-toggle').onchange = (e) => viewer.setQuality((e.target as HTMLInputElement).checked);
 wireLanguageSelect($<HTMLSelectElement>('language-select'), () => state.project?.id, (message) => toast(message, true));
 $('help-btn').onclick = () => $<HTMLDialogElement>('help-dialog').showModal();
@@ -62,6 +113,21 @@ for (const el of document.querySelectorAll<HTMLElement>('[data-close]')) {
     video.pause();
   };
 }
+// Bug reports open GitHub's new-issue form pre-filled with what helps triage. Nothing leaves the page from here: the
+// user reads and edits the report on GitHub before submitting, and it carries no file name, pixels or file:// path.
+addEventListener('click', (e) => {
+  const link = e.target instanceof Element ? e.target.closest<HTMLAnchorElement>('a.report-link') : null;
+  if (!link) {
+    return;
+  }
+  const body = t('ui.feedback.issueBody', {
+    browser: navigator.userAgent,
+    page: location.protocol === 'file:' ? t('ui.feedback.portable') : location.host,
+    threads: crossOriginIsolated ? t('ui.feedback.yes') : t('ui.feedback.no'),
+    warnings: diagnostics.warningCodes() || t('ui.feedback.none'),
+  });
+  link.href = `${link.href.split('?')[0]}?body=${encodeURIComponent(body)}`;
+});
 $('persist-btn').onclick = () => {
   if (typeof navigator.storage?.persist !== 'function') {
     toast(t('ui.main.persistUnsupported'));
@@ -87,10 +153,23 @@ on('finished', (m) => {
   flightEnd();
   run.updateProject(m.data);
   run.setBusy(false);
-  void canvases.refreshCanvases(true).then(() => viewer.fit());
+  void canvases.refreshCanvases(true).then(() => {
+    if (viewer.following) {
+      viewer.fit();
+    }
+    // Stacked layouts print below the printer: bring the print into view when it is out of sight.
+    const top = $('receipt').getBoundingClientRect().top;
+    if (state.canvases.length && top > innerHeight * .6) {
+      $('receipt').scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    }
+  });
   void diagnostics.loadDiagnostics();
   void storageInfo();
   $('status-title').textContent = phaseName(m.data.status);
+  // The last progress event can land short of the end; a finished print shows every gumball filled.
+  if (m.data.status === 'complete') {
+    $('progress-bar').style.width = '100%';
+  }
   if (m.data.error) {
     toast(m.data.error, true);
   }
@@ -173,6 +252,8 @@ if (interrupted) {
 (globalThis as unknown as { longScreen: unknown }).longScreen = {
   getProject: () => state.project,
   getCanvases: () => state.canvases,
+  /** Runs one of the synthetic scenes (src/synthetic/scenarios.ts) the tests use; the page itself only offers the sample. */
+  startDemo: (name: string) => run.start(name),
   rpc: call,
   viewer,
 };

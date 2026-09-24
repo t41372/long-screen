@@ -7,6 +7,8 @@ export const video = $<HTMLVideoElement>('source-video');
 // user-facing dialog's own seeks on the same <video> (both seeking the shared element could resolve on
 // whichever 'seeked' event fired first and capture the wrong-time frame).
 export const decoderVideo = $<HTMLVideoElement>('decoder-video');
+/** The printer's screen: loops the chosen recording while the printer is idle, paused while it works. */
+export const preview = $<HTMLVideoElement>('preview-video');
 
 /** `signal`, when given, cancels the wait (removing its listeners) without the caller needing its own bookkeeping
  *  — source-file.ts uses this so a newly chosen file's readiness wait supersedes, rather than races, the previous

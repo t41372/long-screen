@@ -3,7 +3,8 @@
  *  diagnostic state at once), and the progress bar. */
 import type { AppState } from './state.ts';
 import { syncControls } from './state.ts';
-import { $, NO_COMPRESSION_STREAM, phaseName, timeText, toast } from './dom.ts';
+import { $, NO_COMPRESSION_STREAM, phaseName, setReceiptOpen, timeText, toast } from './dom.ts';
+import { preview } from './video.ts';
 import { call } from './rpc.ts';
 import { flightStart } from './flight.ts';
 import { storeHash } from './source-file.ts';
@@ -37,9 +38,25 @@ export interface Run {
 
 export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvases, diagnostics: Diagnostics): Run {
   let paused = false;
+  // The LCD's run timer: wall-clock time of the current run, not counting time spent paused.
+  let startedAt = 0, pausedAt = 0, pausedFor = 0, ticker: ReturnType<typeof setInterval> | undefined;
+  const showElapsed = () => {
+    $('elapsed').textContent = timeText(((paused ? pausedAt : performance.now()) - startedAt - pausedFor) / 1000);
+  };
 
   function setBusy(value: boolean): void {
     state.busy = value;
+    if (!value && ticker !== undefined) {
+      clearInterval(ticker);
+      ticker = undefined;
+      showElapsed();
+    }
+    // The screen pauses while the printer works, so it never competes with the run for a video decoder.
+    if (value) {
+      preview.pause();
+    } else if (preview.src) {
+      void preview.play().catch(() => {});
+    }
     document.body.classList.toggle('is-processing', value);
     $('run-controls').hidden = !value;
     $('status-dot').classList.toggle('running', value);
@@ -51,9 +68,12 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     canvases.reset();
     diagnostics.reset();
     viewer.clear();
+    document.body.classList.remove('has-result');
+    setReceiptOpen(false);
     $('empty-state').hidden = false;
     $('canvas-badge').hidden = true;
     $<HTMLSelectElement>('canvas-select').replaceChildren(new Option(t('ui.run.waitingCanvasOption'), ''));
+    $('elapsed').textContent = timeText(0);
     $('frames-metric').textContent = '0';
     $('canvases-metric').textContent = '0';
     $('progress-bar').style.width = '0';
@@ -86,6 +106,9 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     resetView();
     setBusy(true);
     paused = false;
+    startedAt = performance.now();
+    pausedFor = 0;
+    ticker = setInterval(showElapsed, 250);
     $('pause-btn').textContent = t('ui.run.pauseLabel');
     $('status-title').textContent = t('ui.run.preparingStatus');
     $('progress-message').textContent = t('ui.run.preparingMessage');
@@ -152,16 +175,31 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
   }
   function wire(): void {
     $('start-btn').onclick = () => void start();
-    $('demo-btn').onclick = () => void start($<HTMLSelectElement>('demo-select').value);
     $('pause-btn').onclick = () => {
       void call('pause', { paused: !paused }).then((result) => {
+        if (result.paused !== paused) {
+          const now = performance.now();
+          if (result.paused) {
+            pausedAt = now;
+          } else {
+            pausedFor += now - pausedAt;
+          }
+        }
         paused = result.paused;
         $('pause-btn').textContent = paused ? t('ui.run.resumeLabel') : t('ui.run.pauseLabel');
         $('status-title').textContent = paused ? t('ui.run.pausedStatus') : t('ui.run.resumedStatus');
       }).catch((e) => toast(String(e), true));
     };
     $('stop-btn').onclick = () => {
-      void call('stop').then(() => toast(t('ui.run.stopToast'))).catch((e) => toast(String(e), true));
+      void call('stop').then(() => {
+        // Stopping also resumes a paused run (it goes on to put together and save what it has): the timer runs again.
+        if (paused) {
+          pausedFor += performance.now() - pausedAt;
+          paused = false;
+          $('pause-btn').textContent = t('ui.run.pauseLabel');
+        }
+        toast(t('ui.run.stopToast'));
+      }).catch((e) => toast(String(e), true));
     };
     globalThis.addEventListener('beforeunload', (e) => {
       if (state.busy) {

@@ -21,8 +21,7 @@ Deno.test({
       const caps = await page.evaluate('longScreen.rpc("capabilities")') as { privateStorage: boolean; opfs: boolean };
       assertEquals(caps.privateStorage, true, 'the session must be detected as one without Blob storage');
       await page.waitForFunction(`document.querySelector('#toast').textContent.includes('隐私浏览')`);
-      await page.selectOption('#demo-select', 'gap');
-      await page.click('#demo-btn');
+      await page.evaluate('longScreen.startDemo("gap")');
       await page.waitForFunction(
         '["complete", "partial", "error"].includes(longScreen.getProject()?.status)',
         null,

@@ -30,7 +30,8 @@ export function createState(): AppState {
 export function syncControls(state: AppState, viewer: TiledViewer): void {
   const busy = state.busy;
   $<HTMLButtonElement>('start-btn').disabled = busy || !state.selectedFile;
-  $<HTMLButtonElement>('demo-btn').disabled = busy;
+  $<HTMLButtonElement>('demo-cta').disabled = busy;
+  $<HTMLButtonElement>('clear-btn').disabled = busy;
   $<HTMLButtonElement>('regions-btn').disabled = busy || !state.firstBitmap;
   $<HTMLButtonElement>('export-project').disabled = busy || !state.project?.renderedFrames;
   $<HTMLButtonElement>('export-png').disabled = busy || !viewer.current?.tileCount;

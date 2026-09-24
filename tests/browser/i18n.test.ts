@@ -24,7 +24,7 @@ Deno.test({
       await page.goto(h.base + '/');
       await page.waitForFunction('!!window.longScreen');
       assertEquals(await page.evaluate(() => document.documentElement.lang), 'en');
-      assertEquals(await page.title(), 'Long Screen — More than one screen');
+      assertEquals(await page.title(), 'Long Screen — One big screenshot from a screen recording');
       // textContent, not innerText: the closed dialogs (help, history, regions, source) and every <option> count too.
       const bodyText = await page.evaluate(() => document.body.textContent || '');
       // The language menu always lists both languages by their own name, including "中文" for the zh option —
@@ -82,7 +82,7 @@ Deno.test({
       await page.goto(h.base + '/');
       await page.waitForFunction('!!window.longScreen');
       assertEquals(await page.evaluate(() => document.documentElement.lang), 'zh-CN');
-      assertEquals(await page.title(), 'Long Screen — 让画面不止一屏');
+      assertEquals(await page.title(), 'Long Screen — 把录屏拼成一整张大截图');
       assertEquals(h.errors, []);
     } finally {
       await h.close();
@@ -101,7 +101,7 @@ Deno.test({
       await page.goto(h.base + '/');
       await page.waitForFunction('!!window.longScreen');
       assertEquals(await page.evaluate(() => document.documentElement.lang), 'en');
-      assertEquals(await page.title(), 'Long Screen — More than one screen');
+      assertEquals(await page.title(), 'Long Screen — One big screenshot from a screen recording');
       assertEquals(h.errors, []);
     } finally {
       await h.close();
@@ -147,8 +147,7 @@ Deno.test({
       const page = h.page;
       await page.goto(h.base + '/');
       await page.waitForFunction('!!window.longScreen');
-      await page.selectOption('#demo-select', 'horizontal');
-      await page.click('#demo-btn');
+      await page.evaluate('longScreen.startDemo("horizontal")');
       await page.waitForFunction(
         '["complete","error","partial"].includes(longScreen.getProject()?.status)',
         null,

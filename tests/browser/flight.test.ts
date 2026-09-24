@@ -14,10 +14,11 @@ Deno.test({
     const h = await harness();
     try {
       const page = h.page;
+      // The printer shakes while it works, and Playwright only clicks a key that holds still; reduced motion stops it.
+      await page.emulateMedia({ reducedMotion: 'reduce' });
       await page.goto(h.base + '/');
       await page.waitForFunction('!!window.longScreen');
-      await page.selectOption('#demo-select', 'comic');
-      await page.click('#demo-btn');
+      await page.evaluate('longScreen.startDemo("comic")');
       // Mid-run, backgrounded for a moment (as when the user switches apps), then killed. The engine's own "暂停"
       // (pause) is used to make sure the run is still genuinely in progress at the moment we simulate the kill:
       // measured, the 'comic' demo reaches project status "complete" only ~2s after the first '#progress-count'
@@ -65,8 +66,7 @@ Deno.test({
       assertEquals(interrupted.hiddenS, recorded.hiddenS);
       assertEquals(await page.evaluate(() => localStorage.getItem('long-screen.flight')), null, 'the report is shown once');
       // A run that finishes: nothing to report on the next load.
-      await page.selectOption('#demo-select', 'gap');
-      await page.click('#demo-btn');
+      await page.evaluate('longScreen.startDemo("gap")');
       await page.waitForFunction(
         'longScreen.getProject()?.name === "demo-gap.generated" && ["complete","error","partial"].includes(longScreen.getProject()?.status)',
         null,
@@ -95,8 +95,7 @@ Deno.test({
       const page = h.page;
       await page.goto(h.base + '/');
       await page.waitForFunction('!!window.longScreen');
-      await page.selectOption('#demo-select', 'comic');
-      await page.click('#demo-btn');
+      await page.evaluate('longScreen.startDemo("comic")');
       await page.waitForFunction(`/帧/.test(document.querySelector('#progress-count')?.textContent || '')`, null, { timeout: 60000 });
       // A bfcache-eligible navigation fires `pagehide` with `persisted: true` (the page is frozen, not unloaded)
       // and, on returning, `pageshow`. src/ui/flight.ts's `visibilitychange` listener must not stay disabled by

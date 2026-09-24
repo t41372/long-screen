@@ -48,6 +48,12 @@ export class TiledViewer {
   private focus?: Rect;
   private maxCache = 48;
   private animation = 0;
+  /** Until the user pans, zooms or locates something, the view keeps the whole canvas fitted and centred: while a
+   *  run is still growing it, after the stage is resized, and when it finishes. `fit()` (the Fit button) resumes it. */
+  private follow = true;
+  /** The bounds the view last saw, as text: the canvas list updates a CanvasMeta in place (canvases.ts mergeCanvas), so
+   *  the previous bounds cannot be read back from `meta` itself. */
+  private boundsKey = '';
   constructor(
     private canvas: HTMLCanvasElement,
     private fetch: (canvasId: string, level: number, x: number, y: number) => Promise<TilePayload | null>,
@@ -56,7 +62,7 @@ export class TiledViewer {
     private tileSize = 512,
   ) {
     this.ctx = canvas.getContext('2d')!;
-    new ResizeObserver(() => this.schedule()).observe(canvas);
+    new ResizeObserver(() => this.follow ? this.fit(false) : this.schedule()).observe(canvas);
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       const r = canvas.getBoundingClientRect();
@@ -72,6 +78,7 @@ export class TiledViewer {
       if (!this.pointers.has(e.pointerId)) {
         return;
       }
+      this.follow = false;
       const before = [...this.pointers.values()], r = canvas.getBoundingClientRect();
       this.pointers.set(e.pointerId, { x: e.clientX - r.left, y: e.clientY - r.top });
       const after = [...this.pointers.values()];
@@ -95,19 +102,26 @@ export class TiledViewer {
   }
   setCanvas(meta: CanvasMeta, tileSize: number): void {
     const different = this.meta?.id !== meta.id || this.tileSize !== tileSize;
+    const { x, y, width, height } = meta.bounds, boundsKey = `${x},${y},${width},${height}`;
+    const grew = boundsKey !== this.boundsKey;
     this.meta = meta;
     this.tileSize = tileSize;
+    this.boundsKey = boundsKey;
     this.maxCache = globalThis.innerWidth < 700 ? 20 : 48;
     if (different) {
       this.invalidate();
       this.focus = undefined;
       this.fit(false);
+    } else if (grew && this.follow) {
+      this.fit();
     } else {
       this.schedule();
     }
   }
   clear(): void {
     this.animation++;
+    this.follow = true;
+    this.boundsKey = '';
     this.meta = undefined;
     this.invalidate();
     this.schedule();
@@ -147,6 +161,7 @@ export class TiledViewer {
     requestAnimationFrame(step);
   }
   fit(animate = true): void {
+    this.follow = true;
     const m = this.meta;
     if (!m || !m.bounds.width || !m.bounds.height) return;
     const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
@@ -162,11 +177,13 @@ export class TiledViewer {
     this.zoom(1 / this.scale, undefined, undefined, true);
   }
   zoom(factor: number, x = this.canvas.clientWidth / 2, y = this.canvas.clientHeight / 2, animate = false): void {
+    this.follow = false;
     const next = Math.min(12, Math.max(1e-9, this.scale * factor)), ratio = next / this.scale;
     this.moveTo(next, x - (x - this.ox) * ratio, y - (y - this.oy) * ratio, animate);
   }
   focusRegion(region: Rect): void {
     this.animation++;
+    this.follow = false;
     this.focus = region;
     this.scale = Math.min(this.canvas.clientWidth / (region.width + 80), this.canvas.clientHeight / (region.height + 80), 1.5);
     this.ox = this.canvas.clientWidth / 2 - (region.x + region.width / 2) * this.scale;
@@ -175,6 +192,10 @@ export class TiledViewer {
   }
   get current(): CanvasMeta | undefined {
     return this.meta;
+  }
+  /** Whether the view still follows the whole canvas (no pan, zoom or locate since the last fit). */
+  get following(): boolean {
+    return this.follow;
   }
   private schedule(): void {
     if (!this.requested) {

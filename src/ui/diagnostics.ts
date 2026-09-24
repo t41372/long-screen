@@ -17,6 +17,8 @@ export interface Diagnostics {
   loadDiagnostics(reset?: boolean): Promise<void>;
   renderDiagnostics(): void;
   reset(): void;
+  /** The warning and error codes seen so far, as `CODE ×count` — what a bug report needs, with no user content. */
+  warningCodes(): string;
   wire(): void;
 }
 
@@ -111,11 +113,17 @@ export function createDiagnostics(state: AppState, viewer: TiledViewer, canvases
     }
   }
   async function showDiagnostic(d: Diagnostic): Promise<void> {
+    // The notes sheet covers the receipt: close it so the located region, or the source dialog, is in view.
+    const sheet = $('note-sheet');
+    if (typeof sheet.hidePopover === 'function' && sheet.matches(':popover-open')) {
+      sheet.hidePopover();
+    }
     if (d.canvasId && state.canvases.some((c) => c.id === d.canvasId)) {
       $<HTMLSelectElement>('canvas-select').value = d.canvasId;
       canvases.selectCanvas(false);
       if (d.region) {
         viewer.focusRegion(d.region);
+        $('receipt').scrollIntoView({ block: 'nearest' });
       }
     }
     if (d.time !== undefined) {
@@ -177,9 +185,12 @@ export function createDiagnostics(state: AppState, viewer: TiledViewer, canvases
     $('warning-count').classList.remove('has-issues');
     renderDiagnostics();
   }
+  function warningCodes(): string {
+    return [...warningCounts].filter(([, v]) => v.severity !== 'info').map(([code, v]) => `${code} ×${v.count}`).join(', ');
+  }
   function wire(): void {
     $<HTMLSelectElement>('diagnostic-filter').onchange = renderDiagnostics;
     $('more-diagnostics').onclick = () => void loadDiagnostics(false);
   }
-  return { addDiagnostic, applyDiagnosticTotals, loadDiagnostics, renderDiagnostics, reset, wire };
+  return { addDiagnostic, applyDiagnosticTotals, loadDiagnostics, renderDiagnostics, reset, warningCodes, wire };
 }

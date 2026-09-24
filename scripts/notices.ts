@@ -10,6 +10,8 @@
  *     gives the resolved module graph; any specifier that isn't a local `file://` module is a bundled dependency.
  *     License text comes from the local npm/jsr cache (both already downloaded for the build to have worked at
  *     all) — no extra network call beyond what `deno bundle` already made.
+ *   - Fonts: the files static/fonts/ ships, with the licence text kept beside them (static/fonts/OFL.txt). They are
+ *     copied in from an npm package rather than bundled, so FONT names that package and version.
  *  Fails (throws) if a bundled dependency's license can't be discovered, rather than silently shipping one with no
  *  notice — see the `--fail`-shaped checks below. MPL-2.0 dependencies get an extra "exact source available at"
  *  line, which MPL-2.0 §3.2 requires when distributing only object/compiled form (true for both the Wasm core and
@@ -17,7 +19,7 @@
 import { dirname, fromFileUrl, join } from '@std/path';
 
 export interface NoticeEntry {
-  ecosystem: 'rust' | 'js';
+  ecosystem: 'rust' | 'js' | 'font';
   name: string;
   version: string;
   license: string;
@@ -331,6 +333,45 @@ async function jsNotices(root: string, entries: readonly string[]): Promise<Noti
 
 const MPL_PREFIX = 'MPL-2.0';
 
+/** The self-hosted UI font: static/fonts/*.woff2 are the latin and latin-ext subsets from this npm package. */
+const FONT = {
+  name: 'Baloo 2 (@fontsource-variable/baloo-2, latin and latin-ext subsets)',
+  version: '5.3.0',
+  license: 'OFL-1.1',
+  sourceUrl: 'https://github.com/EkType/Baloo2',
+};
+
+async function fontNotices(root: string): Promise<NoticeEntry[]> {
+  const dir = join(root, 'static/fonts');
+  let shipsFonts = false;
+  for await (const entry of Deno.readDir(dir)) {
+    if (entry.isFile && entry.name.endsWith('.woff2')) shipsFonts = true;
+  }
+  if (!shipsFonts) return [];
+  return [{ ecosystem: 'font', ...FONT, licenseText: await Deno.readTextFile(join(dir, 'OFL.txt')) }];
+}
+
+/** The third-party logos inlined into static/index.html. They are artwork and trademarks, not code, so this project's
+ *  MIT license does not cover them; each is shown unmodified, only to say what the project uses or where it lives. */
+const LOGO_NOTICES = `## Logos shown on the page
+
+Rust logo (rust-logo-single-path.svg), shown unmodified in the page footer
+© Rust Foundation — CC-BY-4.0, https://creativecommons.org/licenses/by/4.0/
+Source: https://github.com/rust-lang/rust-artwork/tree/main/logo
+Rust and the Rust logo are trademarks of the Rust Foundation, used here under its trademark policy
+(https://rustfoundation.org/policy/rust-trademark-policy/) only to say that the core is written in Rust. This project
+is not affiliated with or endorsed by the Rust Project or the Rust Foundation.
+
+WebAssembly logo (web-assembly-icon.svg) by Carlos Baraza, shown unmodified in the page footer — CC0-1.0
+Source: https://github.com/carlosbaraza/web-assembly-logo
+
+GitHub Invertocat mark, shown unmodified to link to this project's repository
+The Invertocat and GitHub are trademarks of GitHub, Inc., used as its logo guidelines allow
+(https://brand.github.com/foundations/logo). This project is not affiliated with or endorsed by GitHub.
+
+TypeScript and Deno are named on the page as text only; their logos are not used.
+`;
+
 function renderSection(title: string, emptyNote: string, entries: NoticeEntry[]): string {
   if (entries.length === 0) {
     return `## ${title}\n\n${emptyNote}\n`;
@@ -365,7 +406,7 @@ function renderSection(title: string, emptyNote: string, entries: NoticeEntry[])
  *  relative to `root`, matching scripts/build.ts's own `entries` list for that build — a production build that
  *  drops testkit.js should pass the same trimmed list it bundles). */
 export async function generateNotices(root: string, jsEntries: readonly string[]): Promise<string> {
-  const [rust, js] = await Promise.all([rustNotices(root), jsNotices(root, jsEntries)]);
+  const [rust, js, fonts] = await Promise.all([rustNotices(root), jsNotices(root, jsEntries), fontNotices(root)]);
   return [
     'Long Screen — Third-Party Notices',
     '',
@@ -384,6 +425,8 @@ export async function generateNotices(root: string, jsEntries: readonly string[]
         "time) — every module in the bundle is this project's own src/**.",
       js,
     ),
+    renderSection('Fonts shipped in fonts/', 'No font files are shipped.', fonts),
+    LOGO_NOTICES,
   ].join('\n');
 }
 

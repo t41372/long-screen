@@ -17,7 +17,7 @@
  *   - A blob URL made on the page cannot be handed to a worker (opaque-origin fetch/Worker again), so each worker
  *     context must rebuild its own blob URLs from embedded text — hence `installPortable` re-serializes itself
  *     into the classic-worker source it constructs.
- *   - Chromium only (Chrome, Edge). WebKit runs the built-in demos but, from file://, a worker cannot read the File
+ *   - Chromium only (Chrome, Edge). WebKit runs the synthetic test scenes but, from file://, a worker cannot read the File
  *     the user picked ("The I/O read operation failed") and a <video> cannot load its blob URL, so a real recording
  *     never gets past the probe; routing file reads through the page would need changes under src/.
  *
@@ -58,8 +58,18 @@ if (isDevBuild) {
 // --- 1/2: read + wrap the three bundles the portable page actually loads (main, worker, convert-worker; the
 // threads-only core-helper.js is never reached from file://, see the module doc comment). ---
 const html = await readDist('index.html');
-const css = await readDist('style.css');
+// A file:// page cannot load ./fonts/ either, so each font style.css names goes into it as a data: URL.
+let css = await readDist('style.css');
+for (const name of new Set([...css.matchAll(/url\(\.\/fonts\/([\w.-]+\.woff2)\)/g)].map((m) => m[1]))) {
+  const data = encodeBase64(await readDist(`fonts/${name}`, true));
+  css = css.replaceAll(`url(./fonts/${name})`, `url(data:font/woff2;base64,${data})`);
+}
+if (css.includes('url(./')) throw new Error('dist-portable/.site/style.css: a url(./...) reference survived font inlining.');
 const icon = await readDist('icon.svg');
+// The sample recording behind the demo button. The page fetches ./demo/sample.mp4, which file:// cannot serve, so the
+// bytes ride along in the page and the bootstrap answers that one fetch from them. Page-only: it stays out of the
+// payload, which every worker's source re-embeds.
+const demoVideo = encodeBase64(await readDist('demo/sample.mp4', true));
 const notices = await readDist('THIRD_PARTY_NOTICES.txt');
 // `resolvesAssets`: the bundle locates a sibling asset (worker.js, the Wasm core, convert-worker.js) through
 // `new URL('./x', import.meta.url)`, so the rewrite below must actually hit it; a bundle that stopped doing so
@@ -192,7 +202,7 @@ const NOTICE_STYLE = 'display:flex;gap:16px;align-items:flex-start;padding:12px 
   'font-size:14px;line-height:1.7';
 const CLOSE_STYLE = 'flex:none;background:none;border:1px solid rgba(252,255,246,.6);border-radius:6px;color:inherit;' +
   'font:inherit;padding:0 10px;cursor:pointer';
-const BROWSER_NOTICE = '这个便携版只支持 Chrome 和 Edge。当前浏览器能运行内置演示，但多半读不了你选的录屏文件。' +
+const BROWSER_NOTICE = '这个便携版只支持 Chrome 和 Edge。当前浏览器多半读不了录屏文件。' +
   '请用 Chrome 或 Edge 打开 long-screen.html（Mac：右键 →“打开方式”→ Chrome）。';
 const START_NOTICE =
   'Long Screen 没能启动：页面脚本加载或运行失败。请用最新版 Chrome 或 Edge 打开，并确认浏览器或公司策略没有禁止本地网页运行脚本；' +
@@ -200,6 +210,7 @@ const START_NOTICE =
 const noscript = `<noscript><div role="alert" style="${OVERLAY_STYLE};${NOTICE_STYLE}">Long Screen 需要 JavaScript：` +
   '请在 Chrome 或 Edge 中允许这个页面运行脚本。</div></noscript>';
 const bootstrap = `<script type="application/json" id="long-screen-portable">${payloadJSON}</script>
+<script type="text/plain" id="long-screen-demo">${demoVideo}</script>
 <script>(function () {
   function notice(text) {
     var box = document.getElementById('portable-notices');
@@ -231,6 +242,15 @@ const bootstrap = `<script type="application/json" id="long-screen-portable">${p
   }
   if (!/Chrom(e|ium)\\//.test(navigator.userAgent)) notice(${JSON.stringify(BROWSER_NOTICE)});
   try {
+    var demo = document.getElementById('long-screen-demo'), demoHref = new URL('demo/sample.mp4', location.href).href;
+    var pageFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      var href = typeof input === 'string' ? new URL(input, location.href).href : input instanceof URL ? input.href : input.url;
+      if (href !== demoHref) return pageFetch(input, init);
+      var bin = atob(demo.textContent), bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return Promise.resolve(new Response(bytes, { headers: { 'content-type': 'video/mp4' } }));
+    };
     var data = JSON.parse(document.getElementById('long-screen-portable').textContent);
     (${installPortable.toString()})(data, location.href);
     var s = document.createElement('script');
