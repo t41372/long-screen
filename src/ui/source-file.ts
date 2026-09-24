@@ -6,7 +6,7 @@
 import type { AppState } from './state.ts';
 import { $, humanBytes, timeText, toast } from './dom.ts';
 import { call } from './rpc.ts';
-import { captureNativeFrame, decoderVideo, seek, video, waitVideo } from './video.ts';
+import { captureNativeFrame, decoderVideo, seek, video, waitVideo, waitVideoOn } from './video.ts';
 import type { Diagnostic, MediaInfo } from '../types.ts';
 
 const MEDIA_HASH_PREFIX = 'long-screen-media-hash:';
@@ -44,6 +44,9 @@ export interface SourceFile {
 
 export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagnostic): void }): SourceFile {
   let videoURL: string | undefined;
+  // Cancels the previous file's readiness listeners (decoderVideo's 'loadedmetadata'/'loadeddata'/'error'/timeout)
+  // when a new file is chosen before they fired, so they never fire late against the new file's decoderVideo.src.
+  let readinessAbort: AbortController | undefined;
 
   async function chooseFile(file: File): Promise<void> {
     if (state.busy) {
@@ -68,11 +71,26 @@ export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagn
     $('regions-count').textContent = '自动识别 ↗';
     $<HTMLButtonElement>('start-btn').disabled = false;
     $<HTMLButtonElement>('regions-btn').disabled = true;
-    // Native element readiness is tracked for compatibility mode and source-time review; it is not required to start.
-    void waitVideo('loadeddata').then(() => {
-      state.nativeReady = Number.isFinite(video.duration) && video.duration > 0;
-    }).catch(() => {
+    // Native element readiness is tracked for compatibility mode and source-time review; it is not required to
+    // start. It is measured on decoderVideo, the element compatibility mode seeks (main.ts's onFrameRequest), not on
+    // this preview. WebKit can leave a <video> at HAVE_METADATA without buffering any frame, so 'loadeddata' never
+    // fires on its own: measured on Playwright WebKit 2248 with the preload="metadata" preview, and preload="auto"
+    // is only a hint that mobile browsers may lower. Seeking to 0 after 'loadedmetadata' makes it load the first
+    // frame ('loadeddata' ~100 ms later); where a frame is already buffered (Chrome) the seek is skipped.
+    readinessAbort?.abort();
+    const abort = readinessAbort = new AbortController();
+    decoderVideo.addEventListener('loadedmetadata', () => {
+      if (decoderVideo.readyState < 2) {
+        decoderVideo.currentTime = 0;
+      }
+    }, { once: true, signal: abort.signal });
+    void waitVideoOn(decoderVideo, 'loadeddata', { signal: abort.signal }).then(() => {
+      state.nativeReady = Number.isFinite(decoderVideo.duration) && decoderVideo.duration > 0;
+    }).catch((error) => {
       state.nativeReady = false;
+      // A file the native player cannot play (e.g. VP9 Profile 1 in WebKit) ends here; the reason is logged so a
+      // declined compatibility-mode start can be diagnosed.
+      console.warn('decoderVideo did not become ready:', error);
     });
     const chosen = file;
     try {

@@ -125,6 +125,19 @@ Deno.test({
         const kit = (window as any).longScreenKit;
         const scenario = kit.buildScenario('fixture');
         const results: Record<string, unknown> = {};
+        // scroll.webm's track is VP9 Profile 1 (4:4:4, ffprobe: vp09.01.20.08); Matroska carried no CodecPrivate for
+        // it, so the demuxer falls back to a generic 'vp09.00.10.08' (profile 0) string. isConfigSupported(profile 0)
+        // says yes, decoder.configure/decode with the mismatched profile then fails mid-stream with an opaque
+        // 'EncodingError: Decoder failure' instead of the clean UNSUPPORTED_CODEC openMedia() already raises for a
+        // codec it knows it cannot decode. Probing the file's true codec string up front tells the two cases apart
+        // without hardcoding a browser quirk: if this engine cannot decode Profile 1 at all (measured: Playwright
+        // WebKit 2248 says isConfigSupported === false for the correct string too), no demuxer fix changes the
+        // outcome, only where it is reported.
+        const vp9p1 = await (window as any).VideoDecoder.isConfigSupported({
+          codec: 'vp09.01.20.08',
+          codedWidth: 320,
+          codedHeight: 240,
+        });
         for (const name of ['scroll.mp4', 'scroll.webm', 'negative-cts.mov', 'scroll-384.mp4']) {
           const blob = await (await fetch('/fixtures/' + name)).blob();
           // The shipped default chain, with the canvas at its end counting every call.
@@ -132,6 +145,22 @@ Deno.test({
           const canvas = kit.canvasConverter();
           const planar = kit.planarConverter((frame: VideoFrame, info: unknown) => (canvasCalls++, canvas(frame, info)));
           const chain = kit.workerConverter(new URL('./assets/convert-worker.js', location.href), kit.directConverter(planar));
+          if (name === 'scroll.webm' && !vp9p1.supported) {
+            const t0 = performance.now();
+            let error = '', source: { dispose(): void; frames(): AsyncGenerator<{ image: unknown }> } | undefined;
+            try {
+              source = await kit.openMedia(new File([blob], name), chain);
+              for await (const _f of source!.frames()) { /* draining until the decoder fails */ }
+            } catch (e) {
+              error = String(e);
+            } finally {
+              // openMedia() itself can throw (the UNSUPPORTED_CODEC gate, once the codec string is correct) before
+              // a source exists to own the chain; either way the chain's worker must not leak into the next fixture.
+              source ? source.dispose() : chain.dispose?.();
+            }
+            results[name] = { unsupported: true, error, ms: performance.now() - t0 };
+            continue;
+          }
           const source = await kit.openMedia(new File([blob], name), chain);
           const pass = async (limit = Infinity) => {
             const images: { width: number; data: Uint8ClampedArray }[] = [];
@@ -179,6 +208,18 @@ Deno.test({
         return results;
       });
       for (const [name, v] of Object.entries(r) as [string, any][]) {
+        if (v.unsupported) {
+          // Not a hang and not the decoder's own stall guard: a clean rejection, fast, whichever of the two error
+          // shapes the demuxer's codec string produces (see the comment above the probe).
+          console.log(`${name}: browser cannot decode this track at all (${v.ms.toFixed(0)}ms): ${v.error}`);
+          assert(v.ms < 10000, `${name}: unsupported-codec failure took too long (${v.ms}ms) — looks like a stall`);
+          assert(!/DECODER_STALLED/.test(v.error), `${name}: failed via the stall guard, not a codec rejection`);
+          assert(
+            /UNSUPPORTED_CODEC|EncodingError|Decoder failure/.test(v.error),
+            `${name}: unexpected failure shape: ${v.error}`,
+          );
+          continue;
+        }
         console.log(
           `${name}: planar ${v.planar} ${JSON.stringify(v.check)}, canvas calls ${v.canvasCalls}, mean vs truth ${
             v.meanVsTruth.toFixed(2)
@@ -198,12 +239,14 @@ Deno.test({
         assert(v.meanVsTruth <= 4, `${name}: mean channel distance from the rendered world ${v.meanVsTruth}`);
       }
       // WebKit's GStreamer copyTo drops the padded stride of 320-wide frames (rows really 384 bytes apart): the check
-      // must catch it. At 384 wide there is no padding, so the core must take the run.
+      // must catch it. GStreamer is Linux WebKit's media backend only, so that hard check is scoped to Linux; on
+      // macOS (AVFoundation/CoreMedia) the stride bug does not reproduce and both fixtures measure planar === true.
       assertEquals(
         [(r as any)['scroll.mp4'].planar, (r as any)['negative-cts.mov'].planar],
-        [false, false],
-        'misplaced rows must be caught',
+        Deno.build.os === 'linux' ? [false, false] : [true, true],
+        Deno.build.os === 'linux' ? 'misplaced rows must be caught' : 'macOS WebKit must not exhibit the Linux GStreamer stride bug',
       );
+      // At 384 wide there is no padding, so the core must take the run regardless of platform.
       assertEquals((r as any)['scroll-384.mp4'].planar, true, 'the unpadded frames must take the planar path');
       assert((r as any)['scroll-384.mp4'].padding <= 24, 'the black padding must stay black');
       assertEquals(h.errors, []);

@@ -61,7 +61,19 @@ for (const browser of ['chromium', 'webkit'] as const) {
         await page.click('details.advanced > summary');
         await page.selectOption('#decoder', 'compatibility');
         await page.click('#start-btn');
-        await page.waitForFunction('["complete", "partial", "error"].includes(longScreen.getProject()?.status)', null, { timeout: 600000 });
+        // run.ts's client-side guard (decoder === 'compatibility' && !state.nativeReady) can reject before any
+        // 'start' RPC is sent, in which case no project is ever created and the status predicate below would wait
+        // out the full timeout for something that can never happen. It reports through #status-title/#progress-message
+        // (never through longScreen.getProject()), so the wait also resolves on that text.
+        await page.waitForFunction(
+          '["complete", "partial", "error"].includes(longScreen.getProject()?.status) || document.querySelector("#status-title").textContent === "未能开始重建"',
+          null,
+          { timeout: 600000 },
+        );
+        const startError = await page.evaluate(
+          'document.querySelector("#status-title").textContent === "未能开始重建" ? document.querySelector("#progress-message").textContent : null',
+        );
+        assertEquals(startError, null, `compatibility mode failed to start: ${startError}`);
         const project = await page.evaluate<Project>('longScreen.getProject()');
         assertEquals(project.status, 'complete', JSON.stringify(project));
         assert(project.renderedFrames > 0);

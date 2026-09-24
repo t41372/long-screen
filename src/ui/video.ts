@@ -8,12 +8,17 @@ export const video = $<HTMLVideoElement>('source-video');
 // whichever 'seeked' event fired first and capture the wrong-time frame).
 export const decoderVideo = $<HTMLVideoElement>('decoder-video');
 
-export function waitVideoOn(el: HTMLVideoElement, event: string, timeout = 20000): Promise<void> {
+/** `signal`, when given, cancels the wait (removing its listeners) without the caller needing its own bookkeeping
+ *  — source-file.ts uses this so a newly chosen file's readiness wait supersedes, rather than races, the previous
+ *  file's still-pending one. */
+export function waitVideoOn(el: HTMLVideoElement, event: string, options: { timeout?: number; signal?: AbortSignal } = {}): Promise<void> {
+  const { timeout = 20000, signal } = options;
   return new Promise((resolve, reject) => {
     const cleanup = () => {
       clearTimeout(timer);
       el.removeEventListener(event, done);
       el.removeEventListener('error', failed);
+      signal?.removeEventListener('abort', aborted);
     };
     const done = () => {
         cleanup();
@@ -22,6 +27,10 @@ export function waitVideoOn(el: HTMLVideoElement, event: string, timeout = 20000
       failed = () => {
         cleanup();
         reject(new Error(el.error?.message || 'Native media playback failed.'));
+      },
+      aborted = () => {
+        cleanup();
+        reject(new Error(`Native video ${event} wait cancelled.`));
       };
     const timer = setTimeout(() => {
       cleanup();
@@ -29,10 +38,11 @@ export function waitVideoOn(el: HTMLVideoElement, event: string, timeout = 20000
     }, timeout);
     el.addEventListener(event, done, { once: true });
     el.addEventListener('error', failed, { once: true });
+    signal?.addEventListener('abort', aborted, { once: true });
   });
 }
 export function waitVideo(event: string, timeout = 20000): Promise<void> {
-  return waitVideoOn(video, event, timeout);
+  return waitVideoOn(video, event, { timeout });
 }
 export async function seekOn(el: HTMLVideoElement, time: number): Promise<void> {
   if (el.readyState >= 2 && Math.abs(el.currentTime - time) < .00001) {
