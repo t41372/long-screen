@@ -37,6 +37,12 @@ async function run(cmd: string, args: string[], cwd: string): Promise<{ ok: bool
   return { ok: result.success, stdout: new TextDecoder().decode(result.stdout), stderr: new TextDecoder().decode(result.stderr) };
 }
 
+/** Working directory for cargo: rust/, so rustup runs the toolchain rust/rust-toolchain.toml pins. At the repo root
+ *  rustup falls back to its default toolchain, which a rustup installed only for this build does not have. */
+function rustCwd(root: string): string {
+  return join(root, 'rust');
+}
+
 async function commandExists(cmd: string): Promise<boolean> {
   try {
     return (await new Deno.Command(cmd, { args: ['--version'], stdout: 'null', stderr: 'null' }).output()).success;
@@ -69,7 +75,7 @@ async function rustNoticesViaCargoAbout(root: string): Promise<NoticeEntry[] | u
     join(root, 'rust/Cargo.toml'),
     '-c',
     configPath,
-  ], root);
+  ], rustCwd(root));
   if (!result.ok) {
     throw new Error(`cargo about generate failed (rust/core dependency licenses):\n${result.stderr}`);
   }
@@ -108,7 +114,7 @@ async function rustNoticesViaCargoAbout(root: string): Promise<NoticeEntry[] | u
  *  the crate's own vendored license file(s) in the local cargo registry source cache (already downloaded — cargo
  *  can't have built the core without it) as the license text. */
 async function rustNoticesViaCargoMetadata(root: string): Promise<NoticeEntry[]> {
-  const result = await run('cargo', ['metadata', '--format-version', '1', '--manifest-path', join(root, 'rust/Cargo.toml')], root);
+  const result = await run('cargo', ['metadata', '--format-version', '1', '--manifest-path', join(root, 'rust/Cargo.toml')], rustCwd(root));
   if (!result.ok) {
     throw new Error(`cargo metadata failed (rust/core dependency licenses):\n${result.stderr}`);
   }
