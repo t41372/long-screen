@@ -14,9 +14,10 @@ import type { Diagnostics } from './diagnostics.ts';
 import type { TiledViewer } from './viewer.ts';
 
 // static/index.html marks `selected` on the analysis-size/memory <option>s that already match DEFAULT_SETTINGS,
-// but not on policy/framing/decoder (those <select>s fall back to their first <option>, which is not always the
-// default). Setting every value from DEFAULT_SETTINGS here — not just the ones the markup gets right — is what
-// actually keeps the shipped UI default and the settings object `start()` builds from drifting apart.
+// but not on policy/framing/compute/decoder (those <select>s fall back to their first <option>, which is not
+// guaranteed to be the default). Setting every value from DEFAULT_SETTINGS here — not just the ones the markup
+// gets right — is what actually keeps the shipped UI default and the settings object `start()` builds from
+// drifting apart.
 $<HTMLSelectElement>('policy').value = DEFAULT_SETTINGS.temporalPolicy;
 $<HTMLSelectElement>('framing').value = DEFAULT_SETTINGS.framing!;
 $<HTMLSelectElement>('analysis-size').value = String(DEFAULT_SETTINGS.analysisSize);
@@ -108,6 +109,10 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
         regions: demo ? [] : state.manualRegions,
       } as Settings;
       const project = await call('start', { file: state.selectedFile, demo, settings, info: state.mediaInfo });
+      // Set state.project as soon as the worker hands it back: getProject() and the viewer's tile callback
+      // read state.project synchronously, and the file-hash await below must not leave them seeing the
+      // pre-start undefined (resetView()) in the meantime.
+      state.project = project;
       flightStart(demo ? undefined : state.selectedFile ?? undefined);
       if (!demo && state.selectedFile) {
         const hash = await state.selectedFileHash;
@@ -115,7 +120,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
           storeHash(project.id, hash);
         }
       }
-      updateProject(project);
+      updateProject(state.project);
     } catch (error) {
       setBusy(false);
       $('status-title').textContent = '未能开始重建';

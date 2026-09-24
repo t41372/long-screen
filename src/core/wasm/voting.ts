@@ -4,6 +4,7 @@ import type { Gray, Point, Region } from '../../types.ts';
 import type { Core } from './core.ts';
 import type { CoreExports } from './exports.ts';
 import { VOTING_REGION_BYTES } from './exports.ts';
+import { allocOrThrow, FreeGuard } from './memory.ts';
 
 /** Analysis-resolution voting box of one moving region, in that region's own local cell coordinates. */
 export interface VotingBox {
@@ -32,7 +33,7 @@ export class VotingRing {
   private grayBytes: number;
   private grayPtr: number;
   private readonly peekBytes: number;
-  private freed = false;
+  private readonly freeGuard = new FreeGuard();
   constructor(
     private readonly core: Core,
     private readonly exports: CoreExports,
@@ -41,8 +42,7 @@ export class VotingRing {
     analysisPixels: number,
   ) {
     this.grayBytes = analysisPixels;
-    this.grayPtr = exports.ls_alloc(analysisPixels);
-    if (!this.grayPtr) throw new Error('CORE_OUT_OF_MEMORY: voting ring frame buffer.');
+    this.grayPtr = allocOrThrow(exports, analysisPixels, 'voting ring frame buffer');
     this.peekBytes = 16 + 4 * regions.length;
     this.boxes = regions.map((_, slot) => {
       const [out] = core.scratch([16]);
@@ -110,11 +110,11 @@ export class VotingRing {
     return out;
   }
   free(): void {
-    if (this.freed) return;
-    this.freed = true;
-    this.exports.ls_voting_free(this.handle);
-    this.exports.ls_free(this.grayPtr, this.grayBytes);
-    this.handle = 0;
+    this.freeGuard.once(() => {
+      this.exports.ls_voting_free(this.handle);
+      this.exports.ls_free(this.grayPtr, this.grayBytes);
+      this.handle = 0;
+    });
   }
 }
 

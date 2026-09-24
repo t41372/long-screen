@@ -4,7 +4,7 @@ import { deleteProject, listProjects, projectKey, runStore } from './storage/pro
 import { Engine } from './pipeline/engine.ts';
 import { CompatibilitySource, openMedia, PreciseSource } from './media/source.ts';
 import { DemoSource } from './media/demo.ts';
-import { exportCanvas, exportProject } from './export/project.ts';
+import { type CanvasLayout, exportCanvas, exportProject } from './export/project.ts';
 import { cleanupExport } from './export/target.ts';
 import { core, coreLoaded, loadPlannedCore, planCore } from './core/wasm.ts';
 import { tileKey } from './storage/tiles.ts';
@@ -236,7 +236,10 @@ const handlers: Handlers = {
       if (!meta || !meta.tileCount) {
         throw new Error('This canvas has no committed pixels.');
       }
-      return await exportCanvas(store, project, meta, progress, payload.handle, payload.layout ?? 'auto');
+      // payload.layout is typed as CanvasLayout, but the debug handle (globalThis.longScreen.rpc, src/ui/main.ts)
+      // can post any string, so it is re-validated here rather than trusted straight through to exportCanvas.
+      const layout: CanvasLayout = payload.layout === 'single' || payload.layout === 'sheets' ? payload.layout : 'auto';
+      return await exportCanvas(store, project, meta, progress, payload.handle, layout);
     } finally {
       exporting = false;
     }

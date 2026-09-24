@@ -204,6 +204,9 @@ export const MATCH_POINT_BYTES = 40,
 export const COMPOSITE_HEADER = 24, VOTING_REGION_BYTES = 64, LEARNER_MOTION_BYTES = 32, LEARNER_FIELD_BYTES = 40;
 /** `ls_regions_finish` request descriptor, and one output region header (`rust/core/src/abi/regions.rs`). */
 export const REGIONS_FINISH_DESC_BYTES = 112, REGION_HEADER_BYTES = 88;
+/** Named accumulator arrays `rust/core/src/abi/learner.rs::learner_array` recognises — must match
+ *  `./learner.ts`'s `LEARNER_ARRAYS.length` (selector 14, "counts", is separate and not part of this count). */
+export const LEARNER_ARRAY_COUNT = 14;
 
 /** Selector → constant, in the order `rust/core/src/abi/mod.rs::ls_layout` matches them. */
 const LAYOUT = [
@@ -219,11 +222,15 @@ const LAYOUT = [
   MOTION_CELL,
   REGIONS_FINISH_DESC_BYTES,
   REGION_HEADER_BYTES,
+  LEARNER_ARRAY_COUNT,
 ];
 
 /** Throws a clear error the moment a Rust/TS byte-layout constant has drifted, instead of a wrong answer or an
  *  out-of-bounds panic somewhere downstream. */
 export function assertLayout(exports: CoreExports): void {
+  if (typeof exports.ls_layout !== 'function') {
+    throw new Error('CORE_LAYOUT_MISMATCH: module predates ls_layout (stale build?)');
+  }
   for (const [which, expected] of LAYOUT.entries()) {
     const actual = exports.ls_layout(which);
     if (actual !== expected) {

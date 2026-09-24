@@ -42,6 +42,8 @@ pub const STATUS_BAD_FILTER: i32 = -256;
 /// sides can no longer drift silently.
 #[no_mangle]
 pub extern "C" fn ls_layout(which: u32) -> u32 {
+    use crate::motion::MOTION_CELL;
+    use learner::LEARNER_ARRAY_COUNT;
     use regions::{REGIONS_FINISH_DESC_BYTES, REGION_HEADER_BYTES};
     use wire::{
         COMPOSITE_HEADER_BYTES, LEARNER_FIELD_BYTES, LEARNER_MOTION_BYTES, MATCH_POINT_BYTES,
@@ -58,9 +60,10 @@ pub extern "C" fn ls_layout(which: u32) -> u32 {
         6 => VOTING_REGION_BYTES,
         7 => LEARNER_MOTION_BYTES,
         8 => LEARNER_FIELD_BYTES,
-        9 => 24, // motion-field cell size, matching motion::estimate_motion's fixed cell grid.
+        9 => MOTION_CELL,
         10 => REGIONS_FINISH_DESC_BYTES,
         11 => REGION_HEADER_BYTES,
+        12 => LEARNER_ARRAY_COUNT,
         _ => 0,
     }) as u32
 }

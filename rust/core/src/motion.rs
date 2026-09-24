@@ -4,6 +4,10 @@
 
 use crate::geometry::{js_ceil, js_round, Rect, Rng};
 
+/// Fixed motion-field cell size (analysis pixels per side). Shared with `abi::ls_layout` selector 9 so the TS
+/// binding's layout assertion actually guards it instead of duplicating a bare literal.
+pub const MOTION_CELL: usize = 24;
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
     pub x: f64,
@@ -423,9 +427,8 @@ pub fn estimate_motion(
     matches: &[MatchPoints],
     feature_count: u32,
 ) -> MotionField {
-    const CELL: usize = 24;
-    let cols = b.width.div_ceil(CELL);
-    let rows = b.height.div_ceil(CELL);
+    let cols = b.width.div_ceil(MOTION_CELL);
+    let rows = b.height.div_ceil(MOTION_CELL);
     let n = cols * rows;
     let difference = crate::raster::mean_difference(a.data, b.data);
     if difference < 0.12 {
@@ -444,7 +447,7 @@ pub fn estimate_motion(
             dynamic: vec![0; n],
             cols,
             rows,
-            cell: CELL,
+            cell: MOTION_CELL,
             difference,
             feature_count: 0,
             unknown: false,
@@ -536,10 +539,10 @@ pub fn estimate_motion(
         for cx in 0..cols {
             let idx = cy * cols + cx;
             let r = Rect {
-                x: (cx * CELL) as f64,
-                y: (cy * CELL) as f64,
-                width: CELL.min(b.width - cx * CELL) as f64,
-                height: CELL.min(b.height - cy * CELL) as f64,
+                x: (cx * MOTION_CELL) as f64,
+                y: (cy * MOTION_CELL) as f64,
+                width: MOTION_CELL.min(b.width - cx * MOTION_CELL) as f64,
+                height: MOTION_CELL.min(b.height - cy * MOTION_CELL) as f64,
             };
             let (mut best, mut second, mut choice, mut texture, mut dominant_error) =
                 (f64::INFINITY, f64::INFINITY, dominant, 0f64, f64::INFINITY);
@@ -622,7 +625,7 @@ pub fn estimate_motion(
         dynamic,
         cols,
         rows,
-        cell: CELL,
+        cell: MOTION_CELL,
         difference,
         feature_count,
         unknown,

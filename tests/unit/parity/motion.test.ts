@@ -86,17 +86,21 @@ Deno.test('core parity: motion hypotheses, audits, refinement and per-cell field
     // Native refinement on RGBA with and without an atlas mask, including the fractional guess tie rule.
     const ra = rgbaOf(a), rb = rgbaOf(b), region = { x: 4.5, y: 3, width: w - 20, height: h - 9 };
     const atlas = new RegionAtlas([{ id: 'r', name: 'r', kind: 'moving', rect: { x: 0, y: 0, width: w * .6, height: h } }], w, h);
-    for (const guess of [{ x: dx + .3, y: dy - .6 }, { x: dx - 2.5, y: dy + 2.5 }, { x: 0, y: 40 }]) {
-      const plain = core.refineNative(ra, rb, guess, region, undefined, 3),
-        refPlain = motionReference.refineNative(ra, rb, guess, region, undefined, 3);
-      assertEquals([plain.x, plain.y, plain.samples], [refPlain.x, refPlain.y, refPlain.samples]);
-      sameNumber(plain.error, refPlain.error, 'refine error');
-      sameNumber(plain.runnerUp, refPlain.runnerUp, 'runner-up');
-      const masked = core.refineNative(ra, rb, guess, region, { labels: atlas.labels, code: 1 }, 3);
-      const refMasked = motionReference.refineNative(ra, rb, guess, region, (x, y) => atlas.contains(1, x, y), 3);
-      assertEquals([masked.x, masked.y, masked.samples], [refMasked.x, refMasked.y, refMasked.samples]);
-      sameNumber(masked.error, refMasked.error, 'masked refine error');
-      sameNumber(masked.runnerUp, refMasked.runnerUp, 'masked runner-up');
+    try {
+      for (const guess of [{ x: dx + .3, y: dy - .6 }, { x: dx - 2.5, y: dy + 2.5 }, { x: 0, y: 40 }]) {
+        const plain = core.refineNative(ra, rb, guess, region, undefined, 3),
+          refPlain = motionReference.refineNative(ra, rb, guess, region, undefined, 3);
+        assertEquals([plain.x, plain.y, plain.samples], [refPlain.x, refPlain.y, refPlain.samples]);
+        sameNumber(plain.error, refPlain.error, 'refine error');
+        sameNumber(plain.runnerUp, refPlain.runnerUp, 'runner-up');
+        const masked = core.refineNative(ra, rb, guess, region, { labels: atlas.labels, code: 1 }, 3);
+        const refMasked = motionReference.refineNative(ra, rb, guess, region, (x, y) => atlas.contains(1, x, y), 3);
+        assertEquals([masked.x, masked.y, masked.samples], [refMasked.x, refMasked.y, refMasked.samples]);
+        sameNumber(masked.error, refMasked.error, 'masked refine error');
+        sameNumber(masked.runnerUp, refMasked.runnerUp, 'masked runner-up');
+      }
+    } finally {
+      atlas.dispose();
     }
     const native = reference.grayscale(rb.data, w, h), patches = motionReference.extractPatches(native, region, fb.slice(0, 40), 1);
     for (const guess of [{ x: -dx + .2, y: -dy }, { x: 5, y: -5 }]) {

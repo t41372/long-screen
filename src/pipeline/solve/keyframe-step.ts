@@ -107,7 +107,14 @@ export async function keyframeStep(pass: SolvePass, state: RegionState, input: K
   // Decide a thin-overlap correction before the node exists, so the odometry edge records the corrected
   // geometry and a weight that matches how little evidence the step actually had.
   let corrected: Point | undefined, odometryWeight = weakStep ? .05 : 1, correctedShift: Point | undefined;
-  if (global && !attachedFrom && resolveTarget(global.keyframe.canvasId) === state.canvasId) {
+  // Mirrors thinOverlapCorrection's own weak/ambiguous/confidence/error gate (track.ts) so canonicalPose — a
+  // translation the correction only needs once that gate passes — is not computed on every keyframe (6f838af
+  // engine.ts ~1413-1418 computed it inside the same combined `if`; region-step.ts's split moved the resolveTarget
+  // half out into this shell, but the rest of the gate belongs with it too).
+  if (
+    global && !attachedFrom && resolveTarget(global.keyframe.canvasId) === state.canvasId &&
+    (weakStep || state.weak) && !global.ambiguous && global.confidence > .72 && global.error < 8
+  ) {
     // The keyframe used for this correction may itself sit on a fragment attached onto state.canvasId;
     // its raw x/y must be translated into state.canvasId's coordinates before comparing to state.pose.
     const kp = canonicalPose(global.keyframe);

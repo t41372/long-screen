@@ -1,7 +1,7 @@
-// Algorithm-awaiting-port: consistencyMask() itself already dispatches to the Rust core
-// (rust/core/src/consistency.rs); the TypeScript here is the canvas-identity gate around it
-// (a neighbour only counts when its placement resolved to the same canvas) plus the shell that
-// picks the resident-vs-plain-array input form. Nothing left here is an algorithm to port later.
+// consistencyMask() itself already dispatches to the Rust core (rust/core/src/consistency.rs); the TypeScript
+// here is the canvas-identity gate around it (a neighbour only counts when its placement resolved to the same
+// canvas) plus the shell that picks the resident-vs-plain-array input form and the types both sides share. It
+// is not algorithmic TS awaiting a port — there is no algorithm left here to port.
 import type { Point, Rect, Region, RGBA } from '../types.ts';
 import { RegionAtlas } from '../core/layers.ts';
 import { core, type Resident, type ResidentFrame } from '../core/wasm.ts';
@@ -90,7 +90,7 @@ export interface ConsistencyOptions {
  *  only one frame still has to be painted (the 'glimpse' scenario) — no evidence is not evidence of a fault.
  *  A neighbour comparison counts only when that neighbour's own placement for this layer resolved to the same
  *  `canvasId` and the corresponding neighbour screen position lies inside both the frame and this region's
- *  atlas membership; agreement is exact RGB equality, else mean |ΔRGB| ≤ `this.noise` — the decode noise the
+ *  atlas membership; agreement is exact RGB equality, else mean |ΔRGB| ≤ `options.noise` — the decode noise the
  *  SOURCE declares (`MediaInfo.noise`), not a constant. A lossless source is therefore compared exactly, which
  *  is what lets a white floating-button glyph over a near-white page (mean |ΔRGB| 6 — under the 10 levels a
  *  decoded recording needs) be seen at all; a real recording keeps exactly the headroom it always had. Returned array is image-sized

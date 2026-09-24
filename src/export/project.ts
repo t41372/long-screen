@@ -233,7 +233,12 @@ export async function exportCanvas(
     await zip.finish();
     return {
       ...await target.result(),
-      message: `画布超过单张兼容尺寸，已明确改为 ${count} 张原尺寸图片；相邻页最多重叠 ${overlap}px，坐标见 manifest。`,
+      // 'sheets' is an explicit choice (it always pages, even when the canvas would fit one PNG under 'auto'),
+      // so its message must not claim the canvas "exceeded" anything; 'auto' falling into this branch really
+      // did exceed the compatible single-image size.
+      message: layout === 'sheets'
+        ? `已按分页导出为 ${count} 张原尺寸图片；相邻页最多重叠 ${overlap}px，坐标见 manifest。`
+        : `画布超过单张兼容尺寸，已明确改为 ${count} 张原尺寸图片；相邻页最多重叠 ${overlap}px，坐标见 manifest。`,
     };
   } catch (error) {
     await target.sink.abort?.(error);

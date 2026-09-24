@@ -23,8 +23,10 @@ export function createState(): AppState {
   return { canvases: [], busy: false, nativeReady: false, manualRegions: [] };
 }
 
-/** The enablement logic that used to live three times over (setBusy, selectCanvas, doExport): every control whose
- *  disabled state depends only on `state.busy` plus one other current-value check. */
+/** The enablement logic that used to live three times over (setBusy, selectCanvas, doExport) and now lives once:
+ *  every control whose disabled state depends only on `state.busy` plus one other current-value check. Called
+ *  directly from `run.ts`'s `setBusy` and `canvases.ts`'s `selectCanvas`; `export.ts`'s `doExport` reaches it
+ *  through `run.setBusy` instead of re-deriving the same checks. */
 export function syncControls(state: AppState, viewer: TiledViewer): void {
   const busy = state.busy;
   $<HTMLButtonElement>('start-btn').disabled = busy || !state.selectedFile;

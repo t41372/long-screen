@@ -309,7 +309,9 @@ Deno.test('export: the single layout writes one PNG of the whole canvas even whe
 Deno.test('export: the sheets layout always pages, even a canvas that would fit one PNG under auto (one sheet + manifest)', async () => {
   const { p, store, meta } = await project(), target = fakeHandle();
   const result = await exportCanvas(store, p, meta, () => {}, target.handle, 'sheets');
-  assert(result.name.endsWith('.zip') && result.message.includes('张原尺寸图片'), `${result.name}: ${result.message}`);
+  assert(result.name.endsWith('.zip'));
+  // An explicit 'sheets' choice never "exceeded" anything, unlike an 'auto' overflow: the message must say so.
+  assertEquals(result.message, '已按分页导出为 1 张原尺寸图片；相邻页最多重叠 32px，坐标见 manifest。');
   const bytes = target.bytes(), names = zipEntries(bytes);
   assertEquals(names.filter((n) => n.endsWith('.png')).length, 1, names.join(','));
   assert(names.includes('manifest.json') && names.includes('sheet_0_0.png') && names.includes('sheet_0_0.json'), names.join(','));

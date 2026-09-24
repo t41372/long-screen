@@ -106,23 +106,27 @@ Deno.test('consistency mask: optimized raster loop is byte-exact against the fro
       },
     };
     const atlas = new RegionAtlas([region], width, height), code = atlas.code(region);
-    const current = randomConsistencyImage(random, width, height),
-      previousImage = randomConsistencyImage(random, width, height),
-      nextImage = randomConsistencyImage(random, width, height);
-    const pose = {
-      x: consistencyRandomInt(random, 13) - 6 + (random() < .5 ? -.49 : .49),
-      y: consistencyRandomInt(random, 13) - 6 + (random() < .5 ? -.49 : .49),
-    };
-    const prev = randomConsistencyNeighbour(random, width, height, factor, previousImage);
-    const next = randomConsistencyNeighbour(random, width, height, factor, nextImage);
-    const voting = consistencyRandomInt(random, 3) === 0 ? randomConsistencyVote(random, width, height, factor) : undefined;
-    const actual = consistencyMask(current, atlas, region, code, pose, 'canvas', { prev, next, voting, factor, noise: 3 }) as Uint8Array;
-    const expected = consistencyMaskReference(current, atlas, region, code, pose, 'canvas', prev, next, voting, factor, 3);
-    assertEquals(actual.length, expected.length);
-    for (let i = 0; i < actual.length; i++) {
-      if (actual[i] !== expected[i]) {
-        throw new Error(`consistency mask diverged in trial ${trial} at pixel ${i} (${actual[i]} !== ${expected[i]})`);
+    try {
+      const current = randomConsistencyImage(random, width, height),
+        previousImage = randomConsistencyImage(random, width, height),
+        nextImage = randomConsistencyImage(random, width, height);
+      const pose = {
+        x: consistencyRandomInt(random, 13) - 6 + (random() < .5 ? -.49 : .49),
+        y: consistencyRandomInt(random, 13) - 6 + (random() < .5 ? -.49 : .49),
+      };
+      const prev = randomConsistencyNeighbour(random, width, height, factor, previousImage);
+      const next = randomConsistencyNeighbour(random, width, height, factor, nextImage);
+      const voting = consistencyRandomInt(random, 3) === 0 ? randomConsistencyVote(random, width, height, factor) : undefined;
+      const actual = consistencyMask(current, atlas, region, code, pose, 'canvas', { prev, next, voting, factor, noise: 3 }) as Uint8Array;
+      const expected = consistencyMaskReference(current, atlas, region, code, pose, 'canvas', prev, next, voting, factor, 3);
+      assertEquals(actual.length, expected.length);
+      for (let i = 0; i < actual.length; i++) {
+        if (actual[i] !== expected[i]) {
+          throw new Error(`consistency mask diverged in trial ${trial} at pixel ${i} (${actual[i]} !== ${expected[i]})`);
+        }
       }
+    } finally {
+      atlas.dispose();
     }
   }
 });
@@ -190,52 +194,56 @@ Deno.test('consistency mask: agreeing neighbours with sparse edge cases stay byt
         },
       };
       const atlas = new RegionAtlas([region], width, height), code = atlas.code(region);
-      const current = randomConsistencyImage(random, width, height);
-      const pose = {
-        x: consistencyRandomInt(random, 13) - 6 + (random() < .5 ? -.49 : .49),
-        y: consistencyRandomInt(random, 13) - 6 + (random() < .5 ? -.49 : .49),
-      };
-      const neighbour = (): ConsistencyReferenceNeighbour | undefined => {
-        if (consistencyRandomInt(random, 6) === 0) return undefined;
-        const x = pose.x + consistencyRandomInt(random, 9) - 4 + (random() < .5 ? -.49 : .49);
-        const y = pose.y + consistencyRandomInt(random, 9) - 4 + (random() < .5 ? -.49 : .49);
-        const dx = Math.round(pose.x) - Math.round(x), dy = Math.round(pose.y) - Math.round(y);
-        const occlusions = consistencyRandomInt(random, 4) === 0
-          ? Array.from({ length: 1 + consistencyRandomInt(random, 2) }, () => ({
-            x: consistencyRandomInt(random, width + 5) - 2 + (random() < .3 ? .5 : 0),
-            y: consistencyRandomInt(random, height + 5) - 2,
-            width: random() < .5 ? width + 8 : consistencyRandomInt(random, 24),
-            height: consistencyRandomInt(random, 12),
-          }))
-          : undefined;
-        return {
-          // The kernel compares current (sx, sy) with this neighbour's (sx + dx, sy + dy).
-          image: nearNeighbourImage(random, current, dx, dy, noise),
-          x,
-          y,
-          canvasId: consistencyRandomInt(random, 8) === 0 ? 'other' : 'canvas',
-          occlusions,
-          voting: consistencyRandomInt(random, 3) === 0 ? randomConsistencyVote(random, width, height, factor) : undefined,
+      try {
+        const current = randomConsistencyImage(random, width, height);
+        const pose = {
+          x: consistencyRandomInt(random, 13) - 6 + (random() < .5 ? -.49 : .49),
+          y: consistencyRandomInt(random, 13) - 6 + (random() < .5 ? -.49 : .49),
         };
-      };
-      const prev = neighbour(), next = neighbour();
-      const voting = consistencyRandomInt(random, 3) === 0 ? randomConsistencyVote(random, width, height, factor) : undefined;
-      const actual = consistencyMask(current, atlas, region, code, pose, 'canvas', { prev, next, voting, factor, noise }) as Uint8Array;
-      const expected = consistencyMaskReference(current, atlas, region, code, pose, 'canvas', prev, next, voting, factor, noise);
-      assertEquals(actual.length, expected.length);
-      let inside = 0, agreeing = 0;
-      for (let i = 0; i < actual.length; i++) {
-        if (actual[i] !== expected[i]) {
-          throw new Error(`consistency mask diverged (noise ${noise}, trial ${trial}) at pixel ${i} (${actual[i]} !== ${expected[i]})`);
+        const neighbour = (): ConsistencyReferenceNeighbour | undefined => {
+          if (consistencyRandomInt(random, 6) === 0) return undefined;
+          const x = pose.x + consistencyRandomInt(random, 9) - 4 + (random() < .5 ? -.49 : .49);
+          const y = pose.y + consistencyRandomInt(random, 9) - 4 + (random() < .5 ? -.49 : .49);
+          const dx = Math.round(pose.x) - Math.round(x), dy = Math.round(pose.y) - Math.round(y);
+          const occlusions = consistencyRandomInt(random, 4) === 0
+            ? Array.from({ length: 1 + consistencyRandomInt(random, 2) }, () => ({
+              x: consistencyRandomInt(random, width + 5) - 2 + (random() < .3 ? .5 : 0),
+              y: consistencyRandomInt(random, height + 5) - 2,
+              width: random() < .5 ? width + 8 : consistencyRandomInt(random, 24),
+              height: consistencyRandomInt(random, 12),
+            }))
+            : undefined;
+          return {
+            // The kernel compares current (sx, sy) with this neighbour's (sx + dx, sy + dy).
+            image: nearNeighbourImage(random, current, dx, dy, noise),
+            x,
+            y,
+            canvasId: consistencyRandomInt(random, 8) === 0 ? 'other' : 'canvas',
+            occlusions,
+            voting: consistencyRandomInt(random, 3) === 0 ? randomConsistencyVote(random, width, height, factor) : undefined,
+          };
+        };
+        const prev = neighbour(), next = neighbour();
+        const voting = consistencyRandomInt(random, 3) === 0 ? randomConsistencyVote(random, width, height, factor) : undefined;
+        const actual = consistencyMask(current, atlas, region, code, pose, 'canvas', { prev, next, voting, factor, noise }) as Uint8Array;
+        const expected = consistencyMaskReference(current, atlas, region, code, pose, 'canvas', prev, next, voting, factor, noise);
+        assertEquals(actual.length, expected.length);
+        let inside = 0, agreeing = 0;
+        for (let i = 0; i < actual.length; i++) {
+          if (actual[i] !== expected[i]) {
+            throw new Error(`consistency mask diverged (noise ${noise}, trial ${trial}) at pixel ${i} (${actual[i]} !== ${expected[i]})`);
+          }
+          if (atlas.labels[i] === code) {
+            inside++;
+            agreeing += expected[i];
+          }
         }
-        if (atlas.labels[i] === code) {
-          inside++;
-          agreeing += expected[i];
+        // The fixture is only meaningful if most in-region pixels take the agreeing path.
+        if (inside >= 400 && prev?.canvasId === 'canvas' && next?.canvasId === 'canvas' && !prev.voting && !next.voting && !voting) {
+          assert(agreeing > inside / 2, `fixture too random (noise ${noise}, trial ${trial}: ${agreeing}/${inside})`);
         }
-      }
-      // The fixture is only meaningful if most in-region pixels take the agreeing path.
-      if (inside >= 400 && prev?.canvasId === 'canvas' && next?.canvasId === 'canvas' && !prev.voting && !next.voting && !voting) {
-        assert(agreeing > inside / 2, `fixture too random (noise ${noise}, trial ${trial}: ${agreeing}/${inside})`);
+      } finally {
+        atlas.dispose();
       }
     }
   }
@@ -388,35 +396,39 @@ Deno.test('consistency mask: a lone neighbour that voting itself found inconsist
   const W = 200, H = 160, world = new World(W, H, [250, 250, 246]);
   world.picture({ x: 0, y: 0, width: W, height: H }, 31);
   const atlas = new RegionAtlas([{ id: 'body', name: 'body', kind: 'moving', rect: { x: 0, y: 0, width: W, height: H } }], W, H);
-  const region = atlas.regions[0], code = atlas.code(region);
-  const frame = (fill?: RGB): RGBA => {
-    const image: RGBA = { width: W, height: H, data: world.data.slice() };
-    if (fill) fillRGBA(image, { x: 40, y: 40, width: 40, height: 40 }, fill);
-    return image;
-  };
-  const clean = frame(), dirty = frame([255, 0, 255]);
-  const box = { x0: 0, y0: 0, w: W, h: H, bits: new Uint8Array(Math.ceil(W * H / 8)), clean: new Uint8Array(Math.ceil(W * H / 8)) };
-  const cell = 50 * W + 50;
-  box.bits[cell >> 3] |= 1 << (cell & 7);
-  const pose = { x: 0, y: 0 }, neighbour = { image: dirty, x: 0, y: 0, canvasId: 'c' };
-  // Without a verdict for the neighbour, the conservative reading stands and this frame is flagged.
-  const blind = consistencyMask(clean, atlas, region, code, pose, 'c', { prev: neighbour, factor: 1, noise: 0 }) as Uint8Array;
-  assertEquals(blind[cell], 0, 'a lone disagreeing neighbour with no verdict of its own still condemns');
-  // With voting saying the neighbour itself is inconsistent there, the disagreement is the neighbour's fault.
-  const informed = consistencyMask(clean, atlas, region, code, pose, 'c', {
-    prev: { ...neighbour, voting: box },
-    factor: 1,
-    noise: 0,
-  }) as Uint8Array;
-  assertEquals(informed[cell], 1, 'a lone neighbour voting found inconsistent must not condemn this frame');
-  // Two comparable neighbours are enough evidence on their own: the excuse is only for the ambiguous lone case.
-  const both = consistencyMask(clean, atlas, region, code, pose, 'c', {
-    prev: { ...neighbour, voting: box },
-    next: { ...neighbour, voting: box },
-    factor: 1,
-    noise: 0,
-  }) as Uint8Array;
-  assertEquals(both[cell], 0, 'with two comparable neighbours the conservative reading stands');
+  try {
+    const region = atlas.regions[0], code = atlas.code(region);
+    const frame = (fill?: RGB): RGBA => {
+      const image: RGBA = { width: W, height: H, data: world.data.slice() };
+      if (fill) fillRGBA(image, { x: 40, y: 40, width: 40, height: 40 }, fill);
+      return image;
+    };
+    const clean = frame(), dirty = frame([255, 0, 255]);
+    const box = { x0: 0, y0: 0, w: W, h: H, bits: new Uint8Array(Math.ceil(W * H / 8)), clean: new Uint8Array(Math.ceil(W * H / 8)) };
+    const cell = 50 * W + 50;
+    box.bits[cell >> 3] |= 1 << (cell & 7);
+    const pose = { x: 0, y: 0 }, neighbour = { image: dirty, x: 0, y: 0, canvasId: 'c' };
+    // Without a verdict for the neighbour, the conservative reading stands and this frame is flagged.
+    const blind = consistencyMask(clean, atlas, region, code, pose, 'c', { prev: neighbour, factor: 1, noise: 0 }) as Uint8Array;
+    assertEquals(blind[cell], 0, 'a lone disagreeing neighbour with no verdict of its own still condemns');
+    // With voting saying the neighbour itself is inconsistent there, the disagreement is the neighbour's fault.
+    const informed = consistencyMask(clean, atlas, region, code, pose, 'c', {
+      prev: { ...neighbour, voting: box },
+      factor: 1,
+      noise: 0,
+    }) as Uint8Array;
+    assertEquals(informed[cell], 1, 'a lone neighbour voting found inconsistent must not condemn this frame');
+    // Two comparable neighbours are enough evidence on their own: the excuse is only for the ambiguous lone case.
+    const both = consistencyMask(clean, atlas, region, code, pose, 'c', {
+      prev: { ...neighbour, voting: box },
+      next: { ...neighbour, voting: box },
+      factor: 1,
+      noise: 0,
+    }) as Uint8Array;
+    assertEquals(both[cell], 0, 'with two comparable neighbours the conservative reading stands');
+  } finally {
+    atlas.dispose();
+  }
 });
 
 // The comparison tolerance is a property of the SOURCE (MediaInfo.noise), not a constant. A lossless source is
@@ -426,39 +438,43 @@ Deno.test('consistency mask: the ±1 tolerance comes from the source, so a lossl
   const W = 120, H = 100, world = new World(W, H, [251, 250, 246]);
   world.picture({ x: 0, y: 0, width: W, height: H }, 17);
   const atlas = new RegionAtlas([{ id: 'body', name: 'body', kind: 'moving', rect: { x: 0, y: 0, width: W, height: H } }], W, H);
-  const region = atlas.regions[0], code = atlas.code(region);
-  const page: RGBA = { width: W, height: H, data: world.data.slice() };
-  // The page under the glyph is the scenario background; the overlay paints pure white over it.
-  const withGlyph: RGBA = { width: W, height: H, data: world.data.slice() };
-  fillRGBA(page, { x: 40, y: 40, width: 20, height: 20 }, [251, 250, 246]);
-  fillRGBA(withGlyph, { x: 40, y: 40, width: 20, height: 20 }, [255, 255, 255]);
-  const cell = 50 * W + 50;
-  const delta = (Math.abs(255 - 251) + Math.abs(255 - 250) + Math.abs(255 - 246)) / 3;
-  assert(
-    delta > 0 && delta <= 10,
-    `this fixture is only meaningful while the glyph sits inside a decoded recording's noise floor (measured ${delta})`,
-  );
-  const run = (noise: number): Uint8Array =>
-    consistencyMask(withGlyph, atlas, region, code, { x: 0, y: 0 }, 'c', {
-      prev: { image: page, x: 0, y: 0, canvasId: 'c' },
-      factor: 1,
-      noise,
-    }) as Uint8Array;
-  assertEquals(run(0)[cell], 0, 'a lossless source compares exactly, so the glyph is flagged');
-  assertEquals(
-    run(DECODED_VIDEO_NOISE)[cell],
-    1,
-    'a decoded recording must keep its headroom: the same difference is within H.264 noise and carries no information',
-  );
-  // And the wiring the engine actually uses, rather than the override this test injects.
-  assertEquals(new ScenarioSource(buildScenario('fixture')).info.noise, 0, 'a synthetic scenario is lossless');
-  assertEquals(
-    new Engine(new MemoryKV(), new ScenarioSource(buildScenario('fixture')), DEFAULT_SETTINGS, {
-      progress: () => {},
-      diagnostic: () => {},
-      project: () => {},
-    }).noise,
-    0,
-    'the engine reads it from the source',
-  );
+  try {
+    const region = atlas.regions[0], code = atlas.code(region);
+    const page: RGBA = { width: W, height: H, data: world.data.slice() };
+    // The page under the glyph is the scenario background; the overlay paints pure white over it.
+    const withGlyph: RGBA = { width: W, height: H, data: world.data.slice() };
+    fillRGBA(page, { x: 40, y: 40, width: 20, height: 20 }, [251, 250, 246]);
+    fillRGBA(withGlyph, { x: 40, y: 40, width: 20, height: 20 }, [255, 255, 255]);
+    const cell = 50 * W + 50;
+    const delta = (Math.abs(255 - 251) + Math.abs(255 - 250) + Math.abs(255 - 246)) / 3;
+    assert(
+      delta > 0 && delta <= 10,
+      `this fixture is only meaningful while the glyph sits inside a decoded recording's noise floor (measured ${delta})`,
+    );
+    const run = (noise: number): Uint8Array =>
+      consistencyMask(withGlyph, atlas, region, code, { x: 0, y: 0 }, 'c', {
+        prev: { image: page, x: 0, y: 0, canvasId: 'c' },
+        factor: 1,
+        noise,
+      }) as Uint8Array;
+    assertEquals(run(0)[cell], 0, 'a lossless source compares exactly, so the glyph is flagged');
+    assertEquals(
+      run(DECODED_VIDEO_NOISE)[cell],
+      1,
+      'a decoded recording must keep its headroom: the same difference is within H.264 noise and carries no information',
+    );
+    // And the wiring the engine actually uses, rather than the override this test injects.
+    assertEquals(new ScenarioSource(buildScenario('fixture')).info.noise, 0, 'a synthetic scenario is lossless');
+    assertEquals(
+      new Engine(new MemoryKV(), new ScenarioSource(buildScenario('fixture')), DEFAULT_SETTINGS, {
+        progress: () => {},
+        diagnostic: () => {},
+        project: () => {},
+      }).noise,
+      0,
+      'the engine reads it from the source',
+    );
+  } finally {
+    atlas.dispose();
+  }
 });

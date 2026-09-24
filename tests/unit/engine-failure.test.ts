@@ -311,49 +311,53 @@ Deno.test('engine raster consistency: rounds current and neighbour poses separat
   };
   const region = { id: 'body', name: 'body', kind: 'moving' as const, rect: { x: 0, y: 0, width, height } };
   const atlas = new RegionAtlas([region], width, height), code = atlas.code(region);
-  const engine = makeEngine(new MemoryKV(), syntheticSource(1), {});
-  const { factor, noise } = engine;
-  const current = image(10), fractionalNeighbour = image(10);
-  fractionalNeighbour.data[(10 * width + 11) * 4] = 255;
-  fractionalNeighbour.data[(10 * width + 11) * 4 + 1] = 255;
-  fractionalNeighbour.data[(10 * width + 11) * 4 + 2] = 255;
-  const separatelyRounded = consistencyMask(
-    current,
-    atlas,
-    region,
-    code,
-    { x: .49, y: 0 },
-    'canvas',
-    { prev: { image: fractionalNeighbour, x: -.49, y: 0, canvasId: 'canvas' }, factor, noise },
-  ) as Uint8Array;
-  assertEquals(separatelyRounded[10 * width + 10], 1, 'two poses rounding to the same raster origin must compare the same pixel');
+  try {
+    const engine = makeEngine(new MemoryKV(), syntheticSource(1), {});
+    const { factor, noise } = engine;
+    const current = image(10), fractionalNeighbour = image(10);
+    fractionalNeighbour.data[(10 * width + 11) * 4] = 255;
+    fractionalNeighbour.data[(10 * width + 11) * 4 + 1] = 255;
+    fractionalNeighbour.data[(10 * width + 11) * 4 + 2] = 255;
+    const separatelyRounded = consistencyMask(
+      current,
+      atlas,
+      region,
+      code,
+      { x: .49, y: 0 },
+      'canvas',
+      { prev: { image: fractionalNeighbour, x: -.49, y: 0, canvasId: 'canvas' }, factor, noise },
+    ) as Uint8Array;
+    assertEquals(separatelyRounded[10 * width + 10], 1, 'two poses rounding to the same raster origin must compare the same pixel');
 
-  const changedNeighbour = image(10), pixel = (10 * width + 10) * 4;
-  changedNeighbour.data[pixel] = changedNeighbour.data[pixel + 1] = changedNeighbour.data[pixel + 2] = 255;
-  const withoutOcclusion = consistencyMask(
-    current,
-    atlas,
-    region,
-    code,
-    { x: 0, y: 0 },
-    'canvas',
-    { prev: { image: changedNeighbour, x: 0, y: 0, canvasId: 'canvas' }, factor, noise },
-  ) as Uint8Array;
-  const withOcclusion = consistencyMask(
-    current,
-    atlas,
-    region,
-    code,
-    { x: 0, y: 0 },
-    'canvas',
-    {
-      prev: { image: changedNeighbour, x: 0, y: 0, canvasId: 'canvas', occlusions: [{ x: 10, y: 10, width: 1, height: 1 }] },
-      factor,
-      noise,
-    },
-  ) as Uint8Array;
-  assertEquals(withoutOcclusion[pixel / 4], 0, 'an unmasked neighbour disagreement is inconsistent');
-  assertEquals(withOcclusion[pixel / 4], 1, 'a sticky neighbour occlusion is not evidence against the current frame');
+    const changedNeighbour = image(10), pixel = (10 * width + 10) * 4;
+    changedNeighbour.data[pixel] = changedNeighbour.data[pixel + 1] = changedNeighbour.data[pixel + 2] = 255;
+    const withoutOcclusion = consistencyMask(
+      current,
+      atlas,
+      region,
+      code,
+      { x: 0, y: 0 },
+      'canvas',
+      { prev: { image: changedNeighbour, x: 0, y: 0, canvasId: 'canvas' }, factor, noise },
+    ) as Uint8Array;
+    const withOcclusion = consistencyMask(
+      current,
+      atlas,
+      region,
+      code,
+      { x: 0, y: 0 },
+      'canvas',
+      {
+        prev: { image: changedNeighbour, x: 0, y: 0, canvasId: 'canvas', occlusions: [{ x: 10, y: 10, width: 1, height: 1 }] },
+        factor,
+        noise,
+      },
+    ) as Uint8Array;
+    assertEquals(withoutOcclusion[pixel / 4], 0, 'an unmasked neighbour disagreement is inconsistent');
+    assertEquals(withOcclusion[pixel / 4], 1, 'a sticky neighbour occlusion is not evidence against the current frame');
+  } finally {
+    atlas.dispose();
+  }
 });
 Deno.test('engine integration: solve persists sticky occlusions and render carries them into observation decisions', async () => {
   const run = await runScenario(buildScenario('toolbar-collapse'), {});

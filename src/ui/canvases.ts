@@ -2,6 +2,7 @@
  *  viewer to whichever one is selected. `mergeCanvas` is the write side a live 'progress' event uses to update one
  *  canvas's metadata without a full refetch. */
 import type { AppState } from './state.ts';
+import { syncControls } from './state.ts';
 import { $, toast } from './dom.ts';
 import { call } from './rpc.ts';
 import type { CanvasMeta } from '../types.ts';
@@ -91,9 +92,9 @@ export function createCanvases(state: AppState, viewer: TiledViewer): Canvases {
     $('canvas-badge').textContent = `${
       c.kind === 'presentation' ? '带框呈现 · 延伸背景非观察证据' : c.kind === 'fixed' ? '固定 / 观察层' : '二维内容层'
     } · ${c.tileCount} 原图瓦片${c.fragment ? ' · 片段间关系未证实' : ''}`;
-    $<HTMLButtonElement>('export-png').disabled = state.busy || !c.tileCount;
-    $<HTMLButtonElement>('export-sheets').disabled = state.busy || !c.tileCount;
-    $<HTMLButtonElement>('copy-png').disabled = state.busy || !c.tileCount;
+    // syncControls is idempotent and covers export-png/export-sheets/copy-png (plus start/demo/regions, unaffected
+    // by a canvas switch) from viewer.current, which viewer.setCanvas() above has already updated to `c`.
+    syncControls(state, viewer);
   }
   function mergeCanvas(meta: CanvasMeta): void {
     const existing = state.canvases.find((c) => c.id === meta.id);

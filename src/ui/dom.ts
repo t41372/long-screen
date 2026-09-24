@@ -32,7 +32,7 @@ export const phaseNames: Record<string, string> = {
 };
 
 /** Local storage quota, shown in the sidebar; re-queried after anything that changes usage (a run finishing, an
- *  export, a delete, persist() being granted). */
+ *  export, a delete). Not re-queried when persist() is granted. */
 export async function storageInfo(): Promise<void> {
   if (typeof navigator.storage?.estimate !== 'function') {
     $('storage-status').textContent = '浏览器未提供存储配额；不影响本地重建';

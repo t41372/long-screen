@@ -113,8 +113,14 @@ pub extern "C" fn ls_learner_add(
     l.add(&field, prev, current, native) as i32
 }
 
-/// Accumulator selectors for `ls_learner_len`/`ls_learner_read`, in the adapter's field order; 14 = counts
-/// (informative frames, native frames, native width, native height).
+/// Number of named accumulator arrays `learner_array` recognises (selectors 0..=13); selector 14 is the
+/// separate "counts" tuple (informative frames, native frames, native width, native height). Asserted against
+/// `src/core/wasm/learner.ts`'s `LEARNER_ARRAYS` via `ls_layout` selector 12, so an array added or removed on
+/// one side without the other is caught instead of silently misreading `which`.
+pub const LEARNER_ARRAY_COUNT: usize = 14;
+
+/// Accumulator selectors for `ls_learner_len`/`ls_learner_read`, in the adapter's field order; `LEARNER_ARRAY_COUNT`
+/// = counts (informative frames, native frames, native width, native height).
 fn learner_array(l: &Learner, which: u32) -> Option<&[f64]> {
     Some(match which {
         0 => &l.split,
@@ -141,7 +147,7 @@ pub extern "C" fn ls_learner_len(handle: u32, which: u32) -> i32 {
     let Some(l) = learner(handle) else {
         return STATUS_BAD_ARGUMENT;
     };
-    if which == 14 {
+    if which == LEARNER_ARRAY_COUNT as u32 {
         return 4;
     }
     match learner_array(l, which) {
@@ -156,7 +162,7 @@ pub extern "C" fn ls_learner_read(handle: u32, which: u32, out: u32) -> i32 {
     let Some(l) = learner(handle) else {
         return STATUS_BAD_ARGUMENT;
     };
-    let values: Vec<f64> = if which == 14 {
+    let values: Vec<f64> = if which == LEARNER_ARRAY_COUNT as u32 {
         vec![
             l.informative_frames as f64,
             l.native_frames as f64,

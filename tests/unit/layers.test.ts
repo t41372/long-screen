@@ -46,21 +46,25 @@ Deno.test('layers: non-divisible native geometry owns every content pixel; regio
   assertEquals(moving.length, 2, JSON.stringify(regions.map((r) => [r.kind, r.rect])));
   // No native pixel inside the (here: full-frame) content area is owned by no region.
   const atlas = new RegionAtlas(regions, nativeWidth, nativeHeight);
-  let unowned = 0;
-  for (let i = 0; i < atlas.labels.length; i++) if (!atlas.labels[i]) unowned++;
-  assertEquals(unowned, 0, `${unowned} of ${atlas.labels.length} native pixels are owned by no region`);
-  // regionContains must agree with floor(x/factor) (clamped), including in the remainder strip beyond aw*factor/ah*factor.
-  const masked = regions.find((r) => r.mask && !r.solid)!;
-  for (
-    const [x, y] of [[0, 0], [nativeWidth - 1, 10], [10, nativeHeight - 1], [nativeWidth - 1, nativeHeight - 1], [
-      nativeWidth - 2,
-      nativeHeight - 2,
-    ]]
-  ) {
-    const xx = Math.min(masked.maskWidth! - 1, Math.floor(x / factor)), yy = Math.min(masked.maskHeight! - 1, Math.floor(y / factor));
-    const expected = contains(masked.rect, x, y) && (!masked.crop || contains(masked.crop, x, y)) &&
-      !!masked.mask![yy * masked.maskWidth! + xx];
-    assertEquals(regionContains(masked, x, y, nativeWidth, nativeHeight), expected, `(${x},${y})`);
+  try {
+    let unowned = 0;
+    for (let i = 0; i < atlas.labels.length; i++) if (!atlas.labels[i]) unowned++;
+    assertEquals(unowned, 0, `${unowned} of ${atlas.labels.length} native pixels are owned by no region`);
+    // regionContains must agree with floor(x/factor) (clamped), including in the remainder strip beyond aw*factor/ah*factor.
+    const masked = regions.find((r) => r.mask && !r.solid)!;
+    for (
+      const [x, y] of [[0, 0], [nativeWidth - 1, 10], [10, nativeHeight - 1], [nativeWidth - 1, nativeHeight - 1], [
+        nativeWidth - 2,
+        nativeHeight - 2,
+      ]]
+    ) {
+      const xx = Math.min(masked.maskWidth! - 1, Math.floor(x / factor)), yy = Math.min(masked.maskHeight! - 1, Math.floor(y / factor));
+      const expected = contains(masked.rect, x, y) && (!masked.crop || contains(masked.crop, x, y)) &&
+        !!masked.mask![yy * masked.maskWidth! + xx];
+      assertEquals(regionContains(masked, x, y, nativeWidth, nativeHeight), expected, `(${x},${y})`);
+    }
+  } finally {
+    atlas.dispose();
   }
 });
 // F5: a fixed header at high DPI where the native per-frame displacement is strictly below one analysis pixel
@@ -173,10 +177,14 @@ Deno.test('layers: learner separates a stationary band from scrolling content wi
   assert(regionContains(fixed, 10, 36, 400, 300) && !regionContains(fixed, 10, 37, 400, 300));
   assert(regionContains(moving, 10, 37, 400, 300) && !regionContains(moving, 10, 36, 400, 300));
   const atlas = new RegionAtlas(regions, 400, 300);
-  assertEquals(atlas.count(atlas.code(fixed)), 400 * 37);
-  assertEquals(atlas.count(atlas.code(moving)), 400 * 263);
-  assert(!atlas.contains(atlas.code(moving), -1, 50) && !atlas.contains(atlas.code(moving), 10, 300));
-  assertThrows(() => atlas.code({ id: 'x', name: 'x', kind: 'moving', rect: { x: 0, y: 0, width: 1, height: 1 } }));
+  try {
+    assertEquals(atlas.count(atlas.code(fixed)), 400 * 37);
+    assertEquals(atlas.count(atlas.code(moving)), 400 * 263);
+    assert(!atlas.contains(atlas.code(moving), -1, 50) && !atlas.contains(atlas.code(moving), 10, 300));
+    assertThrows(() => atlas.code({ id: 'x', name: 'x', kind: 'moving', rect: { x: 0, y: 0, width: 1, height: 1 } }));
+  } finally {
+    atlas.dispose();
+  }
   assertEquals(
     regionMotion(
       {
@@ -234,8 +242,12 @@ Deno.test('layers: uninformative input yields a single moving region; manual reg
   };
   assert(regionContains(region, 1, 1, 10, 10) && !regionContains(region, 8, 1, 10, 10));
   const atlas = new RegionAtlas([region], 10, 10);
-  assertEquals(atlas.count(1), 50);
-  assertThrows(() => new RegionAtlas(Array.from({ length: 255 }, (_, i) => ({ ...region, id: String(i) })), 10, 10));
+  try {
+    assertEquals(atlas.count(1), 50);
+    assertThrows(() => new RegionAtlas(Array.from({ length: 255 }, (_, i) => ({ ...region, id: String(i) })), 10, 10));
+  } finally {
+    atlas.dispose();
+  }
 });
 Deno.test('layers: two independently moving panes are split at a native-precision divider', () => {
   const left = makeWorld(300, 1400, 21, 'cards'), right = makeWorld(300, 1400, 22, 'article');
@@ -326,7 +338,11 @@ Deno.test('takeover: high-resolution sparse 2D traversal preserves full pane, gu
   const moving = run.regions.find((r) => r.id === result.regionId)!;
   assertEquals(moving.rect, layer.viewport);
   const atlas = new RegionAtlas(run.regions, scenario.width, scenario.height);
-  assertEquals(atlas.count(atlas.code(moving)), layer.viewport.width * layer.viewport.height);
+  try {
+    assertEquals(atlas.count(atlas.code(moving)), layer.viewport.width * layer.viewport.height);
+  } finally {
+    atlas.dispose();
+  }
   assertEquals(run.observations.length, scenario.frames.length);
   const framed = run.canvases.find((c) => c.presentation?.sourceCanvas === result.mainCanvas.id);
   assert(framed?.presentation);

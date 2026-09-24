@@ -1,8 +1,9 @@
 /** Adapter for the Rust reconstruction core (`rust/core`, compiled to `assets/core.wasm`).
  *
  *  This is the only place TypeScript touches Wasm linear memory. Every kernel call follows one shape:
- *  reserve arena space, copy inputs in, call, copy outputs out, release the arena. The arena is a bump
- *  allocator on top of `ls_alloc`, grown in large chunks so per-frame calls never allocate in Rust.
+ *  reserve arena space, copy inputs in, call, copy outputs out, leave the arena for the next call to replan.
+ *  The arena is a bump allocator on top of `ls_alloc`, grown in large chunks so per-frame calls never allocate
+ *  in Rust; it is never freed mid-run, only replaced (grown) when a call needs more than it currently holds.
  *  Kernels return negative status codes rather than trapping; those are surfaced as thrown errors.
  *
  *  Split by domain under `src/core/wasm/`, mirroring `rust/core/src/abi/*.rs`; this file is a barrel that

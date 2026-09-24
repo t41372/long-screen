@@ -3,24 +3,24 @@
 // it is orchestration (storage, diagnostics, progress, batching, failure classification) that stays in TypeScript
 // per the project's thin-shell-over-Rust-core architecture (see docs/ARCHITECTURE.md and Engine's own header).
 import { createId } from '../core/id.ts';
-import type { CanvasMeta, FrameSource, Gray, Project, RGBA, Settings } from '../types.ts';
+import type { CanvasMeta, Diagnostic, FrameSource, Gray, Project, Region, RGBA, Settings } from '../types.ts';
 import type { KV } from '../storage/db.ts';
 import { Namespace } from '../storage/db.ts';
 import { Diagnostics } from '../storage/diagnostics.ts';
 import { TileStore } from '../storage/tiles.ts';
+import { projectIndexKey, projectKey } from '../storage/projects.ts';
 import type { LayerLearner, RegionAtlas } from '../core/layers.ts';
 import { analysisFactor } from '../core/raster.ts';
 import type { FrameRing, Resident, ResidentFrame, ResidentGray, VotingRing } from '../core/wasm.ts';
 import { AnalysisComputer } from '../core/compute.ts';
 import { DECODED_VIDEO_NOISE } from '../media/source.ts';
 import type { EngineEvents } from './engine.ts';
-import type { Diagnostic, Region } from '../types.ts';
 /** Every pass, on hitting a decode/analysis/storage failure it cannot recover from, keeps whatever prefix of frames
  * it already committed and reports that instead of failing the whole run. The three passes' wording and detail
  * shape differ only in the pass name and its frame-count noun ("解码"/"求解"/"渲染" — decode/solve/render), and
  * whether a PERSISTENCE failure appends "；存储写入已停止。"; scan's message carries no `detail` (see spec), solve's
  * and render's carry `{ pass, frames }`. Building the event here keeps that repeated shape in one place instead of
- * re-typed at each of the ~10 emission sites across scan.ts/solve.ts/render.ts. */
+ * re-typed at each of the 15 emission sites across scan.ts/solve.ts/render.ts. */
 export function prefixOnly(
   code: 'DECODE_PREFIX_ONLY' | 'ANALYSIS_PREFIX_ONLY' | 'PERSISTENCE_PREFIX_ONLY',
   pass: 'scan' | 'solve' | 'render',
@@ -205,11 +205,11 @@ export class RunContext {
     this.project.diagnostics = { ...this.diagnostics.counts };
     this.project.severities = { ...this.diagnostics.severities };
     try {
-      await this.db.put(`project/${this.project.id}`, this.project);
+      await this.db.put(projectKey(this.project.id), this.project);
       // History index, written once: 'project-index/<created ISO>/<id>' → id, so a reverse scan of the prefix
       // lists runs newest-first without scanning every 'project/<id>' row.
       if (!this.historyIndexed) {
-        await this.db.put(`project-index/${this.project.created}/${this.project.id}`, this.project.id);
+        await this.db.put(projectIndexKey(this.project.created, this.project.id), this.project.id);
         this.historyIndexed = true;
       }
     } catch (error) {

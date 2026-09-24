@@ -2,9 +2,9 @@
  *  (mirrors `rust/core/src/abi/learner.rs`). */
 import type { Gray, MotionField } from '../../types.ts';
 import type { Core } from './core.ts';
-import { type FrameInput, ResidentFrame } from './memory.ts';
+import { type FrameInput, FreeGuard, ResidentFrame } from './memory.ts';
 import type { CoreExports } from './exports.ts';
-import { LEARNER_FIELD_BYTES, LEARNER_MOTION_BYTES } from './exports.ts';
+import { LEARNER_ARRAY_COUNT, LEARNER_FIELD_BYTES, LEARNER_MOTION_BYTES } from './exports.ts';
 
 /** Accumulators of the core-resident layer learner, read back once for `LayerLearner.finish()`. */
 export interface LearnerAccumulators {
@@ -41,11 +41,17 @@ const LEARNER_ARRAYS = [
   'nativeColChange',
   'nativeColMean',
 ] as const;
+// Kept in sync with `rust/core/src/abi/learner.rs::learner_array`'s match arms (selectors 0..=13); their count is
+// asserted against the Rust side once at `Core` construction (`assertLayout`, `ls_layout` selector 12), but the
+// forEach below trusts this array's *order* too, which no runtime check can see — change both sides together.
+if (LEARNER_ARRAYS.length !== LEARNER_ARRAY_COUNT) {
+  throw new Error(`CORE_LAYOUT_MISMATCH: LEARNER_ARRAYS has ${LEARNER_ARRAYS.length} entries, expected ${LEARNER_ARRAY_COUNT}.`);
+}
 
 /** Core-resident layer-learning accumulators (rust/core/src/layers.rs): one `add()` per informative motion field
  *  during the scan pass, `read()` once for `finish()`, `free()` always. */
 export class LearnerHandle {
-  private freed = false;
+  private readonly freeGuard = new FreeGuard();
   constructor(
     private readonly core: Core,
     private readonly exports: CoreExports,
@@ -122,14 +128,14 @@ export class LearnerHandle {
       const values = array(which);
       if (values.length || which < 11) out[name] = values;
     });
-    const counts = array(14);
+    const counts = array(LEARNER_ARRAY_COUNT);
     return { ...out, informativeFrames: counts[0], nativeFrames: counts[1] } as unknown as LearnerAccumulators;
   }
   free(): void {
-    if (this.freed) return;
-    this.freed = true;
-    this.exports.ls_learner_free(this.handle);
-    this.handle = 0;
+    this.freeGuard.once(() => {
+      this.exports.ls_learner_free(this.handle);
+      this.handle = 0;
+    });
   }
 }
 
