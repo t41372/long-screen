@@ -47,7 +47,7 @@ export interface FrameInput {
   previousGray: Gray | undefined;
   features: Feature[];
   native: () => Gray | ResidentGray;
-  /** R4c 3b-ii: the shared resident native-luma plane `native()` above also fills, only when `current` is a
+  /** The shared resident native-luma plane `native()` above also fills, only when `current` is a
    * `ResidentFrame` (undefined otherwise — the geometry-mismatch fallback `native()` still handles unfused, in
    * TS, exactly as before). `reacquire`/`driftCorrection` pass this straight to Rust so the fused call can fill
    * it lazily, core-side, itself; `nativeFilled`/`markNativeFilled` share `native()`'s own per-frame memo, so

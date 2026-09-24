@@ -31,7 +31,7 @@ export function fieldFor(prev: Gray, cur: Gray) {
   return estimateMotion(prev, cur, undefined, core().extractFeatures(prev, 480), core().extractFeatures(cur, 480));
 }
 
-/** Former src/core/raster.ts exports with no production caller left (final-verify-report.md item 12): kept here
+/** Former src/core/raster.ts exports with no production caller left: kept here
  *  only for tests/unit/raster.test.ts, which still exercises them directly. */
 export function cropRGBA(image: RGBA, r: Rect): RGBA {
   const x = Math.round(r.x), y = Math.round(r.y), width = Math.round(r.width), height = Math.round(r.height);
@@ -76,7 +76,7 @@ export function downscaleRGBA(image: RGBA, factor: number): RGBA {
 export function thumbnail(image: RGBA, maxWidth: number): RGBA {
   return downscaleRGBA(image, Math.max(1, Math.ceil(image.width / maxWidth)));
 }
-/** Former src/core/layers.ts::regionMotion, with no production caller left (final-verify-report.md item 12):
+/** Former src/core/layers.ts::regionMotion, with no production caller left:
  *  kept here only for tests/unit/layers.test.ts. Uses the frozen `referenceRegionContains` (tests/support/
  *  reference/layers.ts) rather than a second copy of that check. */
 export function regionMotion(field: MotionField, region: Region, width: number, height: number): Motion {

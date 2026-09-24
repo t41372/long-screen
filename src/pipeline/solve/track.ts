@@ -1,24 +1,18 @@
-// MOSTLY PORTED (Rust — see docs/history/2026-09-rust-migration-log.md "已在 Rust 核心中"): the per-region tracking
-// DECISIONS region-step.ts's stepRegion() and keyframe-step.ts's keyframeStep() apply each frame. R4b phase 3a
-// ported every stateless verdict (uncertainty, relocalizeVerdict, fragmentCause's gate, occlusionEligible,
-// attachVerdict, odometryWeight, thinOverlapEligible/Correction, loopClosureVerdict, needsKeyframe, zoomChanged,
-// regionZoom, targetPose) to rust/core/src/track.rs; each is now a thin call into src/core/wasm/track.ts,
-// exported under its original name/signature so region-step.ts/keyframe-step.ts need no changes. R4c 3b-i fused
-// odometry the same way; R4c 3b-ii fused reacquire and driftCorrection (native luma filled lazily, core-side) —
-// a stateful cross-frame tracker handle was measured and NOT built (no measurable gain over these per-call
-// fusions). Keyframe candidate scoring's own pure core, evaluateCandidates, is a separate module
-// (src/core/keyframes.ts, bound through src/core/wasm/track.ts too) — R4d step 4 ported it the same way. Every
-// `Math.exp` these functions' TS halves still finish (driftCorrection's/reacquire's/odometry's confidence
-// multiply) is a deliberate bit-exactness choice, not unported logic — see each one's own WHY comment.
-// STILL TS below (not this round's job — see spec-r4d): isTextured/priorMatchesOf (R1: named so the shell's own
-// inline setup has one home; priorMatchesOf is match glue over an already-Rust kernel (matchFeatures), isTextured
-// is a bare `.length >= 8`) and gate() (a six-way branch with no native/patch/feature work of its own — the
-// shell's dispatch, not tracking math). ownFeaturesOf used to filter through a TS `regionContains` copy too; R6-B
-// moved that filter into Rust (final-verify-report.md item 13 — `rust/core/src/region.rs::filter_features`, bound
-// through `core().filterFeatures`), so this function is now a thin call, kept here (not inlined at its one call
-// site in region-step.ts) because it is still this shell's own per-region setup, not tracking math. This split
-// (R1/R2) is why tests/support/reference/track.ts could freeze the pre-port functions' outputs as a TS oracle
-// (tests/unit/parity/track.test.ts checks the Rust replacements against it).
+// The per-region tracking decisions that region-step.ts's stepRegion() and keyframe-step.ts's keyframeStep() apply
+// each frame. The algorithms run in the Rust core (rust/core/src/track/): the stateless verdicts (uncertainty,
+// relocalizeVerdict, fragmentCause's gate, occlusionEligible, attachVerdict, odometryWeight,
+// thinOverlapEligible/Correction, loopClosureVerdict, needsKeyframe, zoomChanged, regionZoom, targetPose) and the fused
+// per-region calls (odometry; re-acquisition and drift control, which fill the native luma plane lazily, core-side).
+// Each is a thin call into src/core/wasm/track*.ts under its original name and signature. A stateful cross-frame
+// tracker handle was measured and not built: it gave no measurable gain over these per-call fusions. Keyframe
+// candidate scoring lives in src/core/keyframes.ts and is bound the same way.
+// What deliberately remains TypeScript here: the final `Math.exp` factor of the odometry/re-acquisition/drift
+// confidences (V8's exp and Rust's libm exp differ by one ULP on some inputs, and these values must stay bit-identical
+// with the historical output — see each WHY comment); isTextured (a bare `.length >= 8`), priorMatchesOf (match glue
+// over the Rust matchFeatures kernel) and gate() (a six-way dispatch with no pixel, patch or feature work of its own).
+// ownFeaturesOf is a thin call into the Rust per-region feature filter (rust/core/src/region.rs::filter_features),
+// kept here because it is this shell's per-region setup. tests/support/reference/track.ts freezes the pre-port
+// TypeScript of these functions; tests/unit/parity/track.test.ts checks the Rust versions against it.
 import type { Feature, Gray, Match, Point, Region, RGBA } from '../../types.ts';
 import type { NativeRefinement, Patch } from '../../core/motion.ts';
 import { core, type LabelMask, type ResidentFrame, type ResidentGray } from '../../core/wasm.ts';
@@ -141,7 +135,7 @@ export interface OdometryEstimate {
   contentChange?: { agreement: number; blocks: number };
 }
 /** Step 1: frame-to-frame odometry — analysis-scale hypotheses, block-aware audit, then a native-pixel decision
- * (R4c 3b-i: `matchFeatures` + `translationHypotheses` + the audit filter/sort + up to 6 native refinements +
+ * (fused: `matchFeatures` + `translationHypotheses` + the audit filter/sort + up to 6 native refinements +
  * rival detection + confidence + the static/lost difference sample, fused into one Rust call). */
 export function odometry(inputs: OdometryInputs): OdometryEstimate {
   return core().trackOdometry(inputs);
@@ -153,7 +147,7 @@ export interface ReacquireInputs {
   current: RGBA | ResidentFrame;
   /** The shared per-frame resident native-luma plane (`solve.ts`'s `nativePlane`), when `current` is resident —
    * undefined for the rare geometry-mismatch fallback, where `native` below still does the JS-side conversion,
-   * unfused (R4c 3b-ii does not port that rare path; see `src/core/wasm/track.ts::resolveNative`'s doc comment). */
+   * unfused (that rare path stays in TS; see `src/core/wasm/track.ts::resolveNative`'s doc comment). */
   nativePlane: ResidentGray | undefined;
   /** Whether `nativePlane` already holds this frame's luma (`native()`'s own per-frame memo — see
    * `region-step.ts`'s `FrameInput.nativeFilled`). */
@@ -168,7 +162,7 @@ export interface ReacquireInputs {
   radius: number;
 }
 /** Step 2: re-acquire the anchor on native patches after blind frames or a failed odometry step (short blank
- * gaps with overlap) — fused into one Rust call (R4c 3b-ii): `matchFeatures` + `translationHypotheses` (no
+ * gaps with overlap) — fused into one Rust call: `matchFeatures` + `translationHypotheses` (no
  * native luma needed), then, only if that found a candidate, the native-plane lazy fill and up to 4 patch
  * refinements + rival rejection. */
 export function reacquire(inputs: ReacquireInputs): { n: NativeRefinement; ambiguous: boolean; confidence: number } | undefined {
@@ -192,7 +186,7 @@ export interface DriftCorrectionInputs {
   confidence: number;
 }
 /** Drift control: re-measure the pose against the anchor keyframe's native patches whenever they are still in
- * view — fused into one Rust call (R4c 3b-ii). */
+ * view — fused into one Rust call. */
 export function driftCorrection(inputs: DriftCorrectionInputs): { pose: Point; confidence: number } | undefined {
   const { markNativeFilled, confidence, ...rest } = inputs;
   const { pose, error, filledNative } = core().trackDriftCorrection(rest);

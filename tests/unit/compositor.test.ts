@@ -18,7 +18,7 @@ import { RegionAtlas } from '../../src/core/layers.ts';
 import { Compositor } from '../../src/core/compositor.ts';
 import type { CanvasMeta, Diagnostic, Placement, Rect, Region, RGBA } from '../../src/types.ts';
 type RGB4 = [number, number, number, number];
-/** Former src/core/compositor.ts export with no production caller left (final-verify-report.md item 12): compares
+/** Former src/core/compositor.ts export with no production caller left: compares
  *  block membership, not only a bounding box or cardinality. Kept here only for this test. */
 function sameBlockSet(a: [number, number][], b: [number, number][]): boolean {
   if (a.length !== b.length) return false;

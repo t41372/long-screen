@@ -50,7 +50,7 @@ deno task fingerprint    # 逐场景、逐持久化行的字节级指纹工具�
 
 ## 部署
 
-`deno task build:prod` 产出的 `dist/` 是静态站点，上传到任何遵守 `_headers` 文件的静态托管（Cloudflare Pages、Netlify；`static/_headers` 原样复制并设置线程构建需要的 COOP/COEP/CORP 响应头，以及缓存策略）即可，不再是 GitHub Pages——后者不能设置自定义响应头，会导致页面不跨源隔离、Wasm 核心退回单线程构建（仍能运行，只是没有线程加速）。
+`deno task build:prod` 产出的 `dist/` 是静态站点，上传到任何遵守 `_headers` 文件的静态托管（Cloudflare Pages、Netlify；`static/_headers` 原样复制并设置线程构建需要的 COOP/COEP/CORP 响应头，以及缓存策略）即可，不再是 GitHub Pages——后者不能设置自定义响应头，会导致页面不跨源隔离、Wasm 核心退回单线程构建（仍能运行，只是没有线程加速）。**托管方必须在 304 响应上也带上这三个头**，不能只在 200 上带：开发服务器（`deno task start`）对每个响应都重新附加，但静态托管各自的行为不一定一致——一次 304 上缺 CORP 头曾经打断 WebKit 私密浏览下的下载流程（见提交历史 "dev server re-applies COOP/COEP/CORP to every response"）；`_headers` 文件本身对 304 是否生效因托管商而异，部署时请在真实主机上核实（用浏览器开发者工具看一次带 `If-None-Match` 的重复请求，确认 304 响应也带着三个头）。
 
 ## 架构
 
@@ -64,7 +64,7 @@ File / Blob（分段随机读取，8 × 256KiB 页面）
   → IndexedDB 原图瓦片 / 覆盖位图 / 诊断
 ```
 
-解码是唯一依赖浏览器 API 的一步：`FrameSource` 产出 `RGBA` 而不是 canvas，供之后各遍使用。配准、分层、位置图、合成、瓦片编解码等算法全部在 `rust/core` 编译成的 Wasm 核心里；TypeScript 是围绕它的薄壳（界面、Worker RPC、I/O、编排）。Deno 测试与浏览器加载的是同一份核心，因此 Deno 里验证过的算法行为就是浏览器里的行为。详见 [架构文档](docs/ARCHITECTURE.md)；迁移过程与逐模块进度见 [docs/history/2026-09-rust-migration-log.md](docs/history/2026-09-rust-migration-log.md)。
+解码是唯一依赖浏览器 API 的一步：`FrameSource` 产出 `RGBA` 而不是 canvas，供之后各遍使用。配准、分层、位置图、合成、瓦片编解码等算法全部在 `rust/core` 编译成的 Wasm 核心里；TypeScript 是围绕它的薄壳（界面、Worker RPC、I/O、编排）。Deno 测试与浏览器加载的是同一份核心，因此 Deno 里验证过的算法行为就是浏览器里的行为。详见 [架构文档](docs/ARCHITECTURE.md)（十一、十二节是当前逐模块归属与刻意留在 TS 的清单）；历史迁移过程记录在 [docs/history/2026-09-rust-migration-log.md](docs/history/2026-09-rust-migration-log.md)（已完结，不代表当前状态）。
 
 ## 目录
 
@@ -73,7 +73,7 @@ rust/core       Rust 核心源码；编译为 core.wasm / core.simd.wasm / core.
 src/core        围绕核心的 TS 薄壳：配准、分层、位置图、关键帧、合成、光栅、加载与选择构建（src/core/wasm/**）
 src/media       容器解析、范围读取、WebCodecs 解码
 src/codec       PNG 编解码的 TS 编排层，chunk/CRC 校验通过核心
-src/pipeline    三遍引擎的编排（scan/solve/render），部分冲突处理与位姿图优化仍是纯 TS
+src/pipeline    三遍引擎的编排（scan/solve/render）；冲突判定与位姿图优化本身都已在 Rust 核心，这里是调用顺序与 KV I/O
 src/storage     IndexedDB / 内存 KV、瓦片、诊断
 src/synthetic   合成场景、渲染器、真值校验器（同时是内置演示）
 src/export      ZIP64（借助 npm 包 client-zip）、PNG 分页、离线查看器

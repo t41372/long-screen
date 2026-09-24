@@ -324,7 +324,7 @@ Deno.test("consistency voting: a screen-fixed blob taller than one frame's displ
   }
 });
 
-// Direction A (fair partner sharing, solve/solve.ts's solve()'s consistencyPartners): a frame whose own arrival can only
+// Direction A (fair partner sharing in the voting ring's partner selection, rust/core/src/voting.rs `Ring::partners`): a frame whose own arrival can only
 // compare it against PAST frames must still accumulate comparisons from the future ones that pick it as a partner,
 // or a world position first seen at the leading edge can never be judged. The engine reports this directly:
 // `consistencyThinLayers` counts per-frame, per-region voting layers finalised on fewer than the comparisons a

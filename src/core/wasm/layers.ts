@@ -1,5 +1,5 @@
 /** Layer-learner handles: accumulates per-frame motion-discontinuity evidence across a whole recording
- *  (mirrors `rust/core/src/abi/learner.rs`). */
+ *  (mirrors `rust/core/src/abi/layers.rs`). */
 import type { Gray, MotionField } from '../../types.ts';
 import type { Core } from './core.ts';
 import { type FrameInput, FreeGuard, ResidentFrame } from './memory.ts';
@@ -41,7 +41,7 @@ const LEARNER_ARRAYS = [
   'nativeColChange',
   'nativeColMean',
 ] as const;
-// Kept in sync with `rust/core/src/abi/learner.rs::learner_array`'s match arms (selectors 0..=13); their count is
+// Kept in sync with `rust/core/src/abi/layers.rs::learner_array`'s match arms (selectors 0..=13); their count is
 // asserted against the Rust side once at `Core` construction (`assertLayout`, `ls_layout` selector 12), but the
 // forEach below trusts this array's *order* too, which no runtime check can see — change both sides together.
 if (LEARNER_ARRAYS.length !== LEARNER_ARRAY_COUNT) {

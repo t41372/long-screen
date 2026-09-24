@@ -1,5 +1,5 @@
 /** FROZEN TypeScript chrome evidence (`stationaryBoundary`, `stickyOcclusions`), lifted verbatim as the parity
- *  oracle for rust/core/src/chrome.rs (tests/unit/core-parity.test.ts). Not used by production code. Do not "fix". */
+ *  oracle for rust/core/src/chrome.rs (tests/unit/parity/). Not used by production code. Do not "fix". */
 import type { Rect, Region, RGBA } from '../../../src/types.ts';
 /** Strong persistent appearance boundary within a stationary run. Never infer a pane edge from its first glyph.
  * Returns the boundary coordinate in native pixels, or undefined if the image offers no boundary evidence. */

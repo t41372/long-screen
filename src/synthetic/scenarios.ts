@@ -576,7 +576,7 @@ export function buildScenario(name: ScenarioName | string): Scenario {
       // recording's boundary — a world position entering at the leading edge with one or two frames left is
       // off screen in every ring partner that clears Dmin, so no comparison is ever possible for it. That is
       // a property of where the recording stops, not of the detector. Only 2 of the 1,675 sit in analysis
-      // cells the `consistencyInterior` mask excludes from voting, so the mask is not what stands in the way.
+      // cells the voting interior mask (`RegionSlot.interior`, rust/core/src/voting.rs) excludes from voting, so the mask is not what stands in the way.
       return {
         name,
         description: '手机竖屏：状态栏、底部导航、悬浮按钮、滚动条、手抖。',
@@ -794,7 +794,7 @@ export function buildScenario(name: ScenarioName | string): Scenario {
       // flagged, frame 52 is genuinely clean and is the LAST frame of the run, and the same pairwise
       // disagreement condemns frame 52 as well, with voting silent for both (a world position entering at
       // the leading edge one frame before the end is off screen in every ring partner that clears Dmin).
-      // NONE of the 1,905 sit in analysis cells the `consistencyInterior` mask excludes from voting.
+      // NONE of the 1,905 sit in analysis cells the voting interior mask (`RegionSlot.interior`, rust/core/src/voting.rs) excludes from voting.
       // maxProvisional is the net unhealed flag count at the end: measured 32,151px, +~5%.
       return {
         name,

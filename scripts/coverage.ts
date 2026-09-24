@@ -16,7 +16,7 @@ const INCLUDE = '--include=^file:.*/(src/.*|main\\.ts)$';
  *  `import.meta.main` block — actual `Deno.serve()` startup and the `scripts/build.ts` spawn — only runs when main.ts is
  *  the process entry point, not when imported by a test, and exercising it would need `--allow-run` that `deno task test`
  *  does not grant plus spawning a real build/server from a unit test, both out of scope here.
- *  Reseeded again (R6-A, final-review item 2): the gate had been failing since before this round — 55 of 89 src files
+ *  Reseeded: the gate had been failing since before the 2026-09 refactor — 55 of 89 src files
  *  (mostly new modules from the Rust-porting rounds: core/wasm/**, pipeline/solve/**, pipeline/{attachments,consistency,
  *  context,features-codec,presentation,render,scan}.ts, media/{convert,pool,rgba-copy}.ts, storage/projects.ts,
  *  core/id.ts, core/wasm.ts) had neither a floor nor a BROWSER_ONLY entry, so `deno task coverage` could never pass.
@@ -27,13 +27,42 @@ const INCLUDE = '--include=^file:.*/(src/.*|main\\.ts)$';
  *  100→96, media/mp4.ts 84→82, pipeline/engine.ts 87→78, storage/db.ts 58→50, storage/tiles.ts 98→97, main.ts 77→50)
  *  is a file that had already drifted below its old floor before this reseed — `deno task coverage` had been failing
  *  on the "no floor recorded" errors for the new modules above, so nobody could see these drops fail the gate on
- *  their own; there is no code or test change here to explain any of them. */
+ *  their own; there is no code or test change here to explain any of them.
+ *  Reseeded again: later renames left floors keyed to old paths (`core/wasm/composite.ts`
+ *  → `core/wasm/compositor.ts`, `core/wasm/learner.ts` → `core/wasm/layers.ts`, `core/features.ts` deleted, the
+ *  track trio split into `core/wasm/track.ts` + `track-odometry.ts`/`track-reacquire.ts`/`track-keyframes.ts`, and
+ *  the new `core/wasm/yuv.ts`) — carried each renamed file's floor to its new path and added floor(measured) for the
+ *  new split files: `core/wasm/compositor.ts` 97, `core/wasm/layers.ts` 96, `core/wasm/track-keyframes.ts` 99,
+ *  `core/wasm/track-odometry.ts` 97, `core/wasm/track-reacquire.ts` 95. `core/wasm/yuv.ts` (`frameToRGBA`, the
+ *  planar-conversion path `media/convert.ts` calls) only runs from a Worker fed real `VideoFrame.copyTo` output,
+ *  which Deno's test runner never produces — but the module is still imported transitively (through the `core.ts`
+ *  barrel), so `deno coverage` reports it at 0% rather than omitting it, and BROWSER_ONLY (which only exempts files
+ *  absent from the report) does not apply; it gets an explicit 0 floor instead, verified real coverage by the
+ *  browser suite (`tests/browser/planar.test.ts`).
+ *  Two floors had genuinely dropped: `core/wasm/track.ts` 95→93.9 was `resolveNative`'s mode-0-returns-a-
+ *  `ResidentGray` branch (added in 474fb81 to fix a real bug) and its plain-`Gray` sibling branch, neither reached by
+ *  the synthetic scenarios (documented on the function: this path never reaches the 24×11 differential suite) — added
+ *  `tests/unit/wasm-track-resolve-native.test.ts`, which calls `resolveNative` directly for both branches, restoring
+ *  the floor to 95 (measured back above it). `core/wasm/memory.ts` 90→82 was `ResidentGray.window()`, which lost its
+ *  only production caller when `extractPatches` moved to Rust (commit d029e6b) — `window()` is real, working code
+ *  with no caller left in `src`, not removed dead code, so the same test file adds a direct call to it too; the floor
+ *  is restored to 90 rather than lowered. Ran `--update-floors` once on a scratch copy of this file to see its
+ *  output (73 entries, all matching the numbers above) but did not accept it: it rewrites the whole FLOORS block
+ *  from the run's measured numbers with no diff review and exits 1 even on a clean rewrite (the exit reflects the
+ *  *old* floors it just replaced, not the new ones), so a scripted `--update-floors && commit` would silently accept
+ *  every regression above; that is a documented trap (the comment on this block already says "review the diff"), not
+ *  a bug to fix in the script — every floor in this block was instead reviewed and typed in by hand.
+ *  `pipeline/render.ts` 89→87: no source or test change touched this file since the 89 floor was set (only a
+ *  comment-only commit) and re-running `deno task coverage` on an unmodified tree measured anywhere from 87.1% to
+ *  89.3% across runs — `RenderPass.checkpointFlush()`'s `performance.now() - this.lastFlush >= 1200` gate and the
+ *  fault-injection catch blocks in `run()`/`processFrame()` are timing- and scheduling-sensitive under
+ *  `deno test --parallel`, so which side of a few branches a given run takes is not fully deterministic; lowered
+ *  to floor(worst observed) rather than chasing a number that moves without a code change. */
 const FLOORS: [RegExp, number][] = [
   [/^codec\/crc\.ts$/, 100],
   [/^codec\/png\.ts$/, 96],
   [/^core\/compositor\.ts$/, 97],
   [/^core\/compute\.ts$/, 93],
-  [/^core\/features\.ts$/, 100],
   [/^core\/framing\.ts$/, 96],
   [/^core\/id\.ts$/, 100],
   [/^core\/keyframes\.ts$/, 100],
@@ -44,13 +73,13 @@ const FLOORS: [RegExp, number][] = [
   [/^core\/raster\.ts$/, 100],
   [/^core\/wasm\.ts$/, 100],
   [/^core\/wasm\/chrome\.ts$/, 98],
-  [/^core\/wasm\/composite\.ts$/, 97],
+  [/^core\/wasm\/compositor\.ts$/, 97],
   [/^core\/wasm\/consistency\.ts$/, 95],
   [/^core\/wasm\/core\.ts$/, 82],
   [/^core\/wasm\/exports\.ts$/, 91],
   [/^core\/wasm\/features\.ts$/, 100],
   [/^core\/wasm\/framing\.ts$/, 95],
-  [/^core\/wasm\/learner\.ts$/, 96],
+  [/^core\/wasm\/layers\.ts$/, 96],
   [/^core\/wasm\/loader\.ts$/, 37],
   [/^core\/wasm\/marshal\.ts$/, 100],
   [/^core\/wasm\/memory\.ts$/, 90],
@@ -62,7 +91,11 @@ const FLOORS: [RegExp, number][] = [
   [/^core\/wasm\/regions\.ts$/, 95],
   [/^core\/wasm\/temporal\.ts$/, 99],
   [/^core\/wasm\/track\.ts$/, 95],
+  [/^core\/wasm\/track-keyframes\.ts$/, 99],
+  [/^core\/wasm\/track-odometry\.ts$/, 97],
+  [/^core\/wasm\/track-reacquire\.ts$/, 95],
   [/^core\/wasm\/voting\.ts$/, 97],
+  [/^core\/wasm\/yuv\.ts$/, 0],
   [/^export\/offline\.ts$/, 100],
   [/^export\/png\.ts$/, 100],
   [/^export\/project\.ts$/, 97],
@@ -83,7 +116,7 @@ const FLOORS: [RegExp, number][] = [
   [/^pipeline\/engine\.ts$/, 78],
   [/^pipeline\/features-codec\.ts$/, 100],
   [/^pipeline\/presentation\.ts$/, 87],
-  [/^pipeline\/render\.ts$/, 89],
+  [/^pipeline\/render\.ts$/, 87],
   [/^pipeline\/scan\.ts$/, 89],
   [/^pipeline\/solve\/keyframe-step\.ts$/, 95],
   [/^pipeline\/solve\/region-step\.ts$/, 96],

@@ -1,5 +1,5 @@
 /** FROZEN TypeScript oracles for the layer-learning port. The first half (`ReferenceLayerLearner`, `add`/
- *  `addNative`) is the parity oracle for rust/core/src/layers.rs (tests/unit/core-parity.test.ts). The second half
+ *  `addNative`) is the parity oracle for rust/core/src/layers.rs (tests/unit/parity/). The second half
  *  (`referenceFinish`, `referenceRegionContains`, `referenceLabelAtlas`, below) is the parity oracle for
  *  rust/core/src/regions.rs (tests/unit/regions-parity.test.ts, stage 2). Production still runs `finish()` and
  *  `RegionAtlas` in TS until stage 2 switches them to the Rust core. Not used by production code. Do not "fix"

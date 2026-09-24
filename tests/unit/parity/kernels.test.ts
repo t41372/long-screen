@@ -84,7 +84,7 @@ Deno.test('core parity: PNG Sub filtering is byte-exact; the frozen unfilter ora
   const image = randomRGBA(37, 11);
   const filtered = core.pngFilterSub(new Uint8Array(image.data.buffer), 37, 11);
   assertEquals(filtered, reference.filterSub(image.data, 37, 11));
-  // `ls_png_unfilter` had no production caller (final-verify-report.md item 12) and was removed; `pngFilterSub`'s
+  // `ls_png_unfilter` had no production caller and was removed; `pngFilterSub`'s
   // own inverse now lives only in the frozen oracle (tests/support/reference/kernels.ts::unfilterPNG), exercised
   // here as a round-trip check on the Rust filter's own output rather than a Rust-vs-TS comparison.
   assertEquals(reference.unfilterPNG(filtered, 37, 11, 4), image.data);

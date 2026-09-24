@@ -1,5 +1,5 @@
 /** Tile compositing: merges one prepared observation into a resident tile's pixels, coverage and quality
- *  bookkeeping (mirrors `rust/core/src/abi/composite.rs`). */
+ *  bookkeeping (mirrors `rust/core/src/abi/compositor.rs`). */
 import type { Rect, RGBA } from '../../types.ts';
 import type { Core } from './core.ts';
 import { type BytesInput, type FrameInput, Resident, ResidentFrame } from './memory.ts';

@@ -469,7 +469,7 @@ export const COMPOSITE_HEADER = 24, VOTING_REGION_BYTES = 64, LEARNER_MOTION_BYT
 export const REGIONS_FINISH_DESC_BYTES = 112, REGION_HEADER_BYTES = 88;
 /** One serialised `framing::Layout` (`rust/core/src/abi/framing.rs`). */
 export const LAYOUT_BYTES = 104;
-/** Named accumulator arrays `rust/core/src/abi/learner.rs::learner_array` recognises — must match
+/** Named accumulator arrays `rust/core/src/abi/layers.rs::learner_array` recognises — must match
  *  `./learner.ts`'s `LEARNER_ARRAYS.length` (selector 14, "counts", is separate and not part of this count). */
 export const LEARNER_ARRAY_COUNT = 14;
 /** `ls_extract_patches`'/`ls_probe_scale`'s serialised `(x, y)` feature point: f64, f64. */

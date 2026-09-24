@@ -1,6 +1,6 @@
 /** FROZEN TypeScript displacement-spread consistency voting: the pre-migration `Engine.solve()` ring, lifted
  *  verbatim (box geometry, interior mask, partner selection, box gray, compare, finalize) as the parity oracle for
- *  rust/core/src/voting.rs (tests/unit/core-parity.test.ts). Not used by production code. Do not "fix" this. */
+ *  rust/core/src/voting.rs (tests/unit/parity/). Not used by production code. Do not "fix" this. */
 import type { Gray, Point, Region } from '../../../src/types.ts';
 import { referenceRegionContains as regionContains } from './layers.ts';
 

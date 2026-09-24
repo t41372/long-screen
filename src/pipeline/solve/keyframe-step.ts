@@ -47,7 +47,7 @@ export interface KeyframeStepInput {
   ownFeatures: Feature[];
   native: () => Gray | ResidentGray;
   /** See `region-step.ts`'s `FrameInput` fields of the same name — passed through so this frame's `index.find()`
-   * call (R4d step 4) can use the same lazy resident native-plane fill as odometry/reacquire/driftCorrection. */
+   * call can use the same lazy resident native-plane fill as odometry/reacquire/driftCorrection. */
   current: RGBA | ResidentFrame;
   nativePlane: ResidentGray | undefined;
   nativeFilled(): boolean;

@@ -121,7 +121,7 @@ export function evaluateCandidates(
     analysisError: r.analysisError,
     strong: r.strong,
   }));
-  // Intentional TS, not an unported kernel (final-verify-report.md item 14): the score/sort/best/rival-ambiguity
+  // Intentional TS, not an unported kernel: the score/sort/best/rival-ambiguity
   // selection below needs the exact host-`Math.exp`'d confidence (line 118) as its sort key for bit-exactness —
   // see this function's own doc comment. `.8`/`6` (the rival test just below) are the measured thresholds this
   // selection has always used: a rival must score within 80% of the best AND either resolve to a different
@@ -224,7 +224,7 @@ export class KeyframeIndex {
     if (truncated) {
       await this.warnOnce(layer);
     }
-    // Intentional TS, not an unported kernel (final-verify-report.md item 14): top-12 candidates by word-vote
+    // Intentional TS, not an unported kernel: top-12 candidates by word-vote
     // count, each needing at least 3 votes, is inline glue over `votes` (a KV posting-list tally built above by
     // `this.db.scan`) — there is no buffer to hand Rust here until the KV reads finish, so this stays the
     // adapter's own bookkeeping, like `evaluateCandidates`'s scoring above.
