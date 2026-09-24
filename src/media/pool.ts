@@ -1,4 +1,4 @@
-/** Explicit-release pool of RGBA conversion buffers (docs/HANDOFF.md "下一步" #1): a fresh 30 MB `Uint8ClampedArray`
+/** Explicit-release pool of RGBA conversion buffers (docs/history/2026-09-rust-migration-log.md "下一步" #1): a fresh 30 MB `Uint8ClampedArray`
  *  per decoded frame page-faults and GCs enough to cost 25+ ms/frame at e.mov resolution (37.6–41 ms/frame fresh vs
  *  12.4 reused, measured on the first 150 frames, decode+convert only). A buffer returns to the pool only when its
  *  last holder calls `release()` — NEVER on a fixed rotation: any holder that keeps `image.data` longer than one

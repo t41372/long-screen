@@ -3,9 +3,10 @@
 // stepRegion() call per region), plan/consistency batching, voting push/drain, trailing commits, pass-mismatch
 // accounting, graph optimise, scratch deletion. The per-region tracking DECISIONS this loop used to compute inline
 // (hypothesis scoring, audit acceptance, native refinement choice, the confidence formula, anchor re-acquisition,
-// keyframe/revisit/attachment/loop-closure decisions) now live in track.ts as pure functions (ALGORITHM-AWAITING-
-// PORT to Rust, see its header and docs/HANDOFF.md "已在 Rust 核心中"); region-step.ts's stepRegion() applies them
-// in the original order. Everything in this file is orchestration shell, unambiguously not awaiting a port.
+// keyframe/revisit/attachment/loop-closure decisions) now live in track.ts, most of them thin calls into the Rust
+// core (see its header and docs/history/2026-09-rust-migration-log.md "已在 Rust 核心中"); region-step.ts's
+// stepRegion() applies them in the original order. Everything in this file is orchestration shell, unambiguously
+// not awaiting a port.
 import type { Attachment, Feature, FramePlan, Gray, Placement, Point, RGBA, ScanRecord } from '../../types.ts';
 import { deletePrefix } from '../../storage/db.ts';
 import { extractFeatures, grayscale } from '../../core/features.ts';
@@ -193,6 +194,15 @@ export async function solve(ctx: RunContext): Promise<void> {
           previousGray,
           features,
           native,
+          // R4c 3b-ii: reacquire()/driftCorrection() fill `nativePlane` themselves, core-side, lazily — this
+          // shares the SAME per-frame memo `native()` above uses (`nativeGray ??= ...`), not a separate one, so
+          // whichever call (a fused Rust call or a later `native()` caller, e.g. keyframe-step.ts) fills the
+          // plane first, every other consumer this frame sees it already filled.
+          nativePlane: current instanceof ResidentFrame ? nativePlane : undefined,
+          nativeFilled: () => nativeGray !== undefined,
+          markNativeFilled: () => {
+            nativeGray = nativePlane;
+          },
           previousPlan,
           voting: votingState,
         };

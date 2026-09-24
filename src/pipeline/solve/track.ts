@@ -1,4 +1,4 @@
-// PARTIALLY PORTED (Rust — see docs/HANDOFF.md "已在 Rust 核心中"): the per-region tracking DECISIONS
+// PARTIALLY PORTED (Rust — see docs/history/2026-09-rust-migration-log.md "已在 Rust 核心中"): the per-region tracking DECISIONS
 // region-step.ts's stepRegion() and keyframe-step.ts's keyframeStep() apply each frame. R4b phase 3a ported every
 // stateless verdict below (uncertainty, relocalizeVerdict, fragmentCause's gate, occlusionEligible, attachVerdict,
 // odometryWeight, thinOverlapEligible/Correction, loopClosureVerdict, needsKeyframe, zoomChanged, regionZoom,
@@ -11,7 +11,7 @@
 // freeze the pre-port functions' outputs as a TS oracle (tests/unit/parity/track.test.ts checks the Rust
 // replacements against it).
 import type { Feature, Gray, Match, Point, Region, RGBA } from '../../types.ts';
-import { type NativeRefinement, type Patch, probeScale, refinePatches, translationHypotheses } from '../../core/motion.ts';
+import { type NativeRefinement, type Patch, probeScale } from '../../core/motion.ts';
 import { regionContains } from '../../core/layers.ts';
 import { matchFeatures } from '../../core/features.ts';
 import { core, type LabelMask, type ResidentFrame, type ResidentGray } from '../../core/wasm.ts';
@@ -143,45 +143,57 @@ export interface ReacquireInputs {
   anchorFeatures: Feature[];
   ownFeatures: Feature[];
   anchorPatches: Patch[];
-  /** Lazy, as in the original: only evaluated once `models.slice(0, 4)` actually has a candidate to refine. */
+  current: RGBA | ResidentFrame;
+  /** The shared per-frame resident native-luma plane (`solve.ts`'s `nativePlane`), when `current` is resident —
+   * undefined for the rare geometry-mismatch fallback, where `native` below still does the JS-side conversion,
+   * unfused (R4c 3b-ii does not port that rare path; see `src/core/wasm/track.ts::resolveNative`'s doc comment). */
+  nativePlane: ResidentGray | undefined;
+  /** Whether `nativePlane` already holds this frame's luma (`native()`'s own per-frame memo — see
+   * `region-step.ts`'s `FrameInput.nativeFilled`). */
+  nativeFilled: boolean;
+  markNativeFilled: () => void;
+  /** Lazy, as in the original: only evaluated once `models.slice(0, 4)` actually has a candidate to refine — for
+   * the resident branch, this now happens core-side (see `nativePlane`'s doc comment); this thunk is only
+   * called (eagerly) for the non-resident fallback. */
   native: () => Gray | ResidentGray;
   rect: { x: number; y: number; width: number; height: number };
   f: number;
   radius: number;
 }
-/** Step 2: re-acquire the anchor on native patches after blind frames or a failed odometry step (short blank gaps with overlap). */
+/** Step 2: re-acquire the anchor on native patches after blind frames or a failed odometry step (short blank
+ * gaps with overlap) — fused into one Rust call (R4c 3b-ii): `matchFeatures` + `translationHypotheses` (no
+ * native luma needed), then, only if that found a candidate, the native-plane lazy fill and up to 4 patch
+ * refinements + rival rejection. */
 export function reacquire(inputs: ReacquireInputs): { n: NativeRefinement; ambiguous: boolean; confidence: number } | undefined {
-  const { anchorFeatures, ownFeatures, anchorPatches, native, rect, f, radius } = inputs;
-  const matches = matchFeatures(anchorFeatures, ownFeatures), models = translationHypotheses(matches, 8).filter((m) => m.support >= 6);
-  const options = models.slice(0, 4).map((m) => ({
-    m,
-    n: refinePatches(anchorPatches, native(), rect, { x: m.x * f, y: m.y * f }, radius),
-  })).filter((v) => v.n.error < 12).sort((a, b) => a.n.error - b.n.error);
-  const top = options[0];
-  if (top && !options.some((v) => v !== top && Math.hypot(v.n.x - top.n.x, v.n.y - top.n.y) > 2 && v.n.error < top.n.error + 2)) {
-    const ambiguous = top.m.ambiguous;
-    const confidence = Math.max(.05, top.m.confidence) * Math.exp(-top.n.error / 20) * (ambiguous ? .6 : 1);
-    return { n: top.n, ambiguous, confidence };
-  }
-  return undefined;
+  const { markNativeFilled, ...rest } = inputs;
+  const { result, filledNative } = core().trackReacquire(rest);
+  if (filledNative) markNativeFilled();
+  return result;
 }
 export interface DriftCorrectionInputs {
   anchor: { x: number; y: number; patches: Patch[] };
   pose: Point;
+  current: RGBA | ResidentFrame;
+  /** See `ReacquireInputs`'s field of the same name — `driftCorrection` has no gate, so the resident branch's
+   * lazy fill always runs (if not already filled this frame) rather than being conditional on a candidate. */
+  nativePlane: ResidentGray | undefined;
+  nativeFilled: boolean;
+  markNativeFilled: () => void;
   native: () => Gray | ResidentGray;
   rect: { x: number; y: number; width: number; height: number };
   radius: number;
   confidence: number;
 }
-/** Drift control: re-measure the pose against the anchor keyframe's native patches whenever they are still in view. */
+/** Drift control: re-measure the pose against the anchor keyframe's native patches whenever they are still in
+ * view — fused into one Rust call (R4c 3b-ii). */
 export function driftCorrection(inputs: DriftCorrectionInputs): { pose: Point; confidence: number } | undefined {
-  const { anchor, pose, native, rect, radius, confidence } = inputs;
-  const expected = { x: pose.x - anchor.x, y: pose.y - anchor.y };
-  const n = refinePatches(anchor.patches, native(), rect, expected, radius);
-  if (n.error < 12 && n.runnerUp > n.error + 1.5) {
-    return { pose: { x: anchor.x + n.x, y: anchor.y + n.y }, confidence: Math.max(confidence, .96 * Math.exp(-n.error / 20)) };
-  }
-  return undefined;
+  const { markNativeFilled, confidence, ...rest } = inputs;
+  const { pose, error, filledNative } = core().trackDriftCorrection(rest);
+  if (filledNative) markNativeFilled();
+  if (!pose) return undefined;
+  // Math.exp finished in TS on the host's own implementation — see src/core/wasm/track.ts's WHY comment at
+  // OdometryEstimate's confidence field (same bit-exactness reason).
+  return { pose, confidence: Math.max(confidence, .96 * Math.exp(-error / 20)) };
 }
 /** Whether this frame mints a new keyframe. `lastNodeFrame` undefined means no node exists yet for this region
  * (R2: replaces the -Infinity sentinel the original used for "no prior node" when computing framesSinceLastNode —

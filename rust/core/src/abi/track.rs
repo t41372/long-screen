@@ -9,9 +9,9 @@ use super::features::read_features;
 use super::motion::read_match_points;
 use crate::abi::memory::{slice, slice_mut};
 use crate::abi::voting::read_voting_regions;
-use crate::abi::wire::{read_rect, FEATURE_BYTES};
+use crate::abi::wire::{read_rect, FEATURE_BYTES, PATCH_BYTES};
 use crate::abi::{STATUS_BAD_ARGUMENT, STATUS_OK};
-use crate::motion::Gray;
+use crate::motion::{Gray, Patch};
 use crate::track;
 
 fn b(v: bool) -> i32 {
@@ -417,5 +417,255 @@ pub extern "C" fn ls_track_odometry(
         track::OdometryDecision::Tracked => 0,
         track::OdometryDecision::Static => 1,
         track::OdometryDecision::Lost => 2,
+    }
+}
+
+/// # Safety
+/// `ptr` points at `count × PATCH_BYTES` descriptors (`rust/core/src/abi/motion.rs::ls_refine_patches`'s wire
+/// format) whose `data` pointers each cover `size × size` readable bytes.
+unsafe fn read_patches<'a>(ptr: u32, count: u32) -> Option<Vec<Patch<'a>>> {
+    let bytes = slice(ptr, count as usize * PATCH_BYTES)?;
+    let mut out = Vec::with_capacity(count as usize);
+    for c in bytes.chunks_exact(PATCH_BYTES) {
+        let size = u32::from_le_bytes(c[8..12].try_into().unwrap()) as usize;
+        let data_ptr = u32::from_le_bytes(c[12..16].try_into().unwrap());
+        let data = slice(data_ptr, size * size)?;
+        out.push(Patch {
+            x: i32::from_le_bytes(c[0..4].try_into().unwrap()),
+            y: i32::from_le_bytes(c[4..8].try_into().unwrap()),
+            size,
+            data,
+        });
+    }
+    Some(out)
+}
+
+/// Fills `native_plane` (`native_width × native_height` bytes) with `current_frame`'s luma
+/// (`native_width × native_height × 4` RGBA bytes) — `crate::raster::grayscale`, the same kernel
+/// `ls_grayscale`/`core().grayscaleInto` already wrap, called directly (same crate, no ABI round trip) so the
+/// two lazy-fill call sites below (`ls_track_reacquire`, `ls_track_drift_correction`) share one implementation.
+///
+/// # Safety
+/// `current_frame` points at `native_width × native_height × 4` readable bytes; `native_plane` at
+/// `native_width × native_height` writable bytes.
+unsafe fn fill_native_plane(
+    current_frame: u32,
+    native_plane: u32,
+    native_width: u32,
+    native_height: u32,
+) -> bool {
+    let n = native_width as usize * native_height as usize;
+    let (Some(rgba), Some(plane)) = (slice(current_frame, n * 4), slice_mut(native_plane, n))
+    else {
+        return false;
+    };
+    crate::raster::grayscale(rgba, plane);
+    true
+}
+
+/// Resolves the "native luma source" every `ls_track_reacquire`/`ls_track_drift_correction` call needs, lazily:
+/// `native_mode` 0 means `native_ptr` already holds a ready `native_width × native_height` luma buffer (the
+/// non-resident-current-frame fallback the TS wrapper computes eagerly, exactly as the original `native()`
+/// thunk did — see `src/core/wasm/track.ts`); `native_mode` 1 means `native_ptr` is the shared RESIDENT native
+/// plane, filled from `current_frame_ptr` only if `already_filled == 0` (R4c 3b-ii: "computed lazily core-side
+/// ... at most once per frame"). Returns `(gray, filled_now)`; `filled_now` is only ever true in mode 1, and
+/// only on the call that actually did the fill — the caller reports it back to TS so the SAME per-frame memo
+/// `solve.ts`'s `native()` closure already uses (shared with every other native-luma consumer, e.g.
+/// keyframe-step.ts) is updated too, not just this call's own view.
+///
+/// # Safety
+/// See `fill_native_plane`; in mode 0, `native_ptr` points at `native_width × native_height` readable bytes.
+#[allow(clippy::too_many_arguments)]
+unsafe fn resolve_native<'a>(
+    native_mode: u32,
+    native_ptr: u32,
+    current_frame_ptr: u32,
+    already_filled: u32,
+    native_width: u32,
+    native_height: u32,
+) -> Option<(Gray<'a>, bool)> {
+    let (w, h) = (native_width as usize, native_height as usize);
+    if native_mode == 0 {
+        let data = slice(native_ptr, w * h)?;
+        return Some((
+            Gray {
+                width: w,
+                height: h,
+                data,
+            },
+            false,
+        ));
+    }
+    let filled_now = if already_filled == 0 {
+        if !fill_native_plane(current_frame_ptr, native_ptr, native_width, native_height) {
+            return None;
+        }
+        true
+    } else {
+        false
+    };
+    let data = slice(native_ptr, w * h)?;
+    Some((
+        Gray {
+            width: w,
+            height: h,
+            data,
+        },
+        filled_now,
+    ))
+}
+
+/// `ls_track_reacquire`'s `out` layout (36 bytes): i32 x, i32 y, u32 ambiguous, u32 padding, f64 confidence,
+/// f64 error, u32 filledNative, u32 padding.
+const TRACK_REACQUIRE_OUT_BYTES: usize = 40;
+
+/// R4c 3b-ii: `track.ts::reacquire` — `matchFeatures` + `translationHypotheses` (no native luma needed; see
+/// `crate::track::reacquire_hypotheses`), then, only when that found a candidate, the native-plane lazy fill
+/// (see `resolve_native`) and up to 4 patch refinements + rival rejection (`crate::track::reacquire_refine`).
+/// Returns `1` (found), `0` (no candidate, or a rival rejected the top one), or `STATUS_BAD_ARGUMENT`.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn ls_track_reacquire(
+    anchor_features: u32,
+    anchor_feature_count: u32,
+    own_features: u32,
+    own_feature_count: u32,
+    anchor_patches: u32,
+    patch_count: u32,
+    rect: u32,
+    f: f64,
+    radius: u32,
+    native_mode: u32,
+    native_ptr: u32,
+    current_frame_ptr: u32,
+    already_filled: u32,
+    native_width: u32,
+    native_height: u32,
+    out: u32,
+) -> i32 {
+    // SAFETY: adapter-owned buffers, bounds checked.
+    let (Some(anchor_bytes), Some(own_bytes), Some(rect_bytes), Some(dst)) = (
+        unsafe {
+            slice(
+                anchor_features,
+                anchor_feature_count as usize * FEATURE_BYTES,
+            )
+        },
+        unsafe { slice(own_features, own_feature_count as usize * FEATURE_BYTES) },
+        unsafe { slice(rect, 32) },
+        unsafe { slice_mut(out, TRACK_REACQUIRE_OUT_BYTES) },
+    ) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    dst.fill(0);
+    let anchor_features_v = read_features(anchor_bytes);
+    let own_features_v = read_features(own_bytes);
+    let models = track::reacquire_hypotheses(&anchor_features_v, &own_features_v);
+    if models.is_empty() {
+        return 0;
+    }
+    // SAFETY: bounds checked inside; a bad pointer here is the caller's error, not "no candidate".
+    let Some((native, filled_now)) = (unsafe {
+        resolve_native(
+            native_mode,
+            native_ptr,
+            current_frame_ptr,
+            already_filled,
+            native_width,
+            native_height,
+        )
+    }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    dst[36..40].copy_from_slice(&(filled_now as u32).to_le_bytes());
+    // SAFETY: adapter-owned patch descriptors, bounds checked.
+    let Some(patches) = (unsafe { read_patches(anchor_patches, patch_count) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    match track::reacquire_refine(
+        &models,
+        &patches,
+        native,
+        read_rect(rect_bytes),
+        f,
+        radius as i32,
+    ) {
+        Some(r) => {
+            dst[0..4].copy_from_slice(&r.x.to_le_bytes());
+            dst[4..8].copy_from_slice(&r.y.to_le_bytes());
+            dst[8..12].copy_from_slice(&(r.ambiguous as u32).to_le_bytes());
+            dst[16..24].copy_from_slice(&r.confidence.to_le_bytes());
+            dst[24..32].copy_from_slice(&r.error.to_le_bytes());
+            1
+        }
+        None => 0,
+    }
+}
+
+/// `ls_track_drift_correction`'s `out` layout (32 bytes): f64 x, f64 y, f64 error, u32 filledNative, u32 padding.
+const TRACK_DRIFT_CORRECTION_OUT_BYTES: usize = 32;
+
+/// R4c 3b-ii: `track.ts::driftCorrection` — no gate (the original always evaluates `native()`), so this always
+/// resolves native luma (lazy fill, see `resolve_native`) before the one patch refinement. Returns `1`
+/// (corrected), `0` (not corrected), or `STATUS_BAD_ARGUMENT`.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn ls_track_drift_correction(
+    anchor_patches: u32,
+    patch_count: u32,
+    rect: u32,
+    ax: f64,
+    ay: f64,
+    px: f64,
+    py: f64,
+    radius: u32,
+    native_mode: u32,
+    native_ptr: u32,
+    current_frame_ptr: u32,
+    already_filled: u32,
+    native_width: u32,
+    native_height: u32,
+    out: u32,
+) -> i32 {
+    // SAFETY: adapter-owned buffers, bounds checked.
+    let (Some(rect_bytes), Some(dst)) = (unsafe { slice(rect, 32) }, unsafe {
+        slice_mut(out, TRACK_DRIFT_CORRECTION_OUT_BYTES)
+    }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    dst.fill(0);
+    // SAFETY: bounds checked inside.
+    let Some((native, filled_now)) = (unsafe {
+        resolve_native(
+            native_mode,
+            native_ptr,
+            current_frame_ptr,
+            already_filled,
+            native_width,
+            native_height,
+        )
+    }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    dst[24..28].copy_from_slice(&(filled_now as u32).to_le_bytes());
+    // SAFETY: adapter-owned patch descriptors, bounds checked.
+    let Some(patches) = (unsafe { read_patches(anchor_patches, patch_count) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    match track::drift_correction(
+        &patches,
+        native,
+        read_rect(rect_bytes),
+        (ax, ay),
+        (px, py),
+        radius as i32,
+    ) {
+        Some(r) => {
+            dst[0..8].copy_from_slice(&r.x.to_le_bytes());
+            dst[8..16].copy_from_slice(&r.y.to_le_bytes());
+            dst[16..24].copy_from_slice(&r.error.to_le_bytes());
+            1
+        }
+        None => 0,
     }
 }

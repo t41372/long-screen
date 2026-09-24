@@ -286,37 +286,42 @@ Deno.test("consistency voting: a screen-fixed blob taller than one frame's displ
     },
   };
   const result = await runScenario(scenario, {});
-  assertEquals(result.project.status, 'complete');
-  assertEquals(
-    result.engine.factor,
-    1,
-    'this fixture is small enough that analysis stays at native resolution, isolating voting from analysis-resolution quantization',
-  );
-  // A comfortably middle frame (index 15 of 24): early enough to have plenty of later ring partners, late enough
-  // that a wide spread of past displacements is already available.
-  const record = await result.store.get<Record<string, { x0: number; y0: number; w: number; h: number; bits: Uint8Array }>>(
-    `consistency/${pad(15)}`,
-  );
-  assert(record, 'a mid-run frame under a persistent screen-fixed overlay must have a consistency record');
-  const [regionId] = Object.keys(record);
-  const { y0, w, h, bits } = record[regionId];
-  let blobFlags = 0, pageFlags = 0;
-  for (let ly = 0; ly < h; ly++) {
-    for (let lx = 0; lx < w; lx++) {
-      const i = ly * w + lx;
-      if (!(bits[i >> 3] & (1 << (i & 7)))) {
-        continue;
-      }
-      const ay = y0 + ly;
-      if (ay >= BLOB.y && ay < BLOB.y + BLOB.height) {
-        blobFlags++;
-      } else {
-        pageFlags++;
+  try {
+    assertEquals(result.project.status, 'complete');
+    assertEquals(
+      result.engine.factor,
+      1,
+      'this fixture is small enough that analysis stays at native resolution, isolating voting from analysis-resolution quantization',
+    );
+    // A comfortably middle frame (index 15 of 24): early enough to have plenty of later ring partners, late enough
+    // that a wide spread of past displacements is already available.
+    const record = await result.store.get<Record<string, { x0: number; y0: number; w: number; h: number; bits: Uint8Array }>>(
+      `consistency/${pad(15)}`,
+    );
+    assert(record, 'a mid-run frame under a persistent screen-fixed overlay must have a consistency record');
+    const [regionId] = Object.keys(record);
+    const { y0, w, h, bits } = record[regionId];
+    let blobFlags = 0, pageFlags = 0;
+    for (let ly = 0; ly < h; ly++) {
+      for (let lx = 0; lx < w; lx++) {
+        const i = ly * w + lx;
+        if (!(bits[i >> 3] & (1 << (i & 7)))) {
+          continue;
+        }
+        const ay = y0 + ly;
+        if (ay >= BLOB.y && ay < BLOB.y + BLOB.height) {
+          blobFlags++;
+        } else {
+          pageFlags++;
+        }
       }
     }
+    assert(blobFlags > 0, 'the blob interior must be flagged inconsistent by this frame');
+    assertEquals(pageFlags, 0, 'genuine page content outside the blob must never be flagged inconsistent');
+  } finally {
+    // result.atlas (src/core/layers.ts's RegionAtlas) owns a core-resident buffer that nothing else frees.
+    result.dispose();
   }
-  assert(blobFlags > 0, 'the blob interior must be flagged inconsistent by this frame');
-  assertEquals(pageFlags, 0, 'genuine page content outside the blob must never be flagged inconsistent');
 });
 
 // Direction A (fair partner sharing, solve/solve.ts's solve()'s consistencyPartners): a frame whose own arrival can only
@@ -360,31 +365,36 @@ Deno.test('consistency voting: every frame accumulates comparisons, including on
     },
   };
   const result = await runScenario(scenario, {});
-  assertEquals(result.project.status, 'complete');
-  const performance = await result.store.get<{ consistencyVotedLayers: number; consistencyThinLayers: number }>('performance');
-  assert(performance, 'the run must report its voting bookkeeping');
-  assertEquals(performance.consistencyVotedLayers, path.length, 'every frame contributes one voting layer for this single moving region');
-  assertEquals(performance.consistencyThinLayers, 0, 'no frame may be finalised on too few partner comparisons to hold a verdict');
-  // The overlay band is only ever seen at the leading edge on its way in, so catching it at all depends on those
-  // later-arriving comparisons; a frame in the middle of the run must still flag it.
-  let flagged = 0;
-  for (let index = 6; index < path.length - 6; index++) {
-    const record = await result.store.get<
-      Record<string, { x0: number; y0: number; w: number; h: number; bits: Uint8Array; clean: Uint8Array }>
-    >(`consistency/${pad(index)}`);
-    const region = record && Object.values(record)[0];
-    if (!region) continue;
-    for (let ly = 0; ly < region.h; ly++) {
-      for (let lx = 0; lx < region.w; lx++) {
-        const i = ly * region.w + lx, ay = region.y0 + ly;
-        if (region.bits[i >> 3] & (1 << (i & 7)) && ay >= VH - 60 && ay < VH - 24) flagged++;
+  try {
+    assertEquals(result.project.status, 'complete');
+    const performance = await result.store.get<{ consistencyVotedLayers: number; consistencyThinLayers: number }>('performance');
+    assert(performance, 'the run must report its voting bookkeeping');
+    assertEquals(performance.consistencyVotedLayers, path.length, 'every frame contributes one voting layer for this single moving region');
+    assertEquals(performance.consistencyThinLayers, 0, 'no frame may be finalised on too few partner comparisons to hold a verdict');
+    // The overlay band is only ever seen at the leading edge on its way in, so catching it at all depends on those
+    // later-arriving comparisons; a frame in the middle of the run must still flag it.
+    let flagged = 0;
+    for (let index = 6; index < path.length - 6; index++) {
+      const record = await result.store.get<
+        Record<string, { x0: number; y0: number; w: number; h: number; bits: Uint8Array; clean: Uint8Array }>
+      >(`consistency/${pad(index)}`);
+      const region = record && Object.values(record)[0];
+      if (!region) continue;
+      for (let ly = 0; ly < region.h; ly++) {
+        for (let lx = 0; lx < region.w; lx++) {
+          const i = ly * region.w + lx, ay = region.y0 + ly;
+          if (region.bits[i >> 3] & (1 << (i & 7)) && ay >= VH - 60 && ay < VH - 24) flagged++;
+        }
       }
     }
+    assert(
+      flagged > 0,
+      'the screen-fixed band must be flagged somewhere in the run despite only future frames ever seeing those world positions clean',
+    );
+  } finally {
+    // result.atlas (src/core/layers.ts's RegionAtlas) owns a core-resident buffer that nothing else frees.
+    result.dispose();
   }
-  assert(
-    flagged > 0,
-    'the screen-fixed band must be flagged somewhere in the run despite only future frames ever seeing those world positions clean',
-  );
 });
 
 // Direction B (consistency.ts's consistencyMask() truth table): a ±1-frame comparison is a PAIRWISE disagreement —

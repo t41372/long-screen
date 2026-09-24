@@ -65,6 +65,14 @@ export interface FrameInput {
   previousGray: Gray | undefined;
   features: Feature[];
   native: () => Gray | ResidentGray;
+  /** R4c 3b-ii: the shared resident native-luma plane `native()` above also fills, only when `current` is a
+   * `ResidentFrame` (undefined otherwise — the geometry-mismatch fallback `native()` still handles unfused, in
+   * TS, exactly as before). `reacquire`/`driftCorrection` pass this straight to Rust so the fused call can fill
+   * it lazily, core-side, itself; `nativeFilled`/`markNativeFilled` share `native()`'s own per-frame memo, so
+   * whichever caller fills it first (a fused call or a later `native()` call) is the only fill this frame. */
+  nativePlane: ResidentGray | undefined;
+  nativeFilled(): boolean;
+  markNativeFilled(): void;
   previousPlan: { placements: Placement[] } | undefined;
   voting: { uploaded: boolean; observed: boolean };
 }
@@ -73,7 +81,22 @@ export interface FrameInput {
  * `pass.attachments`/`pass.ctx`/`pass.index` exactly as the original inline loop body did. */
 export async function stepRegion(pass: SolvePass, state: RegionState, input: FrameInput): Promise<Placement> {
   const { ctx, index, attachments, f, radius, voting, votingSlot, resolveTarget, canonical } = pass;
-  const { frame, image, scan, current, previous, g, previousGray, features, native, previousPlan, voting: votingState } = input;
+  const {
+    frame,
+    image,
+    scan,
+    current,
+    previous,
+    g,
+    previousGray,
+    features,
+    native,
+    nativePlane,
+    nativeFilled,
+    markNativeFilled,
+    previousPlan,
+    voting: votingState,
+  } = input;
   const r = state.region, code = state.code, roi = { x: r.rect.x / f, y: r.rect.y / f, width: r.rect.width / f, height: r.rect.height / f };
   const mask = { labels: pass.residentLabels, code };
   const ownFeatures = ownFeaturesOf(features, r, f, image);
@@ -152,6 +175,10 @@ export async function stepRegion(pass: SolvePass, state: RegionState, input: Fra
       anchorFeatures: state.anchor.features,
       ownFeatures,
       anchorPatches: state.anchor.patches,
+      current,
+      nativePlane,
+      nativeFilled: nativeFilled(),
+      markNativeFilled,
       native,
       rect: r.rect,
       f,
@@ -178,6 +205,10 @@ export async function stepRegion(pass: SolvePass, state: RegionState, input: Fra
           const drift = driftCorrection({
             anchor: state.anchor,
             pose: state.pose,
+            current,
+            nativePlane,
+            nativeFilled: nativeFilled(),
+            markNativeFilled,
             native,
             rect: r.rect,
             radius,

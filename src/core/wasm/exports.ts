@@ -317,6 +317,41 @@ export interface CoreExports {
     confidence: number,
     out: number,
   ): number;
+  ls_track_reacquire(
+    anchorFeatures: number,
+    anchorFeatureCount: number,
+    ownFeatures: number,
+    ownFeatureCount: number,
+    anchorPatches: number,
+    patchCount: number,
+    rect: number,
+    f: number,
+    radius: number,
+    nativeMode: number,
+    nativePtr: number,
+    currentFramePtr: number,
+    alreadyFilled: number,
+    nativeWidth: number,
+    nativeHeight: number,
+    out: number,
+  ): number;
+  ls_track_drift_correction(
+    anchorPatches: number,
+    patchCount: number,
+    rect: number,
+    ax: number,
+    ay: number,
+    px: number,
+    py: number,
+    radius: number,
+    nativeMode: number,
+    nativePtr: number,
+    currentFramePtr: number,
+    alreadyFilled: number,
+    nativeWidth: number,
+    nativeHeight: number,
+    out: number,
+  ): number;
   ls_frame_layout(sourceWidth: number, sourceHeight: number, pane: number, boundsWidth: number, boundsHeight: number, out: number): number;
   ls_frame_coordinate(layout: number, x: number, y: number, out: number): number;
   ls_frame_backgrounds(

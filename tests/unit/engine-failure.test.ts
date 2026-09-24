@@ -18,6 +18,7 @@ import { ScenarioSource } from '../../src/synthetic/source.ts';
 import { pad } from '../../src/core/math.ts';
 import { RegionAtlas } from '../../src/core/layers.ts';
 import { runScenario } from '../support/run.ts';
+import { core } from '../../src/core/wasm.ts';
 /** Minimal synthetic FrameSource: deterministic, always-different pixel content (never bit-identical between
  * frames), independent of the synthetic-world/scenario machinery. Good enough for tests that only care about
  * control flow (error classification, disposal, batching), not placement correctness. */
@@ -361,23 +362,28 @@ Deno.test('engine raster consistency: rounds current and neighbour poses separat
 });
 Deno.test('engine integration: solve persists sticky occlusions and render carries them into observation decisions', async () => {
   const run = await runScenario(buildScenario('toolbar-collapse'), {});
-  assertEquals(run.project.status, 'complete', run.project.error);
-  let planned = 0, rendered = 0, plans = 0, observations = 0;
-  for await (const { value } of iterate<FramePlan>(run.store, 'plan/')) {
-    plans++;
-    planned += value.placements.filter((placement) => placement.occlusions?.length).length;
+  try {
+    assertEquals(run.project.status, 'complete', run.project.error);
+    let planned = 0, rendered = 0, plans = 0, observations = 0;
+    for await (const { value } of iterate<FramePlan>(run.store, 'plan/')) {
+      plans++;
+      planned += value.placements.filter((placement) => placement.occlusions?.length).length;
+    }
+    for await (
+      const { value } of iterate<{ decisions: { placement: FramePlan['placements'][number] }[] }>(run.store, 'observation/')
+    ) {
+      observations++;
+      rendered += value.decisions.filter((decision) => decision.placement.occlusions?.length).length;
+    }
+    assertEquals(plans, run.project.frames, 'solve must persist one plan for every reconstructed frame');
+    assertEquals(observations, run.project.renderedFrames, 'render must persist one observation ledger row per rendered frame');
+    assert(planned > 0, 'the toolbar fixture must produce at least one sticky occlusion in solve()');
+    assertEquals(rendered, planned, 'render must carry every solve-time sticky occlusion into its durable decision ledger');
+    assert(run.codes.has('STICKY_OCCLUSION'), 'solve must journal the sticky-occlusion inference');
+  } finally {
+    // run.atlas (src/core/layers.ts's RegionAtlas) owns a core-resident buffer that nothing else frees.
+    run.dispose();
   }
-  for await (
-    const { value } of iterate<{ decisions: { placement: FramePlan['placements'][number] }[] }>(run.store, 'observation/')
-  ) {
-    observations++;
-    rendered += value.decisions.filter((decision) => decision.placement.occlusions?.length).length;
-  }
-  assertEquals(plans, run.project.frames, 'solve must persist one plan for every reconstructed frame');
-  assertEquals(observations, run.project.renderedFrames, 'render must persist one observation ledger row per rendered frame');
-  assert(planned > 0, 'the toolbar fixture must produce at least one sticky occlusion in solve()');
-  assertEquals(rendered, planned, 'render must carry every solve-time sticky occlusion into its durable decision ledger');
-  assert(run.codes.has('STICKY_OCCLUSION'), 'solve must journal the sticky-occlusion inference');
 });
 // F23: a frame-reference write failure is a warning, not a run failure (the scan-time preview thumbnail EngineEvents.preview
 // carried is gone entirely — see src/pipeline/engine.ts's EngineEvents; it was unread by every caller).
@@ -445,7 +451,12 @@ Deno.test('engine F24: a stop requested during the framing phase ends the run as
       original(p);
     };
   });
-  assertEquals(result.project.status, 'partial', result.project.error);
+  try {
+    assertEquals(result.project.status, 'partial', result.project.error);
+  } finally {
+    // result.atlas (src/core/layers.ts's RegionAtlas) owns a core-resident buffer that nothing else frees.
+    result.dispose();
+  }
 });
 // F24 (graph.optimize path): a stop requested right as pose-graph relaxation begins unwinds via StopRequested,
 // caught around graph.optimize() specifically, rather than crashing solve() or being silently ignored.
@@ -459,10 +470,15 @@ Deno.test('engine F24: a stop requested at the "optimizing" phase (graph.optimiz
       original(p);
     };
   });
-  assertEquals(result.project.status, 'partial', result.project.error);
-  let tiles = 0;
-  for await (const _row of iterate(result.store, 'tile-index/')) tiles++;
-  assert(tiles > 0, 'render() must still have committed tiles for the solved prefix');
+  try {
+    assertEquals(result.project.status, 'partial', result.project.error);
+    let tiles = 0;
+    for await (const _row of iterate(result.store, 'tile-index/')) tiles++;
+    assert(tiles > 0, 'render() must still have committed tiles for the solved prefix');
+  } finally {
+    // result.atlas (src/core/layers.ts's RegionAtlas) owns a core-resident buffer that nothing else frees.
+    result.dispose();
+  }
 });
 // E1: factor/refineRadius are computed lazily at the first decoded frame, from (possibly corrected) source geometry.
 Deno.test('engine E1: factor is computed from the geometry the first decoded frame actually has, not the constructor-time provisional value', async () => {
@@ -500,10 +516,15 @@ Deno.test('engine E1: factor is computed from the geometry the first decoded fra
 // F25/F26: scan-time features live under scan-features/, and are deleted (with keyframe/word) once solve() is done.
 Deno.test('engine F25: scan-features/, keyframe/ and word/ are all empty after a run completes', async () => {
   const result = await runScenario(buildScenario('revisit'));
-  assertEquals(result.project.status, 'complete', result.project.error);
-  for (const prefix of ['scan-features/', 'keyframe/', 'word/']) {
-    const rows = await result.store.scan(prefix, { limit: 10 });
-    assertEquals(rows.length, 0, `${prefix} must be empty after the run`);
+  try {
+    assertEquals(result.project.status, 'complete', result.project.error);
+    for (const prefix of ['scan-features/', 'keyframe/', 'word/']) {
+      const rows = await result.store.scan(prefix, { limit: 10 });
+      assertEquals(rows.length, 0, `${prefix} must be empty after the run`);
+    }
+  } finally {
+    // result.atlas (src/core/layers.ts's RegionAtlas) owns a core-resident buffer that nothing else frees.
+    result.dispose();
   }
 });
 // F27: CanvasMeta is not put() once per placement per frame during render(); it is batched.
@@ -544,6 +565,114 @@ Deno.test('engine: PROCESSING_ERROR is journaled (survives into diagnostic/ rows
   const store = new Namespace(db, `run/${project.id}/`);
   const codes = await codesOf(store);
   assert(codes.has('PROCESSING_ERROR'), [...codes].join(','));
+});
+// NONFINITE_POSE recovery: replaces the retired call-counting NaN-poison DIFFERENTIAL harness for tracking
+// paths that now run inside a single fused Rust call (R4c 3b-i's core().trackOdometry, and later
+// reacquire/driftCorrection) — those calls are no longer individually visible/interceptable at the JS boundary
+// the old differential poison harness monkeypatched, so this stubs the shell's own entry point directly and
+// checks the shell's EXISTING recovery (region-step.ts's `!Number.isFinite(state.pose.x/.y)` guard, which runs
+// before keyframeStep — R3, pre-existing, intentionally unchanged by any R4 phase) end to end: one diagnostic,
+// a fresh fragment canvas, no non-finite coordinate reaches any persisted row, and the run still completes.
+Deno.test('engine: a non-finite odometry delta is caught by NONFINITE_POSE, starts a new fragment canvas, and never persists a non-finite coordinate', async () => {
+  const scenario = buildScenario('traversal'), db = new MemoryKV(), source = new ScenarioSource(scenario);
+  const c = core() as unknown as { trackOdometry(inputs: unknown): { decision: string; delta: { x: number; y: number } } };
+  const original = c.trackOdometry.bind(c);
+  let calls = 0;
+  // Call 1: the region's first real odometry step (frame 1 — frame 0 founds the canvas via the 'start' gate and
+  // never reaches trackOdometry), before any keyframe/anchor exists yet. Poisoning BOTH axes matters: driftCorrection
+  // (the anchor re-measurement a later frame would run) recovers a poisoned axis whose true value happens to be 0,
+  // because `js_round(NaN)` is 0 in Rust (`as i32` saturates NaN to 0, unlike `Math.round(NaN) === NaN` in the
+  // historical TS) — silently "fixing" a single poisoned axis by coincidence in a straight vertical/horizontal
+  // scroll. With no anchor yet, and both axes poisoned, there is nothing to recover through, so the pose stays
+  // non-finite until the guard below catches it.
+  const poisonAtCall = 1;
+  let poisoned = false;
+  c.trackOdometry = (inputs: unknown) => {
+    calls++;
+    const est = original(inputs);
+    if (calls === poisonAtCall && est.decision === 'tracked') {
+      poisoned = true;
+      return { ...est, delta: { x: NaN, y: NaN } };
+    }
+    return est;
+  };
+  try {
+    const diagnostics: Diagnostic[] = [];
+    const engine = makeEngine(db, source, {}, (d) => diagnostics.push(d));
+    const project = await engine.run();
+    assert(poisoned, 'the stub never saw a tracked decision to poison — widen poisonAtCall or the scenario');
+    await assertRecoversFromNonfinitePose(db, project, diagnostics);
+  } finally {
+    c.trackOdometry = original;
+  }
+});
+/** Shared assertions for the three "a fused tracker call goes non-finite" tests: region-step.ts's
+ * `!Number.isFinite(state.pose.x/.y)` guard fires exactly once, with a finite frame/time; no persisted
+ * plan/observation row carries a non-finite coordinate; the run still completes; and the poisoned region gets a
+ * fresh fragment canvas (more than one distinct canvasId across the run's placements). */
+async function assertRecoversFromNonfinitePose(
+  db: MemoryKV,
+  project: { id: string; status: string; error?: string },
+  diagnostics: Diagnostic[],
+): Promise<void> {
+  assertEquals(project.status, 'complete', project.error);
+  const nonfinite = diagnostics.filter((d) => d.code === 'NONFINITE_POSE');
+  assertEquals(nonfinite.length, 1, JSON.stringify(diagnostics.map((d) => d.code)));
+  assert(Number.isFinite(nonfinite[0].frame) && Number.isFinite(nonfinite[0].time), JSON.stringify(nonfinite[0]));
+  const store = new Namespace(db, `run/${project.id}/`);
+  let planRows = 0, observationRows = 0;
+  const canvasIds = new Set<string>();
+  for await (const { value } of iterate<FramePlan>(store, 'plan/')) {
+    planRows++;
+    for (const p of value.placements) {
+      assert(Number.isFinite(p.x) && Number.isFinite(p.y), `non-finite placement in plan/: ${JSON.stringify(p)}`);
+      canvasIds.add(p.canvasId);
+    }
+  }
+  for await (const { value } of iterate<{ decisions: { placement: { x: number; y: number } }[] }>(store, 'observation/')) {
+    observationRows++;
+    for (const d of value.decisions) {
+      assert(
+        Number.isFinite(d.placement.x) && Number.isFinite(d.placement.y),
+        `non-finite placement in observation/: ${JSON.stringify(d.placement)}`,
+      );
+    }
+  }
+  assert(planRows > 0 && observationRows > 0, 'the run must actually have persisted plan/observation rows to check');
+  // The recovery starts a fresh canvas for the poisoned region (state.fragment++ → a new canvasId), so more than
+  // one distinct canvasId must appear across the run's placements for a single-layer scenario (normally one
+  // continuous canvas per moving region).
+  assert(canvasIds.size > 1, `expected a new fragment canvas after NONFINITE_POSE, got canvasIds=${[...canvasIds]}`);
+}
+// R4c 3b-ii: the same NONFINITE_POSE recovery, via a poisoned core().trackDriftCorrection instead. driftCorrection
+// has no gate (region-step.ts always calls it once an anchor exists and the field difference clears .12), so the
+// first call it makes is poisoned; a corrected (truthy) result's pose is what feeds state.pose, so only a
+// poisoned TRUTHY result propagates — matching driftCorrection's own "undefined means no correction" contract.
+Deno.test('engine: a non-finite driftCorrection pose is caught by NONFINITE_POSE, starts a new fragment canvas, and never persists a non-finite coordinate', async () => {
+  const scenario = buildScenario('traversal'), db = new MemoryKV(), source = new ScenarioSource(scenario);
+  const c = core() as unknown as {
+    trackDriftCorrection(inputs: unknown): { pose: { x: number; y: number } | undefined; error: number; filledNative: boolean };
+  };
+  const original = c.trackDriftCorrection.bind(c);
+  let calls = 0, poisoned = false;
+  c.trackDriftCorrection = (inputs: unknown) => {
+    calls++;
+    const est = original(inputs);
+    if (calls === 1 && est.pose) {
+      poisoned = true;
+      return { ...est, pose: { x: NaN, y: NaN } };
+    }
+    return est;
+  };
+  try {
+    const diagnostics: Diagnostic[] = [];
+    const engine = makeEngine(db, source, {}, (d) => diagnostics.push(d));
+    const project = await engine.run();
+    assert(poisoned, 'the stub never saw a corrected pose to poison — widen the call index or the scenario');
+    await assertRecoversFromNonfinitePose(db, project, diagnostics);
+  } finally {
+    c.trackDriftCorrection = original;
+  }
 });
 // Project history index (coordinate with the UI worker's 'projects'/'delete' commands).
 Deno.test('engine: persist() writes a project-index/<created>/<id> row on the first persist, once', async () => {

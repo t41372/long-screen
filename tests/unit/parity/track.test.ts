@@ -9,6 +9,8 @@ import * as ref from '../../support/reference/track.ts';
 import type { Feature, Match, Point, Region } from '../../../src/types.ts';
 import * as kernelsRef from '../../support/reference/kernels.ts';
 import { rgbaOf, textureGray } from '../../support/parity-fixtures.ts';
+import { extractPatches } from '../../../src/core/motion.ts';
+import * as trackPipeline from '../../../src/pipeline/solve/track.ts';
 
 Deno.test('core parity: track.uncertainty matches the frozen oracle', async () => {
   const core = await ensureCore();
@@ -370,5 +372,144 @@ Deno.test('core parity: track.odometry matches the frozen oracle (tracked, stati
     assertEquals(rustResult.weakStep, refResult.weakStep, `${what} weakStep`);
     assertEquals(rustResult.stepError, refResult.stepError, `${what} stepError`);
     assertEquals(rustResult.contentChange, refResult.contentChange, `${what} contentChange`);
+  }
+});
+
+/** One reacquire/driftCorrection case: an anchor keyframe (native luma + patches) and the current frame's own
+ *  analysis features, `dx`/`dy` apart (`undefined` for unrelated content — the "no candidate" branch). The
+ *  native buffer is the ACTUAL `core().grayscale` of the current RGBA frame (not a separately fabricated
+ *  luma), so the resident path's core-side fill (which runs the identical kernel on the identical bytes) is
+ *  bit-exact with the reference oracle's `native()` by construction, not by coincidence. */
+async function reacquireCase(w: number, h: number, seed: number, dx: number | undefined, dy: number | undefined) {
+  const core = await ensureCore();
+  const world = textureGray(w + 80, h + 80, seed);
+  const crop = (x: number, y: number) => {
+    const data = new Uint8Array(w * h);
+    for (let row = 0; row < h; row++) {
+      data.set(world.data.subarray((y + row) * world.width + x, (y + row) * world.width + x + w), row * w);
+    }
+    return { width: w, height: h, data };
+  };
+  const anchorGray = crop(40, 40);
+  const ownGray = dx === undefined ? textureGray(w, h, seed + 501) : crop(40 + dx, 40 + dy!);
+  const anchorFeatures = kernelsRef.extractFeatures(anchorGray), ownFeatures = kernelsRef.extractFeatures(ownGray);
+  const anchorRGBA = rgbaOf(anchorGray), currentRGBAData = rgbaOf(ownGray).data;
+  const anchorNative = core.grayscale(anchorRGBA.data, w, h);
+  const currentNative = core.grayscale(currentRGBAData, w, h);
+  const anchorPatches = extractPatches(anchorNative, { x: 0, y: 0, width: w, height: h }, anchorFeatures, 1);
+  return { anchorFeatures, ownFeatures, anchorPatches, currentNative, currentRGBAData };
+}
+
+Deno.test('core parity: track.reacquire matches the frozen oracle (found, no candidate, resident lazy fill, pre-filled)', async () => {
+  const core = await ensureCore();
+  const w = 220, h = 150, rect = { x: 0, y: 0, width: w, height: h }, radius = 3;
+  const cases = [
+    { dx: 5, dy: -3, seed: 3001, preFilled: false, emptyAnchor: false },
+    { dx: 5, dy: -3, seed: 3002, preFilled: true, emptyAnchor: false },
+    { dx: undefined, dy: undefined, seed: 3003, preFilled: false, emptyAnchor: false },
+    { dx: 5, dy: -3, seed: 3004, preFilled: false, emptyAnchor: true },
+  ] as const;
+  for (const [i, c] of cases.entries()) {
+    const inputs0 = await reacquireCase(w, h, c.seed, c.dx, c.dy);
+    const inputs = c.emptyAnchor ? { ...inputs0, anchorFeatures: [] } : inputs0;
+    const refResult = ref.reacquire({
+      anchorFeatures: inputs.anchorFeatures,
+      ownFeatures: inputs.ownFeatures,
+      anchorPatches: inputs.anchorPatches,
+      native: () => inputs.currentNative,
+      rect,
+      f: 1,
+      radius,
+    });
+    const residentFrame = core.frame(w, h);
+    residentFrame.write(
+      new Uint8Array(inputs.currentRGBAData.buffer, inputs.currentRGBAData.byteOffset, inputs.currentRGBAData.byteLength),
+    );
+    const plane = core.gray(w, h);
+    if (c.preFilled) core.grayscaleInto(residentFrame, plane);
+    let filledNative = false;
+    const result = trackPipeline.reacquire({
+      anchorFeatures: inputs.anchorFeatures,
+      ownFeatures: inputs.ownFeatures,
+      anchorPatches: inputs.anchorPatches,
+      current: residentFrame,
+      nativePlane: plane,
+      nativeFilled: c.preFilled,
+      markNativeFilled: () => {
+        filledNative = true;
+      },
+      native: () => inputs.currentNative,
+      rect,
+      f: 1,
+      radius,
+    });
+    const what = `case ${i} (dx=${c.dx} dy=${c.dy} preFilled=${c.preFilled})`;
+    assertEquals(!!result, !!refResult, `${what} found`);
+    if (refResult) {
+      assertEquals(result!.n.x, refResult.n.x, `${what} x`);
+      assertEquals(result!.n.y, refResult.n.y, `${what} y`);
+      assertEquals(result!.ambiguous, refResult.ambiguous, `${what} ambiguous`);
+      assertEquals(result!.confidence, refResult.confidence, `${what} confidence`);
+    }
+    // `filledNative` is true whenever `reacquire_hypotheses` found ANY candidate (support >= 6), even if the
+    // subsequent native refinement then rejects it (error too high, or a rival) — "found" and "filled" are
+    // independent, so only the safe invariant (never re-fill an already-filled plane) is checked precisely here.
+    if (c.preFilled) assertEquals(filledNative, false, `${what} filledNative (pre-filled must not re-fill)`);
+    if (c.emptyAnchor) assertEquals(filledNative, false, `${what} filledNative (no hypothesis must never touch native)`);
+    residentFrame.free();
+    plane.free();
+  }
+});
+
+Deno.test('core parity: track.driftCorrection matches the frozen oracle (corrected, rejected, resident lazy fill)', async () => {
+  const core = await ensureCore();
+  const w = 220, h = 150, rect = { x: 0, y: 0, width: w, height: h }, radius = 3;
+  const cases = [
+    { dx: 6, dy: 4, seed: 4001, preFilled: false, confidence: 0.4 },
+    { dx: 6, dy: 4, seed: 4002, preFilled: true, confidence: 0.9 },
+    { dx: undefined, dy: undefined, seed: 4003, preFilled: false, confidence: 0.4 },
+  ] as const;
+  for (const [i, c] of cases.entries()) {
+    const inputs = await reacquireCase(w, h, c.seed, c.dx, c.dy);
+    const anchor = { x: 0, y: 0, patches: inputs.anchorPatches };
+    const pose = { x: c.dx ?? 5, y: c.dy ?? -5 };
+    const refResult = ref.driftCorrection({
+      anchor,
+      pose,
+      native: () => inputs.currentNative,
+      rect,
+      radius,
+      confidence: c.confidence,
+    });
+    const residentFrame = core.frame(w, h);
+    residentFrame.write(
+      new Uint8Array(inputs.currentRGBAData.buffer, inputs.currentRGBAData.byteOffset, inputs.currentRGBAData.byteLength),
+    );
+    const plane = core.gray(w, h);
+    if (c.preFilled) core.grayscaleInto(residentFrame, plane);
+    let filledNative = false;
+    const result = trackPipeline.driftCorrection({
+      anchor,
+      pose,
+      current: residentFrame,
+      nativePlane: plane,
+      nativeFilled: c.preFilled,
+      markNativeFilled: () => {
+        filledNative = true;
+      },
+      native: () => inputs.currentNative,
+      rect,
+      radius,
+      confidence: c.confidence,
+    });
+    const what = `case ${i} (dx=${c.dx} dy=${c.dy} preFilled=${c.preFilled})`;
+    assertEquals(!!result, !!refResult, `${what} found`);
+    if (refResult) {
+      assertEquals(result!.pose, refResult.pose, `${what} pose`);
+      assertEquals(result!.confidence, refResult.confidence, `${what} confidence`);
+    }
+    assertEquals(filledNative, !c.preFilled, `${what} filledNative`);
+    residentFrame.free();
+    plane.free();
   }
 });

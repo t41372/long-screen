@@ -94,18 +94,23 @@ function slowScrollScenario(): Scenario {
 Deno.test('layers: sub-analysis-pixel scrolling still separates a fixed header via long-baseline evidence', async () => {
   const scenario = slowScrollScenario(), headerHeight = scenario.layers[0].viewport.y, layer = scenario.layers[0];
   const run = await runScenario(scenario);
-  assertEquals(run.project.status, 'complete', run.project.error);
-  const moving = run.regions.filter((r) => r.kind === 'moving');
-  assertEquals(moving.length, 1, JSON.stringify(run.regions.map((r) => [r.kind, r.rect])));
-  assert(moving[0].rect.y >= headerHeight, `moving region rect.y=${moving[0].rect.y} should be >= header height ${headerHeight}`);
-  const fixed = run.regions.find((r) => r.kind === 'fixed' && r.rect.y <= 0 && r.rect.y + r.rect.height >= headerHeight);
-  assert(fixed, `no fixed region covers the header band; regions=${JSON.stringify(run.regions.map((r) => [r.kind, r.rect]))}`);
-  const result = await verifyLayer(run, layer);
-  assertEquals(result.maxError, 0);
-  assertEquals(result.missing, 0);
-  assertEquals(result.invented, 0);
-  assertEquals(result.mismatched, 0);
-  assertEquals(result.fragments.length, 0);
+  try {
+    assertEquals(run.project.status, 'complete', run.project.error);
+    const moving = run.regions.filter((r) => r.kind === 'moving');
+    assertEquals(moving.length, 1, JSON.stringify(run.regions.map((r) => [r.kind, r.rect])));
+    assert(moving[0].rect.y >= headerHeight, `moving region rect.y=${moving[0].rect.y} should be >= header height ${headerHeight}`);
+    const fixed = run.regions.find((r) => r.kind === 'fixed' && r.rect.y <= 0 && r.rect.y + r.rect.height >= headerHeight);
+    assert(fixed, `no fixed region covers the header band; regions=${JSON.stringify(run.regions.map((r) => [r.kind, r.rect]))}`);
+    const result = await verifyLayer(run, layer);
+    assertEquals(result.maxError, 0);
+    assertEquals(result.missing, 0);
+    assertEquals(result.invented, 0);
+    assertEquals(result.mismatched, 0);
+    assertEquals(result.fragments.length, 0);
+  } finally {
+    // run.atlas (src/core/layers.ts's RegionAtlas) owns a core-resident buffer that nothing else frees.
+    run.dispose();
+  }
 });
 // F7 end-to-end: a 1080p-class desktop capture whose HEIGHT is not an exact multiple of the analysis factor
 // (1082 / 4 = 270.5, matching 'factor4' in scenarios.ts but with a non-divisible height), run through the whole
@@ -138,14 +143,19 @@ function factor4NonDivisibleScenario(): Scenario {
 Deno.test('layers: non-divisible 1080p-class geometry (1920×1082, analysisSize 480, factor 4) places without error', async () => {
   const scenario = factor4NonDivisibleScenario(), layer = scenario.layers[0];
   const run = await runScenario(scenario, { analysisSize: 480 });
-  assertEquals(run.project.status, 'complete', run.project.error);
-  assertEquals(run.engine.factor, 4);
-  const result = await verifyLayer(run, layer);
-  assertEquals(result.maxError, 0, `errors=${JSON.stringify(result.errors)}`);
-  assertEquals(result.missing, 0);
-  assertEquals(result.invented, 0);
-  assertEquals(result.mismatched, 0);
-  assertEquals(result.fragments.length, 0);
+  try {
+    assertEquals(run.project.status, 'complete', run.project.error);
+    assertEquals(run.engine.factor, 4);
+    const result = await verifyLayer(run, layer);
+    assertEquals(result.maxError, 0, `errors=${JSON.stringify(result.errors)}`);
+    assertEquals(result.missing, 0);
+    assertEquals(result.invented, 0);
+    assertEquals(result.mismatched, 0);
+    assertEquals(result.fragments.length, 0);
+  } finally {
+    // run.atlas (src/core/layers.ts's RegionAtlas) owns a core-resident buffer that nothing else frees.
+    run.dispose();
+  }
 });
 Deno.test('layers: learner separates a stationary band from scrolling content with native-precision edges', () => {
   const page = makeWorld(400, 1200, 9, 'article'), header = new Uint8Array(400 * 37).fill(30);
@@ -316,43 +326,48 @@ function sparseScenario(): Scenario {
 }
 Deno.test('takeover: high-resolution sparse 2D traversal preserves full pane, gutters, and all four frame sides', async () => {
   const scenario = sparseScenario(), run = await runScenario(scenario, { framing: 'context' }), layer = scenario.layers[0];
-  assertEquals(run.project.status, 'complete', run.project.error);
-  const result = await verifyLayer(run, layer);
-  await Deno.mkdir('test-results', { recursive: true });
-  await Deno.writeTextFile(
-    'test-results/takeover-geometry.json',
-    JSON.stringify(
-      {
-        verification: result,
-        regions: run.regions.map(({ mask: _mask, cells: _cells, ...r }) => r),
-        performance: await run.store.get('performance'),
-      },
-      null,
-      2,
-    ),
-  );
-  assertEquals(result.maxError, 0);
-  assertEquals(result.missing, 0);
-  assertEquals(result.invented, 0);
-  assertEquals(result.mismatched, 0);
-  const moving = run.regions.find((r) => r.id === result.regionId)!;
-  assertEquals(moving.rect, layer.viewport);
-  const atlas = new RegionAtlas(run.regions, scenario.width, scenario.height);
   try {
-    assertEquals(atlas.count(atlas.code(moving)), layer.viewport.width * layer.viewport.height);
+    assertEquals(run.project.status, 'complete', run.project.error);
+    const result = await verifyLayer(run, layer);
+    await Deno.mkdir('test-results', { recursive: true });
+    await Deno.writeTextFile(
+      'test-results/takeover-geometry.json',
+      JSON.stringify(
+        {
+          verification: result,
+          regions: run.regions.map(({ mask: _mask, cells: _cells, ...r }) => r),
+          performance: await run.store.get('performance'),
+        },
+        null,
+        2,
+      ),
+    );
+    assertEquals(result.maxError, 0);
+    assertEquals(result.missing, 0);
+    assertEquals(result.invented, 0);
+    assertEquals(result.mismatched, 0);
+    const moving = run.regions.find((r) => r.id === result.regionId)!;
+    assertEquals(moving.rect, layer.viewport);
+    const atlas = new RegionAtlas(run.regions, scenario.width, scenario.height);
+    try {
+      assertEquals(atlas.count(atlas.code(moving)), layer.viewport.width * layer.viewport.height);
+    } finally {
+      atlas.dispose();
+    }
+    assertEquals(run.observations.length, scenario.frames.length);
+    const framed = run.canvases.find((c) => c.presentation?.sourceCanvas === result.mainCanvas.id);
+    assert(framed?.presentation);
+    assertEquals(framed.bounds.width, result.mainCanvas.bounds.width + 112 + 120);
+    assertEquals(framed.bounds.height, result.mainCanvas.bounds.height + 80 + 56);
+    const stats = await run.store.get<{ exactDuplicateFrames: number; skippedPaints: number }>('performance');
+    assert(stats && stats.exactDuplicateFrames >= 3 && stats.skippedPaints >= 3);
+    const scan = await run.store.get<ScanRecord>(`scan/${pad(9)}`), plan = await run.store.get<FramePlan>(`plan/${pad(9)}`);
+    assert(scan?.duplicate && plan?.duplicate);
+    assertEquals(run.memory.peakResidentTiles <= run.memory.tileCacheLimit, true);
   } finally {
-    atlas.dispose();
+    // run.atlas (src/core/layers.ts's RegionAtlas) owns a core-resident buffer that nothing else frees.
+    run.dispose();
   }
-  assertEquals(run.observations.length, scenario.frames.length);
-  const framed = run.canvases.find((c) => c.presentation?.sourceCanvas === result.mainCanvas.id);
-  assert(framed?.presentation);
-  assertEquals(framed.bounds.width, result.mainCanvas.bounds.width + 112 + 120);
-  assertEquals(framed.bounds.height, result.mainCanvas.bounds.height + 80 + 56);
-  const stats = await run.store.get<{ exactDuplicateFrames: number; skippedPaints: number }>('performance');
-  assert(stats && stats.exactDuplicateFrames >= 3 && stats.skippedPaints >= 3);
-  const scan = await run.store.get<ScanRecord>(`scan/${pad(9)}`), plan = await run.store.get<FramePlan>(`plan/${pad(9)}`);
-  assert(scan?.duplicate && plan?.duplicate);
-  assertEquals(run.memory.peakResidentTiles <= run.memory.tileCacheLimit, true);
 });
 Deno.test('takeover: appearance boundaries require a persistent edge; blank gutters alone offer no boundary', () => {
   const s = sparseScenario(), image = renderFrame(s, 0).image;
@@ -428,54 +443,59 @@ function attachLoopScenario(): Scenario {
 }
 Deno.test('geometry: a no-overlap jump that tracks back into view attaches to the main canvas, then closes loops on both sides of the seam', async () => {
   const scenario = attachLoopScenario(), run = await runScenario(scenario), layer = scenario.layers[0];
-  assertEquals(run.project.status, 'complete', run.project.error);
-  if (!run.codes.has('UNPLACED_FRAGMENT') || !run.codes.has('FRAGMENT_ATTACHED')) {
-    console.log(
-      'geometry/attach-then-loop diagnostics:',
-      run.diagnostics.map((d) => ({ code: d.code, frame: d.frame, canvasId: d.canvasId })),
-    );
-  }
-  assert(run.codes.has('UNPLACED_FRAGMENT'), `expected UNPLACED_FRAGMENT; got ${[...run.codes].join(',')}`);
-  assert(run.codes.has('FRAGMENT_ATTACHED'), `expected FRAGMENT_ATTACHED; got ${[...run.codes].join(',')}`);
-  const attach = run.diagnostics.find((d) => d.code === 'FRAGMENT_ATTACHED')!;
-  const loopsAfterAttach = run.diagnostics.filter((d) => d.code === 'LOOP_CLOSURE' && (d.frame ?? -1) > (attach.frame ?? Infinity));
-  assert(
-    loopsAfterAttach.length > 0,
-    `expected a LOOP_CLOSURE after the attach frame (${attach.frame}); loop closures at: ${
-      run.diagnostics.filter((d) => d.code === 'LOOP_CLOSURE').map((d) => d.frame).join(',')
-    }`,
-  );
-  const result = await verifyLayer(run, layer);
-  if (result.maxError !== 0 || result.missing !== 0 || result.invented !== 0 || result.mismatched !== 0) {
-    console.log('geometry/attach-then-loop verifyLayer:', result);
-    console.log(
-      'geometry/attach-then-loop diagnostics:',
-      run.diagnostics.map((d) => ({ code: d.code, frame: d.frame, canvasId: d.canvasId, detail: d.detail })),
-    );
-  }
-  assertEquals(result.maxError, 0);
-  assertEquals(result.missing, 0);
-  assertEquals(result.invented, 0);
-  assertEquals(result.mismatched, 0);
-  const fragment = run.canvases.find((c) => c.layer === result.regionId && c.fragment > 0);
-  assert(fragment, 'no fragment canvas was ever created');
-  assertEquals(fragment!.attachedTo, result.mainCanvas.id);
-  assertEquals(fragment!.tileCount, 0, 'an attached fragment must hold no tiles of its own');
-  for (const o of run.observations) {
-    const d = o.decisions.find((x) => x.placement.layer === result.regionId);
-    assert(d, `frame ${o.frame}: no decision recorded for layer ${result.regionId}`);
-    if (d!.skipped) {
-      continue;
+  try {
+    assertEquals(run.project.status, 'complete', run.project.error);
+    if (!run.codes.has('UNPLACED_FRAGMENT') || !run.codes.has('FRAGMENT_ATTACHED')) {
+      console.log(
+        'geometry/attach-then-loop diagnostics:',
+        run.diagnostics.map((d) => ({ code: d.code, frame: d.frame, canvasId: d.canvasId })),
+      );
     }
-    assertEquals(
-      d!.canvasId,
-      result.mainCanvas.id,
-      `frame ${o.frame}: resolved to ${d!.canvasId}, expected the main canvas ${result.mainCanvas.id}`,
+    assert(run.codes.has('UNPLACED_FRAGMENT'), `expected UNPLACED_FRAGMENT; got ${[...run.codes].join(',')}`);
+    assert(run.codes.has('FRAGMENT_ATTACHED'), `expected FRAGMENT_ATTACHED; got ${[...run.codes].join(',')}`);
+    const attach = run.diagnostics.find((d) => d.code === 'FRAGMENT_ATTACHED')!;
+    const loopsAfterAttach = run.diagnostics.filter((d) => d.code === 'LOOP_CLOSURE' && (d.frame ?? -1) > (attach.frame ?? Infinity));
+    assert(
+      loopsAfterAttach.length > 0,
+      `expected a LOOP_CLOSURE after the attach frame (${attach.frame}); loop closures at: ${
+        run.diagnostics.filter((d) => d.code === 'LOOP_CLOSURE').map((d) => d.frame).join(',')
+      }`,
     );
+    const result = await verifyLayer(run, layer);
+    if (result.maxError !== 0 || result.missing !== 0 || result.invented !== 0 || result.mismatched !== 0) {
+      console.log('geometry/attach-then-loop verifyLayer:', result);
+      console.log(
+        'geometry/attach-then-loop diagnostics:',
+        run.diagnostics.map((d) => ({ code: d.code, frame: d.frame, canvasId: d.canvasId, detail: d.detail })),
+      );
+    }
+    assertEquals(result.maxError, 0);
+    assertEquals(result.missing, 0);
+    assertEquals(result.invented, 0);
+    assertEquals(result.mismatched, 0);
+    const fragment = run.canvases.find((c) => c.layer === result.regionId && c.fragment > 0);
+    assert(fragment, 'no fragment canvas was ever created');
+    assertEquals(fragment!.attachedTo, result.mainCanvas.id);
+    assertEquals(fragment!.tileCount, 0, 'an attached fragment must hold no tiles of its own');
+    for (const o of run.observations) {
+      const d = o.decisions.find((x) => x.placement.layer === result.regionId);
+      assert(d, `frame ${o.frame}: no decision recorded for layer ${result.regionId}`);
+      if (d!.skipped) {
+        continue;
+      }
+      assertEquals(
+        d!.canvasId,
+        result.mainCanvas.id,
+        `frame ${o.frame}: resolved to ${d!.canvasId}, expected the main canvas ${result.mainCanvas.id}`,
+      );
+    }
+    const summary = await run.store.get<{ residual: number }>('graph-summary');
+    assert(summary, 'no graph-summary was written');
+    assert(summary!.residual < 1, `graph residual ${summary!.residual} is too high`);
+  } finally {
+    // run.atlas (src/core/layers.ts's RegionAtlas) owns a core-resident buffer that nothing else frees.
+    run.dispose();
   }
-  const summary = await run.store.get<{ residual: number }>('graph-summary');
-  assert(summary, 'no graph-summary was written');
-  assert(summary!.residual < 1, `graph residual ${summary!.residual} is too high`);
 });
 function paneZoomScenario(): Scenario {
   const W = 640, H = 448, HEADER = 48;
@@ -516,24 +536,29 @@ function paneZoomScenario(): Scenario {
 }
 Deno.test('geometry: a per-pane zoom fragments only the zooming pane, not its co-scrolling sibling', async () => {
   const scenario = paneZoomScenario(), run = await runScenario(scenario);
-  assertEquals(run.project.status, 'complete', run.project.error);
-  const leftResult = await verifyLayer(run, scenario.layers[0]), rightResult = await verifyLayer(run, scenario.layers[1]);
-  if (leftResult.fragments.length || leftResult.maxError || leftResult.missing || leftResult.invented || leftResult.mismatched) {
-    console.log(
-      'geometry/pane-zoom left:',
-      leftResult,
-      run.diagnostics.filter((d) => d.canvasId?.startsWith(`${leftResult.regionId}-part-`)),
+  try {
+    assertEquals(run.project.status, 'complete', run.project.error);
+    const leftResult = await verifyLayer(run, scenario.layers[0]), rightResult = await verifyLayer(run, scenario.layers[1]);
+    if (leftResult.fragments.length || leftResult.maxError || leftResult.missing || leftResult.invented || leftResult.mismatched) {
+      console.log(
+        'geometry/pane-zoom left:',
+        leftResult,
+        run.diagnostics.filter((d) => d.canvasId?.startsWith(`${leftResult.regionId}-part-`)),
+      );
+    }
+    assertEquals(leftResult.fragments.length, 0, `left pane fragmented: ${leftResult.fragments.map((c) => c.id).join(',')}`);
+    assertEquals(leftResult.maxError, 0);
+    assertEquals(leftResult.missing, 0);
+    assertEquals(leftResult.invented, 0);
+    assertEquals(leftResult.mismatched, 0);
+    const leftBad = run.diagnostics.filter((d) =>
+      (d.code === 'SCALE_CHANGE_FRAGMENT' || d.code === 'UNPLACED_FRAGMENT') && d.canvasId?.startsWith(`${leftResult.regionId}-part-`)
     );
+    assertEquals(leftBad.length, 0, `left pane got a fragmentation diagnostic meant for the zooming pane: ${JSON.stringify(leftBad)}`);
+    assert(rightResult.fragments.length >= 1, 'right pane did not fragment when it zoomed');
+    assert(run.codes.has('SCALE_CHANGE_FRAGMENT'), `expected SCALE_CHANGE_FRAGMENT for the zooming pane; got ${[...run.codes].join(',')}`);
+  } finally {
+    // run.atlas (src/core/layers.ts's RegionAtlas) owns a core-resident buffer that nothing else frees.
+    run.dispose();
   }
-  assertEquals(leftResult.fragments.length, 0, `left pane fragmented: ${leftResult.fragments.map((c) => c.id).join(',')}`);
-  assertEquals(leftResult.maxError, 0);
-  assertEquals(leftResult.missing, 0);
-  assertEquals(leftResult.invented, 0);
-  assertEquals(leftResult.mismatched, 0);
-  const leftBad = run.diagnostics.filter((d) =>
-    (d.code === 'SCALE_CHANGE_FRAGMENT' || d.code === 'UNPLACED_FRAGMENT') && d.canvasId?.startsWith(`${leftResult.regionId}-part-`)
-  );
-  assertEquals(leftBad.length, 0, `left pane got a fragmentation diagnostic meant for the zooming pane: ${JSON.stringify(leftBad)}`);
-  assert(rightResult.fragments.length >= 1, 'right pane did not fragment when it zoomed');
-  assert(run.codes.has('SCALE_CHANGE_FRAGMENT'), `expected SCALE_CHANGE_FRAGMENT for the zooming pane; got ${[...run.codes].join(',')}`);
 });

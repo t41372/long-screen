@@ -81,7 +81,7 @@ function bench<T>(kernel: string, a: () => T, b: () => T, same: (x: T, y: T) => 
   rows.push({ kernel, tsMS: median(ta), rustMS: median(tb) });
 }
 // Every integer field and per-cell array must match exactly; the f64 motion confidence/error go through exp(), which
-// Rust's libm and V8's Math.exp may round differently in the last bit (see docs/HANDOFF.md), so those are compared
+// Rust's libm and V8's Math.exp may round differently in the last bit (see docs/history/2026-09-rust-migration-log.md), so those are compared
 // to the parity tests' 1e-9 relative tolerance and the largest difference is reported.
 let motionFloatDiff = 0;
 const sameMotion = (x: MotionField, y: MotionField) => {

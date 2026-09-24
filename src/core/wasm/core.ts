@@ -512,6 +512,14 @@ export class Core {
   trackOdometry(inputs: track.OdometryInputs): track.OdometryEstimate {
     return track.odometry(this, this.exports, inputs);
   }
+  /** `track.ts::reacquire` fused into one call (R4c 3b-ii). */
+  trackReacquire(inputs: track.ReacquireInputs): { result: track.ReacquireEstimate | undefined; filledNative: boolean } {
+    return track.reacquire(this, this.exports, inputs);
+  }
+  /** `track.ts::driftCorrection` fused into one call (R4c 3b-ii). */
+  trackDriftCorrection(inputs: track.DriftCorrectionInputs): { pose: Point | undefined; error: number; filledNative: boolean } {
+    return track.driftCorrection(this, this.exports, inputs);
+  }
 
   /** `buildFramedCanvas`'s `frameLayout()`. */
   frameLayout(source: { width: number; height: number }, pane: Rect, boundsWidth: number, boundsHeight: number): FrameLayout {

@@ -12,7 +12,7 @@
 //   solve/track.ts   the per-region tracking DECISIONS (hypothesis scoring, audit acceptance, native
 //                     refinement, confidence, anchor re-acquisition, keyframe/revisit/attachment/loop-closure
 //                     verdicts) as pure functions — plain inputs, plain results, no storage or diagnostics.
-//                     Still plain TypeScript, algorithm-awaiting-port (see docs/HANDOFF.md "已在 Rust 核心中").
+//                     Still plain TypeScript, algorithm-awaiting-port (see docs/history/2026-09-rust-migration-log.md "已在 Rust 核心中").
 //   solve/region-step.ts, solve/keyframe-step.ts  the per-region shell that applies track.ts's decisions, in
 //                     the original order, to storage/diagnostics/the pose graph/keyframe index. Shell.
 //   render.ts        the render pass (placement resolution, consistency-mask consultation, compositing,
