@@ -641,47 +641,259 @@ pub struct NativeRefinement {
     pub runner_up: f64,
 }
 
-/// Native-pixel refinement on textured luma edges of `b` inside `region`, matching against `a` at
-/// integer offsets. `labels`/`code` (region atlas membership) restrict both frames when given.
+/// Picks the native-refinement sample points for `b` inside `region`: a `step`×`step` cell grid, keeping one
+/// point per cell rather than sampling only the pixel at the cell's corner (its lattice node). A node-only
+/// sampler finds an edge with probability proportional to local edge density, so a sparse page (few edges
+/// anywhere) starves the sample (`< 12` points → `Infinity`, the true step read as "static") and a
+/// screen-fixed line that happens to align with a lattice row or column dominates it (every node on that row
+/// is an edge, nothing else is) — see docs/ARCHITECTURE.md §五/§十. Depends only on `b`, `region`, `mask` and
+/// `guide`, not on any hypothesis, so a caller evaluating several candidate displacements can select once and
+/// reuse the points for all of them.
+///
+/// Without a `guide`: a full-resolution scan keeps, per cell, the pixel with the strongest native luma
+/// gradient (ties broken by row-major order) — the exact per-cell argmax.
+///
+/// With `guide = Some((g, f))` — `g` is `b`'s own analysis-scale gray at integer downscale factor `f`
+/// (`raster::downscale_gray`; analysis pixel `(ax, ay)` covers the native block `[ax·f, ax·f+f) ×
+/// [ay·f, ay·f+f)`, edge blocks partial): coarse-to-fine instead of full-resolution. Per cell, first pick the
+/// analysis pixel (among those whose native block intersects the cell, skipping the analysis image's own
+/// 1px border and any pixel whose block centre fails `mask`) with the strongest analysis-scale gradient, then
+/// the native pixel with the strongest native gradient inside that one analysis pixel's block ∩ cell ∩ window
+/// ∩ mask — luma computed only for that handful of pixels and their four neighbours, not a full luma plane.
+/// `f = 1` makes `g` `b`'s own native luma one-for-one (`downscale_gray`'s `factor == 1` branch), every block
+/// a single pixel, and this reduce exactly to the unguided per-cell argmax — this is a property relied on
+/// elsewhere (the `f = 1` odometry parity cases), not merely incidental.
+pub fn select_native_points(
+    b: &[u8],
+    width: usize,
+    height: usize,
+    region: Rect,
+    mask: Option<(&[u8], u8)>,
+    guide: Option<(Gray<'_>, usize)>,
+) -> Vec<i64> {
+    let (w, h) = (width as i64, height as i64);
+    let step = 3i64.max(((region.width * region.height / 1600.0).sqrt()).floor() as i64);
+    let inside =
+        |x: i64, y: i64| mask.is_none_or(|(labels, code)| labels[(y * w + x) as usize] == code);
+    // Same window as the lattice: y from max(2, ceil(region.y)) while y < min(h-2, region.y+region.height).
+    let y_limit = ((h - 2) as f64).min(region.y + region.height);
+    let x_limit = ((w - 2) as f64).min(region.x + region.width);
+    let x_start = 2i64.max(region.x.ceil() as i64);
+    let y_start = 2i64.max(region.y.ceil() as i64);
+    if (x_start as f64) >= x_limit || (y_start as f64) >= y_limit {
+        return Vec::new();
+    }
+    if let Some((g, f)) = guide {
+        return select_native_points_guided(
+            b,
+            w,
+            h,
+            x_start,
+            y_start,
+            x_limit,
+            y_limit,
+            step,
+            &inside,
+            g,
+            f.max(1) as i64,
+        );
+    }
+    // The gradient stencil needs one pixel of margin on every side of the scanned window. Every pixel in that
+    // padded box is visited (a full-resolution scan, one sample per pixel rather than one every `step`
+    // pixels), so its luma is computed exactly once here and reused as up to four neighbours' gradient input
+    // below — recomputing it per neighbour access (as a read-only `luma(i)` closure would) would redo the
+    // same multiply-add four times over for every pixel in the window.
+    let (bx0, by0) = ((x_start - 1).max(0), (y_start - 1).max(0));
+    let (bx1, by1) = (
+        (js_ceil(x_limit) as i64 + 1).min(w),
+        (js_ceil(y_limit) as i64 + 1).min(h),
+    );
+    let (bw, bh) = ((bx1 - bx0).max(0) as usize, (by1 - by0).max(0) as usize);
+    // `u8`, not `i32`: luma is 0..=255, and a quarter the memory traffic matters at 6-7 Mpx per moving region.
+    let mut luma_plane = vec![0u8; bw * bh];
+    for row in 0..bh {
+        let src = (((by0 + row as i64) * w + bx0) * 4) as usize;
+        let dst = row * bw;
+        for col in 0..bw {
+            let i = src + col * 4;
+            luma_plane[dst + col] =
+                ((b[i] as u32 * 77 + b[i + 1] as u32 * 150 + b[i + 2] as u32 * 29) >> 8) as u8;
+        }
+    }
+    let mut points: Vec<i64> = Vec::new();
+    let mut cy = y_start;
+    while (cy as f64) < y_limit {
+        let mut cx = x_start;
+        while (cx as f64) < x_limit {
+            // Strongest-gradient pixel in this cell; strict `>` keeps the row-major-first pixel on a tie.
+            let mut best: Option<(i32, i64)> = None;
+            let mut dy = 0i64;
+            while dy < step {
+                let y = cy + dy;
+                if (y as f64) >= y_limit {
+                    break;
+                }
+                // Row bases computed once per row, not once per pixel's four neighbour lookups.
+                let (row_mid, row_up, row_down) = (
+                    (y - by0) as usize * bw,
+                    (y - 1 - by0) as usize * bw,
+                    (y + 1 - by0) as usize * bw,
+                );
+                let mut dx = 0i64;
+                while dx < step {
+                    let x = cx + dx;
+                    if (x as f64) >= x_limit {
+                        break;
+                    }
+                    if inside(x, y) {
+                        let col = (x - bx0) as usize;
+                        let grad = (luma_plane[row_mid + col - 1] as i32
+                            - luma_plane[row_mid + col + 1] as i32)
+                            .abs()
+                            + (luma_plane[row_up + col] as i32 - luma_plane[row_down + col] as i32)
+                                .abs();
+                        if best.is_none_or(|(bg, _)| grad > bg) {
+                            best = Some((grad, y * w + x));
+                        }
+                    }
+                    dx += 1;
+                }
+                dy += 1;
+            }
+            if let Some((grad, p)) = best {
+                if grad > 12 {
+                    points.push(p);
+                }
+            }
+            cx += step;
+        }
+        cy += step;
+    }
+    points
+}
+
+/// Coarse-to-fine cell scan for [`select_native_points`]'s `guide` branch: per cell, the strongest-gradient
+/// analysis pixel first, then the strongest-gradient native pixel inside just that one analysis pixel's
+/// native block. Never materialises a native luma plane — only ever reads the handful of native pixels (and
+/// their four neighbours) that a chosen analysis pixel's block can contain.
 #[allow(clippy::too_many_arguments)]
-pub fn refine_native(
+fn select_native_points_guided(
+    b: &[u8],
+    w: i64,
+    h: i64,
+    x_start: i64,
+    y_start: i64,
+    x_limit: f64,
+    y_limit: f64,
+    step: i64,
+    inside: &impl Fn(i64, i64) -> bool,
+    g: Gray<'_>,
+    f: i64,
+) -> Vec<i64> {
+    let (gw, gh) = (g.width as i64, g.height as i64);
+    // Native luma at one point only, from `b`'s own RGBA — never a precomputed plane (stage 2 only ever
+    // touches one analysis pixel's native block per cell, a handful of pixels, not the whole window).
+    let native_luma = |x: i64, y: i64| -> i32 {
+        let i = ((y * w + x) * 4) as usize;
+        ((b[i] as u32 * 77 + b[i + 1] as u32 * 150 + b[i + 2] as u32 * 29) >> 8) as i32
+    };
+    // The largest integer native coordinate that still satisfies the window's strict `< x_limit`/`< y_limit`
+    // bound (an analysis pixel whose block starts beyond this can never contribute a stage-2 point, so stage
+    // 1 must not consider it — otherwise a boundary cell could pick an out-of-window analysis pixel over an
+    // in-window one with a lower but real gradient, and silently contribute nothing where the unguided scan
+    // would have found a point. `f = 1`'s exact reduction to the unguided argmax depends on this).
+    let (window_x_hi, window_y_hi) = (
+        (js_ceil(x_limit) as i64 - 1).min(w - 1),
+        (js_ceil(y_limit) as i64 - 1).min(h - 1),
+    );
+    let mut points: Vec<i64> = Vec::new();
+    let mut cy = y_start;
+    while (cy as f64) < y_limit {
+        let mut cx = x_start;
+        while (cx as f64) < x_limit {
+            let (cell_x_hi, cell_y_hi) = (
+                (cx + step - 1).min(window_x_hi),
+                (cy + step - 1).min(window_y_hi),
+            );
+            // Stage 1: the strongest-gradient analysis pixel among those whose native block intersects the
+            // cell. Strict `>` keeps the row-major-first pixel on a tie.
+            let mut chosen: Option<(i64, i64)> = None;
+            let mut best_analysis_grad = i32::MIN;
+            let mut ay = (cy / f).max(1);
+            while ay <= (cell_y_hi / f).min(gh - 2) {
+                let mut ax = (cx / f).max(1);
+                while ax <= (cell_x_hi / f).min(gw - 2) {
+                    let (nx0, ny0) = (ax * f, ay * f);
+                    let (nx1, ny1) = ((nx0 + f).min(w), (ny0 + f).min(h));
+                    let (cx_mid, cy_mid) = (nx0 + (nx1 - nx0) / 2, ny0 + (ny1 - ny0) / 2);
+                    if inside(cx_mid, cy_mid) {
+                        let gi = (ay * gw + ax) as usize;
+                        let grad = (g.data[gi - 1] as i32 - g.data[gi + 1] as i32).abs()
+                            + (g.data[gi - gw as usize] as i32 - g.data[gi + gw as usize] as i32)
+                                .abs();
+                        if grad > best_analysis_grad {
+                            best_analysis_grad = grad;
+                            chosen = Some((ax, ay));
+                        }
+                    }
+                    ax += 1;
+                }
+                ay += 1;
+            }
+            // Stage 2: the strongest-gradient native pixel inside that one analysis pixel's block ∩ cell ∩
+            // window ∩ mask. Kept iff its native gradient clears the same threshold the unguided scan uses.
+            if let Some((ax, ay)) = chosen {
+                let (nx0, ny0) = (ax * f, ay * f);
+                let (nx1, ny1) = ((nx0 + f).min(w), (ny0 + f).min(h));
+                let mut best: Option<(i32, i64)> = None;
+                let mut y = ny0.max(cy).max(y_start);
+                let y_hi = ny1.min(cy + step).min(h);
+                while y < y_hi && (y as f64) < y_limit {
+                    let mut x = nx0.max(cx).max(x_start);
+                    let x_hi = nx1.min(cx + step).min(w);
+                    while x < x_hi && (x as f64) < x_limit {
+                        if inside(x, y) {
+                            let grad = (native_luma(x - 1, y) - native_luma(x + 1, y)).abs()
+                                + (native_luma(x, y - 1) - native_luma(x, y + 1)).abs();
+                            if best.is_none_or(|(bg, _)| grad > bg) {
+                                best = Some((grad, y * w + x));
+                            }
+                        }
+                        x += 1;
+                    }
+                    y += 1;
+                }
+                if let Some((grad, p)) = best {
+                    if grad > 12 {
+                        points.push(p);
+                    }
+                }
+            }
+            cx += step;
+        }
+        cy += step;
+    }
+    points
+}
+
+/// Native-pixel refinement of `b` against `a` at integer offsets, given points already chosen by
+/// [`select_native_points`] for this `b`/`region`/`mask`. Split out of `refine_native` so a caller with
+/// several hypotheses over the same region (`track::odometry`) selects the points once and reuses them.
+#[allow(clippy::too_many_arguments)]
+pub fn refine_native_at(
     a: &[u8],
     b: &[u8],
     width: usize,
     height: usize,
     guess: Point,
-    region: Rect,
     mask: Option<(&[u8], u8)>,
     radius: i32,
+    points: &[i64],
 ) -> NativeRefinement {
     let (w, h) = (width as i64, height as i64);
     let (gx, gy) = (js_round(guess.x), js_round(guess.y));
-    let step = 3i64.max(((region.width * region.height / 1600.0).sqrt()).floor() as i64);
-    let luma =
-        |i: usize| ((b[i] as u32 * 77 + b[i + 1] as u32 * 150 + b[i + 2] as u32 * 29) >> 8) as i32;
-    let mut points: Vec<i64> = Vec::new();
     let inside =
         |x: i64, y: i64| mask.is_none_or(|(labels, code)| labels[(y * w + x) as usize] == code);
-    // Same bounds as the TS loop: y from max(2, ceil(region.y)) while y < min(h-2, region.y+region.height).
-    let y_limit = ((h - 2) as f64).min(region.y + region.height);
-    let x_limit = ((w - 2) as f64).min(region.x + region.width);
-    let x_start = 2i64.max(region.x.ceil() as i64);
-    let mut y = 2i64.max(region.y.ceil() as i64);
-    while (y as f64) < y_limit {
-        let mut x = x_start;
-        while (x as f64) < x_limit {
-            if inside(x, y) {
-                let i = ((y * w + x) * 4) as usize;
-                let grad = (luma(i - 4) - luma(i + 4)).abs()
-                    + (luma(i - (w as usize * 4)) - luma(i + (w as usize * 4))).abs();
-                if grad > 12 {
-                    points.push(y * w + x);
-                }
-            }
-            x += step;
-        }
-        y += step;
-    }
     if points.len() < 12 {
         return NativeRefinement {
             x: gx,
@@ -694,7 +906,7 @@ pub fn refine_native(
     let mut samples = 0u32;
     let mut cost = |dx: i64, dy: i64| -> f64 {
         let (mut error, mut n) = (0f64, 0u32);
-        for &p in &points {
+        for &p in points {
             let (x, y) = (p % w, p / w);
             let (xx, yy) = (x + dx, y + dy);
             if xx < 1 || yy < 1 || xx >= w - 1 || yy >= h - 1 || !inside(xx, yy) {
@@ -742,6 +954,25 @@ pub fn refine_native(
         samples,
         runner_up,
     }
+}
+
+/// Native-pixel refinement on textured luma edges of `b` inside `region`, matching against `a` at
+/// integer offsets. `labels`/`code` (region atlas membership) restrict both frames when given. Composes
+/// [`select_native_points`] and [`refine_native_at`]; a caller evaluating several candidates over the same
+/// `b`/`region`/`mask` should call those directly to select once and reuse the points (see `track::odometry`).
+#[allow(clippy::too_many_arguments)]
+pub fn refine_native(
+    a: &[u8],
+    b: &[u8],
+    width: usize,
+    height: usize,
+    guess: Point,
+    region: Rect,
+    mask: Option<(&[u8], u8)>,
+    radius: i32,
+) -> NativeRefinement {
+    let points = select_native_points(b, width, height, region, mask, None);
+    refine_native_at(a, b, width, height, guess, mask, radius, &points)
 }
 
 /// Keyframe patch (region-local origin, `size`×`size` native luma).
@@ -1165,5 +1396,271 @@ mod tests {
                 assert!(scale > 0.0 && error.is_finite());
             }
         }
+    }
+
+    fn gray_to_rgba(g: &[u8]) -> Vec<u8> {
+        g.iter().flat_map(|&v| [v, v, v, 255]).collect()
+    }
+
+    /// A node-only sampler finds an edge only when the node pixel itself happens to sit on one; a sparse page
+    /// (edges everywhere except exactly at the sampled nodes) then yields `< 12` points and `Infinity`, and
+    /// the true step is read as "static" (measured on e.mov: 9-11 of ~1600 nodes kept). Every value-bearing
+    /// pixel placed here sits fully inside its cell (never a node's own row/column or one of its four
+    /// gradient-stencil neighbours — see `select_native_points`'s doc comment), so a node-only sampler finds
+    /// zero edges here while the per-cell sampler finds one per cell and recovers the true shift.
+    #[test]
+    fn native_refinement_recovers_a_sparse_shift_the_lattice_would_miss() {
+        let (w, h) = (280usize, 280usize);
+        let (dx, dy) = (4i64, -3i64);
+        let (v0, v_lo, v_mid, v_hi) = (100u8, 20u8, 150u8, 220u8);
+        let region = Rect {
+            x: 6.0,
+            y: 6.0,
+            width: 270.0,
+            height: 270.0,
+        };
+        // Area picked so `step` is large enough (6px) for a cell to hold a gradient stencil entirely off every
+        // node's own row/column — otherwise the value-bearing pixel doubles as some other node's stencil
+        // neighbour and would corrupt that node's own (deliberately flat) gradient.
+        let step = 3i64.max(((region.width * region.height / 1600.0).sqrt()).floor() as i64);
+        assert!(
+            step >= 6,
+            "test assumes a wide enough cell, got step={step}"
+        );
+        let x_start = 2i64.max(region.x.ceil() as i64);
+        let y_start = 2i64.max(region.y.ceil() as i64);
+        let mut a = vec![v0; w * h];
+        let mut b = vec![v0; w * h];
+        let mut cy = y_start;
+        while (cy as f64) < region.y + region.height {
+            let mut cx = x_start;
+            while (cx as f64) < region.x + region.width {
+                // A value-bearing pixel 3px inside the cell, flanked by its own low/high companions so it
+                // registers a strong gradient without ever touching a node's own stencil.
+                let (px, py) = (cx + 3, cy + 3);
+                b[(py * w as i64 + px - 1) as usize] = v_lo;
+                b[(py * w as i64 + px) as usize] = v_mid;
+                b[(py * w as i64 + px + 1) as usize] = v_hi;
+                let (qx, qy) = (px + dx, py + dy);
+                a[(qy * w as i64 + qx - 1) as usize] = v_lo;
+                a[(qy * w as i64 + qx) as usize] = v_mid;
+                a[(qy * w as i64 + qx + 1) as usize] = v_hi;
+                cx += step;
+            }
+            cy += step;
+        }
+        let (ra, rb) = (gray_to_rgba(&a), gray_to_rgba(&b));
+        let points = select_native_points(&rb, w, h, region, None, None);
+        assert!(
+            points.len() >= 12,
+            "expected many per-cell points, got {}",
+            points.len()
+        );
+        let r = refine_native_at(
+            &ra,
+            &rb,
+            w,
+            h,
+            Point {
+                x: dx as f64,
+                y: dy as f64,
+            },
+            None,
+            3,
+            &points,
+        );
+        assert_eq!((r.x, r.y), (dx as i32, dy as i32));
+        assert!(r.error < 1.0, "expected a near-zero error, got {}", r.error);
+    }
+
+    /// The same sparse fixture as above, but through the coarse-to-fine `guide` branch at `f = 6` (this
+    /// fixture's own `step` is 6, so one analysis pixel's block is the whole cell's width): the guide's stage
+    /// 1 still finds the one cell containing the value-bearing pixel (every other analysis pixel in the cell
+    /// sits over flat background, gradient 0) and stage 2 recovers the exact native pixel inside its block, so
+    /// the true shift comes back with the same near-zero error as the unguided per-cell scan.
+    #[test]
+    fn native_refinement_recovers_a_sparse_shift_via_the_guide() {
+        let (w, h) = (280usize, 280usize);
+        let (dx, dy) = (4i64, -3i64);
+        let (v0, v_lo, v_mid, v_hi) = (100u8, 20u8, 150u8, 220u8);
+        let region = Rect {
+            x: 6.0,
+            y: 6.0,
+            width: 270.0,
+            height: 270.0,
+        };
+        let step = 3i64.max(((region.width * region.height / 1600.0).sqrt()).floor() as i64);
+        assert!(
+            step >= 6,
+            "test assumes a wide enough cell, got step={step}"
+        );
+        let factor = 6usize;
+        let x_start = 2i64.max(region.x.ceil() as i64);
+        let y_start = 2i64.max(region.y.ceil() as i64);
+        let mut a = vec![v0; w * h];
+        let mut b = vec![v0; w * h];
+        let mut cy = y_start;
+        while (cy as f64) < region.y + region.height {
+            let mut cx = x_start;
+            while (cx as f64) < region.x + region.width {
+                let (px, py) = (cx + 3, cy + 3);
+                b[(py * w as i64 + px - 1) as usize] = v_lo;
+                b[(py * w as i64 + px) as usize] = v_mid;
+                b[(py * w as i64 + px + 1) as usize] = v_hi;
+                let (qx, qy) = (px + dx, py + dy);
+                a[(qy * w as i64 + qx - 1) as usize] = v_lo;
+                a[(qy * w as i64 + qx) as usize] = v_mid;
+                a[(qy * w as i64 + qx + 1) as usize] = v_hi;
+                cx += step;
+            }
+            cy += step;
+        }
+        let (ra, rb) = (gray_to_rgba(&a), gray_to_rgba(&b));
+        let (gw, gh) = crate::raster::downscaled_size(w, h, factor);
+        let mut guide_data = vec![0u8; gw * gh];
+        crate::raster::downscale_gray(&rb, w, h, factor, &mut guide_data);
+        let guide = Gray {
+            width: gw,
+            height: gh,
+            data: &guide_data,
+        };
+        let points = select_native_points(&rb, w, h, region, None, Some((guide, factor)));
+        assert!(
+            points.len() >= 12,
+            "expected many per-cell points, got {}",
+            points.len()
+        );
+        let r = refine_native_at(
+            &ra,
+            &rb,
+            w,
+            h,
+            Point {
+                x: dx as f64,
+                y: dy as f64,
+            },
+            None,
+            3,
+            &points,
+        );
+        assert_eq!((r.x, r.y), (dx as i32, dy as i32));
+        assert!(r.error < 1.0, "expected a near-zero error, got {}", r.error);
+    }
+
+    /// `f = 1` makes the guide `b`'s own native luma one-for-one (`downscale_gray`'s `factor == 1` branch,
+    /// bit-identical to `grayscale`), every analysis pixel's block a single native pixel, and the guided
+    /// two-stage cell scan must then choose the exact same point, in the exact same order, as the unguided
+    /// full-resolution scan — production `track::odometry` relies on this at `f = 1` (its own parity tests
+    /// only cover `f = 1`, exercising `core().refineNative` with no guide at all; if the guided branch ever
+    /// diverged from the unguided one at `f = 1`, this would be the only thing to catch it).
+    #[test]
+    fn native_refinement_guide_at_factor_one_matches_the_unguided_scan() {
+        let (w, h) = (200usize, 200usize);
+        let world = texture(w + 200, h + 200, (w * 13 + h) as u32);
+        let b = crop(&world, w + 200, 100, 100, w, h);
+        let rb = gray_to_rgba(&b);
+        let region = Rect {
+            x: 4.0,
+            y: 4.0,
+            width: (w - 20) as f64,
+            height: (h - 20) as f64,
+        };
+        let unguided = select_native_points(&rb, w, h, region, None, None);
+        let (gw, gh) = crate::raster::downscaled_size(w, h, 1);
+        let mut guide_data = vec![0u8; gw * gh];
+        crate::raster::downscale_gray(&rb, w, h, 1, &mut guide_data);
+        let guide = Gray {
+            width: gw,
+            height: gh,
+            data: &guide_data,
+        };
+        let guided = select_native_points(&rb, w, h, region, None, Some((guide, 1)));
+        assert_eq!(unguided, guided);
+        assert!(
+            unguided.len() >= 12,
+            "fixture should be dense enough to compare meaningfully"
+        );
+    }
+
+    /// A screen-fixed line that happens to sit on a lattice row is sampled at every node on that row, so it
+    /// can dominate the lattice's error mean even though the rest of the page (moving content, off that row)
+    /// agrees perfectly at the true shift (measured on d.mov/e.mov: the vertical/horizontal overlay scrollbar
+    /// sitting on a lattice column/row rejects the true shift or loses to a period alias). A lattice sampler
+    /// takes every one of its points from that single row; a per-cell sampler takes one point from the line's
+    /// own row of cells and one from every other cell, so the moving content it agrees with outweighs it.
+    #[test]
+    fn native_refinement_recovers_a_shift_past_a_screen_fixed_line_on_a_lattice_row() {
+        let (w, h) = (280usize, 280usize);
+        let (dx, dy) = (5i64, -4i64);
+        let (v0, v_lo, v_mid, v_hi, v_bar) = (100u8, 20u8, 150u8, 220u8, 250u8);
+        let region = Rect {
+            x: 6.0,
+            y: 6.0,
+            width: 270.0,
+            height: 270.0,
+        };
+        // Area picked so `step` is large enough (6px) for a cell to hold a gradient stencil entirely off every
+        // node's own row/column — otherwise the "content" pixel doubles as some other node's stencil neighbour.
+        let step = 3i64.max(((region.width * region.height / 1600.0).sqrt()).floor() as i64);
+        assert!(
+            step >= 6,
+            "test assumes a wide enough cell, got step={step}"
+        );
+        let x_start = 2i64.max(region.x.ceil() as i64);
+        let y_start = 2i64.max(region.y.ceil() as i64);
+        // A fixed footer overlay (e.g. a horizontal scrollbar) below row `line_y`, an ordinary lattice row: its
+        // top edge is a strong, screen-fixed y-gradient every node on `line_y` sees. Content above moves by
+        // (dx, dy); the footer does not, exactly like an overlay drawn after the page is composited.
+        let line_y = y_start + 12 * step;
+        let mut a = vec![v0; w * h];
+        let mut b = vec![v0; w * h];
+        let mut cy = y_start;
+        while cy < line_y {
+            let mut cx = x_start;
+            while (cx as f64) < region.x + region.width {
+                // A value-bearing pixel 3px inside the cell (offsets 1..step-1, never a node's own row/column
+                // or one of its four gradient-stencil neighbours), flanked by its own low/high companions —
+                // fully interior to the cell, so it never contaminates any node's own gradient either.
+                let (px, py) = (cx + 3, cy + 3);
+                b[(py * w as i64 + px - 1) as usize] = v_lo;
+                b[(py * w as i64 + px) as usize] = v_mid;
+                b[(py * w as i64 + px + 1) as usize] = v_hi;
+                let (qx, qy) = (px + dx, py + dy);
+                a[(qy * w as i64 + qx - 1) as usize] = v_lo;
+                a[(qy * w as i64 + qx) as usize] = v_mid;
+                a[(qy * w as i64 + qx + 1) as usize] = v_hi;
+                cx += step;
+            }
+            cy += step;
+        }
+        // The footer: same absolute rows and value in both frames, never shifted by (dx, dy).
+        for y in line_y as usize..h {
+            for x in 0..w {
+                let i = y * w + x;
+                a[i] = v_bar;
+                b[i] = v_bar;
+            }
+        }
+        let (ra, rb) = (gray_to_rgba(&a), gray_to_rgba(&b));
+        let points = select_native_points(&rb, w, h, region, None, None);
+        let r = refine_native_at(
+            &ra,
+            &rb,
+            w,
+            h,
+            Point {
+                x: dx as f64,
+                y: dy as f64,
+            },
+            None,
+            3,
+            &points,
+        );
+        assert_eq!((r.x, r.y), (dx as i32, dy as i32));
+        assert!(
+            r.error < 14.0,
+            "expected the true shift to clear the odometry gate, got {}",
+            r.error
+        );
     }
 }

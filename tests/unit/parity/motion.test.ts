@@ -97,6 +97,40 @@ Deno.test('core parity: motion hypotheses, audits, refinement and per-cell field
         assertEquals([masked.x, masked.y, masked.samples], [refMasked.x, refMasked.y, refMasked.samples]);
         sameNumber(masked.error, refMasked.error, 'masked refine error');
         sameNumber(masked.runnerUp, refMasked.runnerUp, 'masked runner-up');
+        // Coarse-to-fine `guide` branch: `factor = 1` (must reduce exactly to the unguided scan above) and a
+        // real downscale factor, both with and without the mask.
+        for (const factor of [1, 4]) {
+          const g = core.downscaleGray(rb, factor);
+          const guided = core.refineNative(ra, rb, guess, region, undefined, 3, { g, factor }),
+            refGuided = motionReference.refineNative(ra, rb, guess, region, undefined, 3, { g, factor });
+          assertEquals([guided.x, guided.y, guided.samples], [refGuided.x, refGuided.y, refGuided.samples], `guided factor=${factor}`);
+          sameNumber(guided.error, refGuided.error, `guided factor=${factor} error`);
+          sameNumber(guided.runnerUp, refGuided.runnerUp, `guided factor=${factor} runner-up`);
+          if (factor === 1) {
+            assertEquals(
+              [guided.x, guided.y, guided.samples],
+              [plain.x, plain.y, plain.samples],
+              'factor=1 guide matches the unguided scan',
+            );
+          }
+          const guidedMasked = core.refineNative(ra, rb, guess, region, { labels: atlas.labels, code: 1 }, 3, { g, factor });
+          const refGuidedMasked = motionReference.refineNative(
+            ra,
+            rb,
+            guess,
+            region,
+            (x, y) => atlas.contains(1, x, y),
+            3,
+            { g, factor },
+          );
+          assertEquals(
+            [guidedMasked.x, guidedMasked.y, guidedMasked.samples],
+            [refGuidedMasked.x, refGuidedMasked.y, refGuidedMasked.samples],
+            `guided masked factor=${factor}`,
+          );
+          sameNumber(guidedMasked.error, refGuidedMasked.error, `guided masked factor=${factor} error`);
+          sameNumber(guidedMasked.runnerUp, refGuidedMasked.runnerUp, `guided masked factor=${factor} runner-up`);
+        }
       }
     } finally {
       atlas.dispose();

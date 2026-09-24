@@ -1,7 +1,7 @@
 /** Translation/scale hypotheses, verification, refinement, and motion-field estimation (mirrors
  *  `rust/core/src/abi/motion.rs`). */
 import type { Feature, Gray, Match, Motion, MotionField, Point, Rect } from '../../types.ts';
-import type { Core, LabelMask, PatchInput, RefinementResult } from './core.ts';
+import type { Core, LabelMask, NativePointGuide, PatchInput, RefinementResult } from './core.ts';
 import { type FrameInput, Resident, ResidentFrame, ResidentGray } from './memory.ts';
 import { writeFeatures } from './features.ts';
 import {
@@ -168,6 +168,7 @@ export function refineNative(
   region: Rect,
   mask: LabelMask | undefined,
   radius: number,
+  guide?: NativePointGuide,
 ): RefinementResult {
   if (a.width !== b.width || a.height !== b.height) {
     return { x: Math.round(guess.x), y: Math.round(guess.y), error: Infinity, samples: 0, runnerUp: Infinity };
@@ -177,11 +178,12 @@ export function refineNative(
   if (residentLabels && residentLabels.length !== a.width * a.height) {
     throw new Error('CORE_BAD_ARGUMENT: resident labels do not match the frame.');
   }
-  const [pa, pb, rect, scratchLabels, output] = core.scratch([
+  const [pa, pb, rect, scratchLabels, scratchGuide, output] = core.scratch([
     frameBytes(a),
     frameBytes(b),
     32,
     mask && !residentLabels ? (mask.labels as Uint8Array).byteLength : 0,
+    guide ? guide.g.data.byteLength : 0,
     REFINEMENT_BYTES,
   ]);
   const ra = core.placeFrame(a, pa), rb = core.placeFrame(b, pb);
@@ -192,8 +194,29 @@ export function refineNative(
     core.writeBytes(scratchLabels, mask.labels as Uint8Array);
     labels = scratchLabels;
   }
+  let guidePtr = 0;
+  if (guide) {
+    core.writeBytes(scratchGuide, guide.g.data);
+    guidePtr = scratchGuide;
+  }
   core.check(
-    core.exports.ls_refine_native(ra, rb, a.width, a.height, guess.x, guess.y, rect, labels, mask?.code ?? 0, radius, output),
+    core.exports.ls_refine_native(
+      ra,
+      rb,
+      a.width,
+      a.height,
+      guess.x,
+      guess.y,
+      rect,
+      labels,
+      mask?.code ?? 0,
+      radius,
+      guidePtr,
+      guide?.g.width ?? 0,
+      guide?.g.height ?? 0,
+      guide?.factor ?? 0,
+      output,
+    ),
     'refineNative',
   );
   return readRefinement(core, output);

@@ -9,9 +9,10 @@ use crate::abi::wire::{
 };
 use crate::abi::STATUS_BAD_ARGUMENT;
 use crate::motion::{
-    audit_translation, detect_scale, estimate_motion, extract_patches, probe_scale, refine_native,
-    refine_patches, refine_translation, resample_gray, translation_hypotheses, verify_translation,
-    Gray, MatchPoints, Motion, NativeRefinement, Patch, Point,
+    audit_translation, detect_scale, estimate_motion, extract_patches, probe_scale,
+    refine_native_at, refine_patches, refine_translation, resample_gray, select_native_points,
+    translation_hypotheses, verify_translation, Gray, MatchPoints, Motion, NativeRefinement, Patch,
+    Point,
 };
 
 /// # Safety
@@ -241,7 +242,9 @@ fn write_refinement(r: &NativeRefinement, dst: &mut [u8]) {
     dst[24..32].copy_from_slice(&r.runner_up.to_le_bytes());
 }
 
-/// Native refinement of RGBA `b` against `a`; `labels` is zero (no mask) or an atlas label plane.
+/// Native refinement of RGBA `b` against `a`; `labels` is zero (no mask) or an atlas label plane. `guide` is
+/// zero for the unguided full-resolution scan, or `b`'s own analysis-scale gray (`guide_width`×`guide_height`,
+/// at integer downscale `factor`) for the coarse-to-fine `select_native_points` branch — see its doc comment.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn ls_refine_native(
@@ -255,6 +258,10 @@ pub extern "C" fn ls_refine_native(
     labels: u32,
     code: u32,
     radius: u32,
+    guide: u32,
+    guide_width: u32,
+    guide_height: u32,
+    factor: u32,
     out: u32,
 ) -> i32 {
     let (w, h) = (width as usize, height as usize);
@@ -279,15 +286,25 @@ pub extern "C" fn ls_refine_native(
             None => return STATUS_BAD_ARGUMENT,
         }
     };
-    let r = refine_native(
+    let guide = if guide == 0 {
+        None
+    } else {
+        // SAFETY: analysis-scale gray plane, guide_width × guide_height bytes.
+        match unsafe { read_gray(guide, guide_width, guide_height) } {
+            Some(g) => Some((g, factor.max(1) as usize)),
+            None => return STATUS_BAD_ARGUMENT,
+        }
+    };
+    let points = select_native_points(b, w, h, read_rect(region), mask, guide);
+    let r = refine_native_at(
         a,
         b,
         w,
         h,
         Point { x: gx, y: gy },
-        read_rect(region),
         mask,
         radius as i32,
+        &points,
     );
     write_refinement(&r, dst);
     crate::abi::STATUS_OK

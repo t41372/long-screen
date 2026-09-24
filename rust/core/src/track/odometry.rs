@@ -6,7 +6,8 @@
 use crate::features::{match_features, Feature};
 use crate::geometry::{js_ceil, js_hypot, Rect};
 use crate::motion::{
-    audit_translation, refine_native, translation_hypotheses, Gray, MatchPoints, Point,
+    audit_translation, refine_native_at, select_native_points, translation_hypotheses, Gray,
+    MatchPoints, Point,
 };
 use crate::region::Region;
 
@@ -138,11 +139,28 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
             - prior(bm.x, bm.y);
         d.partial_cmp(&0.0).unwrap_or(std::cmp::Ordering::Equal)
     });
+    // Points depend only on `current`/`rect`/`mask`/`g`/`f`, not on any hypothesis, so they are selected once —
+    // lazily, only when at least one hypothesis survived the audit — and reused for all (up to 6) native
+    // refinements below instead of rescanning the region per candidate. `g` (this frame's own analysis gray)
+    // and `f` guide the selection coarse-to-fine instead of a full-resolution native scan — see
+    // `select_native_points`'s doc comment.
+    let points = if scored.is_empty() {
+        Vec::new()
+    } else {
+        select_native_points(
+            current,
+            image_width as usize,
+            image_height as usize,
+            rect,
+            mask,
+            Some((g, (f as usize).max(1))),
+        )
+    };
     let mut refined: Vec<_> = scored
         .into_iter()
         .take(6)
         .map(|(m, audit)| {
-            let n = refine_native(
+            let n = refine_native_at(
                 previous,
                 current,
                 image_width as usize,
@@ -151,9 +169,9 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
                     x: m.x * f,
                     y: m.y * f,
                 },
-                rect,
                 mask,
                 radius,
+                &points,
             );
             let key = n.error + 0.02 * js_hypot(n.x as f64 - velocity.0, n.y as f64 - velocity.1);
             (m, audit, n, key)

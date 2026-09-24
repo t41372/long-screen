@@ -8,7 +8,9 @@ import { auditTranslation, detectScale, probeScale, translationHypotheses } from
 // refineNative/refinePatches: NOT re-frozen here. Both this oracle and its own callers (track.ts's resident-plane
 // fast path) need to accept `ResidentFrame`/`ResidentGray`, which the plain-`Gray`/`RGBA` frozen `./motion.ts`
 // copies do not model; called live through `core()` (both are one-call Rust kernels, not TS algorithm code),
-// whose own parity is covered separately (tests/unit/parity/motion.test.ts).
+// whose own parity is covered separately (tests/unit/parity/motion.test.ts). odometry()'s own refineNative call
+// below passes the same `{ g, factor: f }` guide production `track::odometry` selects points with, so this
+// oracle exercises the identical coarse-to-fine branch, not just the unguided fallback.
 import type { NativeRefinement, Patch } from '../../../src/core/motion.ts';
 import { referenceRegionContains as regionContains } from './layers.ts';
 import { matchFeatures } from './kernels.ts';
@@ -144,7 +146,7 @@ export function odometry(inputs: OdometryInputs): OdometryEstimate {
       Math.min(a.audit.error, a.audit.agreeingError) + prior(a.m) - Math.min(b.audit.error, b.audit.agreeingError) - prior(b.m)
     );
   const refined = scored.slice(0, 6).map((v) => {
-    const n = core().refineNative(previous, current, { x: v.m.x * f, y: v.m.y * f }, rect, mask, radius);
+    const n = core().refineNative(previous, current, { x: v.m.x * f, y: v.m.y * f }, rect, mask, radius, { g, factor: f });
     return { ...v, n, key: n.error + .02 * Math.hypot(n.x - velocity.x, n.y - velocity.y) };
   }).filter((v) => Number.isFinite(v.n.error)).sort((a, b) => a.key - b.key);
   const best = refined[0];

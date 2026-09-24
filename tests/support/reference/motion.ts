@@ -361,6 +361,13 @@ export interface NativeRefinement extends Point {
   /** Error of the best offset more than two pixels away from the winner; small gaps mean repeated texture. */
   runnerUp: number;
 }
+/** Coarse-to-fine guide for `refineNative`: `b`'s own analysis-scale gray at integer downscale `factor` (see
+ *  `select_native_points`'s doc comment in rust/core/src/motion.rs). Omitted, refinement falls back to a
+ *  full-resolution native scan. */
+export interface NativePointGuide {
+  g: Gray;
+  factor: number;
+}
 /** Native-pixel refinement and verification. No frame resizing and no averaging of text at the seam. */
 export function refineNative(
   a: RGBA,
@@ -369,6 +376,7 @@ export function refineNative(
   region: Rect,
   mask?: (x: number, y: number) => boolean,
   radius = 3,
+  guide?: NativePointGuide,
 ): NativeRefinement {
   if (a.width !== b.width || a.height !== b.height) {
     return { x: Math.round(guess.x), y: Math.round(guess.y), error: Infinity, samples: 0, runnerUp: Infinity };
@@ -376,15 +384,87 @@ export function refineNative(
   const w = b.width, h = b.height, points: number[] = [], step = Math.max(3, Math.floor(Math.sqrt(region.width * region.height / 1600)));
   // Luma, not a single channel: a texture edge that only shows up as blue-on-green (equal red) must still count.
   const luma = (i: number) => (b.data[i] * 77 + b.data[i + 1] * 150 + b.data[i + 2] * 29) >> 8;
-  for (let y = Math.max(2, Math.ceil(region.y)); y < Math.min(h - 2, region.y + region.height); y += step) {
-    for (let x = Math.max(2, Math.ceil(region.x)); x < Math.min(w - 2, region.x + region.width); x += step) {
-      if (mask && !mask(x, y)) {
-        continue;
+  const yLimit = Math.min(h - 2, region.y + region.height), xLimit = Math.min(w - 2, region.x + region.width);
+  const xStart = Math.max(2, Math.ceil(region.x)), yStart = Math.max(2, Math.ceil(region.y));
+  // Per-cell strongest edge, not the lattice node: a node samples an edge only with probability proportional to
+  // local edge density, so a sparse page starves the sample and a screen-fixed line on a lattice row/column
+  // dominates it. Tie (equal gradient) goes to the first pixel in row-major order within the cell.
+  //
+  // With a `guide`, coarse-to-fine instead of a full-resolution scan: per cell, first the analysis pixel (among
+  // those whose native block intersects the cell, skipping the analysis image's own border and any pixel whose
+  // block centre fails `mask`) with the strongest analysis-scale gradient, then the native pixel with the
+  // strongest native gradient inside just that one analysis pixel's block ∩ cell ∩ window ∩ mask. `factor = 1`
+  // makes every block a single pixel and this reduce exactly to the unguided per-cell argmax.
+  if (guide) {
+    const { g, factor: f } = guide, gw = g.width, gh = g.height;
+    const gluma = (i: number) => g.data[i];
+    // Largest integer native coordinate still inside the strict window bound (an analysis pixel whose block
+    // starts beyond this can never contribute a point, so stage 1 must not consider it).
+    const windowXHi = Math.min(Math.ceil(xLimit) - 1, w - 1), windowYHi = Math.min(Math.ceil(yLimit) - 1, h - 1);
+    for (let cy = yStart; cy < yLimit; cy += step) {
+      for (let cx = xStart; cx < xLimit; cx += step) {
+        const cellXHi = Math.min(cx + step - 1, windowXHi), cellYHi = Math.min(cy + step - 1, windowYHi);
+        let chosen: [number, number] | undefined, bestAnalysisGrad = -Infinity;
+        for (let ay = Math.max(1, Math.floor(cy / f)); ay <= Math.min(Math.floor(cellYHi / f), gh - 2); ay++) {
+          for (let ax = Math.max(1, Math.floor(cx / f)); ax <= Math.min(Math.floor(cellXHi / f), gw - 2); ax++) {
+            const nx0 = ax * f, ny0 = ay * f, nx1 = Math.min(nx0 + f, w), ny1 = Math.min(ny0 + f, h);
+            const cxMid = nx0 + Math.floor((nx1 - nx0) / 2), cyMid = ny0 + Math.floor((ny1 - ny0) / 2);
+            if (mask && !mask(cxMid, cyMid)) {
+              continue;
+            }
+            const gi = ay * gw + ax;
+            const grad = Math.abs(gluma(gi - 1) - gluma(gi + 1)) + Math.abs(gluma(gi - gw) - gluma(gi + gw));
+            if (grad > bestAnalysisGrad) {
+              bestAnalysisGrad = grad;
+              chosen = [ax, ay];
+            }
+          }
+        }
+        if (!chosen) {
+          continue;
+        }
+        const [ax, ay] = chosen, nx0 = ax * f, ny0 = ay * f, nx1 = Math.min(nx0 + f, w), ny1 = Math.min(ny0 + f, h);
+        let bestGrad = -1, bestPoint = -1;
+        for (let y = Math.max(ny0, cy, yStart), yHi = Math.min(ny1, cy + step, h); y < yHi && y < yLimit; y++) {
+          for (let x = Math.max(nx0, cx, xStart), xHi = Math.min(nx1, cx + step, w); x < xHi && x < xLimit; x++) {
+            if (mask && !mask(x, y)) {
+              continue;
+            }
+            const i = (y * w + x) * 4;
+            const grad = Math.abs(luma(i - 4) - luma(i + 4)) + Math.abs(luma(i - w * 4) - luma(i + w * 4));
+            if (grad > bestGrad) {
+              bestGrad = grad;
+              bestPoint = y * w + x;
+            }
+          }
+        }
+        if (bestGrad > 12) {
+          points.push(bestPoint);
+        }
       }
-      const i = (y * w + x) * 4;
-      const grad = Math.abs(luma(i - 4) - luma(i + 4)) + Math.abs(luma(i - w * 4) - luma(i + w * 4));
-      if (grad > 12) {
-        points.push(y * w + x);
+    }
+  } else {
+    for (let cy = yStart; cy < yLimit; cy += step) {
+      for (let cx = xStart; cx < xLimit; cx += step) {
+        let bestGrad = -1, bestPoint = -1;
+        for (let dy = 0; dy < step && cy + dy < yLimit; dy++) {
+          const y = cy + dy;
+          for (let dx = 0; dx < step && cx + dx < xLimit; dx++) {
+            const x = cx + dx;
+            if (mask && !mask(x, y)) {
+              continue;
+            }
+            const i = (y * w + x) * 4;
+            const grad = Math.abs(luma(i - 4) - luma(i + 4)) + Math.abs(luma(i - w * 4) - luma(i + w * 4));
+            if (grad > bestGrad) {
+              bestGrad = grad;
+              bestPoint = y * w + x;
+            }
+          }
+        }
+        if (bestGrad > 12) {
+          points.push(bestPoint);
+        }
       }
     }
   }

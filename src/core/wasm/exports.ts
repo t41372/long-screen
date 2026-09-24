@@ -178,6 +178,10 @@ export interface CoreExports {
     labels: number,
     code: number,
     radius: number,
+    guide: number,
+    guideWidth: number,
+    guideHeight: number,
+    factor: number,
     out: number,
   ): number;
   ls_refine_patches(

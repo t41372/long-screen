@@ -78,6 +78,13 @@ export interface LabelMask {
   labels: BytesInput;
   code: number;
 }
+/** Coarse-to-fine guide for `refineNative`: `b`'s own analysis-scale gray at integer downscale `factor` (see
+ *  `select_native_points`'s doc comment in rust/core/src/motion.rs). Omitted, refinement falls back to a
+ *  full-resolution native scan. */
+export interface NativePointGuide {
+  g: Gray;
+  factor: number;
+}
 
 export interface CoreThreads {
   /** Pool helper workers to start next to the calling thread. */
@@ -388,7 +395,7 @@ export class Core {
     return motion.estimateMotion(this, a, b, matches, featureCount);
   }
   /** No frame resizing and no averaging of text at the seam. `mask` restricts both frames to one region's atlas
-   *  membership. */
+   *  membership. `guide` selects the coarse-to-fine point pick instead of a full-resolution native scan. */
   refineNative(
     a: FrameInput,
     b: FrameInput,
@@ -396,8 +403,9 @@ export class Core {
     region: Rect,
     mask?: LabelMask,
     radius = 3,
+    guide?: NativePointGuide,
   ): RefinementResult {
-    return motion.refineNative(this, a, b, guess, region, mask, radius);
+    return motion.refineNative(this, a, b, guess, region, mask, radius, guide);
   }
   /** Measures how well keyframe patches (region-local, in the keyframe's frame) align in the current native
    *  frame at `guess` (current → keyframe), refining on the native raster. */
