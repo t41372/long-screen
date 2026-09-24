@@ -2,17 +2,16 @@
  *  of listeners with no state of their own (help dialog, dialog close buttons, viewer zoom). No algorithms here —
  *  this file, and everything it imports from src/ui/**, is the "thin TypeScript" shell over the Rust core. */
 // First import: picks the page language before any other module can produce text.
-import { t, takeReopenProject, translatePage, wireLanguageSelect } from '../i18n/page.ts';
-import { $, NO_COMPRESSION_STREAM, phaseName, setReceiptOpen, storageInfo, toast } from './dom.ts';
+import { t, translatePage, wireLanguageSelect } from '../i18n/page.ts';
+import { $, NO_COMPRESSION_STREAM, phaseName, setReceiptOpen, toast } from './dom.ts';
 import { call, on, onError, onFrameRequest, onMessageError } from './rpc.ts';
 import { TiledViewer } from './viewer.ts';
 import { createState, syncControls } from './state.ts';
 import { captureFrame, decoderVideo, seekOn, video } from './video.ts';
 import { createCanvases } from './canvases.ts';
 import { createDiagnostics } from './diagnostics.ts';
-import { createSourceFile } from './source-file.ts';
+import { createSourceFile, forgetHashes } from './source-file.ts';
 import { createRun } from './run.ts';
-import { createHistory } from './history.ts';
 import { createRegions } from './regions.ts';
 import { createExport } from './export.ts';
 import { flightEnd, flightProgress, takeInterruptedFlight } from './flight.ts';
@@ -31,13 +30,12 @@ const viewer = new TiledViewer(
 );
 
 // Dependency order: canvases and diagnostics need only the viewer; source-file needs diagnostics' addDiagnostic;
-// run composes resetView/updateProject out of canvases+diagnostics; history and export both need run for
-// setBusy/resetView; regions is independent.
+// run composes resetView/updateProject out of canvases+diagnostics; export needs run for setBusy/resetView; regions is
+// independent.
 const canvases = createCanvases(state, viewer);
 const diagnostics = createDiagnostics(state, viewer, canvases);
 const sourceFile = createSourceFile(state, { addDiagnostic: diagnostics.addDiagnostic });
 const run = createRun(state, viewer, canvases, diagnostics);
-const history = createHistory(state, viewer, run, canvases, diagnostics);
 const regions = createRegions(state);
 const exporter = createExport(state, viewer, run, diagnostics.addDiagnostic);
 
@@ -45,7 +43,6 @@ canvases.wire();
 diagnostics.wire();
 sourceFile.wire();
 run.wire();
-history.wire();
 regions.wire();
 exporter.wire();
 
@@ -76,13 +73,14 @@ if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
     svg.pauseAnimations();
   }
 }
-// Clear: the printer goes back to how it was on first load. The project stays in 历史记录 (history).
+// Clear: the printer goes back to how it was on first load, and the print the browser kept is deleted.
 $('clear-btn').onclick = () => {
   if (state.busy) {
     return;
   }
   sourceFile.clear();
   run.resetView();
+  void call('sweep', {}).then(() => forgetHashes()).catch((error) => toast(String(error), true));
   $('status-title').textContent = t('page.canvas.statusReady');
   $('progress-message').textContent = t('page.canvas.progressMessageDefault');
   $('progress-count').textContent = '';
@@ -105,7 +103,7 @@ addEventListener('keydown', (e) => {
   }
 });
 $<HTMLInputElement>('quality-toggle').onchange = (e) => viewer.setQuality((e.target as HTMLInputElement).checked);
-wireLanguageSelect($<HTMLSelectElement>('language-select'), () => state.project?.id, (message) => toast(message, true));
+wireLanguageSelect($<HTMLSelectElement>('language-select'), (message) => toast(message, true));
 $('help-btn').onclick = () => $<HTMLDialogElement>('help-dialog').showModal();
 for (const el of document.querySelectorAll<HTMLElement>('[data-close]')) {
   el.onclick = () => {
@@ -128,15 +126,6 @@ addEventListener('click', (e) => {
   });
   link.href = `${link.href.split('?')[0]}?body=${encodeURIComponent(body)}`;
 });
-$('persist-btn').onclick = () => {
-  if (typeof navigator.storage?.persist !== 'function') {
-    toast(t('ui.main.persistUnsupported'));
-    return;
-  }
-  void navigator.storage.persist().then((granted) => toast(granted ? t('ui.main.persistGranted') : t('ui.main.persistDenied'))).catch((
-    error,
-  ) => toast(String(error), true));
-};
 
 // Worker event routing.
 onFrameRequest((time) =>
@@ -164,7 +153,6 @@ on('finished', (m) => {
     }
   });
   void diagnostics.loadDiagnostics();
-  void storageInfo();
   $('status-title').textContent = phaseName(m.data.status);
   // The last progress event can land short of the end; a finished print shows every gumball filled.
   if (m.data.status === 'complete') {
@@ -210,16 +198,25 @@ void call('capabilities').then((c) => {
     toast(t('ui.main.noOpfsNoPicker', { mb: Math.round(MEMORY_EXPORT_LIMIT / 1048576) }));
   }
 }).catch((error) => toast(t('ui.main.dbOpenFailed', { error: String(error) }), true));
-void storageInfo();
 
-// The project that was on screen when the language menu reloaded the page.
-const reopen = takeReopenProject();
-if (reopen) {
-  void history.openProject(reopen).catch((error) => toast(String(error), true));
-}
+// The browser keeps the last print for a day and nothing else, never a history: a reload, a closed tab or a run the
+// browser killed brings it back here, and anything older is deleted. The crash report goes after it, since putting
+// the print back resets the log.
+// If a print or Clear came first (tidying up a large old store can take a moment), that wins.
+const resetsAtLoad = state.resets;
+void call('restore', {}).then((kept) => {
+  if (state.resets !== resetsAtLoad) {
+    return;
+  }
+  forgetHashes(kept?.project.id);
+  return kept ? run.restore(kept) : undefined;
+}).catch((error) => toast(String(error), true)).finally(reportInterruptedRun);
 
-const interrupted = takeInterruptedFlight();
-if (interrupted) {
+function reportInterruptedRun(): void {
+  const interrupted = takeInterruptedFlight();
+  if (!interrupted) {
+    return;
+  }
   const where = interrupted.phase
     ? t('ui.main.interruptedPhaseWhere', { phase: phaseName(interrupted.phase), frames: interrupted.frames ?? 0 })
     : t('ui.main.interruptedStartPhase');

@@ -7,7 +7,8 @@ import '../support/core.ts';
 const results = new URL('../../test-results/', import.meta.url).pathname;
 await Deno.mkdir(results, { recursive: true });
 Deno.test({
-  name: 'browser UI: choose a real container, probe metadata via WebCodecs, reconstruct, restore from history and export a native PNG',
+  name:
+    'browser UI: choose a real container, probe metadata via WebCodecs, reconstruct, export a native PNG; a reload brings the print back',
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -41,13 +42,6 @@ Deno.test({
       const main = canvases.filter((c) => c.kind === 'moving').sort((a, b) => b.tiles - a.tiles)[0];
       assert(main.h > 300 && main.w >= 320, JSON.stringify(canvases));
       await page.screenshot({ path: `${results}desktop-result.png`, fullPage: true });
-      // History restore after reload.
-      await page.reload();
-      await page.waitForFunction('!!window.longScreen');
-      await page.click('#history-btn');
-      await page.locator('.history-item').filter({ hasText: 'negative-cts-v0.mov' }).getByRole('button', { name: '打开', exact: true })
-        .first().click();
-      await page.waitForFunction(`longScreen.getProject()?.id === ${JSON.stringify(project.id)}`);
       // PNG export through the OPFS path (no save-file picker). Export always encodes viewer.current — with
       // `framing: 'context'` the canvas selector defaults to the framed presentation canvas, not the plain
       // `moving` layer `main` above, so the expected dimensions have to come from whatever is actually selected.
@@ -62,6 +56,12 @@ Deno.test({
       const png = await decodePNG(await Deno.readFile(path));
       assertEquals(png.width, selected.w);
       assertEquals(png.height, selected.h);
+      // The browser keeps the last print, so a reload (or a closed tab) puts it back on screen.
+      await page.reload();
+      await page.waitForFunction('!!window.longScreen');
+      await page.waitForFunction(`longScreen.getProject()?.id === ${JSON.stringify(project.id)}`, null, { timeout: 30000 });
+      await page.waitForFunction('document.body.classList.contains("has-result")', null, { timeout: 30000 });
+      await page.waitForFunction(() => document.querySelector('#status-title')?.textContent === '拼好了', null, { timeout: 30000 });
       assertEquals(h.errors, []);
       assertEquals(h.external, []);
     } finally {
@@ -193,7 +193,7 @@ Deno.test({
   },
 });
 Deno.test({
-  name: 'browser UI: the clear key takes the recording out and empties the print, the log and the LCD',
+  name: 'browser UI: a new print replaces the kept one; the clear key empties the printer and deletes the kept print',
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -207,7 +207,26 @@ Deno.test({
       await page.click('#start-btn');
       await page.waitForFunction('["complete","error","partial"].includes(longScreen.getProject()?.status)', null, { timeout: 180000 });
       await page.waitForFunction('!document.querySelector("#export-png").disabled', null, { timeout: 30000 });
+      const gone = (id: string) =>
+        page.waitForFunction((id) => (window as any).longScreen.rpc('open', { projectId: id }).then(() => false, () => true), id, {
+          timeout: 30000,
+          polling: 250,
+        });
+      // The browser keeps one print: printing again deletes the one before.
+      const firstId = await page.evaluate('longScreen.getProject().id') as string;
+      await page.click('#start-btn');
+      await page.waitForFunction(
+        `longScreen.getProject()?.id !== ${
+          JSON.stringify(firstId)
+        } && ["complete","error","partial"].includes(longScreen.getProject()?.status)`,
+        null,
+        { timeout: 180000 },
+      );
+      await gone(firstId);
+      await page.waitForFunction('!document.querySelector("#export-png").disabled', null, { timeout: 30000 });
+      const projectId = await page.evaluate('longScreen.getProject().id') as string;
       await page.click('#clear-btn');
+      await gone(projectId);
       const after = await page.evaluate(() => ({
         project: (globalThis as unknown as { longScreen: { getProject(): unknown } }).longScreen.getProject() ?? null,
         result: document.body.classList.contains('has-result'),

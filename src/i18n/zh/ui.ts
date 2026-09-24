@@ -22,10 +22,6 @@ export const uiSections = {
     },
     dom: {
       noCompressionStream: '当前浏览器缺少 CompressionStream；每张原尺寸瓦片都靠它编码为 PNG，无法开始重建。',
-      storageUnavailable: '浏览器未提供存储配额；不影响本地重建',
-      storageUsage: '本地已用 {{used}} / 可用配额 {{quota}}',
-      storageQueryFailedStatus: '浏览器未提供存储配额',
-      storageQueryFailed: '无法查询存储配额：{{error}}',
     },
     canvases: {
       badgePresentation: '带外框 · 延伸出来的背景不是录到的',
@@ -59,21 +55,7 @@ export const uiSections = {
       copySuccess: '已复制 {{width}} × {{height}} 的大截图，可以直接粘贴。',
       copyFailed: '复制失败：{{error}}。图片可能超出系统剪贴板的限制，请改用“下载大截图”。',
     },
-    history: {
-      busyToast: '请先完成当前处理。',
-      interruptedStatus: '上次中断了 · 可以看已保存的部分',
-      restoredMessage: '已恢复本机保存的结果；项目里不含原始录屏。',
-      interruptedDiagnosticMessage: '上一次处理没有完成。仅已提交的数据可恢复；重新处理需要再次选择原视频，当前不支持断点续算。',
-      rowSub: '{{date}} · {{frames}} · {{status}}',
-      deleteConfirm: '删除本地项目「{{name}}」及其所有瓦片？',
-      openBtn: '打开',
-      deleteBtn: '删除',
-      noProjects: '还没有本地项目。',
-    },
     main: {
-      persistUnsupported: '当前浏览器不支持申请持久存储；本地重建仍可使用，请在支持导出的环境保存重要结果。',
-      persistGranted: '浏览器已授予持久存储；清除网站数据仍会删除项目。',
-      persistDenied: '浏览器未授予持久存储。请导出重要结果，避免自动回收。',
       offscreenMissing: '当前浏览器缺少 OffscreenCanvas；无法运行渲染 Worker。',
       webcodecsMissingToast: '当前浏览器没有 WebCodecs。需要明确选择可能漏帧的兼容 seek 模式。',
       privateStorageToast: '隐私浏览：项目只保存在这个窗口的内存里，关闭窗口后即消失；需要保留请在关闭前导出。',
@@ -107,6 +89,9 @@ export const uiSections = {
         '浏览器在当前 HTTP 地址未开放 WebCodecs。可选择“近似 · 原生 seek”继续本地测试；精确逐帧解码需要 localhost 或 HTTPS。视频不会上传。',
       webcodecsMissing: '当前浏览器没有 WebCodecs。请更新 Safari / iOS，或明确选择可能漏帧的兼容 seek 模式。',
       startFailedStatus: '没能开始',
+      restoredMessage: '这是上次的结果。超过 24 小时的，下次打开页面时会删掉。',
+      interruptedStatus: '上次没跑完',
+      interruptedMessage: '这是中断前已保存的部分。要完整结果，请重新放入录屏再运行一次。',
       waitingCanvasOption: '还没有结果',
     },
     source: {

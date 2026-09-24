@@ -293,12 +293,11 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `state.ts` — 多个功能模块共读写的字段集合；其余状态私有于各自模块。UI。
 - `dom.ts` — DOM 查找、toast、纯格式化小工具。UI。
 - `rpc.ts` — 有类型 worker RPC 客户端：请求/响应、`WorkerEvent` 订阅、compatibility 模式的帧请求桥接。UI，兼 worker RPC。
-- `run.ts` — 重建运行生命周期：启动（设置 + 能力预检）、忙态、`resetView`/`updateProject`、进度条。UI。
+- `run.ts` — 重建运行生命周期：启动（设置 + 能力预检）、忙态、`resetView`/`updateProject`、页面加载时恢复浏览器保留的上一张结果（`restore`）、进度条。UI。
 - `canvases.ts` — 画布选择器：项目画布列表获取、排序/标注、切换查看器画布；`mergeCanvas` 处理实时进度事件的增量更新。UI。
 - `viewer.ts` — `TiledViewer`：瓦片查看器的绘制、缩放、缓存。UI。
 - `diagnostics.ts` — 诊断面板：警告徽标计数、可筛选分页列表、"查看原始时刻/定位受影响区域"。UI。
-- `export.ts` — "下载长图"/"导出完整项目"/"复制长图"：优先原生保存文件选择器，回退锚点下载/OPFS 临时副本。UI。
-- `history.ts` — 本地项目历史对话框：分页列表、"打开"、"删除"（经 `src/storage/projects.ts` 的三键族删除）。UI。
+- `export.ts` — "下载大截图"/"导出完整项目"/"复制大截图"：优先原生保存文件选择器，回退锚点下载/OPFS 临时副本。UI。
 - `regions.ts` — 手动区域编辑对话框：在首帧上绘制 fixed/ignore/moving 矩形，写入 `state.manualRegions`。UI。
 - `source-file.ts` — 选择源录屏：文件输入/拖放、按文件头拦下不是 MP4/MOV/WebM/MKV 的文件并给出指引（`media/sniff.ts`）、探测 RPC（含原生播放器回退）、内容指纹（供 diagnostics.ts 校验重开文件与项目来源一致）。UI，兼浏览器 API（File）。
 - `video.ts` — 原生 `<video>` seek + 帧捕获原语，供 source-file.ts/diagnostics.ts/compatibility 帧请求桥接共用。UI，兼浏览器 API。
@@ -336,7 +335,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `storage/db.ts` — `KV`/`Row`/`Database`/`MemoryKV`/`Namespace` 等存储抽象与遍历/前缀删除工具。TS 外壳：I/O。
 - `storage/tiles.ts` — `TileStore`：瓦片读写、coverage/quality 位图、金字塔构建入口（内核已转发到 Rust）。TS 外壳：I/O + 绑定转发。
 - `storage/diagnostics.ts` — 诊断事件的存储形态、按代码取最高严重级别。TS 外壳：I/O。
-- `storage/projects.ts` — 项目键布局（`project/`、`project-index/`、`run/<id>/`）的唯一入口，防止三键族删除漂移。TS 外壳：I/O。
+- `storage/projects.ts` — 项目键布局（`project/`、`run/<id>/`，以及旧版写过的 `project-index/`）的唯一入口：删除一个项目，以及 `sweepProjects` 只保留屏幕上那张结果、删掉其余一切（应用不保留历史）。TS 外壳：I/O。
 - `synthetic/world.ts` — `World`：无损程序化页面，用于可精确核验的合成场景。TS 外壳：编排（测试基础设施）。
 - `synthetic/scenarios.ts` — 24 个合成场景目录的构建（`buildScenario`）与期望值。TS 外壳：编排（测试基础设施）。
 - `synthetic/source.ts` — `ScenarioSource`：合成场景的 `FrameSource` 封装，Deno 与浏览器行为一致。TS 外壳：编排（测试基础设施）。

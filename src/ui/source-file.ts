@@ -31,6 +31,18 @@ export function readStoredHash(projectId: string): string | null {
     return null;
   }
 }
+/** Drops the stored fingerprints of every project but `keep`, alongside the worker's sweep of the projects. */
+export function forgetHashes(keep?: string): void {
+  try {
+    for (const key of Object.keys(localStorage)) {
+      if (key.startsWith(MEDIA_HASH_PREFIX) && key !== MEDIA_HASH_PREFIX + keep) {
+        localStorage.removeItem(key);
+      }
+    }
+  } catch {
+    // Storage unavailable: nothing was stored either.
+  }
+}
 export function storeHash(projectId: string, hash: string): void {
   try {
     localStorage.setItem(MEDIA_HASH_PREFIX + projectId, hash);

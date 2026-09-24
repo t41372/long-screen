@@ -1,7 +1,7 @@
 /** "下载大截图" (one native-size PNG) and "导出完整项目" (the archival ZIP), plus "复制大截图" to the clipboard. Both
  *  downloads prefer a native save-file picker and fall back to an anchor download / OPFS temporary copy. */
 import type { AppState } from './state.ts';
-import { $, humanBytes, storageInfo, toast } from './dom.ts';
+import { $, humanBytes, toast } from './dom.ts';
 import { call } from './rpc.ts';
 import { t } from '../i18n/page.ts';
 import type { ExportResult } from '../export/project.ts';
@@ -21,7 +21,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
   let downloadURL: string | undefined;
 
   function cleanupTemporary(key?: string): void {
-    if (key) void call('cleanup-export', { key }).then(() => storageInfo()).catch(() => {});
+    if (key) void call('cleanup-export', { key }).catch(() => {});
   }
   async function doExport(kind: ExportKind): Promise<void> {
     if (!state.project || state.busy) {
@@ -101,7 +101,6 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
         a.click();
       }
       $('progress-message').textContent = result.message;
-      await storageInfo();
     } catch (error) {
       toast(String(error), true);
       addDiagnostic({

@@ -1,5 +1,5 @@
-/** Fields more than one feature module reads or writes. Everything else (draft regions, diagnostic rows, history
- *  pagination cursors, …) stays private inside the module that owns it. */
+/** Fields more than one feature module reads or writes. Everything else (draft regions, diagnostic rows, …) stays
+ *  private inside the module that owns it. */
 import type { CanvasMeta, MediaInfo, Project, Region } from '../types.ts';
 import type { Capabilities } from '../protocol.ts';
 import type { TiledViewer } from './viewer.ts';
@@ -17,10 +17,12 @@ export interface AppState {
   nativeReady: boolean;
   manualRegions: Region[];
   capabilities?: Capabilities;
+  /** Counts run.resetView() calls: a reply that arrives after the print was replaced or cleared can tell. */
+  resets: number;
 }
 
 export function createState(): AppState {
-  return { canvases: [], busy: false, nativeReady: false, manualRegions: [] };
+  return { canvases: [], busy: false, nativeReady: false, manualRegions: [], resets: 0 };
 }
 
 /** The one place every control whose disabled state depends only on `state.busy` plus one other current-value

@@ -24,10 +24,6 @@ export const uiSections: Catalog<typeof zh> = {
     dom: {
       noCompressionStream:
         'This browser is missing CompressionStream, which encodes every native-size tile to PNG; reconstruction cannot start.',
-      storageUnavailable: 'This browser does not report a storage quota; local reconstruction is unaffected',
-      storageUsage: '{{used}} used locally / {{quota}} quota available',
-      storageQueryFailedStatus: 'This browser does not report a storage quota',
-      storageQueryFailed: 'Could not query storage quota: {{error}}',
     },
     canvases: {
       badgePresentation: 'Framed presentation · extended background is not observation evidence',
@@ -63,23 +59,7 @@ export const uiSections: Catalog<typeof zh> = {
       copySuccess: 'Copied a {{width}} × {{height}} long image; paste it directly.',
       copyFailed: 'Copy failed: {{error}}. The image may exceed the system clipboard limit; use “Take the screenshot” instead.',
     },
-    history: {
-      busyToast: 'Finish the current run first.',
-      interruptedStatus: 'Processing was interrupted · viewing committed results',
-      restoredMessage: 'Local results restored; the original video was not copied into the project.',
-      interruptedDiagnosticMessage:
-        'The previous run did not finish. Only committed data can be recovered; reprocessing needs the original video again — resuming from an interruption is not supported yet.',
-      rowSub: '{{date}} · {{frames}} · {{status}}',
-      deleteConfirm: 'Delete the local project “{{name}}” and all its tiles?',
-      openBtn: 'Open',
-      deleteBtn: 'Delete',
-      noProjects: 'No local projects yet.',
-    },
     main: {
-      persistUnsupported:
-        'This browser does not support requesting persistent storage; local reconstruction still works — save important results somewhere that supports export.',
-      persistGranted: 'The browser granted persistent storage; clearing site data will still delete projects.',
-      persistDenied: 'The browser did not grant persistent storage. Export important results to avoid automatic eviction.',
       offscreenMissing: 'This browser is missing OffscreenCanvas; the render worker cannot run.',
       webcodecsMissingToast: 'This browser has no WebCodecs. Choose “Approximate · native seek” explicitly; it may miss frames.',
       privateStorageToast:
@@ -115,6 +95,9 @@ export const uiSections: Catalog<typeof zh> = {
       webcodecsMissing:
         'This browser has no WebCodecs. Update Safari / iOS, or explicitly choose “Approximate · native seek”, which may miss frames.',
       startFailedStatus: 'Could not start reconstruction',
+      restoredMessage: 'This is your last result. Once it is over 24 hours old, it is deleted the next time the page opens.',
+      interruptedStatus: 'The last run did not finish',
+      interruptedMessage: 'This is what was saved before it stopped. For the full result, put the recording back in and run it again.',
       waitingCanvasOption: 'Waiting for canvas to reconstruct',
     },
     source: {

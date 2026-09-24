@@ -1,6 +1,6 @@
 import { type CanvasMeta, DEFAULT_SETTINGS, type Diagnostic, type MediaInfo, type Project, type Settings } from './types.ts';
 import { Database } from './storage/db.ts';
-import { deleteProject, listProjects, projectKey, runStore } from './storage/projects.ts';
+import { keepLatest, projectKey, runStore, sweepProjects } from './storage/projects.ts';
 import { Engine } from './pipeline/engine.ts';
 import { CompatibilitySource, openMedia, PreciseSource } from './media/source.ts';
 import { DemoSource } from './media/demo.ts';
@@ -9,7 +9,7 @@ import { cleanupExport } from './export/target.ts';
 import { core, coreLoaded, loadPlannedCore, planCore } from './core/wasm.ts';
 import { tileKey } from './storage/tiles.ts';
 import type { StoredTile } from './storage/tiles.ts';
-import type { Capabilities, CommandName, Commands, FrameResponse, LocaleMessage } from './protocol.ts';
+import { type Capabilities, type CommandName, type Commands, type FrameResponse, type LocaleMessage, PRINT_LOCK } from './protocol.ts';
 import { isLocale, setLocale } from './i18n/index.ts';
 const scope = globalThis as unknown as {
   postMessage: (message: unknown, transfer?: Transferable[]) => void;
@@ -46,6 +46,26 @@ function requestFrame(time: number): Promise<ImageBitmap> {
     post({ event: 'frame-request', id, time });
   });
 }
+/** How long the browser keeps the last print: long enough to survive a reload, a closed tab or a run the browser
+ *  killed, not long enough to become a history. */
+const KEEP_MS = 24 * 60 * 60 * 1000;
+/** Sweeps run one at a time, and a print starts only once the sweep before it is done: a sweep still walking `run/`
+ *  would otherwise delete the rows the new print is writing. */
+let sweeping: Promise<unknown> = Promise.resolve();
+/** The prints some tab holds (PRINT_LOCK); sweeps keep them. Without Web Locks (an insecure LAN HTTP page) none. */
+async function heldPrints(): Promise<Set<string>> {
+  const locks = await navigator.locks?.query();
+  return new Set(
+    (locks?.held ?? []).map((lock) => lock.name ?? '').filter((name) => name.startsWith(PRINT_LOCK)).map((name) =>
+      name.slice(PRINT_LOCK.length)
+    ),
+  );
+}
+function serially<T>(task: () => Promise<T>): Promise<T> {
+  const next = sweeping.catch(() => {}).then(task);
+  sweeping = next;
+  return next;
+}
 function busyError(): never {
   throw new Error('A reconstruction, export or probe is already running.');
 }
@@ -71,9 +91,6 @@ const handlers: Handlers = {
       webgpu: !!(navigator as unknown as { gpu?: unknown }).gpu,
       privateStorage: !database.storesBlobs,
     };
-  },
-  projects(payload, database) {
-    return listProjects(database, { after: payload.after, limit: 30 });
   },
   async probe(payload) {
     // Frame-accurate metadata and the first decoded frame, without relying on the <video> element being able to render.
@@ -116,6 +133,9 @@ const handlers: Handlers = {
         !['auto', 'cpu', 'webgpu'].includes(settings.compute || DEFAULT_SETTINGS.compute!) ||
         !['context', 'region'].includes(settings.framing || DEFAULT_SETTINGS.framing!)
       ) throw new Error('Invalid compute/framing setting.');
+      // A new print replaces the last one: nothing earlier is kept, except prints other tabs hold. Done before any
+      // source is opened, so a failed sweep leaves nothing to release.
+      await serially(async () => sweepProjects(database, await heldPrints()));
       let source;
       if (payload.demo) {
         source = new DemoSource(payload.demo);
@@ -178,11 +198,7 @@ const handlers: Handlers = {
     if (!project) {
       throw new Error('Project not found in this browser.');
     }
-    return {
-      project,
-      canvases: await runStore(database, id).scan<CanvasMeta>('canvas/', { limit: 100 }),
-      interrupted: active?.project.id !== id && !['complete', 'partial', 'error'].includes(project.status),
-    };
+    return { project, canvases: await runStore(database, id).scan<CanvasMeta>('canvas/', { limit: 100 }) };
   },
   canvases(payload, database) {
     return runStore(database, requireProjectId(payload.projectId)).scan<CanvasMeta>('canvas/', { after: payload.after, limit: 100 });
@@ -210,12 +226,14 @@ const handlers: Handlers = {
           : null
       );
   },
-  async delete(payload, database) {
-    const id = requireProjectId(payload.projectId);
-    if (active?.project.id === id || exporting) {
-      throw new Error('Finish processing/export before deleting this project.');
-    }
-    await deleteProject(database, id);
+  async restore(_payload, database) {
+    if (active || exporting || starting) busyError();
+    const project = await serially(async () => keepLatest(database, { maxAgeMs: KEEP_MS, held: await heldPrints() }));
+    return project ? { project, interrupted: !['complete', 'partial', 'error'].includes(project.status) } : null;
+  },
+  async sweep(_payload, database) {
+    if (active || exporting || starting) busyError();
+    await serially(async () => sweepProjects(database, await heldPrints()));
     return true;
   },
   async export(payload, database) {
@@ -283,7 +301,7 @@ scope.onmessage = (event) => {
     }
     return;
   }
-  void dispatch(m.type, (m as { payload?: Record<string, unknown> }).payload ?? {}).then((result) => {
+  void dispatch(m.type, (m as { payload?: Commands[CommandName]['req'] }).payload ?? {}).then((result) => {
     const transfer: Transferable[] = [];
     if (result && typeof result === 'object' && 'bitmap' in result && (result as { bitmap: unknown }).bitmap instanceof ImageBitmap) {
       transfer.push((result as { bitmap: ImageBitmap }).bitmap);

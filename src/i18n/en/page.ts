@@ -15,7 +15,6 @@ export const pageSections: Catalog<typeof zh> = {
       brandLabel: 'Long Screen home',
       slogan: 'ANY PATH · ONE BIG SCREENSHOT',
       privacy: 'Pixels never leave this device',
-      historyBtn: 'Past prints',
       helpLabel: 'Help and capabilities',
       star: 'Star on GitHub',
       starLabel: 'Star on GitHub (opens in a new tab)',
@@ -90,8 +89,6 @@ export const pageSections: Catalog<typeof zh> = {
         "Analysis thumbnails do not change the output pixels. The budget does not include the browser / decoder / GPU's extra memory. “Approximate · native seek” may miss brief content.",
       pauseBtn: 'Pause',
       stopBtn: 'Stop & save',
-      storageChecking: 'Checking local storage…',
-      persistBtn: 'Keep data',
       footerNote: 'No upload · no cloud inference · no external models',
     },
     canvas: {
@@ -143,11 +140,6 @@ export const pageSections: Catalog<typeof zh> = {
         'Splits an oversized canvas into multiple native-size PNGs at a compatible size, with a 32px overlap between pages and a world-coordinate manifest; nothing is shrunk.',
       starNudge: 'Found it useful? Star us on GitHub',
     },
-    history: {
-      title: 'Past prints',
-      hint: 'Saved in this browser, not a cloud backup. The original recording is not copied into the project.',
-      moreProjects: 'Load more',
-    },
     help: {
       title: 'A canvas with a source',
       pixelsHeading: 'Which pixels are kept?',
@@ -161,7 +153,7 @@ export const pageSections: Catalog<typeof zh> = {
         'Motion layering, repeated-texture disambiguation and dynamic-region attribution are all visual inference. Scale changes, non-overlapping or incompatible layouts may become independent fragments; these fragments are never claimed to be aligned with each other. Confidence is not a calibrated probability of correctness.',
       storageHeading: 'Long recordings and storage',
       storageBody:
-        'A three-pass decode scan trades disk space and compute time for limited memory. Please keep the page open. Results already committed before an interruption stay on this device, but the current implementation cannot resume from an interrupted frame.',
+        'A three-pass decode scan trades disk space and compute time for limited memory. The browser keeps only your latest result, for up to 24 hours: after a reload or an accidentally closed page it comes back on its own, and a run cut off halfway comes back with what it had saved (it cannot resume from there). Running again or pressing Clear deletes it, and once it is over 24 hours old it is deleted the next time the page opens. Download what you want to keep.',
       browserHeading: 'Browser and formats',
       browserBody:
         'Requires IndexedDB, OffscreenCanvas and CompressionStream. Local development can use HTTP localhost directly, no certificate needed; a phone opening a LAN HTTP address can test with “Approximate · native seek”, but it may miss frames. Browsers generally only open WebCodecs frame-accurate decoding and disk export APIs on localhost or HTTPS — this has nothing to do with uploading. Frame-accurate decoding also needs device support for the specific codec; an MP4/MOV/WebM container does not mean the device can decode everything inside it.',

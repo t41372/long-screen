@@ -34,22 +34,3 @@ export const NO_COMPRESSION_STREAM = t('ui.dom.noCompressionStream');
 export function phaseName(phase: string): string {
   return translateKey(`ui.phase.${phase}`, phase);
 }
-
-/** Local storage quota, shown in the sidebar; re-queried after anything that changes usage (a run finishing, an
- *  export, a delete). Not re-queried when persist() is granted. */
-export async function storageInfo(): Promise<void> {
-  if (typeof navigator.storage?.estimate !== 'function') {
-    $('storage-status').textContent = t('ui.dom.storageUnavailable');
-    return;
-  }
-  try {
-    const estimate = await navigator.storage.estimate();
-    $('storage-status').textContent = t('ui.dom.storageUsage', {
-      used: humanBytes(estimate.usage || 0),
-      quota: humanBytes(estimate.quota || 0),
-    });
-  } catch (error) {
-    $('storage-status').textContent = t('ui.dom.storageQueryFailedStatus');
-    toast(t('ui.dom.storageQueryFailed', { error: String(error) }), true);
-  }
-}

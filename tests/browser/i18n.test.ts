@@ -25,7 +25,7 @@ Deno.test({
       await page.waitForFunction('!!window.longScreen');
       assertEquals(await page.evaluate(() => document.documentElement.lang), 'en');
       assertEquals(await page.title(), 'Long Screen — One big screenshot from a screen recording');
-      // textContent, not innerText: the closed dialogs (help, history, regions, source) and every <option> count too.
+      // textContent, not innerText: the closed dialogs (help, regions, source) and every <option> count too.
       const bodyText = await page.evaluate(() => document.body.textContent || '');
       // The language menu always lists both languages by their own name, including "中文" for the zh option —
       // that is not untranslated UI copy, so it is excluded before checking the rest of the page for Han script.

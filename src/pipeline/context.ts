@@ -8,7 +8,7 @@ import type { KV } from '../storage/db.ts';
 import { Namespace } from '../storage/db.ts';
 import { Diagnostics } from '../storage/diagnostics.ts';
 import { TileStore } from '../storage/tiles.ts';
-import { projectIndexKey, projectKey } from '../storage/projects.ts';
+import { projectKey } from '../storage/projects.ts';
 import type { LayerLearner, RegionAtlas } from '../core/layers.ts';
 import { analysisFactor } from '../core/raster.ts';
 import type { FrameRing, Resident, ResidentFrame, ResidentGray, VotingRing } from '../core/wasm.ts';
@@ -75,7 +75,6 @@ export class RunContext {
   partial = false;
   lastProgress = 0;
   lastPersist = 0;
-  historyIndexed = false;
   /** Consistency-voting bookkeeping, reported in `performance` and asserted on by tests/unit/consistency.test.ts:
    *  how many per-frame, per-region voting layers solve() finalised, and how many of those were finalised on
    *  fewer than CONSISTENCY_VERDICT_MIN partner comparisons (a "thin" layer can still flag cells, but never
@@ -203,12 +202,6 @@ export class RunContext {
     this.project.severities = { ...this.diagnostics.severities };
     try {
       await this.db.put(projectKey(this.project.id), this.project);
-      // History index, written once: 'project-index/<created ISO>/<id>' → id, so a reverse scan of the prefix
-      // lists runs newest-first without scanning every 'project/<id>' row.
-      if (!this.historyIndexed) {
-        await this.db.put(projectIndexKey(this.project.created, this.project.id), this.project.id);
-        this.historyIndexed = true;
-      }
     } catch (error) {
       throw new StorageError(error);
     }

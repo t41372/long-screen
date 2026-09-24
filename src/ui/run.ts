@@ -10,7 +10,7 @@ import { flightStart } from './flight.ts';
 import { storeHash } from './source-file.ts';
 import { t } from '../i18n/page.ts';
 import { DEFAULT_SETTINGS, type Project, type Settings } from '../types.ts';
-import type { WorkerProgress } from '../protocol.ts';
+import { PRINT_LOCK, type RestoreResult, type WorkerProgress } from '../protocol.ts';
 import type { Canvases } from './canvases.ts';
 import type { Diagnostics } from './diagnostics.ts';
 import type { TiledViewer } from './viewer.ts';
@@ -31,6 +31,7 @@ export interface Run {
   setBusy(value: boolean): void;
   resetView(): void;
   updateProject(value: Project): void;
+  restore(kept: RestoreResult): Promise<void>;
   start(demo?: string): Promise<void>;
   progress(p: WorkerProgress): void;
   wire(): void;
@@ -40,6 +41,16 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
   let paused = false;
   // The LCD's run timer: wall-clock time of the current run, not counting time spent paused.
   let startedAt = 0, pausedAt = 0, pausedFor = 0, ticker: ReturnType<typeof setInterval> | undefined;
+  // The print this tab is running or showing, held under a Web Lock so another tab's sweep leaves it alone.
+  let release = () => {};
+  function hold(id?: string): void {
+    release();
+    release = () => {};
+    if (id && navigator.locks) {
+      const held = new Promise<void>((resolve) => release = resolve);
+      void navigator.locks.request(PRINT_LOCK + id, () => held);
+    }
+  }
   const showElapsed = () => {
     $('elapsed').textContent = timeText(((paused ? pausedAt : performance.now()) - startedAt - pausedFor) / 1000);
   };
@@ -63,6 +74,8 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     syncControls(state, viewer);
   }
   function resetView(): void {
+    state.resets++;
+    hold();
     state.project = undefined;
     state.canvases = [];
     canvases.reset();
@@ -84,6 +97,24 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     $('canvases-metric').textContent = String(value.canvasCount);
     diagnostics.applyDiagnosticTotals(value);
     canvases.refreshIfStale();
+  }
+  /** Puts the print the browser kept back on screen after the page loads: a reload, a closed tab, a language switch
+   *  or a run the browser killed mid-way (then only what it saved) does not lose it. */
+  async function restore({ project, interrupted }: RestoreResult): Promise<void> {
+    resetView();
+    state.project = project;
+    hold(project.id);
+    await canvases.refreshCanvases(true);
+    updateProject(project);
+    await diagnostics.loadDiagnostics();
+    viewer.fit();
+    setBusy(false);
+    $('status-title').textContent = interrupted ? t('ui.run.interruptedStatus') : phaseName(project.status);
+    if (project.status === 'complete') {
+      $('progress-bar').style.width = '100%';
+    }
+    $('progress-message').textContent = project.error || t(interrupted ? 'ui.run.interruptedMessage' : 'ui.run.restoredMessage');
+    $('progress-count').textContent = t('ui.count.frames', { count: project.renderedFrames, frames: String(project.renderedFrames) });
   }
   async function start(demo?: string): Promise<void> {
     if (state.busy) {
@@ -135,6 +166,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
       // read state.project synchronously, and the file-hash await below must not leave them seeing the
       // pre-start undefined (resetView()) in the meantime.
       state.project = project;
+      hold(project.id);
       flightStart(demo ? undefined : state.selectedFile ?? undefined);
       if (!demo && state.selectedFile) {
         const hash = await state.selectedFileHash;
@@ -208,5 +240,5 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
       }
     });
   }
-  return { setBusy, resetView, updateProject, start, progress, wire };
+  return { setBusy, resetView, updateProject, restore, start, progress, wire };
 }

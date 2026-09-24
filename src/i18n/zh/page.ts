@@ -14,7 +14,6 @@ export const pageSections = {
       brandLabel: 'Long Screen 首页',
       slogan: '任意路径 · 一整张大截图',
       privacy: '本地处理，不上传',
-      historyBtn: '历史记录',
       helpLabel: '帮助与能力说明',
       star: '在 GitHub 点星',
       starLabel: '在 GitHub 点星（新标签页打开）',
@@ -87,8 +86,6 @@ export const pageSections = {
       decoderHint: '分析缩图不改变输出像素。预算不包括浏览器 / 解码器 / GPU 的额外内存。兼容 seek 模式可能漏掉短暂内容。',
       pauseBtn: '暂停',
       stopBtn: '停止并保存',
-      storageChecking: '正在检查本地存储…',
-      persistBtn: '保留数据',
       footerNote: '不上传 · 无云端推理 · 无外部模型',
     },
     canvas: {
@@ -138,11 +135,6 @@ export const pageSections = {
       sheetsNote: '超长画布按兼容尺寸拆成多张原尺寸 PNG，页间重叠 32px，附世界坐标清单；不缩小。',
       starNudge: '好用的话，去 GitHub 给我们点个星',
     },
-    history: {
-      title: '历史记录',
-      hint: '只保存在这个浏览器里，不是云端备份；项目里不含原始录屏。',
-      moreProjects: '加载更多',
-    },
     help: {
       title: '使用说明',
       pixelsHeading: '哪些像素被保留？',
@@ -155,7 +147,7 @@ export const pageSections = {
         '运动分层、重复纹理消歧和动态区域归属都是视觉推断。比例变化、无重叠或不能共存的布局可能成为独立片段；这些片段之间不被宣称已经对齐。置信度不是经过校准的正确概率。',
       storageHeading: '长录屏与存储',
       storageBody:
-        '采用三次解码扫描，以磁盘空间和计算时间换取有限内存。请保持页面打开。中断后已提交的结果仍在本机，但当前实现不支持从中断帧续算。',
+        '采用三次解码扫描，以磁盘空间和计算时间换取有限内存。浏览器只替你保留最近一次的结果，最多 24 小时：刷新或不小心关掉页面后再打开，它会自动回来；跑到一半被中断的，会回来已保存的部分（不能从中断处续跑）。再运行一次或按「清空」会删掉它；超过 24 小时的，会在下次打开页面时删掉。想长期保留请下载。',
       browserHeading: '浏览器与格式',
       browserBody:
         '需要 IndexedDB、OffscreenCanvas、CompressionStream。本机开发可直接用 HTTP localhost，无需证书；手机访问局域网 HTTP 时可选择近似 seek 测试，但可能漏帧。浏览器通常只在 localhost 或 HTTPS 开放 WebCodecs 精确解码与磁盘导出接口，这与上传无关。精确解码还需要设备支持相应 codec；MP4/MOV/WebM 容器不等于设备能解码其所有编码。',

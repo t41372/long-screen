@@ -66,7 +66,7 @@ Deno.test({
       await zip.saveAs(zipPath);
       const bytes = await Deno.readFile(zipPath), view = new DataView(bytes.buffer);
       assertEquals(view.getUint32(bytes.length - 22, true), 0x06054b50, 'ZIP end-of-central-directory');
-      // Within the session the project survives a reload and its canvases can be reopened.
+      // The browser keeps the last print: it survives a reload and its canvases can be opened again.
       await page.reload();
       await page.waitForFunction('!!window.longScreen');
       const listed = await page.evaluate(async (id: string) => {

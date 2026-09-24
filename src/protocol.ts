@@ -34,8 +34,15 @@ export interface ProbeResult {
 export interface OpenResult {
   project: Project;
   canvases: Row<CanvasMeta>[];
+}
+/** The kept print, and whether its run was cut off (the page was reloaded, closed or killed before it finished). */
+export interface RestoreResult {
+  project: Project;
   interrupted: boolean;
 }
+/** Tabs share one store. A page holds this Web Lock for the print it is running or showing, and the worker's sweeps
+ *  leave any held print alone, so a print or Clear in one tab cannot delete another tab's. */
+export const PRINT_LOCK = 'long-screen-print:';
 
 /** Same fields worker.ts has always re-derived from `StoredTile` by hand; reused here instead of duplicated. */
 export type TileResult = Pick<StoredTile, 'blob' | 'quality' | 'conflicts' | 'coverage' | 'owner' | 'provisional' | 'level' | 'x' | 'y'>;
@@ -52,7 +59,6 @@ export interface StopResult {
  *  handler returns the shape its callers expect. */
 export interface Commands {
   capabilities: { req: Record<string, never>; res: Capabilities };
-  projects: { req: { after?: string }; res: Row<Project>[] };
   probe: { req: { file: File }; res: ProbeResult };
   start: { req: { file?: File; demo?: string; settings: Settings; info?: MediaInfo }; res: Project };
   pause: { req: { paused: boolean }; res: PauseResult };
@@ -61,7 +67,10 @@ export interface Commands {
   canvases: { req: { projectId: string; after?: string }; res: Row<CanvasMeta>[] };
   diagnostics: { req: { projectId: string; after?: string }; res: Row<Diagnostic>[] };
   tile: { req: { projectId?: string; canvasId: string; level: number; x: number; y: number }; res: TileResult | null };
-  delete: { req: { projectId: string }; res: true };
+  /** Keeps the latest print if it is recent enough and deletes everything else; returns what was kept. */
+  restore: { req: Record<string, never>; res: RestoreResult | null };
+  /** Deletes every stored print. */
+  sweep: { req: Record<string, never>; res: true };
   export: {
     req: { projectId: string; canvasId?: string; format: 'project' | 'png'; layout?: CanvasLayout; handle?: FileSystemFileHandle };
     res: ExportResult;

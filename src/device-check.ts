@@ -182,8 +182,8 @@ async function pipeline(file: File) {
       });
     } finally {
       source.dispose();
-      // Deletes `project/<id>` and `project-index/<created>/<id>` alongside `run/<id>/`; a `run/`-only delete left
-      // two ghost (empty) projects in the app's history per device-check run (src/storage/projects.ts).
+      // Deletes the `project/<id>` record alongside `run/<id>/` (src/storage/projects.ts); the app's own sweep would
+      // otherwise only catch it on its next load.
       await deleteProject(db, engine.project.id);
     }
     report.pipeline = runs;

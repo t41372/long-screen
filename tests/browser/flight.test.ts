@@ -76,6 +76,8 @@ Deno.test({
       assertEquals(await page.evaluate(() => localStorage.getItem('long-screen.flight')), null, 'a finished run leaves no record');
       await page.reload();
       await page.waitForFunction('!!window.longScreen');
+      // The crash report is made once the kept print is back on screen, so wait for that before looking for one.
+      await page.waitForFunction('longScreen.getProject()?.name === "demo-gap.generated"', null, { timeout: 30000 });
       await page.waitForTimeout(1000);
       assert(!/PREVIOUS_RUN_INTERRUPTED/.test(await page.evaluate(diagnosticText) as string), 'false alarm after a finished run');
       // A kill aborts the worker's run without its finally blocks, which is exactly the case being reported.

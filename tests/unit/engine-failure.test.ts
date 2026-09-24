@@ -18,6 +18,7 @@ import { ScenarioSource } from '../../src/synthetic/source.ts';
 import { pad } from '../../src/core/math.ts';
 import { RegionAtlas } from '../../src/core/layers.ts';
 import { runScenario } from '../support/run.ts';
+import { keepLatest, sweepProjects } from '../../src/storage/projects.ts';
 import { core } from '../../src/core/wasm.ts';
 /** Minimal synthetic FrameSource: deterministic, always-different pixel content (never bit-identical between
  * frames), independent of the synthetic-world/scenario machinery. Good enough for tests that only care about
@@ -852,13 +853,38 @@ Deno.test('engine render: a plan/ placement read back with an out-of-range pose 
     }
   }
 });
-// Project history index (coordinate with the UI worker's 'projects'/'delete' commands).
-Deno.test('engine: persist() writes a project-index/<created>/<id> row on the first persist, once', async () => {
-  const db = new MemoryKV(), source = syntheticSource(2);
-  const engine = makeEngine(db, source, {});
-  const project = await engine.run();
-  const rows = await db.scan<string>(`project-index/${project.created}/`, { limit: 10 });
-  assertEquals(rows.length, 1);
-  assertEquals(rows[0].key, `project-index/${project.created}/${project.id}`);
-  assertEquals(rows[0].value, project.id);
+// The store keeps only the print on screen: the worker sweeps everything else on load, on Clear and before each print.
+Deno.test('storage: sweepProjects keeps one project and deletes the rest, orphaned run rows and old history rows too', async () => {
+  const db = new MemoryKV();
+  const first = await makeEngine(db, syntheticSource(2), {}).run();
+  const second = await makeEngine(db, syntheticSource(2), {}).run();
+  await db.put('run/crashed/observation/0', {}); // a run that died before its first persist: rows but no project record
+  await db.put('project-index/2026-01-01T00:00:00.000Z/old', 'old'); // the history list older versions kept
+  const stored = async (prefix: string) => (await db.scan(prefix, { limit: 1 })).length > 0;
+  await sweepProjects(db, [second.id]);
+  assertEquals(await stored(`project/${first.id}`), false);
+  assertEquals(await stored(`run/${first.id}/`), false);
+  assertEquals(await stored('run/crashed/'), false);
+  assertEquals(await stored('project-index/'), false);
+  assert(await stored(`project/${second.id}`));
+  assert(await stored(`run/${second.id}/`));
+  await sweepProjects(db);
+  assertEquals(await stored('project/'), false);
+  assertEquals(await stored('run/'), false);
+});
+Deno.test('storage: keepLatest keeps the newest print while it is recent, nothing once it is old, and spares held prints', async () => {
+  const db = new MemoryKV();
+  const older = await makeEngine(db, syntheticSource(2), {}).run();
+  const newer = await makeEngine(db, syntheticSource(2), {}).run();
+  assert(newer.updated >= older.updated);
+  const day = 24 * 60 * 60 * 1000, written = Date.parse(newer.updated);
+  // Another tab holds the newer print: it is kept but not handed to this page, which gets the older one.
+  assertEquals((await keepLatest(db, { maxAgeMs: day, held: new Set([newer.id]), now: written + 1 }))?.id, older.id);
+  assert(await db.get(`project/${newer.id}`));
+  assertEquals((await keepLatest(db, { maxAgeMs: day, now: written + day - 1 }))?.id, newer.id);
+  assertEquals(await db.get(`project/${older.id}`), undefined);
+  assert(await db.get(`project/${newer.id}`));
+  assertEquals(await keepLatest(db, { maxAgeMs: day, now: written + day }), undefined);
+  assertEquals((await db.scan('project/', { limit: 1 })).length, 0);
+  assertEquals((await db.scan('run/', { limit: 1 })).length, 0);
 });

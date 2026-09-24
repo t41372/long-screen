@@ -165,7 +165,7 @@ export function createDiagnostics(state: AppState, viewer: TiledViewer, canvases
       const loaded = rows.map((r) => r.value);
       diagnosticRows.push(...loaded);
       // Persisted rows carry real severity, unlike project.diagnostics; use them to learn severity for codes this
-      // session never received a live event for (e.g. after reopening a project from history).
+      // session never received a live event for (e.g. the print reopened after a language switch).
       for (const d of loaded) {
         trackDiagnostic(d);
       }

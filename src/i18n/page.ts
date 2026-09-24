@@ -13,8 +13,6 @@ export { displayName } from './names.ts';
 export { locale, t, translateKey };
 
 export const LANGUAGE_STORAGE_KEY = 'long-screen.language';
-/** A project that was open when the language changed, reopened after the reload (sessionStorage: this tab only). */
-const REOPEN_STORAGE_KEY = 'long-screen.reopen-project';
 
 const detector = new LanguageDetector(i18n.services, {
   order: ['localStorage', 'navigator'],
@@ -50,46 +48,26 @@ export function translatePage(root: Document = document): void {
   root.documentElement.classList.remove('i18n-pending');
 }
 
-/** Saves `lng` as the user's choice and reloads the page in it. `reopenProjectId` is reopened after the reload so
- *  switching language does not lose the project on screen. Returns false (after telling the user) when the browser
- *  refuses to store the choice: reloading would then silently come back in the old language. */
-export function chooseLocale(lng: Locale, reopenProjectId?: string): boolean {
+/** Saves `lng` as the user's choice and reloads the page in it; the print on screen comes back after the reload like
+ *  after any other (src/ui/main.ts restores the print the browser kept). Returns false (after telling the user) when
+ *  the browser refuses to store the choice: reloading would then silently come back in the old language. */
+export function chooseLocale(lng: Locale): boolean {
   try {
     localStorage.setItem(LANGUAGE_STORAGE_KEY, lng);
   } catch {
     return false;
   }
-  try {
-    if (reopenProjectId) sessionStorage.setItem(REOPEN_STORAGE_KEY, reopenProjectId);
-  } catch {
-    // Only the convenience of reopening is lost; the language choice itself is saved.
-  }
   location.reload();
   return true;
 }
 
-/** The project to reopen after a language switch, if any; cleared on read so a later reload does not reopen it. */
-export function takeReopenProject(): string | undefined {
-  try {
-    const id = sessionStorage.getItem(REOPEN_STORAGE_KEY);
-    sessionStorage.removeItem(REOPEN_STORAGE_KEY);
-    return id || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 /** Wires a <select> of locales: shows the current one and switches on change. */
-export function wireLanguageSelect(
-  select: HTMLSelectElement,
-  currentProjectId: () => string | undefined,
-  onError: (message: string) => void,
-): void {
+export function wireLanguageSelect(select: HTMLSelectElement, onError: (message: string) => void): void {
   select.value = locale();
   select.onchange = () => {
     const lng = select.value;
     if (!isLocale(lng) || lng === locale()) return;
-    if (!chooseLocale(lng, currentProjectId())) {
+    if (!chooseLocale(lng)) {
       select.value = locale();
       onError(t('language.saveFailed'));
     }

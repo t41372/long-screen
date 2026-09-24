@@ -90,10 +90,6 @@ for (const browser of ['chromium', 'webkit'] as const) {
         });
         assertEquals(await page.evaluate('document.documentElement.scrollWidth <= innerWidth'), true);
         await page.screenshot({ path: `${root}test-results/lan-http-${browser}.png` });
-        if (await page.evaluate('typeof navigator.storage?.persist !== "function"')) {
-          await page.click('#persist-btn');
-          assert((await page.locator('#toast').textContent())?.includes('不支持申请持久存储'));
-        }
         assertEquals(h.errors, []);
         assertEquals(h.external, []);
       } finally {

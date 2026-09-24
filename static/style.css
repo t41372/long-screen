@@ -1312,16 +1312,6 @@ body.receipt-open {
   letter-spacing: 0;
   line-height: 1.6;
 }
-.storage-note {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  align-items: center;
-  gap: 4px 10px;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--muted);
-}
 .app-footer p {
   margin-top: 6px;
   font-size: 11px;
@@ -1730,39 +1720,6 @@ dialog::backdrop {
   font-weight: 800;
   color: var(--ink);
 }
-#history-list {
-  font-size: 13px;
-  color: var(--muted);
-}
-.history-item {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 12px;
-  margin-top: 8px;
-  padding: 11px 13px;
-  border-radius: 10px;
-  background: var(--white);
-  box-shadow: 0 3px 0 #3d35301a, inset 0 0 0 1.5px #3d35300f;
-  color: var(--ink);
-}
-.history-item strong {
-  font-weight: 800;
-  overflow-wrap: anywhere;
-}
-.history-item p {
-  font-size: 12px;
-  color: var(--faint);
-}
-.history-actions {
-  display: flex;
-  flex: none;
-  gap: 6px;
-}
-.history-actions button {
-  padding: 6px 12px;
-  font-size: 13px;
-}
 .quiet {
   padding: 6px 10px;
   border-radius: 8px;
@@ -1770,10 +1727,6 @@ dialog::backdrop {
 }
 .quiet:hover {
   background: #3d353010;
-}
-#more-projects {
-  display: flex;
-  margin: 12px auto 0;
 }
 .region-tools {
   display: flex;
