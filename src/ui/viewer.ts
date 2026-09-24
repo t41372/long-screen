@@ -10,7 +10,6 @@ interface Cached {
    *  neighbour and at least one contradicting one): screen-space overlay/dynamic burn-in awaiting a later
    *  consistent observation to heal it. */
   provisional?: Uint8Array;
-  time: number;
 }
 /** Same two-bytes-per-row trick as the compositor: a level-0 tile's width is a multiple of 16, so each block row is byte-aligned. */
 function blockEvidence(coverage: Uint8Array | undefined, tileSize: number): Uint8Array | undefined {
@@ -47,7 +46,6 @@ export class TiledViewer {
   private overlay = false;
   private focus?: Rect;
   private maxCache = 48;
-  private lastLOD = 0;
   private animation = 0;
   constructor(
     private canvas: HTMLCanvasElement,
@@ -120,14 +118,6 @@ export class TiledViewer {
     }
     this.cache.clear();
     this.loading.clear();
-    this.schedule();
-  }
-  refresh(): void {
-    for (const [key, t] of this.cache) {
-      if (!t.bitmap) {
-        this.cache.delete(key);
-      }
-    }
     this.schedule();
   }
   setQuality(on: boolean): void {
@@ -211,7 +201,6 @@ export class TiledViewer {
       return;
     }
     const level = Math.max(0, Math.min(m.maxLevel, Math.floor(Math.log2(1 / this.scale)))), unit = this.tileSize * 2 ** level;
-    this.lastLOD = level;
     const x0 = Math.max(Math.floor(m.bounds.x / unit), Math.floor(-this.ox / this.scale / unit)),
       x1 = Math.min(Math.floor((m.bounds.x + m.bounds.width - 1) / unit), Math.floor((w - this.ox) / this.scale / unit)),
       y0 = Math.max(Math.floor(m.bounds.y / unit), Math.floor(-this.oy / this.scale / unit)),
@@ -242,11 +231,10 @@ export class TiledViewer {
               owner: payload?.owner,
               evidence: blockEvidence(payload?.coverage, this.tileSize),
               provisional: blockEvidence(payload?.provisional, this.tileSize),
-              time: performance.now(),
             });
           }).catch((error) => {
             this.fail(error);
-            this.cache.set(key, { bitmap: null, time: performance.now() });
+            this.cache.set(key, { bitmap: null });
           }).finally(() => {
             if (generation === this.generation) {
               this.loading.delete(key);

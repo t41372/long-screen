@@ -5,7 +5,8 @@ import { AnalysisComputer } from './core/compute.ts';
 import { core, coreBuild, loadPlannedCore, planCore } from './core/wasm.ts';
 import { analysisFactor, downscaleGray } from './core/raster.ts';
 import { Engine } from './pipeline/engine.ts';
-import { Database, deletePrefix, iterate, type Namespace } from './storage/db.ts';
+import { Database, iterate } from './storage/db.ts';
+import { deleteProject } from './storage/projects.ts';
 import { openMedia } from './media/source.ts';
 import { DEFAULT_SETTINGS, type Settings } from './types.ts';
 
@@ -179,7 +180,9 @@ async function pipeline(file: File) {
       });
     } finally {
       source.dispose();
-      await deletePrefix(db, (engine.store as Namespace).prefix);
+      // Deletes `project/<id>` and `project-index/<created>/<id>` alongside `run/<id>/`; a `run/`-only delete left
+      // two ghost (empty) projects in the app's history per device-check run (src/storage/projects.ts).
+      await deleteProject(db, engine.project.id);
     }
     report.pipeline = runs;
     show();

@@ -1,12 +1,15 @@
 import { type CanvasMeta, DEFAULT_SETTINGS, type Diagnostic, type MediaInfo, type Project, type Settings } from './types.ts';
-import { Database, deletePrefix, iterate, Namespace } from './storage/db.ts';
+import { Database } from './storage/db.ts';
+import { deleteProject, listProjects, projectKey, runStore } from './storage/projects.ts';
 import { Engine } from './pipeline/engine.ts';
 import { CompatibilitySource, openMedia, PreciseSource } from './media/source.ts';
 import { DemoSource } from './media/demo.ts';
-import type { StoredTile } from './storage/tiles.ts';
 import { exportCanvas, exportProject } from './export/project.ts';
 import { cleanupExport } from './export/target.ts';
 import { core, coreLoaded, loadPlannedCore, planCore } from './core/wasm.ts';
+import { tileKey } from './storage/tiles.ts';
+import type { StoredTile } from './storage/tiles.ts';
+import type { Capabilities, CommandName, Commands, FrameResponse } from './protocol.ts';
 const scope = globalThis as unknown as {
   postMessage: (message: unknown, transfer?: Transferable[]) => void;
   onmessage: ((e: MessageEvent) => void) | null;
@@ -42,10 +45,22 @@ function requestFrame(time: number): Promise<ImageBitmap> {
     post({ event: 'frame-request', id, time });
   });
 }
-async function dispatch(type: string, payload: Record<string, any>): Promise<unknown> {
-  await ensureCore();
-  const database = await db();
-  if (type === 'capabilities') {
+function busyError(): never {
+  throw new Error('A reconstruction, export or probe is already running.');
+}
+/** Every command below `pause`/`stop` in the protocol addresses one project's rows; `cleanup-export` is the only
+ *  exception (it deletes a bare OPFS file by its own key, not a project). */
+function requireProjectId(id: string | undefined): string {
+  if (!id) {
+    throw new Error('Project ID is required.');
+  }
+  return id;
+}
+/** One handler per command, typed against `Commands` so the compiler proves every command from the protocol is
+ *  handled here and that each handler's return matches what its callers (main.ts's `rpc<K>()`) expect. */
+type Handlers = { [K in CommandName]: (payload: Commands[K]['req'], database: Database) => Promise<Commands[K]['res']> };
+const handlers: Handlers = {
+  async capabilities(_payload, database): Promise<Capabilities> {
     return {
       worker: true,
       offscreen: typeof OffscreenCanvas !== 'undefined',
@@ -55,48 +70,16 @@ async function dispatch(type: string, payload: Record<string, any>): Promise<unk
       webgpu: !!(navigator as unknown as { gpu?: unknown }).gpu,
       privateStorage: !database.storesBlobs,
     };
-  }
-  if (type === 'projects') {
-    // project-index/<created ISO>/<id> is written on a run's first persist and gives cheap newest-first order;
-    // pre-existing projects have no index row, so the legacy project/ scan below fills those in once the index
-    // is exhausted. A scan returning fewer rows than the requested limit has genuinely reached the end of that
-    // keyspace (IndexedDB's cursor only stops early when there is nothing left), not merely "this page was
-    // short", so it is a reliable exhaustion signal on every page, not only the first.
-    const after = payload.after as string | undefined, legacyContinuation = after?.startsWith('project/');
-    const indexRows = legacyContinuation ? [] : await database.scan<string>('project-index/', { after, limit: 30, reverse: true });
-    const seen = new Set<string>(), rows: { key: string; value: Project }[] = [];
-    for (const row of indexRows) {
-      const project = await database.get<Project>(`project/${row.value}`);
-      if (project) {
-        rows.push({ key: row.key, value: project });
-        seen.add(row.value);
-      }
-    }
-    if (indexRows.length < 30) {
-      // project/ holds every project's record, indexed or not, so this legacy scan can re-surface projects an
-      // earlier index page already returned; resolve the account's complete indexed-id set here (not just
-      // this page's `seen`) so dedup carries across pages instead of resetting on every call.
-      for await (const row of iterate<string>(database, 'project-index/', false, 256)) {
-        seen.add(row.value);
-      }
-      const legacyAfter = legacyContinuation ? after : undefined;
-      const legacy = await database.scan<Project>('project/', { after: legacyAfter, limit: 30 - rows.length, reverse: true });
-      for (const row of legacy) {
-        if (!seen.has(row.value.id)) {
-          rows.push(row);
-        }
-      }
-    }
-    return rows;
-  }
-  if (type === 'probe') {
+  },
+  projects(payload, database) {
+    return listProjects(database, { after: payload.after, limit: 30 });
+  },
+  async probe(payload) {
     // Frame-accurate metadata and the first decoded frame, without relying on the <video> element being able to render.
-    if (active || exporting || starting || probing) {
-      throw new Error('A reconstruction, export or probe is already running.');
-    }
+    if (active || exporting || starting || probing) busyError();
     probing = true;
     try {
-      const source = await openMedia(payload.file as File);
+      const source = await openMedia(payload.file);
       try {
         for await (const frame of source.frames()) {
           const bitmap = await createImageBitmap(
@@ -111,11 +94,9 @@ async function dispatch(type: string, payload: Record<string, any>): Promise<unk
     } finally {
       probing = false;
     }
-  }
-  if (type === 'start') {
-    if (active || exporting || starting || probing) {
-      throw new Error('A reconstruction, export or probe is already running.');
-    }
+  },
+  async start(payload, database) {
+    if (active || exporting || starting || probing) busyError();
     starting = true;
     try {
       if (typeof OffscreenCanvas === 'undefined') {
@@ -175,82 +156,79 @@ async function dispatch(type: string, payload: Record<string, any>): Promise<unk
     } finally {
       starting = false;
     }
-  }
-  if (type === 'pause') {
+  },
+  async pause(payload) {
     if (!active) {
       throw new Error('No active reconstruction.');
     }
     active.setPaused(!!payload.paused);
     return { paused: active.paused };
-  }
-  if (type === 'stop') {
+  },
+  async stop() {
     if (!active) {
       throw new Error('No active reconstruction.');
     }
     active.stopRequested = true;
     active.setPaused(false);
     return { requested: true };
-  }
-  const id = payload.projectId as string;
-  if (!id && type !== 'cleanup-export') {
-    throw new Error('Project ID is required.');
-  }
-  const store = new Namespace(database, `run/${id}/`);
-  if (type === 'open') {
-    const project = await database.get<Project>(`project/${id}`);
+  },
+  async open(payload, database) {
+    const id = requireProjectId(payload.projectId);
+    const project = await database.get<Project>(projectKey(id));
     if (!project) {
       throw new Error('Project not found in this browser.');
     }
     return {
       project,
-      canvases: await store.scan<CanvasMeta>('canvas/', { limit: 100 }),
+      canvases: await runStore(database, id).scan<CanvasMeta>('canvas/', { limit: 100 }),
       interrupted: active?.project.id !== id && !['complete', 'partial', 'error'].includes(project.status),
     };
-  }
-  if (type === 'canvases') {
-    return store.scan<CanvasMeta>('canvas/', { after: payload.after, limit: 100 });
-  }
-  if (type === 'diagnostics') {
-    return store.scan<Diagnostic>('diagnostic/', { after: payload.after, limit: 100 });
-  }
-  if (type === 'tile') {
-    const t = await store.get<StoredTile>(`tile/${payload.canvasId}/${payload.level}/${payload.x}_${payload.y}`);
-    return t
-      ? {
-        blob: t.blob,
-        quality: t.quality,
-        conflicts: t.conflicts,
-        coverage: t.coverage,
-        owner: t.owner,
-        provisional: t.provisional,
-        level: t.level,
-        x: t.x,
-        y: t.y,
-      }
-      : null;
-  }
-  if (type === 'delete') {
+  },
+  canvases(payload, database) {
+    return runStore(database, requireProjectId(payload.projectId)).scan<CanvasMeta>('canvas/', { after: payload.after, limit: 100 });
+  },
+  diagnostics(payload, database) {
+    return runStore(database, requireProjectId(payload.projectId)).scan<Diagnostic>('diagnostic/', { after: payload.after, limit: 100 });
+  },
+  tile(payload, database) {
+    return runStore(database, requireProjectId(payload.projectId)).get<StoredTile>(
+      `tile/${tileKey(payload.canvasId, payload.level, payload.x, payload.y)}`,
+    )
+      .then((t) =>
+        t
+          ? {
+            blob: t.blob,
+            quality: t.quality,
+            conflicts: t.conflicts,
+            coverage: t.coverage,
+            owner: t.owner,
+            provisional: t.provisional,
+            level: t.level,
+            x: t.x,
+            y: t.y,
+          }
+          : null
+      );
+  },
+  async delete(payload, database) {
+    const id = requireProjectId(payload.projectId);
     if (active?.project.id === id || exporting) {
       throw new Error('Finish processing/export before deleting this project.');
     }
-    const project = await database.get<Project>(`project/${id}`);
-    await deletePrefix(database, `run/${id}/`);
-    await database.delete(`project/${id}`);
-    if (project) {
-      await database.delete(`project-index/${project.created}/${id}`);
-    }
+    await deleteProject(database, id);
     return true;
-  }
-  if (type === 'export') {
+  },
+  async export(payload, database) {
     if (active || exporting || starting || probing) {
       throw new Error('Finish processing before exporting committed tiles.');
     }
     exporting = true;
     try {
-      const project = await database.get<Project>(`project/${id}`);
+      const id = requireProjectId(payload.projectId), project = await database.get<Project>(projectKey(id));
       if (!project) {
         throw new Error('Project not found.');
       }
+      const store = runStore(database, id);
       const progress = (message: string, fraction: number) => post({ event: 'export-progress', data: { message, fraction } });
       if (payload.format === 'project') {
         return await exportProject(store, project, progress, payload.handle);
@@ -263,31 +241,42 @@ async function dispatch(type: string, payload: Record<string, any>): Promise<unk
     } finally {
       exporting = false;
     }
-  }
-  if (type === 'cleanup-export') {
+  },
+  async 'cleanup-export'(payload) {
     await cleanupExport(payload.key);
     return true;
+  },
+};
+async function dispatch(type: CommandName, payload: Commands[CommandName]['req']): Promise<unknown> {
+  await ensureCore();
+  const database = await db();
+  // Object.hasOwn, not a truthiness check on handlers[type]: a plain object literal inherits Object.prototype, so
+  // an unrecognised command like 'constructor' or 'toString' would otherwise resolve to a real function and run
+  // it instead of falling through to the error below.
+  if (!Object.hasOwn(handlers, type)) {
+    throw new Error(`Unknown worker command: ${type}`);
   }
-  throw new Error(`Unknown worker command: ${type}`);
+  // deno-lint-ignore no-explicit-any
+  return handlers[type](payload as any, database);
 }
 scope.onmessage = (event) => {
-  const m = event.data;
+  const m = event.data as FrameResponse | { id: number; type: CommandName; payload?: Record<string, unknown> };
   if (m.type === 'frame-response') {
     const pending = frames.get(m.id);
     if (!pending) {
-      m.bitmap?.close();
+      if ('bitmap' in m) m.bitmap?.close();
       return;
     }
     frames.delete(m.id);
     clearTimeout(pending.timer);
-    if (m.error) {
+    if ('error' in m) {
       pending.reject(new Error(m.error));
     } else {
       pending.resolve(m.bitmap);
     }
     return;
   }
-  void dispatch(m.type, m.payload || {}).then((result) => {
+  void dispatch(m.type, (m as { payload?: Record<string, unknown> }).payload ?? {}).then((result) => {
     const transfer: Transferable[] = [];
     if (result && typeof result === 'object' && 'bitmap' in result && (result as { bitmap: unknown }).bitmap instanceof ImageBitmap) {
       transfer.push((result as { bitmap: ImageBitmap }).bitmap);

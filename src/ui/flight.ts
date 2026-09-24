@@ -1,4 +1,4 @@
-import type { Progress } from '../types.ts';
+import type { WorkerProgress } from '../protocol.ts';
 /** Crash recorder: the last known state of a reconstruction, kept in localStorage so that it survives the page being
  *  killed (Safari reloads a tab whose memory footprint crosses its limit; the limit is far lower while the tab is
  *  hidden) or crashing. On the next load an unfinished record is reported once and then cleared. Nothing leaves the
@@ -6,7 +6,9 @@ import type { Progress } from '../types.ts';
 const KEY = 'long-screen.flight';
 const WRITE_INTERVAL_MS = 1000;
 export interface FlightRecord {
-  state: 'running' | 'finished';
+  // Only ever written as 'running' — flightEnd() clears the record entirely (localStorage.removeItem) rather
+  // than writing a terminal state, since a run that ended normally has nothing left to report.
+  state: 'running';
   started: string;
   updated: string;
   userAgent: string;
@@ -67,7 +69,7 @@ export function flightStart(file?: File): void {
   };
   write(true);
 }
-export function flightProgress(p: Progress): void {
+export function flightProgress(p: WorkerProgress): void {
   if (!record) return;
   const phaseChanged = p.phase !== record.phase;
   Object.assign(record, { phase: p.phase, frames: p.frames, total: p.total, conversion: p.conversion ?? record.conversion });

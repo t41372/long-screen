@@ -1,0 +1,146 @@
+/** "下载长图" (one native-size PNG) and "导出完整项目" (the archival ZIP), plus "复制长图" to the clipboard. Both
+ *  downloads prefer a native save-file picker and fall back to an anchor download / OPFS temporary copy. */
+import type { AppState } from './state.ts';
+import { $, humanBytes, storageInfo, toast } from './dom.ts';
+import { call } from './rpc.ts';
+import type { ExportResult } from '../export/project.ts';
+import type { Diagnostic } from '../types.ts';
+import type { Run } from './run.ts';
+import type { TiledViewer } from './viewer.ts';
+
+/** File name for the downloaded image: the recording's name, not a generic one. */
+function imageFileName(state: AppState): string {
+  const stem = (state.project?.name || '').replace(/\.[^.]+$/, '').replace(/[\\/:*?"<>|]+/g, '_').trim();
+  return `${stem || 'long-screen'}-长图.png`;
+}
+
+export function createExport(state: AppState, viewer: TiledViewer, run: Run, addDiagnostic: (d: Diagnostic) => void) {
+  let downloadURL: string | undefined;
+
+  function cleanupTemporary(key?: string): void {
+    if (key) void call('cleanup-export', { key }).then(() => storageInfo()).catch(() => {});
+  }
+  async function doExport(format: 'project' | 'png'): Promise<void> {
+    if (!state.project || state.busy) {
+      return;
+    }
+    let handle: FileSystemFileHandle | undefined;
+    const c = viewer.current, name = format === 'png' ? imageFileName(state) : 'long-screen-project.zip';
+    run.setBusy(true);
+    $('run-controls').hidden = true;
+    try {
+      if ('showSaveFilePicker' in window) {
+        try {
+          handle = await (window as unknown as {
+            showSaveFilePicker: (options: unknown) => Promise<FileSystemFileHandle>;
+          }).showSaveFilePicker({
+            suggestedName: name,
+            types: [{
+              description: format === 'png' ? 'PNG image' : 'ZIP64 archive',
+              accept: { [format === 'png' ? 'image/png' : 'application/zip']: [format === 'png' ? '.png' : '.zip'] },
+            }],
+          });
+        } catch (error) {
+          if ((error as DOMException).name === 'AbortError') {
+            return;
+          }
+          toast(`直接保存不可用，改用浏览器下载：${String(error)}`);
+        }
+      }
+      const result: ExportResult = await call('export', { projectId: state.project.id, canvasId: c?.id, format, layout: 'single', handle });
+      toast(result.message);
+      if (result.blob) {
+        if (downloadURL) {
+          URL.revokeObjectURL(downloadURL);
+        }
+        const fileName = format === 'png' ? name : result.name;
+        downloadURL = URL.createObjectURL(result.blob);
+        const row = document.createElement('div'), a = document.createElement('a');
+        row.className = 'export-download-row';
+        a.href = downloadURL;
+        a.download = fileName;
+        a.textContent = `保存 ${fileName} · ${humanBytes(result.blob.size)}`;
+        a.className = 'export-link';
+        row.append(a);
+        // On phones a download lands in Files; sharing is how an image reaches Photos. A fresh tap is required.
+        const file = format === 'png' ? new File([result.blob], fileName, { type: 'image/png' }) : undefined;
+        if (file && navigator.canShare?.({ files: [file] })) {
+          const share = document.createElement('button');
+          share.className = 'secondary';
+          share.textContent = '分享 / 存到照片';
+          share.onclick = () =>
+            void navigator.share({ files: [file] }).catch((error) => {
+              if ((error as DOMException).name !== 'AbortError') toast(`分享失败：${String(error)}`, true);
+            });
+          row.append(share);
+        }
+        if (result.temporary) {
+          const cleanup = document.createElement('button');
+          cleanup.className = 'quiet';
+          cleanup.textContent = '保存后清理临时副本';
+          cleanup.onclick = () => {
+            cleanupTemporary(result.temporary);
+            if (downloadURL) URL.revokeObjectURL(downloadURL);
+            $('export-download').replaceChildren();
+          };
+          row.append(cleanup);
+        }
+        $('export-download').replaceChildren(row);
+        a.click();
+      }
+      $('progress-message').textContent = result.message;
+      await storageInfo();
+    } catch (error) {
+      toast(String(error), true);
+      addDiagnostic({
+        code: 'EXPORT_ERROR',
+        severity: 'error',
+        message: String(error),
+        action: '没有把未完成的导出标记为成功。已提交的项目瓦片仍在本机。',
+      });
+    } finally {
+      run.setBusy(false);
+    }
+  }
+  /** Copies the current canvas as one PNG. The clipboard write starts synchronously inside the click (Safari
+   *  refuses clipboard writes started later) with the image as a promise, which the worker fulfils once encoded. */
+  function doCopy(): void {
+    const c = viewer.current;
+    if (!state.project || state.busy || !c) return;
+    if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+      toast('这个浏览器不支持复制图片；请用“下载长图”。', true);
+      return;
+    }
+    run.setBusy(true);
+    $('run-controls').hidden = true;
+    let temporary: string | undefined;
+    const project = state.project;
+    const png = call('export', { projectId: project.id, canvasId: c.id, format: 'png', layout: 'single' }).then((r) => {
+      temporary = r.temporary;
+      if (!r.blob) throw new Error('没有生成图片');
+      return new Blob([r.blob], { type: 'image/png' });
+    });
+    let item: ClipboardItem;
+    try {
+      item = new ClipboardItem({ 'image/png': png });
+    } catch (error) {
+      png.then((b) => b, () => undefined).finally(() => cleanupTemporary(temporary));
+      run.setBusy(false);
+      toast(`复制失败：${String(error)}。请改用“下载长图”。`, true);
+      return;
+    }
+    navigator.clipboard.write([item])
+      .then(() => toast(`已复制 ${Math.round(c.bounds.width)} × ${Math.round(c.bounds.height)} 长图，可直接粘贴。`))
+      .catch((error) => toast(`复制失败：${String(error)}。图片可能超出系统剪贴板的限制，请改用“下载长图”。`, true))
+      .finally(() => {
+        void png.catch(() => {}).finally(() => cleanupTemporary(temporary));
+        run.setBusy(false);
+      });
+  }
+  function wire(): void {
+    $('export-project').onclick = () => void doExport('project');
+    $('export-png').onclick = () => void doExport('png');
+    $('copy-png').onclick = () => doCopy();
+  }
+  return { doExport, doCopy, wire };
+}

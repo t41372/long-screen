@@ -229,10 +229,6 @@ export interface Progress {
   time: number;
   message: string;
   canvas?: CanvasMeta;
-  project?: Project;
-  /** Set by the app worker: core linear memory in MB and the frame conversion path. */
-  memoryMB?: number;
-  conversion?: string;
 }
 /** One decoded observation. Pixels are plain RGBA so every stage after decoding runs identically in a browser worker and in Deno. */
 export interface FrameImage {
@@ -245,11 +241,6 @@ export interface FrameSource {
   info: MediaInfo;
   frames(): AsyncGenerator<FrameImage>;
   dispose(): void;
-}
-export interface WorkerCommand {
-  type: string;
-  id?: number;
-  [key: string]: unknown;
 }
 export interface TilePayload {
   blob: Blob;
