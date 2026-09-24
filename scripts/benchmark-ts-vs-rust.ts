@@ -17,7 +17,7 @@ import type { Feature, Gray, MotionField, Region, RGBA } from '../src/types.ts';
 import * as ts from '../tests/support/reference/kernels.ts';
 import * as tsMotion from '../tests/support/reference/motion.ts';
 import { ReferenceVotingRing } from '../tests/support/reference/voting.ts';
-import { consistencyMaskReference } from '../tests/support/consistency-reference.ts';
+import { consistencyMaskReference } from '../tests/support/reference/consistency.ts';
 
 const [recording, firstArg] = Deno.args;
 

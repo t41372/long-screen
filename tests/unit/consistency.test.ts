@@ -4,6 +4,7 @@ import { constantFrames, fillRGBA, World } from '../../src/synthetic/world.ts';
 import type { Layer, Overlay, RGB, Scenario } from '../../src/synthetic/world.ts';
 import { runScenario } from '../support/run.ts';
 import { Engine } from '../../src/pipeline/engine.ts';
+import { consistencyMask } from '../../src/pipeline/consistency.ts';
 import { MemoryKV } from '../../src/storage/db.ts';
 import { RegionAtlas } from '../../src/core/layers.ts';
 import { ScenarioSource } from '../../src/synthetic/source.ts';
@@ -14,7 +15,7 @@ import {
   consistencyMaskReference,
   type ConsistencyReferenceNeighbour,
   type ConsistencyReferenceVote,
-} from '../support/consistency-reference.ts';
+} from '../support/reference/consistency.ts';
 
 function consistencyRandom(seed: number): () => number {
   let state = seed >>> 0;
@@ -84,20 +85,11 @@ function randomConsistencyNeighbour(
   };
 }
 
-// This intentionally compares the optimized private method with a frozen copy of its former implementation,
+// This intentionally compares the optimized consistencyMask() (src/pipeline/consistency.ts) with a frozen copy of its former implementation,
 // rather than asserting a handful of hand-picked pixels. It exercises raster rounding, atlas boundaries, voting,
 // noise, occlusions, fractional analysis factors, and all neighbour/canvas combinations together.
 Deno.test('consistency mask: optimized raster loop is byte-exact against the frozen implementation', () => {
   const random = consistencyRandom(0x5eedcafe);
-  const source = new ScenarioSource(buildScenario('fixture'));
-  source.info.noise = 3;
-  const engine = new Engine(new MemoryKV(), source, DEFAULT_SETTINGS, {
-    progress: () => {},
-    diagnostic: () => {},
-    preview: () => {},
-    project: () => {},
-  });
-  const mask = (engine as unknown as { consistencyMask: (...args: unknown[]) => Uint8Array }).consistencyMask.bind(engine);
   for (let trial = 0; trial < 180; trial++) {
     const width = 1 + consistencyRandomInt(random, 72),
       height = 1 + consistencyRandomInt(random, 64),
@@ -124,8 +116,7 @@ Deno.test('consistency mask: optimized raster loop is byte-exact against the fro
     const prev = randomConsistencyNeighbour(random, width, height, factor, previousImage);
     const next = randomConsistencyNeighbour(random, width, height, factor, nextImage);
     const voting = consistencyRandomInt(random, 3) === 0 ? randomConsistencyVote(random, width, height, factor) : undefined;
-    (engine as unknown as { factor: number }).factor = factor;
-    const actual = mask(current, atlas, region, code, pose, 'canvas', prev, next, voting);
+    const actual = consistencyMask(current, atlas, region, code, pose, 'canvas', { prev, next, voting, factor, noise: 3 }) as Uint8Array;
     const expected = consistencyMaskReference(current, atlas, region, code, pose, 'canvas', prev, next, voting, factor, 3);
     assertEquals(actual.length, expected.length);
     for (let i = 0; i < actual.length; i++) {
@@ -179,16 +170,7 @@ function nearNeighbourImage(random: () => number, current: RGBA, dx: number, dy:
 // offset), occlusions covering part of a row, and row-chunk boundaries of the parallel split.
 Deno.test('consistency mask: agreeing neighbours with sparse edge cases stay byte-exact against the frozen implementation', () => {
   const random = consistencyRandom(0x0c0ffee5);
-  const source = new ScenarioSource(buildScenario('fixture'));
   for (const noise of [3, 2.5, 0, DECODED_VIDEO_NOISE]) {
-    source.info.noise = noise;
-    const engine = new Engine(new MemoryKV(), source, DEFAULT_SETTINGS, {
-      progress: () => {},
-      diagnostic: () => {},
-      preview: () => {},
-      project: () => {},
-    });
-    const mask = (engine as unknown as { consistencyMask: (...args: unknown[]) => Uint8Array }).consistencyMask.bind(engine);
     for (let trial = 0; trial < 40; trial++) {
       // The first trials are large enough for the threaded core to split rows across several pool chunks.
       const large = trial < 2;
@@ -238,8 +220,7 @@ Deno.test('consistency mask: agreeing neighbours with sparse edge cases stay byt
       };
       const prev = neighbour(), next = neighbour();
       const voting = consistencyRandomInt(random, 3) === 0 ? randomConsistencyVote(random, width, height, factor) : undefined;
-      (engine as unknown as { factor: number }).factor = factor;
-      const actual = mask(current, atlas, region, code, pose, 'canvas', prev, next, voting);
+      const actual = consistencyMask(current, atlas, region, code, pose, 'canvas', { prev, next, voting, factor, noise }) as Uint8Array;
       const expected = consistencyMaskReference(current, atlas, region, code, pose, 'canvas', prev, next, voting, factor, noise);
       assertEquals(actual.length, expected.length);
       let inside = 0, agreeing = 0;
@@ -260,7 +241,7 @@ Deno.test('consistency mask: agreeing neighbours with sparse edge cases stay byt
   }
 });
 
-// Displacement-spread consistency voting (docs/ARCHITECTURE.md §七, Engine.solve()'s consistencyRing/consistencyCompare/
+// Displacement-spread consistency voting (docs/ARCHITECTURE.md §七, solve/solve.ts's solve()'s consistencyRing/consistencyCompare/
 // consistencyFinalize). Fixture: a scrolling photo-like page under a screen-fixed, uniformly-coloured blob taller
 // (40px) than the per-frame scroll displacement (8px) — exactly the geometry a ±1-frame comparison alone cannot
 // resolve (docs/ARCHITECTURE.md §七), which the ring's Dmin-qualifying, displacement-spread partners are meant to close.
@@ -330,7 +311,7 @@ Deno.test("consistency voting: a screen-fixed blob taller than one frame's displ
   assertEquals(pageFlags, 0, 'genuine page content outside the blob must never be flagged inconsistent');
 });
 
-// Direction A (fair partner sharing, Engine.solve()'s consistencyPartners): a frame whose own arrival can only
+// Direction A (fair partner sharing, solve/solve.ts's solve()'s consistencyPartners): a frame whose own arrival can only
 // compare it against PAST frames must still accumulate comparisons from the future ones that pick it as a partner,
 // or a world position first seen at the leading edge can never be judged. The engine reports this directly:
 // `consistencyThinLayers` counts per-frame, per-region voting layers finalised on fewer than the comparisons a
@@ -398,12 +379,12 @@ Deno.test('consistency voting: every frame accumulates comparisons, including on
   );
 });
 
-// Direction B (Engine.consistencyMask()'s truth table): a ±1-frame comparison is a PAIRWISE disagreement — it says
-// one of the two frames is wrong, not which. When a pixel has only ONE comparable neighbour and voting independently
-// found that neighbour inconsistent at the same world position, the disagreement is the neighbour's, and this frame
-// must stay consistent so it can still heal what the neighbour left provisional. The run's last frame is where that
-// matters most: nothing comes after it.
-Deno.test('consistency mask: a lone neighbour that voting itself found inconsistent does not condemn this frame', async () => {
+// Direction B (consistency.ts's consistencyMask() truth table): a ±1-frame comparison is a PAIRWISE disagreement —
+// it says one of the two frames is wrong, not which. When a pixel has only ONE comparable neighbour and voting
+// independently found that neighbour inconsistent at the same world position, the disagreement is the neighbour's,
+// and this frame must stay consistent so it can still heal what the neighbour left provisional. The run's last
+// frame is where that matters most: nothing comes after it.
+Deno.test('consistency mask: a lone neighbour that voting itself found inconsistent does not condemn this frame', () => {
   const W = 200, H = 160, world = new World(W, H, [250, 250, 246]);
   world.picture({ x: 0, y: 0, width: W, height: H }, 31);
   const atlas = new RegionAtlas([{ id: 'body', name: 'body', kind: 'moving', rect: { x: 0, y: 0, width: W, height: H } }], W, H);
@@ -413,27 +394,28 @@ Deno.test('consistency mask: a lone neighbour that voting itself found inconsist
     if (fill) fillRGBA(image, { x: 40, y: 40, width: 40, height: 40 }, fill);
     return image;
   };
-  const engine = new Engine(new MemoryKV(), new ScenarioSource(buildScenario('fixture')), DEFAULT_SETTINGS, {
-    progress: () => {},
-    diagnostic: () => {},
-    preview: () => {},
-    project: () => {},
-  });
-  const mask = (engine as unknown as { consistencyMask: (...args: unknown[]) => Uint8Array }).consistencyMask.bind(engine);
-  (engine as unknown as { factor: number }).factor = 1;
   const clean = frame(), dirty = frame([255, 0, 255]);
   const box = { x0: 0, y0: 0, w: W, h: H, bits: new Uint8Array(Math.ceil(W * H / 8)), clean: new Uint8Array(Math.ceil(W * H / 8)) };
   const cell = 50 * W + 50;
   box.bits[cell >> 3] |= 1 << (cell & 7);
   const pose = { x: 0, y: 0 }, neighbour = { image: dirty, x: 0, y: 0, canvasId: 'c' };
   // Without a verdict for the neighbour, the conservative reading stands and this frame is flagged.
-  const blind = mask(clean, atlas, region, code, pose, 'c', neighbour, undefined, undefined);
+  const blind = consistencyMask(clean, atlas, region, code, pose, 'c', { prev: neighbour, factor: 1, noise: 0 }) as Uint8Array;
   assertEquals(blind[cell], 0, 'a lone disagreeing neighbour with no verdict of its own still condemns');
   // With voting saying the neighbour itself is inconsistent there, the disagreement is the neighbour's fault.
-  const informed = mask(clean, atlas, region, code, pose, 'c', { ...neighbour, voting: box }, undefined, undefined);
+  const informed = consistencyMask(clean, atlas, region, code, pose, 'c', {
+    prev: { ...neighbour, voting: box },
+    factor: 1,
+    noise: 0,
+  }) as Uint8Array;
   assertEquals(informed[cell], 1, 'a lone neighbour voting found inconsistent must not condemn this frame');
   // Two comparable neighbours are enough evidence on their own: the excuse is only for the ambiguous lone case.
-  const both = mask(clean, atlas, region, code, pose, 'c', { ...neighbour, voting: box }, { ...neighbour, voting: box }, undefined);
+  const both = consistencyMask(clean, atlas, region, code, pose, 'c', {
+    prev: { ...neighbour, voting: box },
+    next: { ...neighbour, voting: box },
+    factor: 1,
+    noise: 0,
+  }) as Uint8Array;
   assertEquals(both[cell], 0, 'with two comparable neighbours the conservative reading stands');
 });
 
@@ -456,22 +438,15 @@ Deno.test('consistency mask: the ±1 tolerance comes from the source, so a lossl
     delta > 0 && delta <= 10,
     `this fixture is only meaningful while the glyph sits inside a decoded recording's noise floor (measured ${delta})`,
   );
-  const run = async (noise: number): Promise<Uint8Array> => {
-    const scenario = buildScenario('fixture'), source = new ScenarioSource(scenario);
-    source.info.noise = noise;
-    const engine = new Engine(new MemoryKV(), source, DEFAULT_SETTINGS, {
-      progress: () => {},
-      diagnostic: () => {},
-      preview: () => {},
-      project: () => {},
-    });
-    (engine as unknown as { factor: number }).factor = 1;
-    const mask = (engine as unknown as { consistencyMask: (...args: unknown[]) => Uint8Array }).consistencyMask.bind(engine);
-    return mask(withGlyph, atlas, region, code, { x: 0, y: 0 }, 'c', { image: page, x: 0, y: 0, canvasId: 'c' }, undefined, undefined);
-  };
-  assertEquals((await run(0))[cell], 0, 'a lossless source compares exactly, so the glyph is flagged');
+  const run = (noise: number): Uint8Array =>
+    consistencyMask(withGlyph, atlas, region, code, { x: 0, y: 0 }, 'c', {
+      prev: { image: page, x: 0, y: 0, canvasId: 'c' },
+      factor: 1,
+      noise,
+    }) as Uint8Array;
+  assertEquals(run(0)[cell], 0, 'a lossless source compares exactly, so the glyph is flagged');
   assertEquals(
-    (await run(DECODED_VIDEO_NOISE))[cell],
+    run(DECODED_VIDEO_NOISE)[cell],
     1,
     'a decoded recording must keep its headroom: the same difference is within H.264 noise and carries no information',
   );
@@ -481,7 +456,6 @@ Deno.test('consistency mask: the ±1 tolerance comes from the source, so a lossl
     new Engine(new MemoryKV(), new ScenarioSource(buildScenario('fixture')), DEFAULT_SETTINGS, {
       progress: () => {},
       diagnostic: () => {},
-      preview: () => {},
       project: () => {},
     }).noise,
     0,

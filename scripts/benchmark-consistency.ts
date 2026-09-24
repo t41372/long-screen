@@ -1,15 +1,13 @@
+import '../tests/support/core.ts';
 import {
   consistencyMaskReference,
   type ConsistencyReferenceNeighbour,
   type ConsistencyReferenceVote,
-} from '../tests/support/consistency-reference.ts';
+} from '../tests/support/reference/consistency.ts';
+import { consistencyMask } from '../src/pipeline/consistency.ts';
 import { RegionAtlas } from '../src/core/layers.ts';
 import { analysisFactor } from '../src/core/raster.ts';
-import { DEFAULT_SETTINGS, type Rect, type RGBA } from '../src/types.ts';
-import { Engine } from '../src/pipeline/engine.ts';
-import { MemoryKV } from '../src/storage/db.ts';
-import { ScenarioSource } from '../src/synthetic/source.ts';
-import { buildScenario } from '../src/synthetic/scenarios.ts';
+import type { Rect, RGBA } from '../src/types.ts';
 
 const WIDTH = 3456, HEIGHT = 2234, ANALYSIS_SIZE = 640, FACTOR = analysisFactor(WIDTH, HEIGHT, ANALYSIS_SIZE);
 const ROUNDS = 6;
@@ -78,19 +76,7 @@ interface BenchmarkCase {
   voting?: ConsistencyReferenceVote;
 }
 
-const rounds = option('rounds', ROUNDS),
-  source10 = new ScenarioSource(buildScenario('fixture')),
-  source0 = new ScenarioSource(buildScenario('fixture'));
-source10.info.noise = 10;
-source0.info.noise = 0;
-const makeEngine = (source: ScenarioSource): Engine =>
-  new Engine(new MemoryKV(), source, DEFAULT_SETTINGS, {
-    progress: () => {},
-    diagnostic: () => {},
-    preview: () => {},
-    project: () => {},
-  });
-const engines = { noise10: makeEngine(source10), lossless: makeEngine(source0) };
+const rounds = option('rounds', ROUNDS);
 const region = { id: 'benchmark', name: 'benchmark', kind: 'moving' as const, rect: { x: 0, y: 0, width: WIDTH, height: HEIGHT } };
 const atlas = new RegionAtlas([region], WIDTH, HEIGHT), code = atlas.code(region), data = makeFrameData();
 const voteWidth = Math.ceil(WIDTH / FACTOR), voteHeight = Math.ceil(HEIGHT / FACTOR);
@@ -142,8 +128,7 @@ const cases: BenchmarkCase[] = [
   },
 ];
 
-function run(engine: Engine, benchmarkCase: BenchmarkCase, useReference: boolean): { elapsed: number; result: Uint8Array } {
-  (engine as unknown as { factor: number }).factor = benchmarkCase.factor;
+function run(benchmarkCase: BenchmarkCase, useReference: boolean): { elapsed: number; result: Uint8Array } {
   const started = performance.now();
   const result = useReference
     ? consistencyMaskReference(
@@ -159,35 +144,38 @@ function run(engine: Engine, benchmarkCase: BenchmarkCase, useReference: boolean
       benchmarkCase.factor,
       benchmarkCase.noise,
     )
-    : (engine as unknown as { consistencyMask: (...args: unknown[]) => Uint8Array }).consistencyMask(
+    : (consistencyMask(
       data.current,
       atlas,
       region,
       code,
       benchmarkCase.pose,
       'canvas',
-      benchmarkCase.prev,
-      benchmarkCase.next,
-      benchmarkCase.voting,
-    );
+      {
+        prev: benchmarkCase.prev,
+        next: benchmarkCase.next,
+        voting: benchmarkCase.voting,
+        factor: benchmarkCase.factor,
+        noise: benchmarkCase.noise,
+      },
+    ) as Uint8Array);
   return { elapsed: performance.now() - started, result };
 }
 
 // Warm both paths, then alternate old/new order by case and round. Only one call per implementation/case/round is measured.
 for (const benchmarkCase of cases) {
-  const engine = benchmarkCase.noise ? engines.noise10 : engines.lossless;
-  run(engine, benchmarkCase, true);
-  run(engine, benchmarkCase, false);
+  run(benchmarkCase, true);
+  run(benchmarkCase, false);
 }
 const measurements = new Map<string, { reference: number[]; optimized: number[] }>();
 for (const benchmarkCase of cases) measurements.set(benchmarkCase.name, { reference: [], optimized: [] });
 for (let round = 0; round < rounds; round++) {
   for (let index = 0; index < cases.length; index++) {
-    const benchmarkCase = cases[index], engine = benchmarkCase.noise ? engines.noise10 : engines.lossless;
+    const benchmarkCase = cases[index];
     const sample = measurements.get(benchmarkCase.name)!;
     const referenceFirst = (round + index) % 2 === 0;
-    const reference = referenceFirst ? run(engine, benchmarkCase, true) : run(engine, benchmarkCase, false);
-    const optimized = referenceFirst ? run(engine, benchmarkCase, false) : run(engine, benchmarkCase, true);
+    const reference = referenceFirst ? run(benchmarkCase, true) : run(benchmarkCase, false);
+    const optimized = referenceFirst ? run(benchmarkCase, false) : run(benchmarkCase, true);
     const referenceRun = referenceFirst ? reference : optimized, optimizedRun = referenceFirst ? optimized : reference;
     sample.reference.push(referenceRun.elapsed);
     sample.optimized.push(optimizedRun.elapsed);

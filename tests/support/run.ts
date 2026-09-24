@@ -15,7 +15,7 @@ export interface RunResult extends VerifiableRun {
   diagnostics: Diagnostic[];
   codes: Set<string>;
   memory: { peakResidentTiles: number; tileCacheLimit: number };
-  events: { progress: number; diagnostics: Diagnostic[]; previews: number; projects: number };
+  events: { progress: number; diagnostics: Diagnostic[]; projects: number };
   seconds: number;
 }
 export async function runScenario(
@@ -24,11 +24,10 @@ export async function runScenario(
   control?: (engine: Engine) => void,
 ): Promise<RunResult> {
   const db = new MemoryKV(), source = new ScenarioSource(scenario);
-  const events: RunResult['events'] = { progress: 0, diagnostics: [], previews: 0, projects: 0 };
+  const events: RunResult['events'] = { progress: 0, diagnostics: [], projects: 0 };
   const handlers: EngineEvents = {
     progress: () => events.progress++,
     diagnostic: (d) => events.diagnostics.push(d),
-    preview: () => events.previews++,
     project: () => events.projects++,
   };
   const engine = new Engine(db, source, { ...DEFAULT_SETTINGS, ...settings }, handlers);

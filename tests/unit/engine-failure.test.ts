@@ -1,5 +1,6 @@
 import { assert, assertEquals } from '@std/assert';
 import { Engine, type EngineEvents } from '../../src/pipeline/engine.ts';
+import { consistencyMask } from '../../src/pipeline/consistency.ts';
 import { iterate, type KV, MemoryKV, Namespace, type Row } from '../../src/storage/db.ts';
 import {
   DEFAULT_SETTINGS,
@@ -311,42 +312,46 @@ Deno.test('engine raster consistency: rounds current and neighbour poses separat
   const region = { id: 'body', name: 'body', kind: 'moving' as const, rect: { x: 0, y: 0, width, height } };
   const atlas = new RegionAtlas([region], width, height), code = atlas.code(region);
   const engine = makeEngine(new MemoryKV(), syntheticSource(1), {});
-  const mask = (engine as unknown as { consistencyMask: (...args: unknown[]) => Uint8Array }).consistencyMask.bind(engine);
+  const { factor, noise } = engine;
   const current = image(10), fractionalNeighbour = image(10);
   fractionalNeighbour.data[(10 * width + 11) * 4] = 255;
   fractionalNeighbour.data[(10 * width + 11) * 4 + 1] = 255;
   fractionalNeighbour.data[(10 * width + 11) * 4 + 2] = 255;
-  const separatelyRounded = mask(
+  const separatelyRounded = consistencyMask(
     current,
     atlas,
     region,
     code,
     { x: .49, y: 0 },
     'canvas',
-    { image: fractionalNeighbour, x: -.49, y: 0, canvasId: 'canvas' },
-  );
+    { prev: { image: fractionalNeighbour, x: -.49, y: 0, canvasId: 'canvas' }, factor, noise },
+  ) as Uint8Array;
   assertEquals(separatelyRounded[10 * width + 10], 1, 'two poses rounding to the same raster origin must compare the same pixel');
 
   const changedNeighbour = image(10), pixel = (10 * width + 10) * 4;
   changedNeighbour.data[pixel] = changedNeighbour.data[pixel + 1] = changedNeighbour.data[pixel + 2] = 255;
-  const withoutOcclusion = mask(
+  const withoutOcclusion = consistencyMask(
     current,
     atlas,
     region,
     code,
     { x: 0, y: 0 },
     'canvas',
-    { image: changedNeighbour, x: 0, y: 0, canvasId: 'canvas' },
-  );
-  const withOcclusion = mask(
+    { prev: { image: changedNeighbour, x: 0, y: 0, canvasId: 'canvas' }, factor, noise },
+  ) as Uint8Array;
+  const withOcclusion = consistencyMask(
     current,
     atlas,
     region,
     code,
     { x: 0, y: 0 },
     'canvas',
-    { image: changedNeighbour, x: 0, y: 0, canvasId: 'canvas', occlusions: [{ x: 10, y: 10, width: 1, height: 1 }] },
-  );
+    {
+      prev: { image: changedNeighbour, x: 0, y: 0, canvasId: 'canvas', occlusions: [{ x: 10, y: 10, width: 1, height: 1 }] },
+      factor,
+      noise,
+    },
+  ) as Uint8Array;
   assertEquals(withoutOcclusion[pixel / 4], 0, 'an unmasked neighbour disagreement is inconsistent');
   assertEquals(withOcclusion[pixel / 4], 1, 'a sticky neighbour occlusion is not evidence against the current frame');
 });
@@ -370,12 +375,8 @@ Deno.test('engine integration: solve persists sticky occlusions and render carri
   assertEquals(rendered, planned, 'render must carry every solve-time sticky occlusion into its durable decision ledger');
   assert(run.codes.has('STICKY_OCCLUSION'), 'solve must journal the sticky-occlusion inference');
 });
-// F23: the scan-time preview thumbnail is gone; a frame-reference failure degrades to a warning, not a run failure.
-Deno.test('engine F23: no preview events are ever emitted', async () => {
-  const result = await runScenario(buildScenario('traversal'), { framing: 'context' });
-  assertEquals(result.events.previews, 0);
-  assertEquals(result.project.status, 'complete', result.project.error);
-});
+// F23: a frame-reference write failure is a warning, not a run failure (the scan-time preview thumbnail EngineEvents.preview
+// carried is gone entirely — see src/pipeline/engine.ts's EngineEvents; it was unread by every caller).
 Deno.test('engine F23: a frame-reference write failure is a warning (PRESENTATION_REFERENCE_FAILED), not a run failure; framing is then skipped', async () => {
   const scenario = buildScenario('traversal'), db = new MemoryKV(), source = new ScenarioSource(scenario);
   const flaky: KV = {

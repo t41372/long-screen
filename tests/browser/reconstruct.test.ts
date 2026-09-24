@@ -41,7 +41,6 @@ async function reconstruct(page: import('playwright').Page, source: string, anal
       diagnostic: (d: any) => {
         diag[d.code] = (diag[d.code] || 0) + 1;
       },
-      preview: () => {},
       project: () => {},
     });
     const t0 = performance.now(), project = await engine.run(), seconds = (performance.now() - t0) / 1000;
@@ -207,7 +206,6 @@ Deno.test({
             diagnostic: (d: any) => {
               diag[d.code] = (diag[d.code] || 0) + 1;
             },
-            preview: () => {},
             project: () => {},
           });
           const t0 = performance.now(), project = await engine.run();

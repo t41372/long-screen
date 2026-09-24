@@ -304,7 +304,6 @@ async function runPass(
         diagnostic: (diagnostic: { code: string }) => {
           diagnostics[diagnostic.code] = (diagnostics[diagnostic.code] || 0) + 1;
         },
-        preview: () => {},
         project: () => {},
       });
       const originalCodec = engine.tiles.codec;

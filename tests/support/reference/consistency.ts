@@ -1,6 +1,6 @@
-import { resolveRasterPose } from '../../src/core/raster.ts';
-import type { RegionAtlas } from '../../src/core/layers.ts';
-import type { Rect, Region, RGBA } from '../../src/types.ts';
+import { resolveRasterPose } from '../../../src/core/raster.ts';
+import type { RegionAtlas } from '../../../src/core/layers.ts';
+import type { Rect, Region, RGBA } from '../../../src/types.ts';
 
 /** The pre-optimization implementation, kept independent so randomized tests can detect semantic drift. */
 export interface ConsistencyReferenceVote {
