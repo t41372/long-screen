@@ -61,7 +61,17 @@ const INCLUDE = '--include=^file:.*/(src/.*|main\\.ts)$';
  *  coverage swung 87.1–89.3% across runs; the floor was lowered to floor(worst observed). `RenderPass` now takes
  *  its clock as a constructor argument (defaulting to `performance.now` in production, injected as a fake in
  *  tests/unit/render-checkpoint-flush.test.ts), so a direct test always exercises both branches regardless of
- *  timing; re-measured at a stable 89.3% across five consecutive runs, restoring the floor to 89. */
+ *  timing; re-measured at a stable 89.3% across five consecutive runs, restoring the floor to 89.
+ *  media/mp4.ts and media/webm.ts were replaced by media/mediabunny-demux.ts (container demuxing on the mediabunny
+ *  package) and media/isobmff-probe.ts (the small pre-check for conditions mediabunny doesn't reject on its own);
+ *  their floors moved to the new files at floor(measured). media/reader.ts kept its 100 floor: a direct test now
+ *  exercises `BlobReader.u64()`'s in-range return, the one path only the deleted demuxers' box parsing used to
+ *  reach; mediabunny-demux.ts's floor (91) and isobmff-probe.ts's (94) are floor(measured) as the two files grew —
+ *  a Matroska CodecID string not translatable to a WebCodecs codec (`matroskaCodecId`'s own defensive fallback
+ *  branches, exercised only on its success path by a direct test) and the non-square-PAR/HDR container warnings
+ *  (`track.getPixelAspectRatio()`/`hasHighDynamicRange()`, both mediabunny-side reads with no fixture on hand that
+ *  exercises them) are the uncovered lines; nothing here regressed, the new code is just wider than the two direct
+ *  tests it has. */
 const FLOORS: [RegExp, number][] = [
   [/^codec\/crc\.ts$/, 100],
   [/^codec\/png\.ts$/, 96],
@@ -108,12 +118,12 @@ const FLOORS: [RegExp, number][] = [
   [/^main\.ts$/, 50],
   [/^media\/convert\.ts$/, 8],
   [/^media\/demo\.ts$/, 100],
-  [/^media\/mp4\.ts$/, 82],
+  [/^media\/isobmff-probe\.ts$/, 94],
+  [/^media\/mediabunny-demux\.ts$/, 91],
   [/^media\/pool\.ts$/, 100],
   [/^media\/reader\.ts$/, 100],
   [/^media\/rgba-copy\.ts$/, 14],
   [/^media\/source\.ts$/, 94],
-  [/^media\/webm\.ts$/, 70],
   [/^pipeline\/attachments\.ts$/, 100],
   [/^pipeline\/consistency\.ts$/, 100],
   [/^pipeline\/context\.ts$/, 92],

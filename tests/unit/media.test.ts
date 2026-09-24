@@ -1,8 +1,8 @@
 import '../support/core.ts';
 import { assert, assertEquals, assertRejects } from '@std/assert';
 import { BlobReader, type Packet } from '../../src/media/reader.ts';
-import { av01CodecString, MP4Demuxer } from '../../src/media/mp4.ts';
-import { vp09CodecString, WebMDemuxer } from '../../src/media/webm.ts';
+import { MediabunnyDemuxer } from '../../src/media/mediabunny-demux.ts';
+import { probeIsobmff } from '../../src/media/isobmff-probe.ts';
 import { bitmapReader, CompatibilitySource, openDemuxer, openMedia, PreciseSource, Signal } from '../../src/media/source.ts';
 import { canvasConverter } from '../../src/media/convert.ts';
 import { BufferPool, releaseUnlessHeld } from '../../src/media/pool.ts';
@@ -14,12 +14,12 @@ async function fixture(name: string): Promise<File> {
 }
 for (const name of ['scroll.mp4', 'scroll.mov', 'fragmented.mp4', 'scroll.webm', 'negative-cts.mov', 'negative-cts-v0.mov']) {
   Deno.test(`demux ${name}: exact packet count, B-frame presentation order, bounded sizes`, async () => {
-    const file = await fixture(name), d = await (name.endsWith('webm') ? new WebMDemuxer(file) : new MP4Demuxer(file)).init();
+    const file = await fixture(name), d = await new MediabunnyDemuxer(file).init();
     assertEquals(d.width, 320);
     assertEquals(d.height, 240);
     const packets: Packet[] = [];
     for await (const p of d.packets()) {
-      assert(p.size > 0 && p.offset >= 0 && p.offset + p.size <= file.size);
+      assert(p.data.length > 0);
       packets.push(p);
     }
     assertEquals(packets.length, truth.frames);
@@ -49,8 +49,8 @@ for (const name of ['scroll.mp4', 'scroll.mov', 'fragmented.mp4', 'scroll.webm',
   });
 }
 Deno.test('demux: ReplayKit-style version-0 ctts yields the same timeline as the signed version-1 box', async () => {
-  const a = await new MP4Demuxer(await fixture('negative-cts.mov')).init(),
-    b = await new MP4Demuxer(await fixture('negative-cts-v0.mov')).init();
+  const a = await new MediabunnyDemuxer(await fixture('negative-cts.mov')).init(),
+    b = await new MediabunnyDemuxer(await fixture('negative-cts-v0.mov')).init();
   const ta: number[] = [], tb: number[] = [];
   for await (const p of a.packets()) {
     ta.push(p.timestamp);
@@ -61,22 +61,24 @@ Deno.test('demux: ReplayKit-style version-0 ctts yields the same timeline as the
   assertEquals(ta, tb);
 });
 Deno.test('demux: a version-0 ctts with negative (high-bit) offsets is flagged NONSTANDARD_SIGNED_CTTS_V0; version 1 and ordinary files are not', async () => {
-  const v0 = await new MP4Demuxer(await fixture('negative-cts-v0.mov')).init();
-  assert(v0.warnings.some((w) => w.startsWith('NONSTANDARD_SIGNED_CTTS_V0')), JSON.stringify(v0.warnings));
-  const v1 = await new MP4Demuxer(await fixture('negative-cts.mov')).init();
-  assert(!v1.warnings.some((w) => w.startsWith('NONSTANDARD_SIGNED_CTTS_V0')));
-  const scroll = await new MP4Demuxer(await fixture('scroll.mp4')).init();
-  assert(!scroll.warnings.some((w) => w.startsWith('NONSTANDARD_SIGNED_CTTS_V0')));
+  const v0 = await new MediabunnyDemuxer(await fixture('negative-cts-v0.mov')).init();
+  assert(v0.warnings.some((w: string) => w.startsWith('NONSTANDARD_SIGNED_CTTS_V0')), JSON.stringify(v0.warnings));
+  const v1 = await new MediabunnyDemuxer(await fixture('negative-cts.mov')).init();
+  assert(!v1.warnings.some((w: string) => w.startsWith('NONSTANDARD_SIGNED_CTTS_V0')));
+  const scroll = await new MediabunnyDemuxer(await fixture('scroll.mp4')).init();
+  assert(!scroll.warnings.some((w: string) => w.startsWith('NONSTANDARD_SIGNED_CTTS_V0')));
 });
-Deno.test('demux: malformed and unsupported containers are rejected explicitly', async () => {
-  await assertRejects(() => new MP4Demuxer(new File([new Uint8Array(64)], 'bad.mp4')).init(), Error);
-  await assertRejects(() => new MP4Demuxer(new File([new Uint8Array(4)], 'tiny.mp4')).init(), Error, 'moov');
-  await assertRejects(() => new WebMDemuxer(new File([new Uint8Array(64)], 'bad.webm')).init(), Error);
+Deno.test('demux: malformed and unsupported containers are rejected explicitly, with the same frozen error text the hand-written demuxers used', async () => {
+  await assertRejects(() => new MediabunnyDemuxer(new File([new Uint8Array(64)], 'bad.mp4')).init(), Error, 'moov');
+  await assertRejects(() => new MediabunnyDemuxer(new File([new Uint8Array(4)], 'tiny.mp4')).init(), Error, 'moov');
+  await assertRejects(() => new MediabunnyDemuxer(new File([new Uint8Array(64)], 'bad.webm')).init(), Error);
   const header = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0x80]);
-  await assertRejects(() => new WebMDemuxer(new File([header], 'nosegment.webm')).init(), Error);
-  await assertRejects(() => openDemuxer(new File([new Uint8Array(32)], 'x.bin')), Error);
-  assert((await openDemuxer(await fixture('scroll.webm'))) instanceof WebMDemuxer);
-  assert((await openDemuxer(await fixture('scroll.mp4'))) instanceof MP4Demuxer);
+  await assertRejects(() => new MediabunnyDemuxer(new File([header], 'nosegment.webm')).init(), Error, 'Missing WebM segment');
+  await assertRejects(() => openDemuxer(new File([new Uint8Array(32)], 'x.bin')), Error, 'moov');
+  const webm = await openDemuxer(await fixture('scroll.webm'));
+  assertEquals(webm.width, 320);
+  const mp4 = await openDemuxer(await fixture('scroll.mp4'));
+  assertEquals(mp4.config.codec, 'avc1.64000d');
 });
 Deno.test('demux: moov without a video track, an audio-only file and a truncated table are reported', async () => {
   const file = await fixture('scroll.mp4'), bytes = new Uint8Array(await file.arrayBuffer());
@@ -84,11 +86,31 @@ Deno.test('demux: moov without a video track, an audio-only file and a truncated
   assert(hdlr > 0);
   const noVideo = bytes.slice();
   noVideo.set(new TextEncoder().encode('soun'), hdlr);
-  await assertRejects(() => new MP4Demuxer(new File([noVideo], 'audio.mp4')).init(), Error, 'No video track');
+  await assertRejects(() => new MediabunnyDemuxer(new File([noVideo], 'audio.mp4')).init(), Error, 'No video track');
   const stsz = text.indexOf('stsz');
   const zeroSamples = bytes.slice();
   new DataView(zeroSamples.buffer).setUint32(stsz + 12, 0);
-  await assertRejects(() => new MP4Demuxer(new File([zeroSamples], 'empty.mp4')).init(), Error, 'No decodable video samples');
+  await assertRejects(() => new MediabunnyDemuxer(new File([zeroSamples], 'empty.mp4')).init(), Error, 'No decodable video samples');
+});
+Deno.test('demux: an unrecognized Matroska CodecID is reported by name, and a file cut in half fails at open rather than opening with zero packets', async () => {
+  const bytes = new Uint8Array(await (await fixture('scroll.webm')).arrayBuffer());
+  const text = new TextDecoder('latin1').decode(bytes), codecId = text.indexOf('V_VP9');
+  assert(codecId > 0);
+  const unknownCodec = bytes.slice();
+  unknownCodec.set(new TextEncoder().encode('V_XP9'), codecId);
+  await assertRejects(
+    () => new MediabunnyDemuxer(new File([unknownCodec], 'unknown-codec.webm')).init(),
+    Error,
+    'Unsupported Matroska codec V_XP9. Compatibility mode may support it.',
+  );
+  // Cut away everything after the Segment Info: Duration is still declared (mediabunny trusts it and skips the
+  // full-file walk), but there are no clusters left to decode — this must still fail at open, not open silently
+  // with zero packets and no error.
+  await assertRejects(
+    () => new MediabunnyDemuxer(new File([bytes.slice(0, 400)], 'half.webm')).init(),
+    Error,
+    'No decodable video samples were found.',
+  );
 });
 // --- Minimal hand-built MP4 boxes, for demuxer edge cases too specific to reproduce by patching a real fixture. ---
 function ascii(s: string): Uint8Array<ArrayBuffer> {
@@ -182,22 +204,73 @@ function stszBox(sizes: number[]): Uint8Array<ArrayBuffer> {
 function stssBox(syncSamples: number[]): Uint8Array<ArrayBuffer> {
   return mkBox('stss', beU32(0), beU32(syncSamples.length), ...syncSamples.map(beU32));
 }
-/** A minimal single-track, non-fragmented MP4 driving tablePackets(): only the sample-table shape under test matters. */
+/** version-0 `elst`: each entry is duration(4)/time(4)/rate as a 16.16 fixed-point integer part in the first two
+ *  of its 4 bytes (the only part isobmff-probe.ts reads, matching the hand-written demuxer it replaced). */
+function elstBox(entries: [duration: number, time: number, rateInt: number][]): Uint8Array<ArrayBuffer> {
+  const parts = [beU32(0), beU32(entries.length)];
+  for (const [duration, time, rateInt] of entries) {
+    const rate = new Uint8Array(4);
+    new DataView(rate.buffer).setInt16(0, rateInt);
+    parts.push(beU32(duration), beI32(time), rate);
+  }
+  return mkBox('elst', ...parts);
+}
+function edtsBox(elst: Uint8Array): Uint8Array<ArrayBuffer> {
+  return mkBox('edts', elst);
+}
+/** A minimal moov/trak/mdia tree for isobmff-probe.ts's own box walk (edts/elst, stbl/stsc) — the probe never reads
+ *  sample data or needs an ftyp box, so this skips minimalTableMP4's mediabunny-shaped backing bytes entirely. */
+function minimalProbeMP4(opts: { edts?: Uint8Array<ArrayBuffer>; stsc?: Uint8Array<ArrayBuffer> }): Uint8Array<ArrayBuffer> {
+  const stblParts = [stsdBox(16, 16), sttsBox([[1, 1000]])];
+  if (opts.stsc) {
+    stblParts.push(opts.stsc);
+  } else {
+    stblParts.push(stscBox([[1, 1, 1]]));
+  }
+  stblParts.push(stcoBox([0]), stszBox([4]));
+  const minf = mkBox('minf', mkBox('stbl', ...stblParts));
+  const mdia = mkBox('mdia', mdhdBox(1000, 1000), hdlrBox(), minf);
+  const trakParts = [tkhdBox(1)];
+  if (opts.edts) {
+    trakParts.push(opts.edts);
+  }
+  trakParts.push(mdia);
+  return mkBox('moov', mkBox('trak', ...trakParts));
+}
+/** 4-byte "brand" ftyp box: mediabunny sniffs the container format from ftyp/styp (the hand-written demuxer never
+ *  needed one, since it didn't distinguish formats by signature the way mediabunny's `IsobmffInputFormat` does). */
+function ftypBox(): Uint8Array<ArrayBuffer> {
+  return mkBox('ftyp', ascii('isom'), beU32(0), ascii('isom'), ascii('mp41'));
+}
+/** A minimal single-track, non-fragmented MP4 exercising the sample-table shape under test. Real backing bytes are
+ *  appended after the header (not just a fake `stco` offset, as the hand-written demuxer's own lazy `reader.read()`
+ *  tolerated) because mediabunny resolves a packet's bytes eagerly, as part of producing it. */
 function minimalTableMP4(
   opts: { count: number; timescale?: number; stts: [number, number][]; ctts?: [number, number][]; stss?: number[]; sizes?: number[] },
 ): Uint8Array<ArrayBuffer> {
-  const timescale = opts.timescale ?? 1000;
+  const timescale = opts.timescale ?? 1000, sizes = opts.sizes ?? Array(opts.count).fill(4);
   const stblParts = [stsdBox(16, 16), sttsBox(opts.stts)];
   if (opts.ctts) {
     stblParts.push(cttsBox(opts.ctts));
   }
-  stblParts.push(stscBox([[1, opts.count, 1]]), stcoBox([1000]), stszBox(opts.sizes ?? Array(opts.count).fill(4)));
+  stblParts.push(stscBox([[1, opts.count, 1]]), stcoBox([0]), stszBox(sizes));
   if (opts.stss) {
     stblParts.push(stssBox(opts.stss));
   }
   const minf = mkBox('minf', mkBox('stbl', ...stblParts));
   const mdia = mkBox('mdia', mdhdBox(timescale, opts.count * 1000), hdlrBox(), minf);
-  return mkBox('moov', mkBox('trak', tkhdBox(1), mdia));
+  const header = concatAll([ftypBox(), mkBox('moov', mkBox('trak', tkhdBox(1), mdia))]);
+  // Patch the placeholder stco chunk offset (0) to point right after the header, then append that many real bytes.
+  const stco = mkBox('stco', beU32(0), beU32(1), beU32(0));
+  let at = -1;
+  for (let i = 0; i + stco.length <= header.length && at < 0; i++) {
+    if (stco.slice(0, -4).every((b, j) => header[i + j] === b)) {
+      at = i;
+    }
+  }
+  const patched = header.slice();
+  new DataView(patched.buffer).setUint32(at + 8, header.length);
+  return concatAll([patched, new Uint8Array(sizes.reduce((a, b) => a + b, 0))]);
 }
 /** tfhd flags: 1 base-data-offset-present, 2 sample-description-index-present, 8/16/32 default duration/size/flags. */
 function tfhdBox(
@@ -252,33 +325,49 @@ function trunBox(
   }
   return mkBox('trun', ...parts);
 }
-/** A minimal single-track fragmented MP4 (moov with an empty stbl + one moof/traf) driving fragmentPackets(). */
+function trexBox(trackId: number): Uint8Array<ArrayBuffer> {
+  return mkBox('trex', beU32(0), beU32(trackId), beU32(1), beU32(0), beU32(0), beU32(0));
+}
+function mfhdBox(sequence: number): Uint8Array<ArrayBuffer> {
+  return mkBox('mfhd', beU32(0), beU32(sequence));
+}
+/** A minimal single-track fragmented MP4 (moov with `mvex`/`trex` + one moof/traf) exercising fragment parsing.
+ *  `mvex` is what tells mediabunny's ISOBMFF demuxer the file is fragmented at all — the hand-written demuxer
+ *  inferred that from the presence of a `moof` box instead and never needed one. A real `mdat` backs every trun's
+ *  declared sample bytes, for the same eager-read reason `minimalTableMP4` appends its own backing bytes. */
 function minimalFragmentedMP4(trackId: number, traf: Uint8Array): Uint8Array<ArrayBuffer> {
   const minf = mkBox('minf', mkBox('stbl', stsdBox(16, 16)));
   const mdia = mkBox('mdia', mdhdBox(1000, 0), hdlrBox(), minf);
-  const moov = mkBox('moov', mkBox('trak', tkhdBox(trackId), mdia));
-  return concatAll([moov, mkBox('moof', traf)]);
+  const mvex = mkBox('mvex', trexBox(trackId));
+  const moov = mkBox('moov', mkBox('trak', tkhdBox(trackId), mdia), mvex);
+  return concatAll([ftypBox(), moov, mkBox('moof', mfhdBox(1), traf), mkBox('mdat', new Uint8Array(2000))]);
 }
-Deno.test('demux: MP4 E2 — an stss box with entry_count 0 does not read a stray sync-sample index (or run off the box)', async () => {
+Deno.test('demux: MP4 E2 — an stss box with entry_count 0 does not crash or drop samples; the adapter reports the same packet count as an ordinary file', async () => {
+  // The hand-written demuxer additionally asserted that an empty-but-present stss box marks every sample non-key
+  // (its own sync-sample loop's degenerate case). mediabunny does not read this box as "no sync samples declared"
+  // the way that loop did; it forces sample 0 to be a sync point regardless (not "every sample", which is what an
+  // absent stss box means under ISO 14496-12 — this is its own, narrower fallback for an unreadable sync-sample
+  // table). That is mediabunny's own internal choice, not this adapter's, but it does make such a file decodable
+  // (a run needs a keyframe to start from), which is worth locking in alongside the no-crash/no-lost-samples check.
   const bytes = minimalTableMP4({ count: 3, stts: [[3, 1000]], stss: [] });
-  const d = await new MP4Demuxer(new File([bytes], 'e2.mp4')).init();
+  const d = await new MediabunnyDemuxer(new File([bytes], 'e2.mp4')).init();
   const packets: Packet[] = [];
   for await (const p of d.packets()) {
     packets.push(p);
   }
+  assert(packets[0].key, 'sample 0 must be usable as a decode start point even with an unreadable sync-sample table');
   assertEquals(packets.length, 3);
-  assert(packets.every((p) => !p.key), 'an empty stss table declares no sync samples');
 });
-Deno.test('demux: MP4 E3 — fragmentPackets rejects a tfhd sample-description-index other than 1, like tablePackets does', async () => {
+Deno.test('demux: MP4 E3 — a tfhd sample-description-index other than 1 is rejected before mediabunny demuxes the fragment (which otherwise warns and ignores it)', async () => {
   const traf = mkBox('traf', tfhdBox(1, 2, { descriptionIndex: 2 }));
   await assertRejects(
-    () => new MP4Demuxer(new File([minimalFragmentedMP4(1, traf)], 'e3.mp4')).init(),
+    () => new MediabunnyDemuxer(new File([minimalFragmentedMP4(1, traf)], 'e3.mp4')).init(),
     Error,
     'Sample-description/codec changes require compatibility mode.',
   );
   // Absent (no flag 2 at all) must NOT throw: the implicit default description index is 1.
   const fine = mkBox('traf', tfhdBox(1, 0), tfdtBox(0), trunBox(0x1 | 0x200, [{ size: 4 }], { dataOffset: 100 }));
-  const d = await new MP4Demuxer(new File([minimalFragmentedMP4(1, fine)], 'e3-ok.mp4')).init();
+  const d = await new MediabunnyDemuxer(new File([minimalFragmentedMP4(1, fine)], 'e3-ok.mp4')).init();
   const packets: Packet[] = [];
   for await (const p of d.packets()) {
     packets.push(p);
@@ -288,37 +377,70 @@ Deno.test('demux: MP4 E3 — fragmentPackets rejects a tfhd sample-description-i
 Deno.test('demux: MP4 E4 — composition offset pads with 0 once the ctts table is exhausted, not the last entry repeated', async () => {
   // 4 samples, stts delta 1000 (timescale 1000 => 1s apart); ctts only covers the first 2 samples with +500.
   const bytes = minimalTableMP4({ count: 4, stts: [[4, 1000]], ctts: [[2, 500]] });
-  const d = await new MP4Demuxer(new File([bytes], 'e4.mp4')).init();
+  const d = await new MediabunnyDemuxer(new File([bytes], 'e4.mp4')).init();
   const packets: Packet[] = [];
   for await (const p of d.packets()) {
     packets.push(p);
   }
   assertEquals(packets.map((p) => p.timestamp), [500000, 1500000, 2000000, 3000000]);
 });
-Deno.test('demux: MP4 E5 — a fragment sample with zero duration is allowed (duration: 0); zero size still throws', async () => {
+Deno.test('demux: MP4 E5 — a fragment sample with zero duration is allowed (duration: 0); zero size is rejected at init(), before any packet is read', async () => {
   const okTraf = mkBox('traf', tfhdBox(1, 0), tfdtBox(0), trunBox(0x1 | 0x100 | 0x200, [{ duration: 0, size: 4 }], { dataOffset: 100 }));
-  const ok = await new MP4Demuxer(new File([minimalFragmentedMP4(1, okTraf)], 'e5-ok.mp4')).init();
+  const ok = await new MediabunnyDemuxer(new File([minimalFragmentedMP4(1, okTraf)], 'e5-ok.mp4')).init();
   const packets: Packet[] = [];
   for await (const p of ok.packets()) {
     packets.push(p);
   }
   assertEquals(packets.length, 1);
   assertEquals(packets[0].duration, 0);
-  assertEquals(packets[0].size, 4);
+  assertEquals(packets[0].data.length, 4);
   const badTraf = mkBox(
     'traf',
     tfhdBox(1, 0),
     tfdtBox(0),
     trunBox(0x1 | 0x100 | 0x200, [{ duration: 1000, size: 0 }], { dataOffset: 100 }),
   );
+  // The zero-size sample surfaces during init()'s own metadataOnly count walk (byteLength is carried by a
+  // metadata-only packet), not lazily inside packets() — a caller that only opens a file to read its MediaInfo
+  // must see this failure too, not just one that goes on to decode.
   await assertRejects(
-    () => new MP4Demuxer(new File([minimalFragmentedMP4(1, badTraf)], 'e5-bad.mp4')).init(),
+    () => new MediabunnyDemuxer(new File([minimalFragmentedMP4(1, badTraf)], 'e5-bad.mp4')).init(),
     Error,
     'Fragment has no sample size.',
   );
 });
+Deno.test('demux: isobmff-probe rejects a non-unit edit-list rate', async () => {
+  const bytes = minimalProbeMP4({ edts: edtsBox(elstBox([[1000, 0, 2]])) });
+  await assertRejects(
+    () => probeIsobmff(new File([bytes], 'rate.mp4')),
+    Error,
+    'A non-unit MOV edit playback rate needs compatibility mode.',
+  );
+});
+Deno.test('demux: isobmff-probe rejects multiple discontinuous movie edits', async () => {
+  const bytes = minimalProbeMP4({ edts: edtsBox(elstBox([[500, 0, 1], [500, 100, 1]])) });
+  await assertRejects(
+    () => probeIsobmff(new File([bytes], 'multi-edit.mp4')),
+    Error,
+    'Multiple discontinuous movie edits need compatibility mode; they will not be silently flattened.',
+  );
+  // A single empty edit (time -1) plus one real edit is the ordinary, single-valid-entry case and must not throw.
+  const single = minimalProbeMP4({ edts: edtsBox(elstBox([[200, -1, 1], [500, 0, 1]])) });
+  await probeIsobmff(new File([single], 'one-edit.mp4'));
+});
+Deno.test('demux: isobmff-probe rejects a sample-description index other than 1 in stsc', async () => {
+  const bytes = minimalProbeMP4({ stsc: stscBox([[1, 1, 2]]) });
+  await assertRejects(
+    () => probeIsobmff(new File([bytes], 'stsc-index.mp4')),
+    Error,
+    'Sample-description/codec changes require compatibility mode.',
+  );
+  // Index 1 (the ordinary case) must not throw.
+  const ok = minimalProbeMP4({});
+  await probeIsobmff(new File([ok], 'stsc-ok.mp4'));
+});
 Deno.test('demux: WebM skips the full-file frame-count walk when Segment Info Duration is present, and falls back to it when absent', async () => {
-  const withDuration = await new WebMDemuxer(await fixture('scroll.webm')).init();
+  const withDuration = await new MediabunnyDemuxer(await fixture('scroll.webm')).init();
   assertEquals(withDuration.frameCount, undefined);
   assert(withDuration.duration > 1.3 && withDuration.duration < 1.6, `duration ${withDuration.duration}`);
   // Rename the Duration element's 2-byte EBML ID (0x4489 -> the unused-but-same-length-class 0x4400), leaving its
@@ -334,25 +456,22 @@ Deno.test('demux: WebM skips the full-file frame-count walk when Segment Info Du
   assert(patched >= 0, 'fixture must actually carry a Segment Info Duration element to make this test meaningful');
   const noDuration = bytes.slice();
   noDuration[patched + 1] = 0x00;
-  const fallback = await new WebMDemuxer(new File([noDuration], 'no-duration.webm')).init();
+  const fallback = await new MediabunnyDemuxer(new File([noDuration], 'no-duration.webm')).init();
   assertEquals(fallback.frameCount, truth.frames);
   assert(fallback.duration > 1.3 && fallback.duration < 1.6, `duration ${fallback.duration}`);
 });
-Deno.test('vp09CodecString: builds vp09.PP.LL.DD from Matroska feature records; missing fields keep the caller default', () => {
-  // [id:1][len:1][value]: 1=profile, 2=level, 3=bit depth, 4=chroma subsampling (present but unused in the string).
-  assertEquals(vp09CodecString(new Uint8Array([1, 1, 2, 2, 1, 10, 3, 1, 10, 4, 1, 1])), 'vp09.02.10.10');
-  assertEquals(vp09CodecString(new Uint8Array([1, 1, 0, 2, 1, 0])), undefined); // no bit-depth record
-  assertEquals(vp09CodecString(new Uint8Array([])), undefined);
-  assertEquals(vp09CodecString(new Uint8Array([1, 5, 0])), undefined); // truncated record (len exceeds buffer)
-});
-Deno.test('av01CodecString: builds av01.P.LLT.DD from the AV1 Codec Configuration Record (shared with the av1C box)', () => {
-  assertEquals(av01CodecString(new Uint8Array([0x81, 0x04, 0x40])), 'av01.0.04M.10'); // profile 0, level 4, main tier, 10-bit
-  assertEquals(av01CodecString(new Uint8Array([0x81, 0x20, 0x80])), 'av01.1.00H.08'); // profile 1, level 0, high tier, 8-bit
-  assertEquals(av01CodecString(new Uint8Array([0x81, 0x00, 0x60])), 'av01.0.00M.12'); // 12-bit (high_bitdepth + twelve_bit)
+Deno.test('demux: scroll.webm is VP9 Profile 1 (gbrp), reported with its real codec string rather than the generic Profile-0 default', async () => {
+  // scroll.webm's Matroska track carries no CodecPrivate at all for this VP9 stream — the hand-written WebMDemuxer
+  // had nothing to read and always fell back to the generic default 'vp09.00.10.08' (profile 0). mediabunny
+  // instead reads the real profile out of the first frame's uncompressed header, which is where the level (50
+  // here) is also read from — a guess in the sense that it is the level of the first frame observed, not a
+  // per-file constant declared anywhere, but the profile/bit-depth/chroma fields it is built from are exact.
+  const d = await new MediabunnyDemuxer(await fixture('scroll.webm')).init();
+  assertEquals(d.config.codec, 'vp09.01.50.08.03.01.13.00.01');
 });
 Deno.test('demux: F13 — fragmented-bdo.mp4 (no default_base_moof, so tfhd uses base-data-offset-present) matches fragmented.mp4 exactly', async () => {
-  const withDefaultBase = await new MP4Demuxer(await fixture('fragmented.mp4')).init();
-  const withoutDefaultBase = await new MP4Demuxer(await fixture('fragmented-bdo.mp4')).init();
+  const withDefaultBase = await new MediabunnyDemuxer(await fixture('fragmented.mp4')).init();
+  const withoutDefaultBase = await new MediabunnyDemuxer(await fixture('fragmented-bdo.mp4')).init();
   const a: Packet[] = [], b: Packet[] = [];
   for await (const p of withDefaultBase.packets()) {
     a.push(p);
@@ -365,16 +484,12 @@ Deno.test('demux: F13 — fragmented-bdo.mp4 (no default_base_moof, so tfhd uses
   assertEquals(a.map((p) => p.timestamp), b.map((p) => p.timestamp));
   assertEquals(a.map((p) => p.duration), b.map((p) => p.duration));
   assertEquals(a.map((p) => p.key), b.map((p) => p.key));
-  const fileSize = (await fixture('fragmented-bdo.mp4')).size;
   for (const p of b) {
-    assert(
-      p.offset >= 0 && p.size > 0 && p.offset + p.size <= fileSize,
-      `packet at ${p.offset}+${p.size} must lie inside the file (${fileSize})`,
-    );
+    assert(p.data.length > 0, `packet must carry non-empty data`);
   }
 });
 Deno.test('demux: F18 — a container that declares rotation 90 via the tkhd matrix (no pixel transposed) swaps PreciseSource.info width/height', async () => {
-  const d = await new MP4Demuxer(await fixture('rotated.mp4')).init();
+  const d = await new MediabunnyDemuxer(await fixture('rotated.mp4')).init();
   assertEquals(d.rotation, 90);
   assertEquals(d.width, 320); // coded/stored size is untouched by rotation metadata
   assertEquals(d.height, 240);
@@ -411,7 +526,7 @@ Deno.test('demux: real recordings in test_case/ (skipped when absent) parse with
       console.log(`skip ${name}: not present`);
       continue;
     }
-    const d = await new MP4Demuxer(file).init();
+    const d = await new MediabunnyDemuxer(file).init();
     assertEquals([d.width, d.height, d.frameCount], [facts.width, facts.height, facts.frames]);
     assert(Math.abs(d.duration - facts.duration) < .01);
     assert(d.config.codec.startsWith('avc1.4d00'));
@@ -431,7 +546,7 @@ Deno.test('demux: real recordings in test_case/ (skipped when absent) parse with
     for (let i = 1; i < pts.length; i++) {
       assert(pts[i] > pts[i - 1], 'presentation timestamps must be distinct');
     }
-    d.reader.clear();
+    d.dispose();
   }
 });
 Deno.test('BlobReader reads bounded pages, splits boundary reads, evicts, and rejects out-of-range requests', async () => {
@@ -463,6 +578,8 @@ Deno.test('BlobReader reads bounded pages, splits boundary reads, evicts, and re
   const small = new BlobReader(new Blob([new Uint8Array([0, 0, 0, 5, 0, 7, 255, 255, 255, 255, 255, 255, 255, 255])]));
   assertEquals(await small.u32(0), 5);
   assertEquals(await small.u16(4), 7);
+  const inRange = new BlobReader(new Blob([new Uint8Array([0, 0, 0, 0, 0, 0, 0, 42])]));
+  assertEquals(await inRange.u64(0), 42);
   await assertRejects(() => small.u64(6), Error, 'safe-integer');
   reader.clear();
 });
@@ -598,10 +715,9 @@ Deno.test('source: decoding pipeline yields every packet in presentation order w
 Deno.test('source: negative timestamps are skipped with a notice; backwards timestamps continue with a notice', async () => {
   const fake = installFakeDecoder();
   try {
-    const demux = await new MP4Demuxer(await fixture('scroll.mp4')).init();
+    const demux = await new MediabunnyDemuxer(await fixture('scroll.mp4')).init();
     const shifted = {
       ...demux,
-      reader: demux.reader,
       config: demux.config,
       warnings: [],
       async *packets() {
@@ -618,7 +734,6 @@ Deno.test('source: negative timestamps are skipped with a notice; backwards time
     assertEquals(source.info.notices![0].count, truth.frames - count);
     const scrambled = {
       ...demux,
-      reader: demux.reader,
       config: demux.config,
       warnings: [],
       async *packets() {
@@ -640,10 +755,9 @@ Deno.test('source: negative timestamps are skipped with a notice; backwards time
 Deno.test('source: F20 — notices reset at the start of each frames() pass, so calling it repeatedly on one PreciseSource does not accumulate counts', async () => {
   const fake = installFakeDecoder();
   try {
-    const demux = await new MP4Demuxer(await fixture('scroll.mp4')).init();
+    const demux = await new MediabunnyDemuxer(await fixture('scroll.mp4')).init();
     const shifted = {
       ...demux,
-      reader: demux.reader,
       config: demux.config,
       warnings: [],
       async *packets() {
@@ -686,7 +800,7 @@ Deno.test('source: bitstream size wins over container metadata on the first fram
   } finally {
     fake.restore();
   }
-  const demux = await new MP4Demuxer(await fixture('scroll.mp4')).init();
+  const demux = await new MediabunnyDemuxer(await fixture('scroll.mp4')).init();
   const packets = [];
   for await (const p of demux.packets()) {
     packets.push(p);

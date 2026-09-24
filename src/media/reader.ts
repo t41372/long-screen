@@ -58,15 +58,15 @@ export class BlobReader {
     this.pages.clear();
   }
 }
+/** One decodable sample, with its bytes already resolved: mediabunny reads them off its own bounded `BlobSource`
+ *  cache as the packet is produced, so there is no separate offset/length handle to defer the read with. */
 export interface Packet {
-  offset: number;
-  size: number;
+  data: Uint8Array;
   timestamp: number;
   duration: number;
   key: boolean;
 }
 export interface Demuxer {
-  reader: BlobReader;
   config: VideoDecoderConfig;
   width: number;
   height: number;
@@ -75,4 +75,6 @@ export interface Demuxer {
   frameCount?: number;
   warnings: string[];
   packets(): AsyncGenerator<Packet>;
+  /** Releases the underlying mediabunny `Input` (and whatever cache it holds). Idempotent. */
+  dispose(): void;
 }

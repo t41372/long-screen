@@ -72,8 +72,16 @@ export function directConverter(fallback: FrameConverter = planarConverter()): F
 /** Codes of rust/core/src/yuv.rs `Format::from_code`. */
 const FRAME_FORMATS: Record<string, number> = { I420: 0, I422: 1, I444: 2, NV12: 3 };
 /** Index into rust/core/src/yuv.rs `MATRICES`, or undefined for BT.2020 (its gamut conversion to sRGB is left to
- *  the canvas). An untagged frame is taken as BT.709 when HD and BT.601 otherwise. */
-function matrixCode(colorSpace: VideoColorSpace | undefined, height: number): number | undefined {
+ *  the canvas) or for GBR/RGB-native planes (there is no YUV matrix to invert at all — a 4:4:4 stream whose colour
+ *  space reports `matrix: 'rgb'`, or, measured on VP9 Profile 1's GBR planes decoded by Chrome, an I444 frame whose
+ *  `VideoFrame.colorSpace.matrix` comes back `null`; declined here rather than left to the first-frame agreement
+ *  check, which a genuinely close-but-wrong YUV-math conversion of RGB planes is not guaranteed to fail loudly
+ *  enough to catch). A null/absent matrix on any *other* layout (I420/I422/NV12) is a real, ordinary untagged YUV
+ *  stream — most H.264 recordings never tag one at all — and is still taken as BT.709 when HD and BT.601 otherwise. */
+function matrixCode(colorSpace: VideoColorSpace | undefined, format: string | undefined, height: number): number | undefined {
+  if (colorSpace && ((colorSpace.matrix as string) === 'rgb' || (colorSpace.matrix === null && format === 'I444'))) {
+    return undefined;
+  }
   const matrix: string = colorSpace?.matrix ?? (height >= 720 ? 'bt709' : 'smpte170m');
   if (matrix === 'bt2020-ncl' || matrix === 'bt2020-cl') return undefined;
   return (matrix === 'bt709' ? 0 : 2) + (colorSpace?.fullRange ? 1 : 0);
@@ -115,7 +123,7 @@ export function planarConverter(
   const pool = new BufferPool();
   const convert = async (frame: VideoFrame, info: MediaInfo): Promise<RGBA> => {
     const format = frame.format ? FRAME_FORMATS[frame.format] : undefined, width = info.codedWidth, height = info.codedHeight;
-    const matrix = matrixCode(frame.colorSpace ?? undefined, height);
+    const matrix = matrixCode(frame.colorSpace ?? undefined, frame.format ?? undefined, height);
     if (planar === false || info.rotation !== 0 || format === undefined || matrix === undefined || typeof frame.copyTo !== 'function') {
       if (planar) throw new Error(`planar conversion cannot take a ${frame.format} frame after taking earlier ones`);
       planar = false;

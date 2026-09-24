@@ -1,15 +1,10 @@
 import type { FrameImage, FrameSource, MediaInfo, MediaNotice, RGBA } from '../types.ts';
 import type { Demuxer } from './reader.ts';
-import { MP4Demuxer } from './mp4.ts';
-import { WebMDemuxer } from './webm.ts';
+import { MediabunnyDemuxer } from './mediabunny-demux.ts';
 import { type FrameConverter, workerConverter } from './convert.ts';
 import { releaseUnlessHeld } from './pool.ts';
 export async function openDemuxer(file: Blob): Promise<Demuxer> {
-  const header = new Uint8Array(await file.slice(0, 16).arrayBuffer());
-  if (header[0] === 0x1a && header[1] === 0x45 && header[2] === 0xdf && header[3] === 0xa3) {
-    return await new WebMDemuxer(file).init();
-  }
-  return await new MP4Demuxer(file).init();
+  return await new MediabunnyDemuxer(file).init();
 }
 export async function openMedia(
   file: File,
@@ -25,9 +20,11 @@ export async function openMedia(
   try {
     support = await VideoDecoder.isConfigSupported(demux.config);
   } catch (e) {
+    demux.dispose();
     throw new Error(`Unsupported codec configuration ${demux.config.codec}: ${String(e)}`);
   }
   if (!support.supported) {
+    demux.dispose();
     throw new Error(
       `UNSUPPORTED_CODEC: ${demux.config.codec} is not decodable by this browser/device. No frames were silently skipped. Try compatibility mode or an H.264/VP9 recording.`,
     );
@@ -91,7 +88,7 @@ export class PreciseSource implements FrameSource {
   }
   dispose(): void {
     this.cancelled = true;
-    this.demux.reader.clear();
+    this.demux.dispose();
     this.convert.dispose?.();
   }
   /** How decoded frames are being turned into RGBA, for diagnostics. */
@@ -193,8 +190,7 @@ export class PreciseSource implements FrameSource {
           if (ended || this.cancelled || failure) {
             break;
           }
-          const data = await demux.reader.read(packet.offset, packet.size);
-          const init: EncodedVideoChunkInit = { type: packet.key ? 'key' : 'delta', timestamp: packet.timestamp, data };
+          const init: EncodedVideoChunkInit = { type: packet.key ? 'key' : 'delta', timestamp: packet.timestamp, data: packet.data };
           if (packet.duration > 0) {
             init.duration = packet.duration;
           }

@@ -7,9 +7,6 @@ import { covered, markCovered, pngTileCodec, TileStore } from './storage/tiles.t
 import { DemoSource } from './media/demo.ts';
 import { CompatibilitySource, openDemuxer, openMedia, PreciseSource } from './media/source.ts';
 import { canvasConverter, directConverter, planarConverter, workerConverter } from './media/convert.ts';
-import { MP4Demuxer } from './media/mp4.ts';
-import { WebMDemuxer } from './media/webm.ts';
-import { BlobReader } from './media/reader.ts';
 import { DEFAULT_SETTINGS } from './types.ts';
 import { buildScenario, SCENARIO_NAMES } from './synthetic/scenarios.ts';
 import { ScenarioSource } from './synthetic/source.ts';
@@ -50,9 +47,6 @@ const kit = {
   workerConverter,
   PreciseSource,
   CompatibilitySource,
-  MP4Demuxer,
-  WebMDemuxer,
-  BlobReader,
   DEFAULT_SETTINGS,
   buildScenario,
   SCENARIO_NAMES,

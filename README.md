@@ -55,8 +55,8 @@ deno task fingerprint    # 逐场景、逐持久化行的字节级指纹工具�
 ## 架构
 
 ```text
-File / Blob（分段随机读取，8 × 256KiB 页面）
-  → MP4 / MOV / fMP4 / WebM 解封装（含 QuickTime 有符号 ctts）
+File / Blob（借助 npm 包 mediabunny 分段随机读取）
+  → MP4 / MOV / fMP4 / WebM 解封装（含 QuickTime 有符号 ctts；mediabunny 负责容器解析，本项目只保留它未覆盖的少数校验）
   → WebCodecs（PTS、B 帧、背压、释放 VideoFrame）→ RGBA
   → 第一遍：逐帧运动证据 + 全局区域学习 → 磁盘
   → 第二遍：分层定位、原像素精修、历史重定位、位置图 → 磁盘
@@ -71,7 +71,7 @@ File / Blob（分段随机读取，8 × 256KiB 页面）
 ```text
 rust/core       Rust 核心源码；编译为 core.wasm / core.simd.wasm / core.threads.wasm 三种构建
 src/core        围绕核心的 TS 薄壳：配准、分层、位置图、关键帧、合成、光栅、加载与选择构建（src/core/wasm/**）
-src/media       容器解析、范围读取、WebCodecs 解码
+src/media       容器解析（npm 包 mediabunny 的 Input/BlobSource/EncodedPacketSink）、范围读取、WebCodecs 解码
 src/codec       PNG 编解码的 TS 编排层，chunk/CRC 校验通过核心
 src/pipeline    三遍引擎的编排（scan/solve/render）；冲突判定与位姿图优化本身都已在 Rust 核心，这里是调用顺序与 KV I/O
 src/storage     IndexedDB / 内存 KV、瓦片、诊断

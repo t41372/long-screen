@@ -38,13 +38,27 @@ Deno.test({
           const canvas = kit.canvasConverter();
           const planar = kit.planarConverter((frame: VideoFrame, info: unknown) => (canvasCalls++, canvas(frame, info)));
           const direct = await grab(kit.directConverter()), mine = await grab(planar);
-          decoded[name] = {
+          const entry: Record<string, unknown> = {
             frames: mine.length,
             canvasCalls,
             planar: planar.planar,
             check: planar.check,
             firstDiff: direct.map((d, i) => firstDiff(d.data, mine[i].data)).find((x) => x !== -1) ?? -1,
           };
+          if (name === 'scroll.webm') {
+            // scroll.webm is VP9 Profile 1: GBR (RGB-native) planes, not YUV, so there is no matrix for the planar
+            // path's YUV→RGBA core call to invert — matrixCode() (convert.ts) declines it up front. Correctness
+            // is checked against the synthetic ground truth instead of the direct/copyTo path, which decodes the
+            // same GBR planes and would agree even if both were wrong the same way.
+            const scenario = kit.buildScenario('fixture');
+            let sum = 0, n = 0;
+            mine.forEach((f, i) => {
+              const truth = kit.renderFrame(scenario, i).image.data;
+              for (let p = 0; p < f.data.length; p += 4) for (let c = 0; c < 3; c++) (sum += Math.abs(f.data[p + c] - truth[p + c])), n++;
+            });
+            entry.meanVsTruth = sum / n;
+          }
+          decoded[name] = entry;
         }
         // Frames Chrome builds from buffers, with Chrome's own conversion of the same frame as the reference. The
         // fallback stands in for the canvas with that reference, so the first-frame check passes exactly when the
@@ -94,6 +108,13 @@ Deno.test({
       });
       for (const [name, v] of Object.entries(r.decoded) as [string, any][]) {
         assertEquals(v.frames, truth.frames, name);
+        if (name === 'scroll.webm') {
+          // GBR planes, declined up front (see the comment above) — every frame goes through the canvas, and its
+          // correctness is judged against the synthetic ground truth, not the direct/copyTo path (see above).
+          assertEquals([v.planar, v.canvasCalls], [false, truth.frames], `${name}: GBR planes must not take the planar path`);
+          assert(v.meanVsTruth < 1, `${name}: mean channel distance from the rendered world ${v.meanVsTruth}`);
+          continue;
+        }
         // One canvas conversion: the first-frame agreement check, never a returned frame.
         assertEquals([v.planar, v.canvasCalls], [true, 1], `${name}: planar path not taken (${JSON.stringify(v.check)})`);
         assertEquals(v.firstDiff, -1, `${name}: first differing byte`);
@@ -125,14 +146,12 @@ Deno.test({
         const kit = (window as any).longScreenKit;
         const scenario = kit.buildScenario('fixture');
         const results: Record<string, unknown> = {};
-        // scroll.webm's track is VP9 Profile 1 (4:4:4, ffprobe: vp09.01.20.08); Matroska carried no CodecPrivate for
-        // it, so the demuxer falls back to a generic 'vp09.00.10.08' (profile 0) string. isConfigSupported(profile 0)
-        // says yes, decoder.configure/decode with the mismatched profile then fails mid-stream with an opaque
-        // 'EncodingError: Decoder failure' instead of the clean UNSUPPORTED_CODEC openMedia() already raises for a
-        // codec it knows it cannot decode. Probing the file's true codec string up front tells the two cases apart
-        // without hardcoding a browser quirk: if this engine cannot decode Profile 1 at all (measured: Playwright
-        // WebKit 2248 says isConfigSupported === false for the correct string too), no demuxer fix changes the
-        // outcome, only where it is reported.
+        // scroll.webm's track is VP9 Profile 1 (4:4:4, ffprobe: vp09.01.20.08). The demuxer reports this real
+        // string (mediabunny reads it from the first frame's header — the Matroska track carries no CodecPrivate),
+        // so openMedia()'s own isConfigSupported() gate is what rejects it on an engine that cannot decode Profile 1
+        // at all (measured: Playwright WebKit 2248 says isConfigSupported === false for it), with the clean
+        // UNSUPPORTED_CODEC error — never reaching decode. Probing the same string up front here just tells the
+        // test whether to expect that fast rejection instead of frames.
         const vp9p1 = await (window as any).VideoDecoder.isConfigSupported({
           codec: 'vp09.01.20.08',
           codedWidth: 320,
@@ -209,13 +228,14 @@ Deno.test({
       });
       for (const [name, v] of Object.entries(r) as [string, any][]) {
         if (v.unsupported) {
-          // Not a hang and not the decoder's own stall guard: a clean rejection, fast, whichever of the two error
-          // shapes the demuxer's codec string produces (see the comment above the probe).
+          // Not a hang and not the decoder's own stall guard: a clean, fast rejection shaped like openMedia()'s own
+          // UNSUPPORTED_CODEC gate — with the correct codec string, WebKit never reaches decode() at all here, so
+          // there is no more opaque 'EncodingError: Decoder failure' shape to accept (see the comment above).
           console.log(`${name}: browser cannot decode this track at all (${v.ms.toFixed(0)}ms): ${v.error}`);
           assert(v.ms < 10000, `${name}: unsupported-codec failure took too long (${v.ms}ms) — looks like a stall`);
           assert(!/DECODER_STALLED/.test(v.error), `${name}: failed via the stall guard, not a codec rejection`);
           assert(
-            /UNSUPPORTED_CODEC|EncodingError|Decoder failure/.test(v.error),
+            /UNSUPPORTED_CODEC/.test(v.error),
             `${name}: unexpected failure shape: ${v.error}`,
           );
           continue;

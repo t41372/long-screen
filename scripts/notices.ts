@@ -24,6 +24,11 @@ export interface NoticeEntry {
   /** Where the exact source of this version can be obtained — required in the output for MPL-2.0, included when
    *  known for everything else. */
   sourceUrl?: string;
+  /** The package's own source repository (npm `package.json`'s `repository.url`, normalized), when it differs from
+   *  `sourceUrl`. MPL-2.0 §3.2 asks where "the exact Source Code Form" can be obtained; a registry listing page
+   *  (npm/crates.io) satisfies that for a tarball, but the repository is the more direct answer, so both are
+   *  printed when both are known. */
+  repositoryUrl?: string;
   licenseText?: string;
 }
 
@@ -259,12 +264,23 @@ async function jsNotices(root: string, entries: readonly string[]): Promise<Noti
             `file was found in ${pkgDir} — the notices file would ship without its required text.`,
         );
       }
+      const repository = typeof pkgJson?.repository === 'string' ? pkgJson.repository : pkgJson?.repository?.url;
+      // MPL-2.0 §3.2 wants the source of the exact bundled version, not just the repository's default branch, so a
+      // GitHub repository is pointed at this version's tag (a bare repo URL drifts as the project moves on).
+      let repositoryUrl = typeof repository === 'string'
+        ? repository.replace(/^git\+/, '').replace(/\.git$/, '').replace(/^git:\/\//, 'https://')
+        : undefined;
+      const githubTag = repositoryUrl?.match(/^(https:\/\/github\.com\/[^/]+\/[^/]+)$/);
+      if (githubTag) {
+        repositoryUrl = `${githubTag[1]}/tree/v${dep.version}`;
+      }
       results.push({
         ecosystem: 'js',
         name: dep.name,
         version: dep.version,
         license,
         sourceUrl: `https://www.npmjs.com/package/${dep.name}/v/${dep.version}`,
+        repositoryUrl: repositoryUrl !== `https://www.npmjs.com/package/${dep.name}/v/${dep.version}` ? repositoryUrl : undefined,
         licenseText,
       });
     } else {
@@ -320,8 +336,16 @@ function renderSection(title: string, emptyNote: string, entries: NoticeEntry[])
       if (e.sourceUrl) {
         lines.push(`Source: ${e.sourceUrl}`);
       }
-      if (e.license.includes(MPL_PREFIX) && e.sourceUrl) {
-        lines.push(`Exact source for this version (MPL-2.0 §3.2): ${e.sourceUrl}`);
+      if (e.license.includes(MPL_PREFIX)) {
+        // §3.2 requires stating where the exact Source Code Form of the bundled version is available; the registry
+        // listing (a tarball of this exact version) and the repository (the maintained source tree) are both given
+        // when both are known, rather than picking one.
+        if (e.sourceUrl) {
+          lines.push(`Exact source for this version (MPL-2.0 §3.2): ${e.sourceUrl}`);
+        }
+        if (e.repositoryUrl) {
+          lines.push(`Exact source for this version (MPL-2.0 §3.2): ${e.repositoryUrl}`);
+        }
       }
       if (e.licenseText) {
         lines.push('', e.licenseText.trimEnd());
