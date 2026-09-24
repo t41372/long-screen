@@ -5,29 +5,25 @@
 # replacing). See https://docs.netlify.com/manage/routing/headers/ and
 # https://developers.cloudflare.com/pages/configuration/headers/.
 #
-# Cross-origin isolation (COOP/COEP/CORP) mirrors main.ts's dev server (createHandler in main.ts) exactly: it is
+# The `/*` block mirrors RESPONSE_HEADERS in main.ts's dev server exactly. Cross-origin isolation (COOP/COEP/CORP) is
 # required for SharedArrayBuffer, which the threaded Wasm core needs (src/core/wasm/loader.ts::planCore). Every
 # resource the app loads is same-origin, so these headers cost nothing; without them the app falls back to the
 # single-thread core.
+#
+# `Cache-Control: no-cache` lets a browser keep a copy but makes it revalidate before every use (a 304 when nothing
+# changed). dist/assets/* keep the same filenames across deploys (scripts/build.ts does not content-hash them), so
+# any freshness lifetime would let a browser pair a new index.html with the previous deploy's JS or Wasm. It is set in
+# this one rule only: a second matching rule would append its value instead of replacing this one, and a `/*.html`
+# rule would not reach the pages anyway, because Cloudflare Pages serves index.html at `/` and answers `/index.html`
+# with a 308 redirect.
 /*
   Cross-Origin-Opener-Policy: same-origin
   Cross-Origin-Embedder-Policy: require-corp
   Cross-Origin-Resource-Policy: same-origin
   X-Content-Type-Options: nosniff
-
-# index.html and the (non-production) test harness must always be revalidated so a new deploy is visible on the
-# next load, never served stale from a shared or browser cache.
-/*.html
   Cache-Control: no-cache
-
-# dist/assets/*.{js,mjs,wasm} are emitted with fixed filenames (scripts/build.ts does not content-hash them), so a
-# redeploy can change their bytes without changing the URL. They can still be cached, but never as `immutable` —
-# always revalidate before reuse.
-/assets/*
-  Cache-Control: public, max-age=3600, must-revalidate
 
 # Belt-and-braces content type for the Wasm core builds: some hosts' built-in MIME inference falls back to
 # application/octet-stream for .wasm, which WebAssembly.instantiateStreaming() refuses to compile from directly.
 /assets/*.wasm
   Content-Type: application/wasm
-  Cache-Control: public, max-age=3600, must-revalidate
