@@ -2,25 +2,13 @@ import type { CanvasMeta, Diagnostic, Placement, Rect, Region, RGBA } from '../t
 import type { KV } from '../storage/db.ts';
 import { iterate } from '../storage/db.ts';
 import { QUALITY_BLOCK, type TileStore } from '../storage/tiles.ts';
-import { core, Resident, type ResidentFrame } from './wasm.ts';
+import { core, type Resident, type ResidentFrame, type TemporalIndexHandle, type TemporalRow } from './wasm.ts';
 import type { RegionAtlas } from './layers.ts';
-import { intersect, pad, union } from './math.ts';
+import { union } from './math.ts';
 import { resolveRasterPose } from './raster.ts';
-/** Native-screen occluder membership, native-frame coordinates. Occlusions are always full-width bands, so rect containment on (sx, sy) is exact. */
-function occluded(occlusions: Rect[] | undefined, sx: number, sy: number): boolean {
-  return !!occlusions && occlusions.some((o) => sx >= o.x && sx < o.x + o.width && sy >= o.y && sy < o.y + o.height);
-}
-interface TemporalRegion {
-  id: string;
-  canvasId: string;
-  rect: Rect;
-  /** Absolute [bx,by] block coordinates (16px units) actually part of this temporal patch; never the dense bounding rect. */
-  blocks: [number, number][];
-  chosenFrame: number;
-  chosenTime: number;
-  complete: boolean;
-  revisions: number;
-}
+/** Persisted row shape (`temporal/<canvasId>/<id>` — frozen, see common.md): a `TemporalRow` (rust/core/src/temporal.rs's
+ *  `TemporalRecord`, via `TemporalIndexHandle`, src/core/wasm/temporal.ts) plus the canvas it belongs to. */
+type TemporalRegion = TemporalRow & { canvasId: string };
 
 /** Compare block membership, not only a bounding box or cardinality. */
 export function sameBlockSet(a: [number, number][], b: [number, number][]): boolean {
@@ -29,7 +17,9 @@ export function sameBlockSet(a: [number, number][], b: [number, number][]): bool
   return keys.size === b.length && b.every(([x, y]) => keys.has(`${x},${y}`));
 }
 /** Integer key for an absolute 16px block: row-major, so ascending keys are (by, bx) order. Blocks within
- *  ±2^25 (±537 M native pixels) pack exactly into a double. */
+ *  ±2^25 (±537 M native pixels) pack exactly into a double. Only used for the per-frame `conflictBlocks`
+ *  bookkeeping below (a JS `Set<number>` of blocks touched this call, fed to `components()`) — the temporal
+ *  index itself (rust/core/src/temporal.rs) keeps block membership as plain (bx, by) pairs. */
 const BLOCK_OFFSET = 1 << 25, BLOCK_STRIDE = 1 << 26;
 export function blockKey(bx: number, by: number): number {
   if (bx < -BLOCK_OFFSET || bx >= BLOCK_OFFSET || by < -BLOCK_OFFSET || by >= BLOCK_OFFSET) {
@@ -40,21 +30,6 @@ export function blockKey(bx: number, by: number): number {
 export function blockOf(key: number): [number, number] {
   const by = Math.floor(key / BLOCK_STRIDE);
   return [key - by * BLOCK_STRIDE - BLOCK_OFFSET, by - BLOCK_OFFSET];
-}
-/** In-memory form of a temporal record: the block membership is a resident integer-key set (records on a
- *  long-scrolling canvas grow to tens of thousands of blocks and are touched by every conflict component that
- *  overlaps them), and the persisted `blocks` array is derived from it only when a record is written. */
-type ResidentTemporal = Omit<TemporalRegion, 'blocks'> & { keys: Set<number> };
-/** Temporal records of one canvas, resident for the pass. Persisted rows are written by flush(), so a run that is
- *  interrupted mid-pass leaves rows as of the last flush — the same durability the tile cache already has. */
-interface TemporalIndex {
-  records: Map<string, ResidentTemporal>;
-  dirty: Set<string>;
-  deleted: Set<string>;
-}
-/** Persisted block order: ascending integer keys are (by, bx) row-major. */
-function persistedBlocks(keys: Set<number>): [number, number][] {
-  return [...keys].sort((a, b) => a - b).map(blockOf);
 }
 export interface CompositeStats {
   added: number;
@@ -81,9 +56,18 @@ interface PatchResult {
 }
 /** Pixel ownership, not alpha blending. Conflicting moving objects are selected as whole observed patches. */
 export class Compositor {
+  /** Fresh-id sequence: shared across every canvas this Compositor ever touches (never reset per canvas), so it
+   *  is threaded through `TemporalIndexHandle.decide()` explicitly rather than living in the Rust index itself
+   *  (rust/core/src/temporal.rs's `TemporalIndex` is otherwise entirely per-canvas). */
   private temporalSequence = 0;
   private rectangular = new Set<string>();
-  private temporal = new Map<string, TemporalIndex>();
+  /** Live per-canvas temporal-index handles (rust/core/src/temporal.rs via `TemporalIndexHandle`) plus, once
+   *  `dispose()` has drained and freed a handle, its stash — `deleted`/`dirty` rows `flush()` still owes the KV
+   *  store, kept in JS since the Rust side is gone (see `dispose()`). `canvasOrder` mirrors the exact order a
+   *  plain `Map<string, …>` would have iterated canvases in (first-touched order), across both maps. */
+  private temporal = new Map<string, TemporalIndexHandle>();
+  private stashed = new Map<string, { deleted: string[]; dirty: TemporalRow[] }>();
+  private canvasOrder: string[] = [];
   constructor(
     private db: KV,
     readonly tiles: TileStore,
@@ -98,37 +82,65 @@ export class Compositor {
       ) this.rectangular.add(region.id);
     }
   }
-  /** Persists temporal records changed since the last flush (one batch, deletions first). */
+  /** Persists temporal records changed since the last flush (one batch per canvas, deletions first) — reads a
+   *  still-live handle's own dirty/deleted state, or (after `dispose()`) the stash it drained into. Either way
+   *  the row order matches `TemporalIndexHandle.flush()`'s exactly: every deleted id, then every dirty row. */
   async flush(): Promise<void> {
-    for (const [canvasId, index] of this.temporal) {
-      for (const id of index.deleted) await this.db.delete(`temporal/${canvasId}/${id}`);
-      index.deleted.clear();
-      if (index.dirty.size) {
-        await this.db.putMany([...index.dirty].map((id) => {
-          const { keys, ...record } = index.records.get(id)!;
-          return { key: `temporal/${canvasId}/${id}`, value: { ...record, blocks: persistedBlocks(keys) } satisfies TemporalRegion };
-        }));
-        index.dirty.clear();
+    for (const canvasId of this.canvasOrder) {
+      const live = this.temporal.get(canvasId);
+      const { deleted, dirty } = live ? live.flush() : this.stashed.get(canvasId) ?? { deleted: [], dirty: [] };
+      this.stashed.delete(canvasId);
+      for (const id of deleted) await this.db.delete(`temporal/${canvasId}/${id}`);
+      if (dirty.length) {
+        await this.db.putMany(dirty.map((row) => ({
+          key: `temporal/${canvasId}/${row.id}`,
+          // Field order is part of the frozen persisted shape (fingerprint.ts hashes JSON key order, not just
+          // content) — matches the original TemporalRegion literal order exactly, not TemporalRow's.
+          value: {
+            id: row.id,
+            canvasId,
+            rect: row.rect,
+            chosenFrame: row.chosenFrame,
+            chosenTime: row.chosenTime,
+            complete: row.complete,
+            revisions: row.revisions,
+            blocks: row.blocks,
+          } satisfies TemporalRegion,
+        })));
       }
     }
   }
-  /** Loads a canvas's persisted temporal records once; afterwards the in-memory index is authoritative. */
-  private async temporalIndex(canvasId: string): Promise<TemporalIndex> {
-    let index = this.temporal.get(canvasId);
-    if (!index) {
-      index = { records: new Map(), dirty: new Set(), deleted: new Set() };
+  /** Loads a canvas's persisted temporal records once, into a fresh Rust-resident index; afterwards that index
+   *  is authoritative. Rows are handed over in KV scan (ascending id) order, exactly the order the in-memory
+   *  index used to build itself in. */
+  private async temporalIndex(canvasId: string): Promise<TemporalIndexHandle> {
+    let handle = this.temporal.get(canvasId);
+    if (!handle) {
+      handle = core().newTemporalIndex();
       for await (const { value } of iterate<TemporalRegion>(this.db, `temporal/${canvasId}/`)) {
-        const { blocks, ...record } = value;
-        index.records.set(value.id, { ...record, keys: new Set(blocks.map(([x, y]) => blockKey(x, y))) });
+        handle.load(value);
       }
-      this.temporal.set(canvasId, index);
+      this.temporal.set(canvasId, handle);
+      this.canvasOrder.push(canvasId);
     }
-    return index;
+    return handle;
   }
-  /** No-op: the compositor no longer owns any core-resident state (the atlas's label plane is shared, owned by
-   *  the atlas itself — `RegionAtlas.dispose()`, called once from run()'s finally). Kept so callers (`context.ts`'s
-   *  `releaseResidentRenderState`) can keep treating a compositor as disposable without a special case. */
-  dispose(): void {}
+  /** Drains every canvas's dirty/deleted rows into `stashed` (in the exact order `flush()` would have asked the
+   *  live handle for) and frees its Rust-resident handle. This runs BEFORE the pipeline's final `flush()`
+   *  (`releaseResidentRenderState`, src/pipeline/context.ts, is called from render.ts's `finally` ahead of its
+   *  own trailing `compositor.flush()`), so the handle cannot simply be freed here — `flush()` falls back to
+   *  `stashed` for any canvas whose handle is gone, so the persisted rows and their order are unaffected by
+   *  when exactly this runs relative to `flush()`. Idempotent (a canvas already stashed, or never touched, is
+   *  skipped) and safe to call more than once, though the pipeline only ever does so once. */
+  dispose(): void {
+    for (const canvasId of this.canvasOrder) {
+      const handle = this.temporal.get(canvasId);
+      if (!handle) continue;
+      this.stashed.set(canvasId, handle.flush());
+      handle.free();
+      this.temporal.delete(canvasId);
+    }
+  }
   /** `consistent`, when given, is a per-native-pixel (image-sized, one byte per pixel, indexed like `labels`) world-consistency
    *  mask computed by the render pass's one-frame lookahead: 0 means this pixel's placement here could be checked against a
    *  neighbouring frame and disagreed with every such check (CONSISTENT-BY-DEFAULT and genuinely-consistent pixels are both
@@ -213,11 +225,11 @@ export class Compositor {
       });
       const components = this.components(new Set(orderedConflictBlocks), B);
       let patchedPixels = 0, patchedTiles = 0, patchedConflictPixels = 0, patchedProvisional = 0;
-      // Only the pixel-level completeness walk in resolveTemporal reads the mask, and only for a component it may
-      // rewrite; it takes a view of a resident mask right before that synchronous walk instead of a per-frame copy.
-      const mask = consistent instanceof Resident ? () => consistent.view() : consistent && (() => consistent);
       for (const component of components) {
-        const result = await this.resolveTemporal(image, region, p, frame, component.bounds, component.blocks, world, mask);
+        // `consistent` is passed straight through to the one Rust call that reads it (`maskCompleteAndCommit`,
+        // via `resolveTemporal`): a `Resident`'s own pointer is growth-stable (no view-staleness concern, unlike
+        // the old TS walk), and a plain `Uint8Array` is copied into scratch fresh inside that same call.
+        const result = await this.resolveTemporal(image, region, p, frame, component.bounds, component.blocks, world, consistent);
         patchedPixels += result.added;
         patchedTiles += result.newTiles;
         // A pixel count, not a block count — a block count would understate conflict pixels by roughly a factor
@@ -267,6 +279,12 @@ export class Compositor {
       blocks: new Set(blocks.map(([bx, by]) => blockKey(bx, by))),
     }));
   }
+  /** resolveTemporal's decision (rust/core/src/temporal.rs's `TemporalIndex::decide`/`mask_complete`/`commit`,
+   *  via `TemporalIndexHandle`): two Rust calls — `decide` (the olds/union/expanded/choose bookkeeping, which
+   *  needs no atlas/occlusion/consistency pixels) sizes the write-block buffer for `maskCompleteAndCommit` (the
+   *  pixel-level completeness walk plus the index commit) to fill. `consistent` is handed straight to the
+   *  second call: a `Resident`'s pointer is growth-stable, so unlike the old TS walk there is no "no core call
+   *  in between" requirement to preserve here — the whole walk already happens inside that one call. */
   private async resolveTemporal(
     image: RGBA,
     region: Region,
@@ -275,110 +293,43 @@ export class Compositor {
     compBounds: Rect,
     compBlocks: Set<number>,
     visible: Rect,
-    consistentMask?: () => Uint8Array,
+    consistent?: Uint8Array | Resident,
   ): Promise<PatchResult> {
-    const B = QUALITY_BLOCK;
-    const index = await this.temporalIndex(p.canvasId), olds: ResidentTemporal[] = [];
-    for (const t of index.records.values()) {
-      const expanded = { x: t.rect.x - 16, y: t.rect.y - 16, width: t.rect.width + 32, height: t.rect.height + 32 };
-      const ix = intersect(expanded, compBounds);
-      if (ix.width > 0 && ix.height > 0) {
-        olds.push(t);
-      }
-    }
-    // Records never share a block (a record's blocks lie inside its rect, and a record is only ever created from a
-    // component that misses every existing record's expanded rect), so the previous membership is the plain sum
-    // of the overlapping records' sizes and the union grows by exactly the component blocks none of them holds.
-    // The union is built in the LARGEST overlapping set to avoid re-hashing tens of thousands of keys per component.
-    const old = olds[0];
-    let rect = compBounds, previousSize = 0, largest: ResidentTemporal | undefined;
-    for (const o of olds) {
-      rect = union(rect, o.rect);
-      previousSize += o.keys.size;
-      if (!largest || o.keys.size > largest.keys.size) largest = o;
-    }
-    const mask = largest ? largest.keys : new Set<number>();
-    for (const o of olds) {
-      if (o !== largest) { for (const key of o.keys) mask.add(key); }
-    }
-    for (const key of compBlocks) mask.add(key);
-    const geometryChanged = !old || rect.x !== old.rect.x || rect.y !== old.rect.y || rect.width !== old.rect.width ||
-      rect.height !== old.rect.height;
-    // `olds` can contain multiple nearby records. Compare against their union, not just `olds[0]`, and compare
-    // actual membership so equal bboxes/cardinalities cannot preserve a stale complete=true state. The union
-    // contains every previous block by construction, so membership differs exactly when the size grew.
-    const membershipChanged = !old || mask.size !== previousSize;
-    const expanded = geometryChanged || membershipChanged;
-    const record: ResidentTemporal = old ? { ...old, rect, keys: mask } : {
-      id: pad(this.temporalSequence++),
-      canvasId: p.canvasId,
-      rect,
-      keys: mask,
-      chosenFrame: frame,
-      chosenTime: p.time,
-      complete: false,
-      revisions: 0,
-    };
-    if (expanded) {
-      record.complete = false;
-    }
-    // Ensure the entire tracked patch is visible this frame. `rect` is exactly the bounding box of the mask blocks
-    // (component bounds and record rects are block bounding boxes, and union preserves that), and every block
-    // lies inside `visible` iff their bounding box does, so this is the per-block test in O(1). The write set is
-    // still the block MASK, not the rect, so a stable pixel-identical corner block in a concave conflict is never
-    // rewritten.
-    const complete = intersect(rect, visible).width === rect.width && intersect(rect, visible).height === rect.height;
-    const writeBlocks: [number, number][] = complete ? persistedBlocks(mask) : [];
-    const choose = complete && (!old || !old.complete || expanded || this.policy === 'latest');
+    const index = await this.temporalIndex(p.canvasId);
+    const [writeBlockCount, nextSeq] = index.decide(
+      compBounds,
+      [...compBlocks].map(blockOf),
+      frame,
+      p.time,
+      visible,
+      this.policy === 'latest',
+      this.temporalSequence,
+    );
+    this.temporalSequence = nextSeq;
+    const { rasterX: ox, rasterY: oy } = resolveRasterPose(p.x, p.y), code = this.atlas.code(region);
+    const decision = index.maskCompleteAndCommit({
+      labelsPtr: this.atlas.resident.ptr,
+      atlasWidth: this.atlas.width,
+      atlasHeight: this.atlas.height,
+      code,
+      occlusions: p.occlusions,
+      consistent,
+      ox,
+      oy,
+      writeBlockCount,
+    });
     let result: PatchResult = { added: 0, conflictPixels: 0, newTiles: 0, provisionalPixels: 0 };
-    if (choose) {
-      // Ensure the entire patch belongs to this pane AND is world-consistent everywhere: an observation
-      // containing a cursor/FAB is not a good "complete moment" even when it is the first full view of this
-      // region, so a consistency failure here refuses the patch exactly like a mask hole does. A block can
-      // also contain an unknown mask hole.
-      let maskComplete = true;
-      // No core call happens between taking the view and the end of this synchronous walk.
-      const { rasterX: ox, rasterY: oy } = resolveRasterPose(p.x, p.y), code = this.atlas.code(region), consistent = consistentMask?.();
-      for (let k = 0; k < writeBlocks.length && maskComplete; k++) {
-        const [bx, by] = writeBlocks[k];
-        for (let y = by * B; y < by * B + B && maskComplete; y++) {
-          for (let x = bx * B; x < bx * B + B; x++) {
-            if (
-              !this.atlas.contains(code, x - ox, y - oy) || occluded(p.occlusions, x - ox, y - oy) ||
-              (consistent && !consistent[(y - oy) * image.width + (x - ox)])
-            ) {
-              maskComplete = false;
-              break;
-            }
-          }
-        }
-      }
-      if (maskComplete) {
-        result = await this.overwritePatch(image, p, writeBlocks, frame);
-        record.chosenFrame = frame;
-        record.chosenTime = p.time;
-        record.complete = true;
-        record.revisions++;
-      }
+    if (decision.chosen) {
+      result = await this.overwritePatch(image, p, decision.writeBlocks, frame);
     }
-    index.records.set(record.id, record);
-    index.dirty.add(record.id);
-    index.deleted.delete(record.id);
-    for (const o of olds) {
-      if (o.id !== record.id) {
-        index.records.delete(o.id);
-        index.dirty.delete(o.id);
-        index.deleted.add(o.id);
-      }
-    }
-    if (!record.complete && (!old || expanded)) {
+    if (decision.emitIncomplete) {
       await this.emit({
         code: 'INCOMPLETE_TEMPORAL_PATCH',
         severity: 'warning',
         canvasId: p.canvasId,
         frame,
         time: p.time,
-        region: rect,
+        region: decision.rect,
         message: '这个变化区域从未完整地出现在一个可用视口中；无法保证其所有像素来自同一时刻。',
         action: '保留已观察内容和明确冲突标记，没有填造未观察部分。',
       });

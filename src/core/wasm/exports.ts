@@ -46,6 +46,45 @@ export interface CoreExports {
     out: number,
   ): number;
   ls_temporal_components(cells: number, count: number, size: number, headerOut: number, blocksOut: number): number;
+  ls_temporal_index_new(): number;
+  ls_temporal_index_free(handle: number): void;
+  ls_temporal_index_load(handle: number, header: number, blocks: number): number;
+  ls_temporal_decide(
+    handle: number,
+    compBounds: number,
+    compBlocks: number,
+    compBlockCount: number,
+    frame: number,
+    time: number,
+    visible: number,
+    latestPolicy: number,
+    nextSeq: number,
+    out: number,
+  ): number;
+  ls_temporal_mask_complete_and_commit(
+    handle: number,
+    labels: number,
+    atlasWidth: number,
+    atlasHeight: number,
+    code: number,
+    occlusions: number,
+    occlusionCount: number,
+    consistent: number,
+    ox: number,
+    oy: number,
+    writeBlocksOut: number,
+    writeBlockCount: number,
+    out: number,
+  ): number;
+  ls_temporal_flush_sizes(handle: number, out: number): number;
+  ls_temporal_flush_take(
+    handle: number,
+    deletedOut: number,
+    deletedCount: number,
+    dirtyHeadersOut: number,
+    dirtyBlocksOut: number,
+    dirtyCount: number,
+  ): number;
   ls_overwrite_tile(
     tile: number,
     rgba: number,

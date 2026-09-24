@@ -1,6 +1,6 @@
 import '../support/core.ts';
 import { assert, assertEquals, assertRejects } from '@std/assert';
-import { iterate, MemoryKV } from '../../src/storage/db.ts';
+import { iterate, type KV, MemoryKV } from '../../src/storage/db.ts';
 import {
   countCovered,
   covered,
@@ -639,3 +639,204 @@ for (const policy of ['stable', 'latest'] as const) {
     assertEquals(await rows(cached.db), await rows(raster.db), 'PNG, evidence, index and temporal records');
   });
 }
+
+// --- R3-5c tripwire (Step 0): pins the exact ORDER flush() persists temporal rows in, across a
+// delete-then-reinsert-shaped sequence. JS Map/Set iteration is insertion order; deleting a key never reorders
+// the survivors, and re-`.set`-ing an EXISTING key never moves it either (only a delete+fresh-insert of a key
+// would move it to the end — and index.records never does that: it always deletes losers with `index.records
+// .delete`, never re-adds them under the same key). The port to Rust (BTreeMap<seq,Record> + HashMap<id,seq>)
+// must reproduce this exactly, not indexmap's swap_remove (which reorders on removal). Must pass on today's TS.
+/** A KV wrapper that logs every delete()/putMany() call, in call order, so flush()'s row order is directly
+ *  observable (db.scan() sorts by key and cannot show call order). */
+function spyKV(db: KV): { db: KV; log: string[] } {
+  const log: string[] = [];
+  const spy: KV = {
+    get: (key) => db.get(key),
+    put: (key, value) => db.put(key, value),
+    putMany: (rowsArg) => {
+      log.push(`putMany(${rowsArg.map((r) => r.key).join(',')})`);
+      return db.putMany(rowsArg);
+    },
+    delete: (key) => {
+      log.push(`delete(${key})`);
+      return db.delete(key);
+    },
+    deleteMany: (keys) => db.deleteMany(keys),
+    scan: (prefix, options) => db.scan(prefix, options),
+  };
+  return { db: spy, log };
+}
+Deno.test('compositor: flush() persists temporal rows in exact index insertion/deletion order (R3-5c Step 0 tripwire)', async () => {
+  // A row of 13 single-block (16px) regions on one 208px-wide tile: blocks 0,4,8,12 each get their own
+  // temporal record (A,B,C,D — far enough apart that their ±16px expanded rects never touch each other).
+  const width = 13 * B, region = makeRegion({ x: 0, y: 0, width, height: B });
+  const raw = new MemoryKV(), { db: spied, log } = spyKV(raw);
+  const tiles = new TileStore(spied, width, 8), atlas = new RegionAtlas([region], width, B);
+  const compositor = new Compositor(spied, tiles, 'stable', async () => {}, atlas);
+  const meta = makeMeta();
+  const base: RGB4 = [100, 100, 100, 255], hot1: RGB4 = [250, 10, 10, 255];
+  const paintBlocks = (img: RGBA, blocks: number[], color: RGB4) => {
+    for (const bx of blocks) paintRect(img, { x: bx * B, y: 0, width: B, height: B }, color);
+  };
+  const frame = (litBlocks: number[]) => {
+    const img = solid(width, B, base);
+    paintBlocks(img, litBlocks, hot1);
+    return img;
+  };
+  await compositor.add(frame([]), region, place(0, 0, 0.5), 0, meta); // establishes base coverage, no conflicts
+  await compositor.add(frame([0]), region, place(0, 0, 0.5), 1, meta); // record A (id 0000000000)
+  await compositor.add(frame([0, 4]), region, place(0, 0, 0.5), 2, meta); // record B (id 0000000001)
+  await compositor.add(frame([0, 4, 8]), region, place(0, 0, 0.5), 3, meta); // record C (id 0000000002)
+  await compositor.add(frame([0, 4, 8, 12]), region, place(0, 0, 0.5), 4, meta); // record D (id 0000000003)
+  await compositor.flush();
+  const afterSetup = await raw.scan<{ id: string }>('temporal/c/', { limit: 10 });
+  assertEquals(afterSetup.map((r) => r.value.id).sort(), ['0000000000', '0000000001', '0000000002', '0000000003']);
+  log.length = 0; // only the frame5/frame6 sequence below is under test
+  // Frame 5: a bridge (blocks 4..8, hot3) merges B and C into one record kept at B's id — C is deleted, B is
+  // dirty. In the SAME add() call, D's block (12) is repainted (hot4) but — since it neither expands D's
+  // geometry nor its membership, and D's existing record is already complete under the 'stable' policy — this
+  // does NOT re-choose/overwrite it; D is still marked dirty (index.dirty.add runs unconditionally) even though
+  // nothing about its persisted content changes.
+  const hot3: RGB4 = [10, 250, 10, 255], hot4: RGB4 = [10, 10, 250, 255];
+  const img5 = solid(width, B, base);
+  paintBlocks(img5, [0], hot1); // A: unchanged, matches stored — no conflict there
+  paintBlocks(img5, [4, 5, 6, 7, 8], hot3); // bridges B (block 4) and C (block 8)
+  paintBlocks(img5, [12], hot4); // D: differs, but is frozen/complete and does not expand
+  await compositor.add(img5, region, place(0, 0, 0.5), 5, meta);
+  // Frame 6: one mega-conflict spanning blocks 0..12 absorbs A, the merged B, and D into a single record kept
+  // at A's id. B and D — both still dirty and never flushed — are deleted before ever reaching storage.
+  const hot5: RGB4 = [250, 250, 10, 255];
+  const img6 = solid(width, B, hot5);
+  await compositor.add(img6, region, place(0, 0, 0.5), 6, meta);
+  await compositor.flush();
+  const ids = { a: '0000000000', b: '0000000001', c: '0000000002', d: '0000000003' };
+  assertEquals(
+    log,
+    [
+      `delete(temporal/c/${ids.c})`,
+      `delete(temporal/c/${ids.b})`,
+      `delete(temporal/c/${ids.d})`,
+      `putMany(temporal/c/${ids.a})`,
+    ],
+    'deletions (C, then B, then D — accumulated across two resolveTemporal calls with no flush between) must ' +
+      'precede the single dirty putMany (A only — B and D were deleted before this flush ever saw them dirty)',
+  );
+  const final = await raw.scan<{ id: string; blocks: [number, number][] }>('temporal/c/', { limit: 10 });
+  assertEquals(final.map((r) => r.value.id), [ids.a], 'only the surviving merged record (A) remains persisted');
+  assertEquals(final[0].value.blocks.length, 13, 'the final record owns every block 0..12');
+});
+Deno.test('compositor: a fresh id that collides with a still-loaded KV row overwrites it in place, not append (R3-5c Step 0)', async () => {
+  // temporalSequence always restarts at 0 in a new Compositor instance. If a canvas already has a persisted
+  // record at id "0000000000" (typical: the first record any Compositor ever creates) and this Compositor's
+  // first-ever new (non-overlapping) temporal record also gets the fresh id pad(0), `index.records.set` clobbers
+  // the loaded entry in place (Map.set on an existing key never moves or duplicates it) rather than colliding
+  // into a second row.
+  const region = makeRegion({ x: 0, y: 0, width: 6 * B, height: B });
+  const raw = new MemoryKV();
+  const preseeded = {
+    id: '0000000000',
+    canvasId: 'c',
+    rect: { x: 5 * B, y: 0, width: B, height: B }, // far from the conflict below — never overlaps it
+    blocks: [[5, 0]],
+    chosenFrame: 0,
+    chosenTime: 0,
+    complete: true,
+    revisions: 1,
+  };
+  await raw.put('temporal/c/0000000000', preseeded);
+  const { db: spied, log } = spyKV(raw);
+  const tiles = new TileStore(spied, 6 * B, 8), atlas = new RegionAtlas([region], 6 * B, B);
+  const compositor = new Compositor(spied, tiles, 'stable', async () => {}, atlas);
+  const meta = makeMeta();
+  const base: RGB4 = [100, 100, 100, 255], hot: RGB4 = [250, 10, 10, 255];
+  await compositor.add(solid(6 * B, B, base), region, place(0, 0, 0.5), 0, meta);
+  const img1 = solid(6 * B, B, base);
+  paintRect(img1, { x: 0, y: 0, width: B, height: B }, hot); // block 0 — far from the preseeded record's block 5
+  await compositor.add(img1, region, place(0, 0, 0.5), 1, meta);
+  await compositor.flush();
+  assertEquals(log, ['putMany(temporal/c/0000000000)'], 'one row rewritten in place — no delete, no second row');
+  const rows = await raw.scan<{ rect: Rect }>('temporal/c/', { limit: 10 });
+  assertEquals(rows.length, 1, 'the collision overwrites the preseeded row rather than adding a second one');
+  assertEquals(rows[0].value.rect, { x: 0, y: 0, width: B, height: B }, "the new record's content replaced the stale preseeded one");
+});
+Deno.test('compositor: a fresh id that collides with a DELETED id is appended and un-deletes the key, emitting no delete() (R3-5c Step 0)', async () => {
+  // Complements the two tests above: here the fresh id collides with a key that USED to be live but was deleted
+  // earlier in the same run (merged away). `index.records.set` on a non-existing key appends at the end of Map
+  // iteration order, and `index.deleted.delete(record.id)` removes it from the pending-deletions set — so
+  // flush() must never emit a delete() for that key, only a putMany rewriting it with the fresh content.
+  const region = makeRegion({ x: 0, y: 0, width: 12 * B, height: B });
+  const raw = new MemoryKV();
+  // Two adjacent preseeded rows (ids 0 and 1): a conflict spanning both blocks merges them into id 0, deleting id 1.
+  await raw.put('temporal/c/0000000000', {
+    id: '0000000000',
+    canvasId: 'c',
+    rect: { x: 0, y: 0, width: B, height: B },
+    blocks: [[0, 0]],
+    chosenFrame: 0,
+    chosenTime: 0,
+    complete: true,
+    revisions: 1,
+  });
+  await raw.put('temporal/c/0000000001', {
+    id: '0000000001',
+    canvasId: 'c',
+    rect: { x: B, y: 0, width: B, height: B },
+    blocks: [[1, 0]],
+    chosenFrame: 0,
+    chosenTime: 0,
+    complete: true,
+    revisions: 1,
+  });
+  const { db: spied, log } = spyKV(raw);
+  const tiles = new TileStore(spied, 12 * B, 8), atlas = new RegionAtlas([region], 12 * B, B);
+  const compositor = new Compositor(spied, tiles, 'stable', async () => {}, atlas);
+  const meta = makeMeta();
+  const base: RGB4 = [100, 100, 100, 255], hot: RGB4 = [250, 10, 10, 255], hot2: RGB4 = [10, 250, 10, 255], hot3: RGB4 = [10, 10, 250, 255];
+  await compositor.add(solid(12 * B, B, base), region, place(0, 0, 0.5), 0, meta);
+  // Frame 1: merge blocks 0 and 1 — this deletes id "0000000001" (olds[0] is always id "0000000000").
+  const img1 = solid(12 * B, B, base);
+  paintRect(img1, { x: 0, y: 0, width: 2 * B, height: B }, hot);
+  await compositor.add(img1, region, place(0, 0, 0.5), 1, meta);
+  // Frame 2: two disjoint, non-overlapping conflicts (blocks 5 and 9) in one add() call, sorted left-to-right —
+  // block 5 gets fresh id pad(0) = "0000000000" (collides with the still-LIVE merged row: in-place clobber,
+  // same as the previous test), block 9 gets fresh id pad(1) = "0000000001" (collides with the just-DELETED row).
+  const img2 = solid(12 * B, B, base);
+  paintRect(img2, { x: 5 * B, y: 0, width: B, height: B }, hot2);
+  paintRect(img2, { x: 9 * B, y: 0, width: B, height: B }, hot3);
+  await compositor.add(img2, region, place(0, 0, 0.5), 2, meta);
+  await compositor.flush();
+  assertEquals(
+    log,
+    ['putMany(temporal/c/0000000000,temporal/c/0000000001)'],
+    'no delete() for "0000000001" — the fresh-id collision un-deleted it before this flush ever saw it as pending deletion',
+  );
+  const rows = await raw.scan<{ id: string; rect: Rect }>('temporal/c/', { limit: 10 });
+  assertEquals(rows.map((r) => r.value.id), ['0000000000', '0000000001']);
+  assertEquals(rows.find((r) => r.value.id === '0000000001')!.value.rect, { x: 9 * B, y: 0, width: B, height: B });
+});
+Deno.test("compositor: dispose() before the trailing flush() (render.ts's actual order) persists identical rows to flush() alone", async () => {
+  // src/pipeline/render.ts calls `ctx.releaseResidentRenderState()` (-> `Compositor.dispose()`) in its `finally`
+  // BEFORE its own trailing `await this.compositor.flush()`. The Rust-resident temporal-index handle is freed by
+  // dispose(), so flush() must still produce the exact same persisted rows either way — dispose() drains each
+  // canvas's pending dirty/deleted rows into a JS-side stash first (see `Compositor.dispose()`'s doc comment).
+  const width = 6 * B, region = makeRegion({ x: 0, y: 0, width, height: B });
+  const base: RGB4 = [100, 100, 100, 255], hot: RGB4 = [250, 10, 10, 255];
+  const run = async (disposeBeforeFlush: boolean) => {
+    const db = new MemoryKV(), tiles = new TileStore(db, width, 8), atlas = new RegionAtlas([region], width, B);
+    const compositor = new Compositor(db, tiles, 'stable', async () => {}, atlas);
+    const meta = makeMeta();
+    await compositor.add(solid(width, B, base), region, place(0, 0, 0.5), 0, meta);
+    const img1 = solid(width, B, base);
+    paintRect(img1, { x: 0, y: 0, width: B, height: B }, hot);
+    await compositor.add(img1, region, place(0, 0, 0.5), 1, meta);
+    if (disposeBeforeFlush) compositor.dispose();
+    await compositor.flush();
+    if (!disposeBeforeFlush) compositor.dispose();
+    const rows = await db.scan('temporal/c/', { limit: 10 });
+    return rows;
+  };
+  const withDispose = await run(true);
+  const withoutDispose = await run(false);
+  assertEquals(withDispose, withoutDispose, 'dispose() running before flush() must not change what gets persisted');
+  assertEquals(withDispose.length, 1);
+});

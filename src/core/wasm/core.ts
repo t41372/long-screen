@@ -10,7 +10,7 @@ import { check as checkStatus } from './exports.ts';
 import * as raster from './raster.ts';
 import * as pyramid from './pyramid.ts';
 import * as temporal from './temporal.ts';
-import type { OverwriteStats, OverwriteTile, TemporalComponent } from './temporal.ts';
+import type { OverwriteStats, OverwriteTile, TemporalComponent, TemporalIndexHandle } from './temporal.ts';
 import * as featuresDomain from './features.ts';
 import * as motion from './motion.ts';
 import * as chrome from './chrome.ts';
@@ -243,6 +243,10 @@ export class Core {
   }
   temporalComponents(cells: [number, number][], size: number): TemporalComponent[] {
     return temporal.temporalComponents(this, cells, size);
+  }
+  /** A fresh, empty in-memory temporal index (one per canvas — `Compositor.temporalIndex()`, src/core/compositor.ts). */
+  newTemporalIndex(): TemporalIndexHandle {
+    return temporal.newTemporalIndex(this, this.exports);
   }
   overwriteTile(
     tile: OverwriteTile,
