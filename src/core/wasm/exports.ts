@@ -206,6 +206,18 @@ export interface CoreExports {
   ls_pose_graph_residual(handle: number): number;
   ls_pose_graph_read(handle: number, xsOut: number, ysOut: number): number;
   ls_pose_graph_free(handle: number): void;
+  ls_frame_layout(sourceWidth: number, sourceHeight: number, pane: number, boundsWidth: number, boundsHeight: number, out: number): number;
+  ls_frame_coordinate(layout: number, x: number, y: number, out: number): number;
+  ls_frame_backgrounds(
+    source: number,
+    sourceWidth: number,
+    sourceHeight: number,
+    pane: number,
+    rowsOut: number,
+    columnsOut: number,
+  ): number;
+  ls_frame_paint_tile(desc: number): number;
+  ls_frame_fold_evidence(desc: number): number;
 }
 
 /** Byte layouts shared with `rust/core/src/abi/wire.rs`. Asserted against the live module's `ls_layout` once
@@ -220,6 +232,8 @@ export const MATCH_POINT_BYTES = 40,
 export const COMPOSITE_HEADER = 24, VOTING_REGION_BYTES = 64, LEARNER_MOTION_BYTES = 32, LEARNER_FIELD_BYTES = 40;
 /** `ls_regions_finish` request descriptor, and one output region header (`rust/core/src/abi/regions.rs`). */
 export const REGIONS_FINISH_DESC_BYTES = 112, REGION_HEADER_BYTES = 88;
+/** One serialised `framing::Layout` (`rust/core/src/abi/framing.rs`). */
+export const LAYOUT_BYTES = 104;
 /** Named accumulator arrays `rust/core/src/abi/learner.rs::learner_array` recognises — must match
  *  `./learner.ts`'s `LEARNER_ARRAYS.length` (selector 14, "counts", is separate and not part of this count). */
 export const LEARNER_ARRAY_COUNT = 14;
@@ -239,6 +253,7 @@ const LAYOUT = [
   REGIONS_FINISH_DESC_BYTES,
   REGION_HEADER_BYTES,
   LEARNER_ARRAY_COUNT,
+  LAYOUT_BYTES,
 ];
 
 /** Throws a clear error the moment a Rust/TS byte-layout constant has drifted, instead of a wrong answer or an

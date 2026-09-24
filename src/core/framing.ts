@@ -1,90 +1,27 @@
 import type { CanvasMeta, Rect, Region, RGBA } from '../types.ts';
 import type { KV } from '../storage/db.ts';
 import { iterate } from '../storage/db.ts';
-import {
-  countCovered,
-  covered,
-  markCovered,
-  markProvisional,
-  provisional,
-  QUALITY_BLOCK,
-  type TileIndex,
-  type TileStore,
-} from '../storage/tiles.ts';
+import { countCovered, type TileIndex, type TileStore } from '../storage/tiles.ts';
 import { decodePNG } from '../codec/png.ts';
 import { intersect } from './math.ts';
-import { regionContains } from './layers.ts';
+import { core, type FrameLayout, type SourceFramingTile } from './wasm.ts';
+
+export type { FrameLayout } from './wasm.ts';
 
 /** Presentation is deliberately separate from reconstruction. No toolbar is translated into world coordinates,
- * no sidebar icons are stretched or repeated, and background extensions never count as observed evidence. */
-export interface FrameLayout {
-  width: number;
-  height: number;
-  pane: Rect;
-  content: Rect;
-  dx: number;
-  dy: number;
-  seamX: number;
-}
+ * no sidebar icons are stretched or repeated, and background extensions never count as observed evidence.
+ * Layout/coordinate mapping, background statistics and per-tile pixel synthesis are Rust (rust/core/src/framing.rs,
+ * docs/ARCHITECTURE.md §十 "呈现画布"); this module keeps the orchestration — tile-index/candidate traversal,
+ * TileStore get/save, KV writes, checkpoint/progress and the PRESENTATION_TOO_SPARSE skip. */
 export function frameLayout(source: RGBA, region: Region, canvas: CanvasMeta): FrameLayout {
-  const pane = region.crop || region.rect;
-  const content = {
-    x: pane.x,
-    y: pane.y,
-    width: Math.max(pane.width, Math.ceil(canvas.bounds.width)),
-    height: Math.max(pane.height, Math.ceil(canvas.bounds.height)),
-  };
-  return {
-    width: source.width + content.width - pane.width,
-    height: source.height + content.height - pane.height,
-    pane,
-    content,
-    dx: content.width - pane.width,
-    dy: content.height - pane.height,
-    seamX: Math.floor(pane.x + pane.width / 2),
-  };
+  return core().frameLayout(source, region.crop || region.rect, canvas.bounds.width, canvas.bounds.height);
 }
-/** Native source coordinate for a context pixel; undefined is a decorative extension, null is reconstructed content. */
+/** Native source coordinate for a context pixel; undefined is a decorative extension, null is reconstructed
+ * content. Test/diagnostic use only — `buildFramedCanvas`'s per-tile loop classifies pixels inline in Rust. */
 export function frameCoordinate(layout: FrameLayout, x: number, y: number): { x: number; y: number } | undefined | null {
-  const { pane: p, content: c, dx, dy, seamX } = layout;
-  if (x >= c.x && x < c.x + c.width && y >= c.y && y < c.y + c.height) return null;
-  if (y < p.y || y >= c.y + c.height) {
-    const sy = y < p.y ? y : y - dy;
-    if (x >= seamX && x < seamX + dx) return undefined;
-    return { x: x < seamX ? x : x - dx, y: sy };
-  }
-  if (y >= p.y + p.height) return undefined;
-  return { x: x < p.x ? x : x - dx, y };
+  return core().frameCoordinate(layout, x, y);
 }
-function mode(values: number[]): number {
-  const counts = new Map<number, number>();
-  let best = values[0] || 0, count = 0;
-  for (const v of values) {
-    const n = (counts.get(v) || 0) + 1;
-    counts.set(v, n);
-    if (n > count) {
-      count = n;
-      best = v;
-    }
-  }
-  return best;
-}
-function backgrounds(image: RGBA, pane: Rect): { rows: Uint32Array; columns: Uint32Array } {
-  const pixels = new Uint32Array(image.data.buffer, image.data.byteOffset, image.data.length / 4);
-  const rows = new Uint32Array(image.height), columns = new Uint32Array(image.width);
-  const xs = Math.max(1, Math.floor(pane.width / 128)), ys = Math.max(1, Math.floor(pane.height / 128));
-  for (let y = 0; y < image.height; y++) {
-    const samples: number[] = [];
-    for (let x = pane.x; x < pane.x + pane.width; x += xs) samples.push(pixels[y * image.width + x]);
-    rows[y] = mode(samples);
-  }
-  for (let x = 0; x < image.width; x++) {
-    const samples: number[] = [];
-    for (let y = pane.y; y < pane.y + pane.height; y += ys) samples.push(pixels[y * image.width + x]);
-    columns[x] = mode(samples);
-  }
-  return { rows, columns };
-}
+
 /**
  * Composites the framed presentation canvas: native chrome plus decorative background-extension bands wrapped
  * around the live content rect. Cost is O(perimeter tiles + observed source tiles) by construction, never
@@ -133,9 +70,7 @@ export async function buildFramedCanvas(
         'Native-scale reference chrome shown once; flat background-only extensions are presentation, NOT observed world content. Other panes in the frame are reference snapshots, NOT merged trajectories. Coverage bits mark copied evidence; opaque extension pixels are deliberately not covered.',
     },
   };
-  const bg = backgrounds(source, pane),
-    sourcePixels = new Uint32Array(source.data.buffer, source.data.byteOffset, source.data.length / 4),
-    size = tiles.size;
+  const size = tiles.size;
   const ignored = regions.filter((r) => r.kind === 'ignore');
   const cols = Math.ceil(layout.width / size), rows = Math.ceil(layout.height / size);
   const boundsFor = (tx: number, ty: number): Rect => ({
@@ -218,87 +153,44 @@ export async function buildFramedCanvas(
     sourceTilesSeen++;
     if ((sourceTilesSeen & 255) === 0) await checkpoint();
   }
-  // Tilewise traversal: at most four raw input tiles per output tile. Never allocate a giant output canvas or a full output row.
-  for (const [tx, ty] of candidates) {
-    await checkpoint();
-    const bounds = boundsFor(tx, ty),
-      tile = await tiles.get(meta.id, tx, ty),
-      dst = new Uint32Array(tile.pixels.buffer, tile.pixels.byteOffset, tile.pixels.length / 4);
-    for (let y = 0; y < bounds.height; y++) {
-      for (let x = 0; x < bounds.width; x++) {
-        const ox = bounds.x + x, oy = bounds.y + y, p = frameCoordinate(layout, ox, oy), at = y * size + x;
-        if (p === null) continue;
-        if (p) {
-          if (ignored.some((r) => regionContains(r, p.x, p.y, source.width, source.height))) continue;
-          dst[at] = sourcePixels[p.y * source.width + p.x];
-          if (tile.pixels[at * 4 + 3]) markCovered(tile, at);
-        } else if (oy < pane.y || oy >= content.y + content.height) {
-          dst[at] = bg.rows[oy < pane.y ? oy : oy - layout.dy];
-        } else {
-          dst[at] = bg.columns[ox < pane.x ? ox : ox - layout.dx];
-        }
-      }
-    }
-    const overlap = intersect(bounds, content);
-    if (overlap.width > 0 && overlap.height > 0) {
-      const evidence = new Map<number, { quality: number; score: number; owners: Set<number>; conflicts: boolean; frozen: boolean }>();
-      const wx = Math.floor(sourceCanvas.bounds.x + overlap.x - content.x),
-        wy = Math.floor(sourceCanvas.bounds.y + overlap.y - content.y);
-      for (let sy = Math.floor(wy / size); sy <= Math.floor((wy + overlap.height - 1) / size); sy++) {
-        for (let sx = Math.floor(wx / size); sx <= Math.floor((wx + overlap.width - 1) / size); sx++) {
-          if (!existingSourceTiles.has(`${sx}_${sy}`)) continue;
-          const raw = await tiles.get(sourceCanvas.id, sx, sy);
-          const part = intersect({ x: wx, y: wy, width: overlap.width, height: overlap.height }, {
-            x: sx * size,
-            y: sy * size,
-            width: size,
-            height: size,
-          });
-          for (let y = part.y; y < part.y + part.height; y++) {
-            const dy = overlap.y - bounds.y + y - wy, dx = overlap.x - bounds.x + part.x - wx;
-            const from = (y - sy * size) * size + part.x - sx * size;
-            for (let x = 0; x < part.width; x++) {
-              const sourcePixel = from + x, destinationPixel = dy * size + dx + x;
-              tile.pixels.set(raw.pixels.subarray(sourcePixel * 4, sourcePixel * 4 + 4), destinationPixel * 4);
-              if (covered(raw, sourcePixel)) {
-                markCovered(tile, destinationPixel);
-                const sourceBlock = Math.floor((part.x - sx * size + x) / QUALITY_BLOCK) +
-                  Math.floor((y - sy * size) / QUALITY_BLOCK) * (size / QUALITY_BLOCK);
-                const destinationBlock = Math.floor((dx + x) / QUALITY_BLOCK) + Math.floor(dy / QUALITY_BLOCK) * (size / QUALITY_BLOCK);
-                let block = evidence.get(destinationBlock);
-                if (!block) {
-                  block = { quality: 255, score: Number.POSITIVE_INFINITY, owners: new Set<number>(), conflicts: false, frozen: false };
-                  evidence.set(destinationBlock, block);
-                }
-                block.quality = Math.min(block.quality, raw.quality[sourceBlock]);
-                block.score = Math.min(block.score, raw.score[sourceBlock]);
-                block.owners.add(raw.owner[sourceBlock]);
-                block.conflicts ||= !!raw.conflicts[sourceBlock];
-                block.frozen ||= !!raw.frozen[sourceBlock];
-              }
-              if (provisional(raw, sourcePixel)) {
-                markProvisional(tile, destinationPixel);
-              }
-            }
+  // One resident copy of the reference frame and its background statistics for the whole canvas (never a
+  // per-tile upload); disposed in `finally` on every exit path, including the maxTiles/error paths above.
+  const session = core().openFramingSession(source, layout, ignored, size);
+  try {
+    // Tilewise traversal: at most four raw input tiles per output tile. Never allocate a giant output canvas or a full output row.
+    for (const [tx, ty] of candidates) {
+      await checkpoint();
+      const bounds = boundsFor(tx, ty), tile = await tiles.get(meta.id, tx, ty);
+      session.paintTile(tile, bounds);
+      const overlap = intersect(bounds, content);
+      if (overlap.width > 0 && overlap.height > 0) {
+        const wx = Math.floor(sourceCanvas.bounds.x + overlap.x - content.x),
+          wy = Math.floor(sourceCanvas.bounds.y + overlap.y - content.y);
+        // TS still decides WHICH ≤4 source tiles overlap this output tile (same grid arithmetic the pre-check
+        // above uses to decide candidacy) and fetches them through the shared LRU, preserving its hit/eviction
+        // order; Rust re-derives the same per-pixel `part` rects from `wx`/`wy` and folds them in one call.
+        const sources: SourceFramingTile[] = [];
+        for (let sy = Math.floor(wy / size); sy <= Math.floor((wy + overlap.height - 1) / size); sy++) {
+          for (let sx = Math.floor(wx / size); sx <= Math.floor((wx + overlap.width - 1) / size); sx++) {
+            if (!existingSourceTiles.has(`${sx}_${sy}`)) continue;
+            const raw = await tiles.get(sourceCanvas.id, sx, sy);
+            sources.push({ sx, sy, ...raw });
           }
         }
+        if (sources.length) session.foldEvidence(tile, bounds, sourceCanvas.bounds.x, sourceCanvas.bounds.y, sources);
       }
-      for (const [q, block] of evidence) {
-        tile.quality[q] = block.quality;
-        tile.score[q] = Number.isFinite(block.score) ? block.score : 0;
-        tile.conflicts[q] = block.conflicts ? 1 : 0;
-        tile.frozen[q] = block.frozen ? 1 : 0;
-        tile.owner[q] = block.owners.size === 1 && !block.owners.has(0) ? [...block.owners][0] : 0;
+      const dst = new Uint32Array(tile.pixels.buffer, tile.pixels.byteOffset, tile.pixels.length / 4);
+      if (dst.some((w) => w >>> 24)) {
+        tile.dirty = true;
+        tile.touched = performance.now();
+        meta.tileCount++;
+        meta.observedPixels += countCovered(tile.coverage);
+        meta.provisionalPixels += countCovered(tile.provisional);
+        await tiles.save(tile);
       }
     }
-    if (dst.some((w) => w >>> 24)) {
-      tile.dirty = true;
-      tile.touched = performance.now();
-      meta.tileCount++;
-      meta.observedPixels += countCovered(tile.coverage);
-      meta.provisionalPixels += countCovered(tile.provisional);
-      await tiles.save(tile);
-    }
+  } finally {
+    session.dispose();
   }
   // The aggregate uncertainty/conflict counters above describe the source run and are preserved in `meta`; coverage
   // and provisional counts are recomputed from the exact pixels copied into this presentation. Decorative pixels are

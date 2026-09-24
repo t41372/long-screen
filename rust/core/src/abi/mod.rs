@@ -23,6 +23,7 @@ mod chrome;
 mod composite;
 mod consistency;
 mod features;
+mod framing;
 mod learner;
 mod memory;
 mod motion;
@@ -44,6 +45,7 @@ pub const STATUS_BAD_FILTER: i32 = -256;
 #[no_mangle]
 pub extern "C" fn ls_layout(which: u32) -> u32 {
     use crate::motion::MOTION_CELL;
+    use framing::LAYOUT_BYTES;
     use learner::LEARNER_ARRAY_COUNT;
     use regions::{REGIONS_FINISH_DESC_BYTES, REGION_HEADER_BYTES};
     use wire::{
@@ -65,6 +67,7 @@ pub extern "C" fn ls_layout(which: u32) -> u32 {
         10 => REGIONS_FINISH_DESC_BYTES,
         11 => REGION_HEADER_BYTES,
         12 => LEARNER_ARRAY_COUNT,
+        13 => LAYOUT_BYTES,
         _ => 0,
     }) as u32
 }

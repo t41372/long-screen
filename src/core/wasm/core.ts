@@ -33,6 +33,13 @@ import {
   poseGraphRead as poseGraphReadImpl,
   poseGraphResidual as poseGraphResidualImpl,
 } from './pose-graph.ts';
+import {
+  frameCoordinate as frameCoordinateImpl,
+  type FrameLayout,
+  frameLayout as frameLayoutImpl,
+  type FramingSession,
+  openFramingSession as openFramingSessionImpl,
+} from './framing.ts';
 
 export interface RefinementResult {
   x: number;
@@ -400,5 +407,19 @@ export class Core {
   }
   poseGraphFree(handle: number): void {
     poseGraphFreeImpl(this.exports, handle);
+  }
+
+  /** `buildFramedCanvas`'s `frameLayout()`. */
+  frameLayout(source: { width: number; height: number }, pane: Rect, boundsWidth: number, boundsHeight: number): FrameLayout {
+    return frameLayoutImpl(this, this.exports, source, pane, boundsWidth, boundsHeight);
+  }
+  /** `buildFramedCanvas`'s `frameCoordinate()` (test/diagnostic use; the per-tile kernels classify inline). */
+  frameCoordinate(layout: FrameLayout, x: number, y: number): { x: number; y: number } | undefined | null {
+    return frameCoordinateImpl(this, this.exports, layout, x, y);
+  }
+  /** Opens a `buildFramedCanvas` session for one presentation canvas: uploads the reference frame, computes
+   *  background statistics once, and returns the per-output-tile `paintTile`/`foldEvidence` calls. */
+  openFramingSession(source: RGBA, layout: FrameLayout, ignoreRegions: Region[], tileSize: number): FramingSession {
+    return openFramingSessionImpl(this, this.exports, source, layout, ignoreRegions, tileSize);
   }
 }
