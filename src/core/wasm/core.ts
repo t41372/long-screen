@@ -319,6 +319,19 @@ export class Core {
   pngFilterSub(rgba: Uint8Array, width: number, height: number): Uint8Array<ArrayBuffer> {
     return png.pngFilterSub(this, rgba, width, height);
   }
+  pngEncode(rgba: Uint8Array, width: number, height: number): Uint8Array<ArrayBuffer> {
+    return png.pngEncode(this, rgba, width, height);
+  }
+  pngDecode(bytes: Uint8Array, width: number, height: number): Uint8ClampedArray {
+    return png.pngDecode(this, bytes, width, height);
+  }
+  crc32(bytes: Uint8Array): number {
+    return png.crc32(this, bytes);
+  }
+  /** Incremental CRC32 for a caller streaming bounded chunks (`src/export/zip.ts`, `src/codec/png.ts::chunk()`). */
+  crc32Stream(): png.Crc32 {
+    return new png.Crc32(this);
+  }
 
   meanDifference(a: Gray, b: Gray): number {
     return raster.meanDifference(this, a, b);

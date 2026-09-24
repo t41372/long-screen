@@ -9,3 +9,11 @@ description = "Long Screen reconstruction core compiled to WebAssembly"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+# Tile PNG codec (replaces the hand-rolled Sub filter + browser CompressionStream + JS CRC32 table — see
+# rust/core/src/abi/png.rs). Pinned exact: a `png` point release can change its Adaptive-filter heuristic or its
+# error Display text, either of which this crate depends on byte-for-byte (fingerprints) or string-for-string
+# (`classify` in abi/png.rs). Brings in fdeflate/flate2/miniz_oxide/crc32fast transitively.
+png = "=0.18.1"
+# Already a transitive dependency of png (chunk CRCs); used directly for `ls_crc32` (crate::abi::png), which
+# replaces the hand-rolled JS CRC32 table in src/codec/crc.ts and src/export/zip.ts.
+crc32fast = "=1.5.2"

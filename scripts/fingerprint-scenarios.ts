@@ -4,7 +4,7 @@
  *  the same name to a first-class repo script, so any tree can fingerprint itself with its own deno.json/config
  *  (no --config flag needed) and no <root> argument.
  *
- *  Usage: deno run -A scripts/fingerprint-scenarios.ts <out.json> [--root <otherRepoRoot>] [scenario…]
+ *  Usage: deno run -A scripts/fingerprint-scenarios.ts <out.json> [--root <otherRepoRoot>] [--pixels] [scenario…]
  *  Without --root, fingerprints this checkout (dynamic-imports its own modules, resolved relative to this script).
  *  With --root, fingerprints the checkout at that path instead — for an A/B compare against a baseline worktree,
  *  e.g. `deno run -A scripts/fingerprint-scenarios.ts out.json --root ../baseline`. The <root> tree is fingerprinted
@@ -12,7 +12,12 @@
  *  `--config <root>/deno.json`: a tree being compared can be on a different @std/* version or have different
  *  compilerOptions, and loading its modules through THIS tree's config would silently resolve those imports wrong.
  *  The child receives the target root via LONGSCREEN_FP_ROOT (not --root again), so it runs the body below once,
- *  instead of re-spawning itself. */
+ *  instead of re-spawning itself.
+ *
+ *  --pixels: hash every `image/png` Blob by its DECODED pixels ({width,height,sha(RGBA)}, via the fingerprinted
+ *  tree's own src/codec/png.ts decodePNG) instead of its raw bytes. Everything else (non-PNG blobs, all other rows)
+ *  is unchanged. Used to prove a PNG-codec change alters only bytes, never decoded pixels: run --pixels on two
+ *  trees with different codecs and the output must still be IDENTICAL. */
 import { fromFileUrl, resolve as resolvePath } from '@std/path';
 
 const argv = Deno.args.slice();
@@ -22,13 +27,28 @@ if (rootFlag !== -1) {
   rootArg = argv[rootFlag + 1];
   argv.splice(rootFlag, 2);
 }
+let PIXELS = false;
+const pixelsFlag = argv.indexOf('--pixels');
+if (pixelsFlag !== -1) {
+  PIXELS = true;
+  argv.splice(pixelsFlag, 1);
+}
 const [outArg, ...only] = argv;
 
 if (rootArg !== undefined) {
   const targetRoot = await Deno.realPath(rootArg);
   const out = resolvePath(outArg); // absolute before spawning, in case the child's cwd differs from ours
   const child = new Deno.Command(Deno.execPath(), {
-    args: ['run', '-A', '--config', `${targetRoot}/deno.json`, fromFileUrl(import.meta.url), out, ...only],
+    args: [
+      'run',
+      '-A',
+      '--config',
+      `${targetRoot}/deno.json`,
+      fromFileUrl(import.meta.url),
+      out,
+      ...(PIXELS ? ['--pixels'] : []),
+      ...only,
+    ],
     env: { ...Deno.env.toObject(), LONGSCREEN_FP_ROOT: targetRoot },
     stdout: 'inherit',
     stderr: 'inherit',
@@ -43,6 +63,9 @@ const root = new URL(`file://${await Deno.realPath(rootDir)}/`);
 await import(new URL('tests/support/core.ts', root).href);
 const { SCENARIO_NAMES, buildScenario } = await import(new URL('src/synthetic/scenarios.ts', root).href);
 const { Engine } = await import(new URL('src/pipeline/engine.ts', root).href);
+// Only imported in --pixels mode: decodes PNG blobs with the FINGERPRINTED tree's own decoder (this tree's, or the
+// --root tree's when respawned above), so a codec change is exercised through the same code path production uses.
+const { decodePNG } = PIXELS ? await import(new URL('src/codec/png.ts', root).href) : { decodePNG: undefined };
 const { MemoryKV } = await import(new URL('src/storage/db.ts', root).href);
 const { ScenarioSource } = await import(new URL('src/synthetic/source.ts', root).href);
 const { DEFAULT_SETTINGS } = await import(new URL('src/types.ts', root).href);
@@ -57,7 +80,14 @@ const LEGACY_SETTINGS: Record<string, Record<string, unknown>> = { factor4: { an
 const VOLATILE = new Set(['created', 'updated', 'scanMS', 'solveMS', 'renderMS', 'framingMS', 'pyramidMS', 'compute', 'id']);
 
 async function canon(v: unknown, id: string): Promise<unknown> {
-  if (v instanceof Blob) return { blob: v.type, sha: await sha(new Uint8Array(await v.arrayBuffer())) };
+  if (v instanceof Blob) {
+    const bytes = new Uint8Array(await v.arrayBuffer());
+    if (PIXELS && v.type === 'image/png') {
+      const { width, height, data } = await decodePNG!(bytes);
+      return { blob: v.type, pixels: { width, height, sha: await sha(data) } };
+    }
+    return { blob: v.type, sha: await sha(bytes) };
+  }
   if (ArrayBuffer.isView(v)) {
     return { [v.constructor.name]: await sha(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)) };
   }

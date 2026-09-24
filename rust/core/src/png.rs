@@ -1,5 +1,6 @@
-//! PNG scanline reconstruction (unfilter) and filtering. Deflate stays with the browser's native
-//! `CompressionStream`, which is already machine code; only the byte-wise predictor loops move here.
+//! PNG scanline reconstruction (unfilter) and filtering, used by the streaming single-PNG export path
+//! (`src/codec/png.ts::encodePNG`/`decodePNG`'s legacy row helpers). The tile codec itself
+//! (`abi/png.rs::ls_png_encode`/`ls_png_decode`) uses the `png` crate end to end instead.
 
 #[inline]
 fn paeth(a: u8, b: u8, c: u8) -> u8 {
@@ -68,34 +69,42 @@ pub fn unfilter_to_rgba(
             other => return Err(other),
         }
         let dst = &mut out[y * width * 4..(y + 1) * width * 4];
-        match channels {
-            4 => dst.copy_from_slice(&line),
-            3 => {
-                for (px, s) in dst.chunks_exact_mut(4).zip(line.chunks_exact(3)) {
-                    px[..3].copy_from_slice(s);
-                    px[3] = 255;
-                }
-            }
-            2 => {
-                for (px, s) in dst.chunks_exact_mut(4).zip(line.chunks_exact(2)) {
-                    px[0] = s[0];
-                    px[1] = s[0];
-                    px[2] = s[0];
-                    px[3] = s[1];
-                }
-            }
-            _ => {
-                for (px, &s) in dst.chunks_exact_mut(4).zip(line.iter()) {
-                    px[0] = s;
-                    px[1] = s;
-                    px[2] = s;
-                    px[3] = 255;
-                }
-            }
-        }
+        expand_to_rgba(&line, channels, dst);
         std::mem::swap(&mut line, &mut previous);
     }
     Ok(())
+}
+
+/// Expands a channels-per-pixel buffer (1 grey, 2 grey+alpha, 3 RGB, 4 RGBA) to RGBA. `raw` holds
+/// `pixel_count * channels` bytes; `out` receives `pixel_count * 4`. Shared by `unfilter_to_rgba`'s per-row
+/// tail above and `abi::png::ls_png_decode` (whose scanlines the `png` crate has already unfiltered, so it
+/// only needs the channel expansion, not the predictor).
+pub fn expand_to_rgba(raw: &[u8], channels: usize, out: &mut [u8]) {
+    match channels {
+        4 => out.copy_from_slice(raw),
+        3 => {
+            for (px, s) in out.chunks_exact_mut(4).zip(raw.chunks_exact(3)) {
+                px[..3].copy_from_slice(s);
+                px[3] = 255;
+            }
+        }
+        2 => {
+            for (px, s) in out.chunks_exact_mut(4).zip(raw.chunks_exact(2)) {
+                px[0] = s[0];
+                px[1] = s[0];
+                px[2] = s[0];
+                px[3] = s[1];
+            }
+        }
+        _ => {
+            for (px, &s) in out.chunks_exact_mut(4).zip(raw.iter()) {
+                px[0] = s;
+                px[1] = s;
+                px[2] = s;
+                px[3] = 255;
+            }
+        }
+    }
 }
 
 /// Applies the Sub filter (type 1) to RGBA rows: `out` receives `height` rows of `1 + width*4` bytes.

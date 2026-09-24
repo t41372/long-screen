@@ -90,83 +90,48 @@ export async function* encodePNG(
     await producer;
   }
 }
-function* rowsOf(pixels: Uint8ClampedArray, width: number, height: number): Generator<Uint8Array> {
-  for (let y = 0; y < height; y++) {
-    yield new Uint8Array(pixels.buffer, pixels.byteOffset + y * width * 4, width * 4);
-  }
-}
+/** Tile codec: one call to the core's `png` crate encoder (`Compression::Fast` + its default Adaptive filter —
+ *  the dependency audit's chosen setting), synchronous work behind this async signature. Replaces the streaming
+ *  `encodePNG`/`CompressionStream` path above for the common case (a whole RGBA image already in memory); that
+ *  path stays, for the giant single-PNG export whose height would otherwise need the whole canvas resident. */
 export async function encodeRGBA(image: RGBA): Promise<Uint8Array<ArrayBuffer>> {
   if (image.data.length !== image.width * image.height * 4) {
     throw new Error('RGBA buffer does not match its dimensions.');
   }
-  const parts: Uint8Array[] = [];
-  let total = 0;
-  for await (const part of encodePNG(image.width, image.height, rowsOf(image.data, image.width, image.height))) {
-    parts.push(part);
-    total += part.length;
-  }
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
-  return out;
+  return core().pngEncode(
+    new Uint8Array(image.data.buffer, image.data.byteOffset, image.data.byteLength),
+    image.width,
+    image.height,
+  );
 }
-async function inflate(data: Uint8Array<ArrayBuffer>): Promise<Uint8Array> {
-  if (typeof DecompressionStream === 'undefined') {
-    throw new Error('COMPRESSION_UNAVAILABLE: PNG decoding needs DecompressionStream.');
-  }
-  const stream = new DecompressionStream('deflate'), writer = stream.writable.getWriter();
-  const written = writer.write(data).then(() => writer.close());
-  const parts: Uint8Array[] = [], reader = stream.readable.getReader();
-  let total = 0;
-  while (true) {
-    const r = await reader.read();
-    if (r.done) {
-      break;
-    }
-    parts.push(r.value);
-    total += r.value.length;
-  }
-  await written;
-  const out = new Uint8Array(total);
-  let offset = 0;
-  for (const p of parts) {
-    out.set(p, offset);
-    offset += p.length;
-  }
-  return out;
-}
-/** Decodes 8-bit non-interlaced PNG (grey, grey+alpha, RGB, RGBA) into RGBA. Palette, 16-bit and interlaced images are rejected explicitly. */
+/** Decodes 8-bit non-interlaced PNG (grey, grey+alpha, RGB, RGBA) into RGBA. Palette, 16-bit and interlaced
+ *  images are rejected explicitly. The container (signature, per-chunk CRC, IHDR colour/depth/interlace,
+ *  truncation, IHDR/IEND presence) is still walked and verified here, in TS, so every rejection this function
+ *  is tested against (`tests/unit/codec.test.ts`) keeps its exact existing message; only the actual pixel
+ *  reconstruction (inflate + unfilter + colour expansion, no more `DecompressionStream`) moves to the core's
+ *  `ls_png_decode`, which receives the whole validated file in one call. */
 export async function decodePNG(bytes: Uint8Array): Promise<RGBA> {
   if (bytes.length < 8 || SIGNATURE.some((b, i) => bytes[i] !== b)) {
     throw new Error('Not a PNG file.');
   }
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  let offset = 8, width = 0, height = 0, colour = -1, depth = 0, interlace = 0;
-  const idat: Uint8Array[] = [];
-  let idatLength = 0, ended = false;
+  let offset = 8, width = 0, height = 0, colour = -1, depth = 0, interlace = 0, ended = false;
   while (offset + 8 <= bytes.length && !ended) {
     const size = view.getUint32(offset),
       type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]);
     if (offset + 12 + size > bytes.length) {
       throw new Error(`Truncated PNG chunk ${type}.`);
     }
-    const body = bytes.subarray(offset + 8, offset + 8 + size), crc = new CRC32();
-    crc.update(bytes.subarray(offset + 4, offset + 8 + size));
-    if (crc.digest() !== view.getUint32(offset + 8 + size)) {
+    if (core().crc32(bytes.subarray(offset + 4, offset + 8 + size)) !== view.getUint32(offset + 8 + size)) {
       throw new Error(`PNG chunk ${type} failed its CRC check.`);
     }
     if (type === 'IHDR') {
+      const body = bytes.subarray(offset + 8, offset + 8 + size);
       width = view.getUint32(offset + 8);
       height = view.getUint32(offset + 12);
       depth = body[8];
       colour = body[9];
       interlace = body[12];
-    } else if (type === 'IDAT') {
-      idat.push(body);
-      idatLength += body.length;
     } else if (type === 'IEND') {
       ended = true;
     }
@@ -179,17 +144,20 @@ export async function decodePNG(bytes: Uint8Array): Promise<RGBA> {
   if (!channels || depth !== 8 || interlace !== 0) {
     throw new Error(`Unsupported PNG layout: colour type ${colour}, ${depth}-bit, interlace ${interlace}.`);
   }
-  const joined = new Uint8Array(idatLength);
-  let at = 0;
-  for (const part of idat) {
-    joined.set(part, at);
-    at += part.length;
+  let out: Uint8ClampedArray;
+  try {
+    out = core().pngDecode(bytes, width, height);
+  } catch (e) {
+    // The one failure the container walk above cannot see — the scanline filter-type byte lives inside the
+    // deflate stream — keeps its own distinct message via core.check()'s STATUS_BAD_FILTER convention (see
+    // rust/core/src/abi/png.rs::classify). Anything else here means the declared IHDR dimensions do not match
+    // the actual (inflated) scanline data length, the same condition the old inflate-in-TS path caught by
+    // comparing byte counts directly.
+    if (e instanceof Error && e.message.startsWith('Invalid PNG filter')) throw e;
+    const stride = width * channels;
+    throw new Error(
+      `PNG data does not decode to its declared ${width}×${height}; expected ${(stride + 1) * height} bytes of scanline data.`,
+    );
   }
-  const raw = await inflate(joined), stride = width * channels;
-  if (raw.length !== (stride + 1) * height) {
-    throw new Error(`PNG data has ${raw.length} bytes; expected ${(stride + 1) * height}.`);
-  }
-  // Scanline reconstruction (all five PNG filters, any colour type → RGBA) runs in the Rust core.
-  const out = core().pngUnfilter(raw, width, height, channels);
   return { width, height, data: out };
 }

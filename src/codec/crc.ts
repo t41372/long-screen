@@ -1,25 +1,18 @@
-const table = new Uint32Array(256);
-for (let n = 0; n < 256; n++) {
-  let c = n;
-  for (let k = 0; k < 8; k++) {
-    c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  }
-  table[n] = c >>> 0;
-}
+/** CRC32 (`crc32fast`, hardware-accelerated where available) via the Rust core — replaces the hand-rolled JS
+ *  CRC32 table this module used to carry. `CRC32` keeps its old incremental class shape (`update()` any number
+ *  of times, `digest()` any number of times, no explicit dispose) so `src/export/zip.ts` needed no call-site
+ *  changes; `crc32()` is the one-shot convenience form. */
+import { core } from '../core/wasm.ts';
 export class CRC32 {
-  private value = 0xffffffff;
+  private readonly stream = core().crc32Stream();
   update(data: Uint8Array): void {
-    for (const b of data) {
-      this.value = table[(this.value ^ b) & 255] ^ (this.value >>> 8);
-    }
+    this.stream.update(data);
   }
   digest(): number {
-    return (this.value ^ 0xffffffff) >>> 0;
+    return this.stream.digest();
   }
 }
 export function crc32(data: Uint8Array): number {
-  const c = new CRC32();
-  c.update(data);
-  return c.digest();
+  return core().crc32(data);
 }
 export const utf8 = (s: string): Uint8Array => new TextEncoder().encode(s);
