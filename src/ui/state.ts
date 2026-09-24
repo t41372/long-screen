@@ -32,5 +32,6 @@ export function syncControls(state: AppState, viewer: TiledViewer): void {
   $<HTMLButtonElement>('regions-btn').disabled = busy || !state.firstBitmap;
   $<HTMLButtonElement>('export-project').disabled = busy || !state.project?.renderedFrames;
   $<HTMLButtonElement>('export-png').disabled = busy || !viewer.current?.tileCount;
+  $<HTMLButtonElement>('export-sheets').disabled = busy || !viewer.current?.tileCount;
   $<HTMLButtonElement>('copy-png').disabled = busy || !viewer.current?.tileCount;
 }

@@ -129,8 +129,9 @@ export async function exportProject(
 }
 /** `single`: always one PNG of the whole canvas at native size (the PNG format allows 2³¹−1 per side and rows are
  *  streamed, so size only costs time); `auto`: one PNG when it stays within common viewer limits, otherwise
- *  overlapping native-size sheets in a ZIP. */
-export type CanvasLayout = 'single' | 'auto';
+ *  overlapping native-size sheets in a ZIP; `sheets`: always the paged ZIP, even when the canvas would fit one PNG
+ *  (a canvas that fits one page still yields a ZIP, with exactly one sheet plus its manifest). */
+export type CanvasLayout = 'single' | 'auto' | 'sheets';
 export async function exportCanvas(
   db: KV,
   project: Project,
@@ -150,7 +151,8 @@ export async function exportCanvas(
       Math.max(512, Math.floor(project.settings.memoryMB * 1024 * 1024 * .20 / (project.settings.tileSize * 4) / 512) * 512),
     ),
     sheetHeight = 8192;
-  const single = layout === 'single' || (rect.width <= sheetWidth && rect.height <= 32767 && rect.width * rect.height <= 100000000);
+  const single = layout === 'single' ||
+    (layout === 'auto' && rect.width <= sheetWidth && rect.height <= 32767 && rect.width * rect.height <= 100000000);
   const name = single ? 'long-screen.png' : 'long-screen-sheets.zip',
     target = await createTarget(name, handle),
     tiles = new TileStore(db, project.settings.tileSize, project.settings.memoryMB);

@@ -92,6 +92,7 @@ export function createCanvases(state: AppState, viewer: TiledViewer): Canvases {
       c.kind === 'presentation' ? '带框呈现 · 延伸背景非观察证据' : c.kind === 'fixed' ? '固定 / 观察层' : '二维内容层'
     } · ${c.tileCount} 原图瓦片${c.fragment ? ' · 片段间关系未证实' : ''}`;
     $<HTMLButtonElement>('export-png').disabled = state.busy || !c.tileCount;
+    $<HTMLButtonElement>('export-sheets').disabled = state.busy || !c.tileCount;
     $<HTMLButtonElement>('copy-png').disabled = state.busy || !c.tileCount;
   }
   function mergeCanvas(meta: CanvasMeta): void {

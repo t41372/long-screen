@@ -303,6 +303,46 @@ Deno.test('export: the single layout writes one PNG of the whole canvas even whe
     assertEquals([...image.data.subarray(i, i + 4)], hole ? [0, 0, 0, 0] : [(x + 10) & 255, (y + 10) & 255, 7, 255], `pixel ${x},${y}`);
   }
 });
+// The 'sheets' layout is the explicit UI entry point for the paged ZIP (restored to the UI after b93d2ea made
+// "下载长图" always send 'single'): it must always page, even a canvas that would otherwise fit one PNG under
+// 'auto' — that canvas still gets a ZIP, just with exactly one sheet plus its manifest, not silently a PNG.
+Deno.test('export: the sheets layout always pages, even a canvas that would fit one PNG under auto (one sheet + manifest)', async () => {
+  const { p, store, meta } = await project(), target = fakeHandle();
+  const result = await exportCanvas(store, p, meta, () => {}, target.handle, 'sheets');
+  assert(result.name.endsWith('.zip') && result.message.includes('张原尺寸图片'), `${result.name}: ${result.message}`);
+  const bytes = target.bytes(), names = zipEntries(bytes);
+  assertEquals(names.filter((n) => n.endsWith('.png')).length, 1, names.join(','));
+  assert(names.includes('manifest.json') && names.includes('sheet_0_0.png') && names.includes('sheet_0_0.json'), names.join(','));
+  const image = await decodePNG(zipEntryBytes(bytes, 'sheet_0_0.png'));
+  assertEquals([image.width, image.height], [40, 30]);
+  let transparent = 0, opaque = 0;
+  for (let y = 0; y < 30; y++) {
+    for (let x = 0; x < 40; x++) {
+      const wx = x - 3, wy = y - 2, i = (y * 40 + x) * 4;
+      if ((wx + wy) % 5 === 0) {
+        assertEquals(image.data[i + 3], 0);
+        transparent++;
+      } else {
+        assertEquals([image.data[i], image.data[i + 1], image.data[i + 3]], [(wx + 10) & 255, (wy + 10) & 255, 255]);
+        opaque++;
+      }
+    }
+  }
+  assert(transparent > 0 && opaque > 0);
+  assertEquals((await store.scan('sheet-export/', { limit: 10 })).length, 0);
+});
+Deno.test("export: the sheets layout on a canvas needing several sheets matches auto's paging exactly", async () => {
+  const { p, store, meta } = await project(5000, 24), target = fakeHandle();
+  const result = await exportCanvas(store, p, meta, () => {}, target.handle, 'sheets');
+  assert(result.name.endsWith('.zip') && result.message.includes('张原尺寸图片'));
+  const names = zipEntries(target.bytes());
+  assert(
+    names.includes('manifest.json') && names.includes('sheet_0_0.png') && names.includes('sheet_1_0.json') &&
+      names.includes('sheet_1_0.png'),
+    names.join(','),
+  );
+  assertEquals((await store.scan('sheet-export/', { limit: 10 })).length, 0);
+});
 Deno.test('export: fractional sheet bounds preserve absolute edge pixels and overlap coordinates', async () => {
   const { p, store, meta } = await project(5001, 31), target = fakeHandle();
   meta.bounds = { x: -2.4, y: -1.6, width: 5000, height: 30 };

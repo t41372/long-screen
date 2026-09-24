@@ -168,8 +168,7 @@ const handlers: Handlers = {
     if (!active) {
       throw new Error('No active reconstruction.');
     }
-    active.stopRequested = true;
-    active.setPaused(false);
+    active.stop();
     return { requested: true };
   },
   async open(payload, database) {
@@ -237,7 +236,7 @@ const handlers: Handlers = {
       if (!meta || !meta.tileCount) {
         throw new Error('This canvas has no committed pixels.');
       }
-      return await exportCanvas(store, project, meta, progress, payload.handle, payload.layout === 'single' ? 'single' : 'auto');
+      return await exportCanvas(store, project, meta, progress, payload.handle, payload.layout ?? 'auto');
     } finally {
       exporting = false;
     }

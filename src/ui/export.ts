@@ -14,18 +14,23 @@ function imageFileName(state: AppState): string {
   return `${stem || 'long-screen'}-长图.png`;
 }
 
+type ExportKind = 'project' | 'png' | 'sheets';
+
 export function createExport(state: AppState, viewer: TiledViewer, run: Run, addDiagnostic: (d: Diagnostic) => void) {
   let downloadURL: string | undefined;
 
   function cleanupTemporary(key?: string): void {
     if (key) void call('cleanup-export', { key }).then(() => storageInfo()).catch(() => {});
   }
-  async function doExport(format: 'project' | 'png'): Promise<void> {
+  async function doExport(kind: ExportKind): Promise<void> {
     if (!state.project || state.busy) {
       return;
     }
     let handle: FileSystemFileHandle | undefined;
-    const c = viewer.current, name = format === 'png' ? imageFileName(state) : 'long-screen-project.zip';
+    const c = viewer.current;
+    const format = kind === 'png' ? 'png' : kind === 'sheets' ? 'png' : 'project';
+    const name = kind === 'png' ? imageFileName(state) : kind === 'sheets' ? 'long-screen-sheets.zip' : 'long-screen-project.zip';
+    const isZip = kind !== 'png';
     run.setBusy(true);
     $('run-controls').hidden = true;
     try {
@@ -36,8 +41,8 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
           }).showSaveFilePicker({
             suggestedName: name,
             types: [{
-              description: format === 'png' ? 'PNG image' : 'ZIP64 archive',
-              accept: { [format === 'png' ? 'image/png' : 'application/zip']: [format === 'png' ? '.png' : '.zip'] },
+              description: isZip ? 'ZIP64 archive' : 'PNG image',
+              accept: { [isZip ? 'application/zip' : 'image/png']: [isZip ? '.zip' : '.png'] },
             }],
           });
         } catch (error) {
@@ -47,13 +52,19 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
           toast(`直接保存不可用，改用浏览器下载：${String(error)}`);
         }
       }
-      const result: ExportResult = await call('export', { projectId: state.project.id, canvasId: c?.id, format, layout: 'single', handle });
+      const result: ExportResult = await call('export', {
+        projectId: state.project.id,
+        canvasId: c?.id,
+        format,
+        layout: kind === 'sheets' ? 'sheets' : 'single',
+        handle,
+      });
       toast(result.message);
       if (result.blob) {
         if (downloadURL) {
           URL.revokeObjectURL(downloadURL);
         }
-        const fileName = format === 'png' ? name : result.name;
+        const fileName = kind === 'png' ? name : result.name;
         downloadURL = URL.createObjectURL(result.blob);
         const row = document.createElement('div'), a = document.createElement('a');
         row.className = 'export-download-row';
@@ -63,7 +74,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
         a.className = 'export-link';
         row.append(a);
         // On phones a download lands in Files; sharing is how an image reaches Photos. A fresh tap is required.
-        const file = format === 'png' ? new File([result.blob], fileName, { type: 'image/png' }) : undefined;
+        const file = kind === 'png' ? new File([result.blob], fileName, { type: 'image/png' }) : undefined;
         if (file && navigator.canShare?.({ files: [file] })) {
           const share = document.createElement('button');
           share.className = 'secondary';
@@ -140,6 +151,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
   function wire(): void {
     $('export-project').onclick = () => void doExport('project');
     $('export-png').onclick = () => void doExport('png');
+    $('export-sheets').onclick = () => void doExport('sheets');
     $('copy-png').onclick = () => doCopy();
   }
   return { doExport, doCopy, wire };

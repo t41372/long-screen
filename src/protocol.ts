@@ -4,7 +4,7 @@
  *  site that sends the wrong payload. */
 import type { CanvasMeta, Diagnostic, MediaInfo, Progress, Project, Settings } from './types.ts';
 import type { Row } from './storage/db.ts';
-import type { ExportResult } from './export/project.ts';
+import type { CanvasLayout, ExportResult } from './export/project.ts';
 import type { StoredTile } from './storage/tiles.ts';
 
 export interface Capabilities {
@@ -62,7 +62,7 @@ export interface Commands {
   tile: { req: { projectId?: string; canvasId: string; level: number; x: number; y: number }; res: TileResult | null };
   delete: { req: { projectId: string }; res: true };
   export: {
-    req: { projectId: string; canvasId?: string; format: 'project' | 'png'; layout?: string; handle?: FileSystemFileHandle };
+    req: { projectId: string; canvasId?: string; format: 'project' | 'png'; layout?: CanvasLayout; handle?: FileSystemFileHandle };
     res: ExportResult;
   };
   'cleanup-export': { req: { key: string }; res: true };
