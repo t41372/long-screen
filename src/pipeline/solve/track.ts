@@ -3,21 +3,15 @@
 // stateless verdict below (uncertainty, relocalizeVerdict, fragmentCause's gate, occlusionEligible, attachVerdict,
 // odometryWeight, thinOverlapEligible/Correction, loopClosureVerdict, needsKeyframe, zoomChanged, regionZoom,
 // targetPose) to rust/core/src/track.rs; each function here is now a thin call into src/core/wasm/track.ts,
-// exported under its original name/signature so region-step.ts/keyframe-step.ts need no changes. odometry,
-// reacquire and driftCorrection (below) are still TS pending phase 3b's stateful tracker handle. This split
-// (R1/R2, plus keyframe scoring's own pure core, evaluateCandidates, in src/core/keyframes.ts) is why
-// tests/support/reference/track.ts could freeze the pre-port functions' outputs as a TS oracle
-// (tests/unit/parity/track.test.ts checks the Rust replacements against it).
+// exported under its original name/signature so region-step.ts/keyframe-step.ts need no changes. R4c 3b-i fused
+// odometry (matchFeatures + translationHypotheses + the audit filter/sort + native refinements + rival detection
+// + confidence + the static/lost difference sample) into one more such call. reacquire and driftCorrection
+// (below) are still TS pending phase 3b-ii's stateful tracker handle. This split (R1/R2, plus keyframe scoring's
+// own pure core, evaluateCandidates, in src/core/keyframes.ts) is why tests/support/reference/track.ts could
+// freeze the pre-port functions' outputs as a TS oracle (tests/unit/parity/track.test.ts checks the Rust
+// replacements against it).
 import type { Feature, Gray, Match, Point, Region, RGBA } from '../../types.ts';
-import {
-  auditTranslation,
-  type NativeRefinement,
-  type Patch,
-  probeScale,
-  refineNative,
-  refinePatches,
-  translationHypotheses,
-} from '../../core/motion.ts';
+import { type NativeRefinement, type Patch, probeScale, refinePatches, translationHypotheses } from '../../core/motion.ts';
 import { regionContains } from '../../core/layers.ts';
 import { matchFeatures } from '../../core/features.ts';
 import { core, type LabelMask, type ResidentFrame, type ResidentGray } from '../../core/wasm.ts';
@@ -124,7 +118,8 @@ export interface OdometryInputs {
   previousGray: Gray;
   g: Gray;
   velocity: Point;
-  matches: Match[];
+  previousFeatures: Feature[];
+  ownFeatures: Feature[];
   /** confidence carried in from before this call; returned unchanged on the 'static'/'lost' branches, exactly as
    * the original left the outer `confidence` local untouched there. */
   confidence: number;
@@ -138,53 +133,11 @@ export interface OdometryEstimate {
   stepError: number;
   contentChange?: { agreement: number; blocks: number };
 }
-/** Step 1: frame-to-frame odometry — analysis-scale hypotheses, block-aware audit, then a native-pixel decision. */
+/** Step 1: frame-to-frame odometry — analysis-scale hypotheses, block-aware audit, then a native-pixel decision
+ * (R4c 3b-i: `matchFeatures` + `translationHypotheses` + the audit filter/sort + up to 6 native refinements +
+ * rival detection + confidence + the static/lost difference sample, fused into one Rust call). */
 export function odometry(inputs: OdometryInputs): OdometryEstimate {
-  const { f, radius, mask, roi, rect, region: r, image, previous, current, previousGray, g, velocity, matches } = inputs;
-  const models = translationHypotheses(matches, 16).filter((m) => m.support >= 4);
-  // Period-aliased hypotheses on repeated content audit equally well; the constant-velocity prior orders them before the
-  // native decision so the true small step is never dropped in favour of a one-row-off alias with more (arbitrary) matches.
-  const prior = (m: Point) => .02 * Math.hypot(m.x * f - velocity.x, m.y * f - velocity.y);
-  const scored = models.map((m) => ({ m, audit: auditTranslation(previousGray, g, m.x, m.y, roi, f > 1) }))
-    .filter((v) =>
-      v.audit.overlap > .10 && Number.isFinite(v.audit.error) &&
-      ((v.audit.error < 14 && v.audit.mismatch < .2) ||
-        (v.audit.agreement >= .4 && v.audit.agreeing >= 3 && v.audit.agreeingError < 8))
-    )
-    .sort((a, b) =>
-      Math.min(a.audit.error, a.audit.agreeingError) + prior(a.m) - Math.min(b.audit.error, b.audit.agreeingError) - prior(b.m)
-    );
-  const refined = scored.slice(0, 6).map((v) => {
-    const n = refineNative(previous, current, { x: v.m.x * f, y: v.m.y * f }, rect, mask, radius);
-    return { ...v, n, key: n.error + .02 * Math.hypot(n.x - velocity.x, n.y - velocity.y) };
-  }).filter((v) => Number.isFinite(v.n.error)).sort((a, b) => a.key - b.key);
-  const best = refined[0];
-  if (best && best.n.error < 14) {
-    const delta = { x: best.n.x, y: best.n.y };
-    const rival = refined.find((v) => v !== best && Math.hypot(v.n.x - best.n.x, v.n.y - best.n.y) > 2 && v.n.error < best.n.error + 2);
-    const ambiguous = !!rival || (best.m.ambiguous && refined.length > 1);
-    // A fast jump leaves a thin strip of shared content. Periodic layouts align just as well one period
-    // away, so such a step is a best guess to be re-examined by revisit evidence, not a settled fact.
-    const weakStep = best.audit.overlap < .25;
-    const confidence = Math.max(.05, best.m.confidence) * Math.exp(-best.n.error / 20) * (ambiguous ? .6 : 1) * (weakStep ? .5 : 1);
-    const stepError = best.n.error;
-    const contentChange = best.audit.agreement < .85 && best.audit.blocks >= 4
-      ? { agreement: best.audit.agreement, blocks: best.audit.blocks }
-      : undefined;
-    return { decision: 'tracked', delta, confidence, ambiguous, weakStep, stepError, contentChange };
-  }
-  let difference = 0, samples = 0;
-  for (let y = Math.ceil(roi.y); y < roi.y + roi.height; y += 7) {
-    for (let x = Math.ceil(roi.x); x < roi.x + roi.width; x += 7) {
-      if (!regionContains(r, x * f, y * f, image.width, image.height)) {
-        continue;
-      }
-      difference += Math.abs(previousGray.data[y * g.width + x] - g.data[y * g.width + x]);
-      samples++;
-    }
-  }
-  const decision = difference / Math.max(1, samples) > 5 ? 'lost' : 'static';
-  return { decision, delta: { x: 0, y: 0 }, confidence: inputs.confidence, ambiguous: false, weakStep: false, stepError: Infinity };
+  return core().trackOdometry(inputs);
 }
 export interface ReacquireInputs {
   anchorFeatures: Feature[];

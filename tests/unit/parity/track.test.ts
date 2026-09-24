@@ -1,12 +1,14 @@
 /** Byte-exact parity between the Rust tracking verdicts (rust/core/src/track.rs + abi/track.rs, phase 3a of R4b)
  *  and the frozen TS oracle they replace (tests/support/reference/track.ts). Runs on whichever build
- *  `LONGSCREEN_CORE` selects (scalar/simd/threads — see tests/support/core.ts). Only the stateless verdicts
- *  covered by phase 3a are exercised here; odometry/reacquire/driftCorrection stay TS until phase 3b. */
+ *  `LONGSCREEN_CORE` selects (scalar/simd/threads — see tests/support/core.ts). Stateless verdicts (phase 3a)
+ *  and the fused odometry call (R4c 3b-i) are exercised here; reacquire/driftCorrection stay TS until 3b-ii. */
 import { assertEquals } from '@std/assert';
 import { ensureCore } from '../../support/core.ts';
 import { rng } from '../../../src/core/math.ts';
 import * as ref from '../../support/reference/track.ts';
-import type { Feature, Match, Point } from '../../../src/types.ts';
+import type { Feature, Match, Point, Region } from '../../../src/types.ts';
+import * as kernelsRef from '../../support/reference/kernels.ts';
+import { rgbaOf, textureGray } from '../../support/parity-fixtures.ts';
 
 Deno.test('core parity: track.uncertainty matches the frozen oracle', async () => {
   const core = await ensureCore();
@@ -256,5 +258,117 @@ Deno.test('core parity: track.regionZoom matches the frozen oracle over random m
         `kindMoving=${kindMoving} count=${count} uniqueRatio=${uniqueRatio} seed=${seed}`,
       );
     }
+  }
+});
+
+/** Full odometry inputs for one synthetic case: a textured native frame pair (`f = 1`, so the analysis grays
+ *  are the RGBA's own luma channel) shifted by `(dx, dy)`, or `undefined` `dx`/`dy` for unrelated content (the
+ *  refinement-fails branch, exercising the difference-sample fallback). */
+function odometryCase(
+  w: number,
+  h: number,
+  seed: number,
+  dx: number | undefined,
+  dy: number | undefined,
+  region: Region,
+  velocity: Point,
+): {
+  previous: ReturnType<typeof rgbaOf>;
+  current: ReturnType<typeof rgbaOf>;
+  previousGray: ReturnType<typeof textureGray>;
+  g: ReturnType<typeof textureGray>;
+  previousFeatures: Feature[];
+  ownFeatures: Feature[];
+  region: Region;
+  velocity: Point;
+} {
+  const margin = 40;
+  const previousGray = textureGray(w, h, seed);
+  const g = dx === undefined ? textureGray(w, h, seed + 97) : (() => {
+    const world = textureGray(w + margin * 2, h + margin * 2, seed);
+    const data = new Uint8Array(w * h);
+    for (let row = 0; row < h; row++) {
+      data.set(
+        world.data.subarray((margin + row + dy!) * world.width + margin + dx!, (margin + row + dy!) * world.width + margin + dx! + w),
+        row * w,
+      );
+    }
+    return { width: w, height: h, data };
+  })();
+  const previous = rgbaOf(previousGray), current = rgbaOf(g);
+  const previousFeatures = kernelsRef.extractFeatures(previousGray), ownFeatures = kernelsRef.extractFeatures(g);
+  return { previous, current, previousGray, g, previousFeatures, ownFeatures, region, velocity };
+}
+
+Deno.test('core parity: track.odometry matches the frozen oracle (tracked, static/lost fallback, masked region)', async () => {
+  const core = await ensureCore();
+  const w = 260, h = 180, roi = { x: 0, y: 0, width: w, height: h }, rect = { x: 0, y: 0, width: w, height: h };
+  const plainRegion: Region = { id: 'r', name: 'r', kind: 'moving', rect: { x: 0, y: 0, width: w, height: h } };
+  const maskWidth = w, maskHeight = h, mask = new Uint8Array(maskWidth * maskHeight);
+  for (let y = 0; y < maskHeight; y++) for (let x = 0; x < maskWidth; x++) mask[y * maskWidth + x] = x < maskWidth * 0.7 ? 1 : 0;
+  const maskedRegion: Region = {
+    id: 'r',
+    name: 'r',
+    kind: 'moving',
+    rect: { x: 0, y: 0, width: w, height: h },
+    mask,
+    maskWidth,
+    maskHeight,
+    factor: 1,
+  };
+  const cases: { dx: number | undefined; dy: number | undefined; region: Region; velocity: Point; radius: number; conf: number }[] = [
+    { dx: 6, dy: -4, region: plainRegion, velocity: { x: 6, y: -4 }, radius: 3, conf: 0.7 },
+    { dx: 6, dy: -4, region: plainRegion, velocity: { x: 0, y: 0 }, radius: 3, conf: 0.7 },
+    { dx: 0, dy: 0, region: plainRegion, velocity: { x: 0, y: 0 }, radius: 2, conf: 0.5 },
+    { dx: -18, dy: 11, region: maskedRegion, velocity: { x: -18, y: 11 }, radius: 4, conf: 0.4 },
+    { dx: undefined, dy: undefined, region: plainRegion, velocity: { x: 0, y: 0 }, radius: 3, conf: 0.35 },
+    { dx: undefined, dy: undefined, region: maskedRegion, velocity: { x: 0, y: 0 }, radius: 3, conf: 0.2 },
+  ];
+  for (const [i, c] of cases.entries()) {
+    const inputs = odometryCase(w, h, 1000 + i, c.dx, c.dy, c.region, c.velocity);
+    const labelMask = { labels: new Uint8Array(w * h).fill(1), code: 1 };
+    const refResult = ref.odometry({
+      f: 1,
+      radius: c.radius,
+      mask: labelMask,
+      roi,
+      rect,
+      region: inputs.region,
+      image: { width: w, height: h },
+      previous: inputs.previous,
+      current: inputs.current,
+      previousGray: inputs.previousGray,
+      g: inputs.g,
+      velocity: inputs.velocity,
+      matches: kernelsRef.matchFeatures(inputs.previousFeatures, inputs.ownFeatures),
+      confidence: c.conf,
+    });
+    const rustResult = core.trackOdometry({
+      f: 1,
+      radius: c.radius,
+      mask: labelMask,
+      roi,
+      rect,
+      region: inputs.region,
+      image: { width: w, height: h },
+      previous: inputs.previous,
+      current: inputs.current,
+      previousGray: inputs.previousGray,
+      g: inputs.g,
+      velocity: inputs.velocity,
+      previousFeatures: inputs.previousFeatures,
+      ownFeatures: inputs.ownFeatures,
+      confidence: c.conf,
+    });
+    const what = `case ${i} (dx=${c.dx} dy=${c.dy} masked=${c.region === maskedRegion})`;
+    assertEquals(rustResult.decision, refResult.decision, what);
+    assertEquals([rustResult.delta.x, rustResult.delta.y], [refResult.delta.x, refResult.delta.y], `${what} delta`);
+    // Bit-exact, not `sameNumber`: the tracked-branch confidence formula's `Math.exp` runs in TS (this engine's
+    // own V8), matching the reference oracle exactly — see wasm/track.ts's odometry() comment.
+    assertEquals(rustResult.confidence, refResult.confidence, `${what} confidence`);
+    assertEquals(rustResult.ambiguous, refResult.ambiguous, `${what} ambiguous`);
+    assertEquals(rustResult.weakStep, refResult.weakStep, `${what} weakStep`);
+    assertEquals(rustResult.stepError, refResult.stepError, `${what} stepError`);
+    assertEquals(rustResult.contentChange, refResult.contentChange, `${what} contentChange`);
   }
 });

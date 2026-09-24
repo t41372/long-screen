@@ -292,6 +292,31 @@ export interface CoreExports {
   ): number;
   ls_track_zoom_changed(hasRegionZoom: number, regionZoom: number, fieldZoom: number): number;
   ls_track_region_zoom(kindMoving: number, matches: number, count: number): number;
+  ls_track_odometry(
+    previous: number,
+    current: number,
+    imageWidth: number,
+    imageHeight: number,
+    previousGray: number,
+    g: number,
+    grayWidth: number,
+    grayHeight: number,
+    previousFeatures: number,
+    previousFeatureCount: number,
+    ownFeatures: number,
+    ownFeatureCount: number,
+    roi: number,
+    rect: number,
+    region: number,
+    labels: number,
+    code: number,
+    f: number,
+    radius: number,
+    vx: number,
+    vy: number,
+    confidence: number,
+    out: number,
+  ): number;
   ls_frame_layout(sourceWidth: number, sourceHeight: number, pane: number, boundsWidth: number, boundsHeight: number, out: number): number;
   ls_frame_coordinate(layout: number, x: number, y: number, out: number): number;
   ls_frame_backgrounds(

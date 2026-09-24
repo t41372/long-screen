@@ -5,9 +5,13 @@
 //! uses `f64::NAN` as its "none" sentinel (every real result here is finite, matching `ls_detect_scale`'s
 //! own convention that it never returns NaN).
 
+use super::features::read_features;
 use super::motion::read_match_points;
-use crate::abi::memory::slice_mut;
+use crate::abi::memory::{slice, slice_mut};
+use crate::abi::voting::read_voting_regions;
+use crate::abi::wire::{read_rect, FEATURE_BYTES};
 use crate::abi::{STATUS_BAD_ARGUMENT, STATUS_OK};
+use crate::motion::Gray;
 use crate::track;
 
 fn b(v: bool) -> i32 {
@@ -269,5 +273,149 @@ pub extern "C" fn ls_track_region_zoom(kind_moving: u32, matches: u32, count: u3
     match unsafe { read_match_points(matches, count) } {
         Some(points) => track::region_zoom(kind_moving != 0, &points).unwrap_or(f64::NAN),
         None => f64::NAN,
+    }
+}
+
+/// `ls_track_odometry`'s `out` layout (`TRACK_ODOMETRY_OUT_BYTES` in `src/core/wasm/track.ts`): f64 delta.x,
+/// f64 delta.y, f64 confidence, u32 ambiguous, u32 weakStep, f64 stepError, u32 hasContentChange, u32 padding,
+/// f64 contentChange.agreement, u32 contentChange.blocks, u32 padding (64 bytes total).
+const TRACK_ODOMETRY_OUT_BYTES: usize = 64;
+
+/// R4c 3b-i: `track.ts::odometry` fused into one call — `matchFeatures` + `translationHypotheses` + the audit
+/// filter/sort + up to 6 native refinements with the velocity prior + rival detection + confidence, falling
+/// back (only when no hypothesis refines below the native-error threshold) to the analysis-grid difference
+/// sample that decides `static` vs `lost`. `previous`/`current` are full native RGBA frames
+/// (`image_width × image_height × 4` bytes); `previous_gray`/`g` are analysis-resolution luma
+/// (`gray_width × gray_height` bytes). `region == 0` means "no region" (the difference-sample fallback then
+/// treats every sample as contained, matching `Region::contains`'s own no-mask shortcut — every `'moving'`
+/// region odometry actually runs against always carries a real region, so this is a defensive fallback, not a
+/// path exercised in practice). Returns the decision tag (0 tracked, 1 static, 2 lost) or `STATUS_BAD_ARGUMENT`.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn ls_track_odometry(
+    previous: u32,
+    current: u32,
+    image_width: u32,
+    image_height: u32,
+    previous_gray: u32,
+    g: u32,
+    gray_width: u32,
+    gray_height: u32,
+    previous_features: u32,
+    previous_feature_count: u32,
+    own_features: u32,
+    own_feature_count: u32,
+    roi: u32,
+    rect: u32,
+    region: u32,
+    labels: u32,
+    code: u32,
+    f: f64,
+    radius: u32,
+    vx: f64,
+    vy: f64,
+    confidence: f64,
+    out: u32,
+) -> i32 {
+    let (iw, ih) = (image_width as usize, image_height as usize);
+    let (gw, gh) = (gray_width as usize, gray_height as usize);
+    // SAFETY: every buffer is adapter-owned; every length is bounds checked before the slice is trusted.
+    let (
+        Some(previous_bytes),
+        Some(current_bytes),
+        Some(previous_gray_bytes),
+        Some(g_bytes),
+        Some(previous_feature_bytes),
+        Some(own_feature_bytes),
+        Some(dst),
+    ) = (
+        unsafe { slice(previous, iw * ih * 4) },
+        unsafe { slice(current, iw * ih * 4) },
+        unsafe { slice(previous_gray, gw * gh) },
+        unsafe { slice(g, gw * gh) },
+        unsafe {
+            slice(
+                previous_features,
+                previous_feature_count as usize * FEATURE_BYTES,
+            )
+        },
+        unsafe { slice(own_features, own_feature_count as usize * FEATURE_BYTES) },
+        unsafe { slice_mut(out, TRACK_ODOMETRY_OUT_BYTES) },
+    )
+    else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    // SAFETY: `roi`/`rect` each point at one 32-byte rect (never optional for this call).
+    let (Some(roi_bytes), Some(rect_bytes)) =
+        (unsafe { slice(roi, 32) }, unsafe { slice(rect, 32) })
+    else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let region_defs = if region == 0 {
+        None
+    } else {
+        // SAFETY: one `VOTING_REGION_BYTES` region descriptor, bounds checked by `read_voting_regions`.
+        match unsafe { read_voting_regions(region, 1) } {
+            Some(defs) => Some(defs),
+            None => return STATUS_BAD_ARGUMENT,
+        }
+    };
+    let mask = if labels == 0 {
+        None
+    } else {
+        // SAFETY: label plane covers the native frame.
+        match unsafe { slice(labels, iw * ih) } {
+            Some(l) => Some((l, code as u8)),
+            None => return STATUS_BAD_ARGUMENT,
+        }
+    };
+    let previous_features = read_features(previous_feature_bytes);
+    let own_features = read_features(own_feature_bytes);
+    let result = track::odometry(track::OdometryInputs {
+        f,
+        radius: radius as i32,
+        mask,
+        roi: read_rect(roi_bytes),
+        rect: read_rect(rect_bytes),
+        region: region_defs.as_ref().map(|defs| &defs[0]),
+        image_width: iw as f64,
+        image_height: ih as f64,
+        previous: previous_bytes,
+        current: current_bytes,
+        previous_gray: Gray {
+            width: gw,
+            height: gh,
+            data: previous_gray_bytes,
+        },
+        g: Gray {
+            width: gw,
+            height: gh,
+            data: g_bytes,
+        },
+        velocity: (vx, vy),
+        previous_features: &previous_features,
+        own_features: &own_features,
+        confidence,
+    });
+    dst[0..8].copy_from_slice(&result.delta.0.to_le_bytes());
+    dst[8..16].copy_from_slice(&result.delta.1.to_le_bytes());
+    dst[16..24].copy_from_slice(&result.confidence.to_le_bytes());
+    dst[24..28].copy_from_slice(&(result.ambiguous as u32).to_le_bytes());
+    dst[28..32].copy_from_slice(&(result.weak_step as u32).to_le_bytes());
+    dst[32..40].copy_from_slice(&result.step_error.to_le_bytes());
+    match &result.content_change {
+        Some(c) => {
+            dst[40..44].copy_from_slice(&1u32.to_le_bytes());
+            dst[44..48].fill(0);
+            dst[48..56].copy_from_slice(&c.agreement.to_le_bytes());
+            dst[56..60].copy_from_slice(&c.blocks.to_le_bytes());
+            dst[60..64].fill(0);
+        }
+        None => dst[40..64].fill(0),
+    }
+    match result.decision {
+        track::OdometryDecision::Tracked => 0,
+        track::OdometryDecision::Static => 1,
+        track::OdometryDecision::Lost => 2,
     }
 }

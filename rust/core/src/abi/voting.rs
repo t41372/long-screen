@@ -27,7 +27,9 @@ fn voting(handle: u32) -> Option<&'static mut VotingHandle> {
 
 /// # Safety
 /// `ptr` points at `count × VOTING_REGION_BYTES` bytes whose pointers cover the sizes they declare.
-unsafe fn read_voting_regions(ptr: u32, count: u32) -> Option<Vec<RegionDef>> {
+/// Reused by `abi::track::ls_track_odometry` (same `VOTING_REGION_BYTES` wire format) for the one region a
+/// fused odometry call needs for its own difference-sampling fallback.
+pub(crate) unsafe fn read_voting_regions(ptr: u32, count: u32) -> Option<Vec<RegionDef>> {
     let bytes = slice(ptr, count as usize * VOTING_REGION_BYTES)?;
     let mut out = Vec::with_capacity(count as usize);
     for c in bytes.chunks_exact(VOTING_REGION_BYTES) {

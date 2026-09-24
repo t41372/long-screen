@@ -507,6 +507,10 @@ export class Core {
   trackRegionZoom(kindMoving: boolean, priorMatches: Match[]): number | undefined {
     return track.regionZoom(this, this.exports, kindMoving, priorMatches);
   }
+  /** `track.ts::odometry` fused into one call (R4c 3b-i). */
+  trackOdometry(inputs: track.OdometryInputs): track.OdometryEstimate {
+    return track.odometry(this, this.exports, inputs);
+  }
 
   /** `buildFramedCanvas`'s `frameLayout()`. */
   frameLayout(source: { width: number; height: number }, pane: Rect, boundsWidth: number, boundsHeight: number): FrameLayout {

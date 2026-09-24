@@ -123,7 +123,8 @@ export async function stepRegion(pass: SolvePass, state: RegionState, input: Fra
       previousGray: previousGray!,
       g,
       velocity: state.velocity,
-      matches: priorMatches,
+      previousFeatures: state.previousFeatures || [],
+      ownFeatures,
       confidence,
     });
     decision = est.decision;

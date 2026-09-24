@@ -34,7 +34,7 @@ mod raster;
 mod regions;
 mod temporal;
 mod track;
-mod voting;
+pub(crate) mod voting;
 pub(crate) mod wire;
 
 pub const STATUS_OK: i32 = 0;
