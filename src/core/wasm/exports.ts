@@ -36,6 +36,32 @@ export interface CoreExports {
   ls_grayscale(rgba: number, width: number, height: number, out: number): number;
   ls_downscale_gray(rgba: number, width: number, height: number, factor: number, out: number): number;
   ls_halve_rgba(rgba: number, width: number, height: number, out: number): number;
+  ls_assemble_pyramid_parent(
+    c0: number,
+    c1: number,
+    c2: number,
+    c3: number,
+    present: number,
+    size: number,
+    out: number,
+  ): number;
+  ls_temporal_components(cells: number, count: number, size: number, headerOut: number, blocksOut: number): number;
+  ls_overwrite_tile(
+    tile: number,
+    rgba: number,
+    imgWidth: number,
+    imgHeight: number,
+    blocks: number,
+    blockCount: number,
+    ox: number,
+    oy: number,
+    tx: number,
+    ty: number,
+    frame: number,
+    confidence: number,
+    stable: number,
+    out: number,
+  ): number;
   ls_extract_features(gray: number, width: number, height: number, max: number, roi: number, out: number): number;
   ls_match_features(a: number, countA: number, b: number, countB: number, ambiguous: number, out: number): number;
   ls_feature_words(features: number, count: number, out: number): number;

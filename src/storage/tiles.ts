@@ -2,7 +2,7 @@ import type { KV, Row } from './db.ts';
 import type { CanvasMeta, RGBA, TilePayload } from '../types.ts';
 import { deletePrefix, iterate } from './db.ts';
 import { decodePNG, encodeRGBA } from '../codec/png.ts';
-import { halveRGBA } from '../core/raster.ts';
+import { core } from '../core/wasm.ts';
 export const QUALITY_BLOCK = 16;
 export interface Tile {
   canvasId: string;
@@ -219,7 +219,7 @@ export class TileStore {
     // A previous attempt on this same canvas that crashed mid-level can leave a stale work queue; start from a
     // clean one rather than resuming into (possibly inconsistent) leftovers.
     await deletePrefix(this.db, `pyramid-todo/${meta.id}/`);
-    const size = this.size, half = size / 2;
+    const size = this.size;
     const maxLevel = Math.max(0, Math.ceil(Math.log2(Math.max(meta.bounds.width, meta.bounds.height) / size)));
     try {
       for (let level = 1; level <= maxLevel; level++) {
@@ -228,23 +228,20 @@ export class TileStore {
           await this.db.put(`pyramid-todo/${meta.id}/${level}/${x}_${y}`, { x, y });
         }
         for await (const row of iterate<{ x: number; y: number }>(this.db, `pyramid-todo/${meta.id}/${level}/`)) {
-          const { x, y } = row.value, parent = new Uint8ClampedArray(size * size * 4);
-          let any = false;
+          const { x, y } = row.value;
+          // Quadrant order [dx=0,dy=0], [dx=1,dy=0], [dx=0,dy=1], [dx=1,dy=1] — row-major over the 2×2 grid,
+          // matching rust/core/src/pyramid.rs::assemble_parent.
+          const children: (Uint8ClampedArray | undefined)[] = [];
           for (let dy = 0; dy < 2; dy++) {
             for (let dx = 0; dx < 2; dx++) {
               const child = await this.db.get<StoredTile>(`tile/${tileKey(meta.id, level - 1, x * 2 + dx, y * 2 + dy)}`);
-              if (!child) {
-                continue;
-              }
-              const small = halveRGBA({ width: size, height: size, data: await this.codec.decode(child.blob, size) });
-              for (let r = 0; r < half; r++) {
-                parent.set(small.data.subarray(r * half * 4, (r + 1) * half * 4), ((dy * half + r) * size + dx * half) * 4);
-              }
-              any = true;
+              children.push(child ? await this.codec.decode(child.blob, size) : undefined);
             }
           }
+          const any = children.some((c) => c);
           if (any) {
-            const blob = await this.codec.encode({ width: size, height: size, data: parent }), key = tileKey(meta.id, level, x, y);
+            const parent = core().assemblePyramidParent(children, size);
+            const blob = await this.codec.encode(parent), key = tileKey(meta.id, level, x, y);
             await this.db.putMany([{
               key: `tile/${key}`,
               value: { blob, x, y, level, owner: new Uint32Array(), score: new Float32Array() },

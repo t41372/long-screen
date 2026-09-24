@@ -1,7 +1,7 @@
 import type { CanvasMeta, Diagnostic, Placement, Rect, Region, RGBA } from '../types.ts';
 import type { KV } from '../storage/db.ts';
 import { iterate } from '../storage/db.ts';
-import { clearProvisional, covered, markCovered, provisional, QUALITY_BLOCK, type TileStore } from '../storage/tiles.ts';
+import { QUALITY_BLOCK, type TileStore } from '../storage/tiles.ts';
 import { core, Resident, type ResidentFrame } from './wasm.ts';
 import type { RegionAtlas } from './layers.ts';
 import { intersect, pad, union } from './math.ts';
@@ -257,33 +257,15 @@ export class Compositor {
     meta.lastTime = p.time;
     return stats;
   }
-  /** 8-connected components of conflicting 16px blocks. Each component keeps its own block set, never just a bounding rect — a
-   * concave (e.g. L-shaped) conflict must not drag pixel-identical blocks in its bounding box into the patch. */
+  /** 8-connected components of conflicting `size`-px blocks (rust/core/src/temporal.rs). Each component keeps its own
+   * block set, never just a bounding rect — a concave (e.g. L-shaped) conflict must not drag pixel-identical blocks
+   * in its bounding box into the patch. `cells` must already be in seed order (Compositor.add sorts conflict blocks
+   * into tile-then-local-block order before calling, matching the old `Set` iteration this replaces). */
   private components(cells: Set<number>, size: number): { bounds: Rect; blocks: Set<number> }[] {
-    const out: { bounds: Rect; blocks: Set<number> }[] = [];
-    while (cells.size) {
-      const first = cells.values().next().value!, queue = [first], comp = new Set<number>([first]);
-      cells.delete(first);
-      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-      for (let i = 0; i < queue.length; i++) {
-        const [x, y] = blockOf(queue[i]);
-        x0 = Math.min(x0, x);
-        x1 = Math.max(x1, x);
-        y0 = Math.min(y0, y);
-        y1 = Math.max(y1, y);
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dx = -1; dx <= 1; dx++) {
-            const key = queue[i] + dy * BLOCK_STRIDE + dx;
-            if (cells.delete(key)) {
-              queue.push(key);
-              comp.add(key);
-            }
-          }
-        }
-      }
-      out.push({ bounds: { x: x0 * size, y: y0 * size, width: (x1 - x0 + 1) * size, height: (y1 - y0 + 1) * size }, blocks: comp });
-    }
-    return out;
+    return core().temporalComponents([...cells].map(blockOf), size).map(({ bounds, blocks }) => ({
+      bounds,
+      blocks: new Set(blocks.map(([bx, by]) => blockKey(bx, by))),
+    }));
   }
   private async resolveTemporal(
     image: RGBA,
@@ -404,7 +386,7 @@ export class Compositor {
     return result;
   }
   private async overwritePatch(image: RGBA, p: Placement, mask: [number, number][], frame: number): Promise<PatchResult> {
-    const size = this.tiles.size, { rasterX: ox, rasterY: oy } = resolveRasterPose(p.x, p.y), B = QUALITY_BLOCK, perTile = size / B;
+    const size = this.tiles.size, { rasterX: ox, rasterY: oy } = resolveRasterPose(p.x, p.y), B = QUALITY_BLOCK;
     const byTile = new Map<string, { tx: number; ty: number; blocks: [number, number][] }>();
     for (const [bx, by] of mask) {
       const tx = Math.floor(bx * B / size), ty = Math.floor(by * B / size), key = `${tx},${ty}`;
@@ -418,47 +400,19 @@ export class Compositor {
     let added = 0, conflictPixels = 0, provisionalPixels = 0;
     for (const { tx, ty, blocks: tileBlocks } of byTile.values()) {
       const tile = await this.tiles.get(p.canvasId, tx, ty);
-      let changed = false;
-      for (const [bx, by] of tileBlocks) {
-        for (let y = by * B; y < by * B + B; y++) {
-          for (let x = bx * B; x < bx * B + B; x++) {
-            // resolveTemporal's maskComplete walk already tested this exact (x, y) set against the same
-            // atlas.contains/occluded/consistent conditions before choosing to call overwritePatch, so
-            // every pixel here is guaranteed in-bounds, unoccluded and world-consistent — an occluded()
-            // or out-of-range src here would mean that walk and this one disagree about the same pixel.
-            const src = ((y - oy) * image.width + (x - ox)) * 4, dst = ((y - ty * size) * size + (x - tx * size)) * 4;
-            tile.pixels[dst] = image.data[src];
-            tile.pixels[dst + 1] = image.data[src + 1];
-            tile.pixels[dst + 2] = image.data[src + 2];
-            tile.pixels[dst + 3] = image.data[src + 3];
-            const px = dst / 4;
-            if (!covered(tile, px)) {
-              markCovered(tile, px);
-              added++;
-            }
-            // This observation was proven consistent over the whole masked component (maskComplete,
-            // above) before overwritePatch was ever called, so any provisional bit here is healed, never set.
-            if (provisional(tile, px)) {
-              clearProvisional(tile, px);
-              provisionalPixels--;
-            }
-            changed = true;
-            conflictPixels++;
-          }
-        }
-        const localBx = bx - tx * perTile, localBy = by - ty * perTile, q = localBy * perTile + localBx;
-        tile.owner[q] = frame + 1;
-        tile.quality[q] = Math.round(p.confidence * 255);
-        tile.conflicts[q] = 1;
-        if (this.policy === 'stable') {
-          tile.frozen[q] = 1;
-        }
-      }
+      // resolveTemporal's maskComplete walk already tested this exact block set against the same
+      // atlas.contains/occluded/consistent conditions before choosing to call overwritePatch, so every pixel
+      // here is guaranteed in-bounds, unoccluded and world-consistent, and any standing provisional bit is
+      // healed, never set (rust/core/src/temporal.rs::overwrite_tile mirrors this loop exactly).
+      const result = core().overwriteTile(tile, size, image, tileBlocks, ox, oy, tx, ty, frame, p.confidence, this.policy === 'stable');
+      added += result.added;
+      conflictPixels += result.conflictPixels;
+      provisionalPixels += result.provisionalPixels;
       // A masked block only ever reaches overwritePatch already holding ≥12 covered pixels — either this
       // frame's own conflict detection required overlap ≥ 12 to flag it (rust/core/src/compositor.rs), or it
       // carries forward an earlier resolveTemporal record, which itself only ever wrote pixels the same way. The
       // tile this block sits on is therefore never new here, so there is no newTiles bookkeeping to do.
-      if (changed) {
+      if (result.changed) {
         tile.dirty = true;
         tile.touched = performance.now();
       }

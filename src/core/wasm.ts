@@ -22,5 +22,6 @@ export type { PoseGraphEdges, PoseGraphNodes } from './wasm/pose-graph.ts';
 export type { FragmentCauseGate, LoopVerdict, OcclusionDecision } from './wasm/track.ts';
 export type { FrameLayout, FramingSession, FramingTile, SourceFramingTile } from './wasm/framing.ts';
 export type { CompositeObservation, CompositeTile, CompositeTileStats, PreparedObservation } from './wasm/composite.ts';
+export type { OverwriteStats, OverwriteTile, TemporalComponent } from './wasm/temporal.ts';
 export type { ConsistencyMaskInput, ConsistencyNeighbourInput, ConsistencyVoteInput } from './wasm/consistency.ts';
 export { core, coreBuild, coreLoaded, type CorePlan, loadCore, loadPlannedCore, planCore, simdSupported } from './wasm/loader.ts';

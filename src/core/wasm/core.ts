@@ -8,6 +8,9 @@ import { allocOrThrow, Arena, type BytesInput, type FrameInput, FrameRing, Resid
 import { placeFrame as placeFrameImpl, writeRect as writeRectImpl } from './marshal.ts';
 import { check as checkStatus } from './exports.ts';
 import * as raster from './raster.ts';
+import * as pyramid from './pyramid.ts';
+import * as temporal from './temporal.ts';
+import type { OverwriteStats, OverwriteTile, TemporalComponent } from './temporal.ts';
 import * as featuresDomain from './features.ts';
 import * as motion from './motion.ts';
 import * as chrome from './chrome.ts';
@@ -234,6 +237,27 @@ export class Core {
   }
   halveRGBA(image: RGBA): RGBA {
     return raster.halveRGBA(this, image);
+  }
+  assemblePyramidParent(children: (Uint8ClampedArray | undefined)[], size: number): RGBA {
+    return pyramid.assemblePyramidParent(this, children, size);
+  }
+  temporalComponents(cells: [number, number][], size: number): TemporalComponent[] {
+    return temporal.temporalComponents(this, cells, size);
+  }
+  overwriteTile(
+    tile: OverwriteTile,
+    tileSize: number,
+    image: { data: Uint8ClampedArray; width: number; height: number },
+    blocks: [number, number][],
+    ox: number,
+    oy: number,
+    tx: number,
+    ty: number,
+    frame: number,
+    confidence: number,
+    stable: boolean,
+  ): OverwriteStats {
+    return temporal.overwriteTile(this, tile, tileSize, image, blocks, ox, oy, tx, ty, frame, confidence, stable);
   }
   /** RGBA of a decoded frame given in its `VideoFrame.copyTo` layout (see rust/core/src/yuv.rs for the codes). */
   frameToRGBA(

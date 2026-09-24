@@ -109,13 +109,31 @@ mod tests {
         // node 0 pinned at origin, node 1 free, one odometry edge 0->1 (dx,dy) and its mirror 1->0.
         Graph {
             nodes: vec![
-                Node { x: 0.0, y: 0.0, pinned: true },
-                Node { x: dx + 5.0, y: dy + 5.0, pinned: false },
+                Node {
+                    x: 0.0,
+                    y: 0.0,
+                    pinned: true,
+                },
+                Node {
+                    x: dx + 5.0,
+                    y: dy + 5.0,
+                    pinned: false,
+                },
             ],
             offsets: vec![0, 1, 2],
             edges: vec![
-                Edge { other: 1, dx, dy, weight: 1.0 },
-                Edge { other: 0, dx: -dx, dy: -dy, weight: 1.0 },
+                Edge {
+                    other: 1,
+                    dx,
+                    dy,
+                    weight: 1.0,
+                },
+                Edge {
+                    other: 0,
+                    dx: -dx,
+                    dy: -dy,
+                    weight: 1.0,
+                },
             ],
         }
     }
@@ -133,9 +151,18 @@ mod tests {
     #[test]
     fn missing_other_is_skipped_not_fatal() {
         let mut g = Graph {
-            nodes: vec![Node { x: 1.0, y: 1.0, pinned: false }],
+            nodes: vec![Node {
+                x: 1.0,
+                y: 1.0,
+                pinned: false,
+            }],
             offsets: vec![0, 1],
-            edges: vec![Edge { other: -1, dx: 0.0, dy: 0.0, weight: 1.0 }],
+            edges: vec![Edge {
+                other: -1,
+                dx: 0.0,
+                dy: 0.0,
+                weight: 1.0,
+            }],
         };
         let change = g.pass(false);
         assert_eq!(change, 0.0);
