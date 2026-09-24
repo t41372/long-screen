@@ -18,8 +18,19 @@ Deno.test({
       await page.waitForFunction('!!window.longScreen');
       await page.selectOption('#demo-select', 'comic');
       await page.click('#demo-btn');
-      // Mid-run, backgrounded for a moment (as when the user switches apps), then killed.
+      // Mid-run, backgrounded for a moment (as when the user switches apps), then killed. The engine's own "暂停"
+      // (pause) is used to make sure the run is still genuinely in progress at the moment we simulate the kill:
+      // measured, the 'comic' demo reaches project status "complete" only ~2s after the first '#progress-count'
+      // update with a frame count in it, so the fixed 1500ms wait below sits inside normal run-to-run timing
+      // variance — without pausing, a run occasionally finished (clearing the flight record via flightEnd(),
+      // correctly) before the checkpoint, making this test flaky rather than exercising the crash-recorder logic it
+      // means to. Pause is honoured at ctx.checkpoint(), which every phase (solve, optimize, render, framing,
+      // pyramid — see src/pipeline/context.ts) calls, so it blocks progress deterministically regardless of which
+      // phase the run is in or how fast the machine is; it is not lifted, since the page is about to be reloaded
+      // (killed) anyway.
       await page.waitForFunction(`/帧/.test(document.querySelector('#progress-count')?.textContent || '')`, null, { timeout: 60000 });
+      await page.click('#pause-btn');
+      await page.waitForFunction(`document.querySelector('#pause-btn')?.textContent === '继续'`);
       await page.evaluate(() => {
         Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
         document.dispatchEvent(new Event('visibilitychange'));
