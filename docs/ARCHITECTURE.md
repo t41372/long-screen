@@ -192,3 +192,196 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 
 - **`src/synthetic/verify.ts` 只在覆盖物实际绘制过的像素上记录 overlay 颜色**（与 `RenderedFrame.beneath` 比较）。overlay 的 rect 是包围盒，有些覆盖物只画其中一部分（鼠标指针是 10×16 盒子里的一个箭头）；按整个 rect 记录会把页面坐标的动态内容算成屏幕覆盖物污染，并错误地在 `contaminatedOverlay` 与 `contaminatedDynamic` 之间划分。
 - **各场景的棘轮只能往下调**（`maxMissing`/`maxInvented`/`maxMismatched`/`maxContaminated*`/`maxProvisional`）。调高一个来让运行通过是在掩盖回退。调高需要的是一个查清的机制，不是一次测量；`maxContaminatedOverlayRecoverable` 对任何没有查清理由的场景保持默认 0。
+
+## 十一、代码地图
+
+下面按目录列出每个模块归属，标注它属于哪一层：**TS 外壳**（细分为 UI / worker RPC / 浏览器 API / I/O / 编排）、**Rust 算法核心**，或**绑定**（TS↔Wasm 的双向封送层）。清单由 `find src rust/core/src -type f | sort` 生成，不是凭记忆写的；出现分歧以树本身为准。
+
+**一域三文件规则**：算法核心的每个领域都拆成三个同名文件——`rust/core/src/<域>.rs`（纯算法，无 FFI）↔ `rust/core/src/abi/<域>.rs`（该域的 `extern "C"` 导出，序列化/反序列化）↔ `src/core/wasm/<域>.ts`（TS 侧的对应封送模块）。例如 `raster`：`raster.rs` 算法、`abi/raster.rs` 导出、`wasm/raster.ts` 封送。`regions` 域例外：算法侧因体量拆成 `rust/core/src/regions/{mod,atlas,bands,band_fn,cells,construct,crops,merge,tests}.rs` 多文件，binding 侧仍是单个 `abi/regions.rs` ↔ `src/core/wasm/regions.ts`。`png`/`pool`/`geometry`/`yuv`/`region`（单数，`regionContains`）没有对应的 `abi/*.rs` 独立入口或被多个域共用，不算独立的“域”。
+
+### src/core（绑定层 + 少量仍待迁的算法转发）
+
+- `wasm.ts` — 桶文件，把 `src/core/wasm/*` 的每个导出重新导出给 16 个调用方，保留 `import { core } from './wasm.ts'` 这条旧路径。绑定层。
+- `wasm/core.ts` — `Core`：加载/持有 Wasm 实例（含可选的线程池）、`core().x(...)` 的统一入口，把每个内核调用委派给对应域模块。绑定层。
+- `wasm/exports.ts` — `rust/core/src/abi/*.rs` 导出的 `extern "C"` 签名类型、内存布局常量、状态码约定。绑定层。
+- `wasm/loader.ts` — `planCore()`：按 SIMD128/threads/crossOriginIsolated 能力选择 scalar/simd/threads 三种构建之一并加载为 `active` 单例。绑定层，兼 TS 外壳（浏览器能力探测）。
+- `wasm/marshal.ts` — 每个域模块写入核心内存的公共封送原语（`writeRect` 等）。绑定层。
+- `wasm/memory.ts` — 核心内存所有权：bump arena 的规划、`Resident`/`ResidentFrame`/`ResidentGray`/`FrameRing` 等跨调用常驻句柄。绑定层。
+- `wasm/raster.ts` — 像素格式转换与逐像素光栅内核封送（镜像 `abi/raster.rs`）。绑定层。
+- `wasm/features.ts` — 角点/描述子提取、匹配、视觉词封送（镜像 `abi/features.rs`）。绑定层。
+- `wasm/motion.ts` — 平移/缩放假设、audit、精修、运动场封送（镜像 `abi/motion.rs`）。绑定层。
+- `wasm/chrome.ts` — 固定边界与吸附遮挡带检测封送（镜像 `abi/chrome.rs`）。绑定层。
+- `wasm/consistency.ts` — 世界一致性掩码封送（镜像 `abi/consistency.rs`）。绑定层。
+- `wasm/composite.ts` — 单瓦片合成（冲突/替换、coverage、quality）封送（镜像 `abi/composite.rs`）。绑定层。
+- `wasm/temporal.ts` — 时间冲突连通分量、`overwritePatch` 像素写入、内存态时间索引与 `resolveTemporal` 决策封送（镜像 `abi/temporal.rs`）。绑定层。
+- `wasm/framing.ts` — 呈现画布合成的两趟逐瓦片调用封送（镜像 `abi/framing.rs`）。绑定层。
+- `wasm/pyramid.ts` — 金字塔父瓦片装配封送（镜像 `abi/pyramid.rs`）。绑定层。
+- `wasm/png.ts` — 单 PNG 导出路径的扫描行 (un)filter 封送（镜像 `abi/png.rs`）。绑定层。
+- `wasm/pose-graph.ts` — 位置图松弛的有状态 handle 封送（镜像 `abi/pose_graph.rs`）。绑定层。
+- `wasm/learner.ts` — `LayerLearner` 逐帧证据累加 handle 封送（镜像 `abi/learner.rs`）。绑定层。
+- `wasm/regions.ts` — 一次性区域构建与原生分辨率像素打标封送（镜像 `abi/regions.rs`）。绑定层。
+- `wasm/track.ts` — 逐区域逐帧跟踪判定与关键帧候选评分封送（镜像 `abi/track.rs`）。绑定层。
+- `wasm/voting.ts` — 位移展开一致性投票环 handle 封送（镜像 `abi/voting.rs`）。绑定层。
+- `helper.ts` — 线程构建（`core.threads.wasm`）的 pool helper worker 入口，在共享内存上实例化并常驻。TS 外壳：浏览器 API（Worker）。
+- `id.ts` — `createId`：优先 `randomUUID`，非安全上下文回退 `getRandomValues`。TS 外壳：浏览器 API。
+- `math.ts` — `clamp`/`median`/`pad`/`intersect`/`contains`/`norm`/`rng` 等与领域无关的纯数值/几何小工具，供 Rust 尚未接管的编排代码使用。TS 外壳（编排用的纯函数，未来若被算法路径复用可考虑下沉）。
+- `raster.ts` — `analysisFactor`/`downscaleGray`/`RasterPose` 等转发到 `rust/core/src/raster.rs` 的薄封装；lint 基线的 2 个已知错误之一在此文件。绑定转发层。
+- `features.ts` — 分析分辨率特征流水线的历史调用形状，转发到 `rust/core/src/features.rs`。绑定转发层。
+- `motion.ts` — 平移/缩放假设与运动场估计的历史调用形状，转发到 `rust/core/src/motion.rs`。绑定转发层。
+- `layers.ts` — `LayerLearner`（累加器 handle 持有者）、`RegionAtlas`（原生分辨率标签平面持有者）、`regionContains`、`stationaryBoundary`/`stickyOcclusions` 的转发；一次性构建仍留少量 TS 胶水（对象封送）。绑定转发层，兼少量编排。
+- `compositor.ts` — `Compositor`：瓦片缓存遍历、时间冲突分量/记录（内存索引）、`add()`/`overwritePatch`/`resolveTemporal` 的 TS 侧编排，单瓦片像素合成已下沉到 `rust/core/src/compositor.rs`。TS 外壳：编排，绑定单瓦片内核。
+- `framing.ts` — `buildFramedCanvas`：瓦片缓存遍历、O(周长瓦片) 候选预检查、KV 读写；两趟逐瓦片像素工作转发到 `wasm/framing.ts`。TS 外壳：编排。
+- `keyframes.ts` — 关键帧原分辨率纹理片存取、回访检索候选整理；候选评分本身在 Rust（`track.rs`），`Math.exp` 置信度收尾见十二节 track 行。TS 外壳：编排，混合绑定转发。
+- `pose-graph.ts` — `PoseGraph`：节点/边的 KV I/O 与 `Map` 迭代顺序构建，`optimize()` 的停止检查点循环；单趟 Gauss-Seidel 松弛转发到 Rust。`correction()`（≈6 次浮点运算）保留纯 TS，见十二节。TS 外壳：编排 + I/O。
+- `compute.ts` — `AnalysisComputer`：WGSL compute shader 做灰度+整数降采样，首帧 CPU/GPU 位精确校准与自动回退；只加速 `gray()`。TS 外壳：浏览器 API（WebGPU）。
+- `wasm/*` 之外没有其它未列出的核心域模块。
+
+### rust/core/src（算法核心）
+
+- `lib.rs` — crate 入口与三构建说明；`abi` 是唯一带 `extern "C"` 的模块。Rust 算法核心（模块声明）。
+- `abi/mod.rs`、`abi/memory.rs`、`abi/wire.rs` — FFI 总纲、线性内存分配/越界检查/handle 表、共享字节布局与小端读取器。绑定（Rust 侧 FFI 层，被下面每个 `abi/<域>.rs` 复用）。
+- `abi/raster.rs`、`abi/features.rs`、`abi/motion.rs`、`abi/chrome.rs`、`abi/consistency.rs`、`abi/composite.rs`、`abi/temporal.rs`、`abi/framing.rs`、`abi/pyramid.rs`、`abi/png.rs`、`abi/pose_graph.rs`、`abi/learner.rs`、`abi/regions.rs`、`abi/track.rs`、`abi/voting.rs` — 对应域的 `extern "C"` 导出，逐个镜像 `src/core/wasm/<域>.ts`（见一域三文件规则）。绑定。
+- `raster.rs` — 原生帧光栅内核：luma、盒式分析降采样、预览减半。Rust 算法核心。
+- `features.rs` — 角点检测（3×3 结构张量最小特征值，整数前缀和）与二值描述子。Rust 算法核心。
+- `motion.rs` — 平移/缩放假设生成、patch 误差、audit、整数精修。Rust 算法核心。
+- `chrome.rs` — 固定边界持续性外观边、吸附遮挡带检测。Rust 算法核心。
+- `consistency.rs` — 单区域世界一致性掩码（±1 帧证据 + 投票环终审）。Rust 算法核心。
+- `compositor.rs` — 单瓦片像素归属合成：块级冲突/替换决策、coverage/provisional 记账、像素写入。Rust 算法核心。
+- `temporal.rs` — 时间冲突连通分量、`overwrite_tile`、内存态 `TemporalIndex`/`resolveTemporal` 决策。Rust 算法核心。
+- `framing.rs` — 呈现画布布局/坐标映射、背景扩展统计、逐瓦片两趟绘制。Rust 算法核心。
+- `pyramid.rs` — 四子瓦片（含空洞）减半装配为父瓦片；减半本身复用 `raster::halve_rgba`。Rust 算法核心。
+- `png.rs` — 单 PNG 导出路径的扫描行 (un)filter；瓦片编解码走 `abi/png.rs` 的 `png` crate 端到端路径，不经过这里。Rust 算法核心。
+- `pose_graph.rs` — Gauss-Seidel 位置图松弛，纯数组/CSR 输入，不认识字符串 id。Rust 算法核心。
+- `region.rs` — `regionContains`：矩形、排除区、可选原生裁剪、分析分辨率掩码查询。Rust 算法核心。
+- `regions/mod.rs` + `{atlas,bands,band_fn,cells,construct,crops,merge,tests}.rs` — 一次性区域构建流水线（并查集分格、条带检测、区域装配、原生精度裁剪、小块合并、最终过滤）与原生像素打标；逐阶段从冻结的 TS oracle（`tests/support/reference/layers.ts`）移植。Rust 算法核心。
+- `layers.rs` — `LayerLearner` 逐帧累加证据（行/列分歧、split/evidence/activity），冻结为 `tests/support/reference/layers.ts` 的字节对照基准。Rust 算法核心。
+- `track.rs` — 逐区域逐帧无状态跟踪判定（不确定度、重定位判定、attach/thin-overlap/loop-closure 判定、关键帧候选评分等）；`Math.exp` 收尾留在 TS，见十二节。Rust 算法核心。
+- `voting.rs` — 位移展开一致性投票环：ring buffer、box-gray、interior、partners、compare、finalize，有状态 handle。Rust 算法核心。
+- `pool.rs` — 线程构建下把独立分块工作分发给共享内存 helper worker 的数据并行 `for`；非线程构建内联顺序执行。Rust 算法核心（并行基础设施）。
+- `geometry.rs` — 与 JS `Math.round`/`Math.floor` 精确对齐的取整/几何约定。Rust 算法核心（共享工具）。
+- `yuv.rs` — 平面/半平面 YUV → RGBA（libyuv 参考算法），供不支持 `copyTo` 直转 RGB 的浏览器（Safari）使用。Rust 算法核心。
+
+### src/pipeline（编排 + 尚未迁移的算法转发）
+
+- `engine.ts` — `Engine`：一次重建运行的公开门面，`run()` 编排（阶段顺序、计时、性能行、终态、资源释放）。TS 外壳：编排。
+- `context.ts` — `RunContext`：每趟共享的状态与服务，存储/诊断/进度/暂停/停止管线。TS 外壳：编排。
+- `scan.ts` — 扫描趟解码循环编排；`estimateMotion`/`LayerLearner` 的调用仍是待迁移算法转发（累加器本体已在 Rust）。TS 外壳：编排 + 绑定转发。
+- `presentation.ts` — `run()` 在 scan/solve/render 之后驱动的 framing 与 pyramid 展示阶段；本身不含算法，失败只降级为警告诊断。TS 外壳：编排。
+- `render.ts` — 渲染趟：单帧前瞻、放置解析、固定区域重复绘制检测、一致性掩码咨询与合成调用、观察台账、周期性落盘。TS 外壳：编排。
+- `consistency.ts` — `consistencyMask()` 本身已转发到 `rust/core/src/consistency.rs`；这里只是画布身份闸门（邻居必须解析到同一画布）与常驻/普通数组入参形态选择。TS 外壳：编排 + 绑定转发。
+- `attachments.ts` — 沿片段接回链查找片段最终解析到的画布，纯图结构查找，非算法。TS 外壳：编排。
+- `features-codec.ts` — 一帧 `Feature[]` 的磁盘编码（三个定长 TypedArray），纯存储编码，非算法。TS 外壳：I/O（存储编码）。
+- `solve/solve.ts` — 求解趟：建立位置图/关键帧索引/逐区域状态/帧环/atlas 标签平面/原生亮度平面/投票环，帧循环驱动 `stepRegion()`，计划/一致性批处理，图优化收尾。TS 外壳：编排。
+- `solve/region-step.ts` — 每区域每帧的外壳：调用 `track.ts` 的纯判定并按原始顺序应用（诊断、关键帧索引/位置图 I/O、新画布、投票、遮挡检测、放置构造）。TS 外壳：编排。
+- `solve/keyframe-step.ts` — 关键帧/回访半边：是否铸造新关键帧、回访检索、片段接回、薄重叠轨迹改正、回环记账，按原始顺序应用 `track.ts` 的判定。TS 外壳：编排。
+- `solve/state.ts` — 逐区域里程计/跟踪状态及其两个构造器，供 `solve.ts` 帧循环与 `region-step.ts` 共享。TS 外壳：编排（状态容器）。
+- `solve/track.ts` — 大部分已迁移到 Rust（见十二节）：`region-step.ts`/`keyframe-step.ts` 应用的每帧跟踪判定薄转发；`ownFeaturesOf`/`priorMatchesOf`/`isTextured`/`gate()` 仍是纯 TS 小胶水，见十二节说明。TS 外壳：编排 + 绑定转发。
+
+### src/ui（TS 外壳：UI）
+
+- `main.ts` — 启动：按依赖顺序建立每个功能模块、把 worker 事件路由给它们、少量无状态的监听器（帮助对话框、对话框关闭、查看器缩放）。UI。
+- `state.ts` — 多个功能模块共读写的字段集合；其余状态私有于各自模块。UI。
+- `dom.ts` — DOM 查找、toast、纯格式化小工具。UI。
+- `rpc.ts` — 有类型 worker RPC 客户端：请求/响应、`WorkerEvent` 订阅、compatibility 模式的帧请求桥接。UI，兼 worker RPC。
+- `run.ts` — 重建运行生命周期：启动（设置 + 能力预检）、忙态、`resetView`/`updateProject`、进度条。UI。
+- `canvases.ts` — 画布选择器：项目画布列表获取、排序/标注、切换查看器画布；`mergeCanvas` 处理实时进度事件的增量更新。UI。
+- `viewer.ts` — `TiledViewer`：瓦片查看器的绘制、缩放、缓存。UI。
+- `diagnostics.ts` — 诊断面板：警告徽标计数、可筛选分页列表、"查看原始时刻/定位受影响区域"。UI。
+- `export.ts` — "下载长图"/"导出完整项目"/"复制长图"：优先原生保存文件选择器，回退锚点下载/OPFS 临时副本。UI。
+- `history.ts` — 本地项目历史对话框：分页列表、"打开"、"删除"（经 `src/storage/projects.ts` 的三键族删除）。UI。
+- `regions.ts` — 手动区域编辑对话框：在首帧上绘制 fixed/ignore/moving 矩形，写入 `state.manualRegions`。UI。
+- `source-file.ts` — 选择源录屏：文件输入/拖放、探测 RPC（含原生播放器回退）、内容指纹（供 diagnostics.ts 校验重开文件与项目来源一致）。UI，兼浏览器 API（File）。
+- `video.ts` — 原生 `<video>` seek + 帧捕获原语，供 source-file.ts/diagnostics.ts/compatibility 帧请求桥接共用。UI，兼浏览器 API。
+- `flight.ts` — 崩溃记录器：把重建的最后已知状态写入 localStorage，页面被杀或崩溃后下次加载上报一次并清除。UI，兼 I/O（localStorage）。
+
+### src/media（TS 外壳：浏览器 API / I/O）
+
+- `source.ts` — `FrameSource` 实现的组装点：demuxer 选择、`FrameConverter` 接入、缓冲区释放。TS 外壳：编排 + 浏览器 API。
+- `reader.ts` — `BlobReader`：最多 8 个 256KiB 页面的随机访问读取，不调用整段 `arrayBuffer()`。TS 外壳：I/O。
+- `mp4.ts` — MP4/MOV box 解析、sample table 与 fragmented `trun`、`ctts` 有符号偏移读取（不迁移，见十不变式）。TS 外壳：I/O（容器解析）。
+- `webm.ts` — WebM/Matroska 解析，VP9/AV1 CodecPrivate 解码；已知 VP9 Profile-1 codec 字符串缺陷见十二节。TS 外壳：I/O（容器解析）。
+- `convert.ts` — `VideoFrame` → RGBA 转换的可注入形态（直转/worker 转换）与显式释放缓冲池接入。TS 外壳：浏览器 API（WebCodecs）。
+- `convert-worker.ts` — 帧转换 worker：转移进来的 `VideoFrame` 上跑 `copyTo({format:'RGBA'})`，转移 RGBA 缓冲回去；刻意保持零依赖（不引入 `src/core/wasm.ts`）。TS 外壳：浏览器 API（Worker）。
+- `rgba-copy.ts` — `copyTo(RGBA)` 选项与结果布局校验，供直转/worker 转换器与 convert-worker.ts 共用。TS 外壳：浏览器 API。
+- `pool.ts` — 显式释放的 RGBA 转换缓冲池：`release()` 才归还，永不按固定轮转回收。TS 外壳：I/O（内存管理）。
+- `demo.ts` — `DemoSource`：内置 demo 复用与测试套件相同的 ground-truth 合成场景。TS 外壳：编排（测试/演示数据接入）。
+
+### src/codec、src/export、src/storage、src/synthetic（TS 外壳，各自领域）
+
+- `codec/crc.ts` — CRC32 经 Rust `crc32fast` 的薄封装，保留旧增量类形状。绑定转发层。
+- `codec/png.ts` — 单 PNG chunk 编解码：chunk 组装、`decodePNG`/`encodeRGBA`，调用核心 (un)filter 与 CRC。TS 外壳：I/O（编码），部分绑定转发。
+- `export/zip.ts` — `ByteSink` 接口与 `client-zip`（npm，ZIP64）驱动的写入。TS 外壳：I/O。
+- `export/target.ts` — 同步文件写入目标的小接口与实现（`createId` 用于临时命名）。TS 外壳：I/O。
+- `export/project.ts` — 完整项目 ZIP64 导出：画布/瓦片/诊断从 KV 读出并交给 `ZipWriter`。TS 外壳：编排 + I/O。
+- `export/png.ts` — 从磁盘瓦片流式产出原生分辨率行，未观察像素透明。TS 外壳：I/O。
+- `export/offline.ts` — 生成自包含 `file://` 离线查看器 HTML。TS 外壳：I/O（静态资源生成）。
+- `storage/db.ts` — `KV`/`Row`/`Database`/`MemoryKV`/`Namespace` 等存储抽象与遍历/前缀删除工具。TS 外壳：I/O。
+- `storage/tiles.ts` — `TileStore`：瓦片读写、coverage/quality 位图、金字塔构建入口（内核已转发到 Rust）。TS 外壳：I/O + 绑定转发。
+- `storage/diagnostics.ts` — 诊断事件的存储形态、按代码取最高严重级别。TS 外壳：I/O。
+- `storage/projects.ts` — 项目键布局（`project/`、`project-index/`、`run/<id>/`）的唯一入口，防止三键族删除漂移。TS 外壳：I/O。
+- `synthetic/world.ts` — `World`：无损程序化页面，用于可精确核验的合成场景。TS 外壳：编排（测试基础设施）。
+- `synthetic/scenarios.ts` — 24 个合成场景目录的构建（`buildScenario`）与期望值。TS 外壳：编排（测试基础设施）。
+- `synthetic/source.ts` — `ScenarioSource`：合成场景的 `FrameSource` 封装，Deno 与浏览器行为一致。TS 外壳：编排（测试基础设施）。
+- `synthetic/verify.ts` — 重建结果与合成 ground truth 的逐像素核验，含瞬态/污染像素的可恢复性分类。TS 外壳：编排（测试基础设施）。
+
+### 顶层与其它（src/*.ts）
+
+- `types.ts` — 跨模块共享的纯数据类型（`Gray`/`RGBA`/`Region`/`CanvasMeta` 等），无逻辑。TS 外壳（类型定义）。
+- `protocol.ts` — 页面↔worker 类型化协议：冻结的命令名字符串 + 每个命令的载荷/回复类型。TS 外壳：worker RPC。
+- `worker.ts` — worker 入口：接线 `Engine`、存储、项目生命周期、媒体源选择到 `protocol.ts` 的命令处理器。TS 外壳：worker RPC + 编排。
+- `device-check.ts` — 独立页面（不随主应用加载）：报告本机/本浏览器的核心能力与 GPU 路径成本。TS 外壳：编排（诊断工具）。
+- `testkit.ts` — 浏览器测试用：把 `Engine`/`Database`/`PoseGraph`/`RegionAtlas`/`TileStore` 等挂到 `window` 上给 Playwright 用，不随应用加载。TS 外壳（测试基础设施）。
+
+### 测试布局
+
+- `tests/unit/*.test.ts` — 逐模块行为单测（`codec`/`compositor`/`compute`/`consistency`/`engine-*`/`export`/`features`/`framing`/`id`/`keyframes`/`layers`/`math`/`media`/`motion`/`pose-graph`/`raster`/`storage`/`synthetic`/`server` 等）与四个分片的场景目录测试 `scenarios-{1..4}.test.ts`（单一目录拆分而成，见 `tests/support/scenario-check.ts`）。
+- `tests/unit/parity/*.test.ts` — 每个已迁移 Rust 域与其冻结 TS oracle 的 byte-exact 对照（`chrome`/`compositor`/`framing`/`kernels`/`layers`/`motion`/`pose-graph`/`pyramid`/`regions`/`track`/`voting`），oracle 源在 `tests/support/reference/*.ts`。
+- `tests/support/reference/*.ts` — 冻结的、迁移前 TS 实现快照，只作对照基准，不参与生产路径。
+- `tests/support/{core,run,scenario-check,parity-fixtures,pixel-fixtures}.ts` — 测试基础设施：加载工作区 Wasm 构建、跑一次场景到 KV、场景目录自检、parity/像素测试用的固定输入。
+- `tests/browser/*.test.ts` — Playwright 驱动的真实 Chrome/WebKit 集成测试（`ui`/`export-ui`/`flight`/`private`/`compatibility`/`device-check`/`compute`/`decode`/`planar`/`reconstruct`/`support`），覆盖解码、Worker、IndexedDB、OPFS、界面等核心之外的部分。
+- `tests/fixtures/*` — 确定性编码/解码测试固件（mp4/mov/webm 样本、`truth.json`、`world.png`），多数由 `scripts/make-fixtures.ts` 生成。
+
+### scripts/ 工具
+
+- `build.ts` / `build-core.sh` — 应用构建（bundle + dist 静态资源 + THIRD_PARTY_NOTICES）与 Rust 核心三构建编译；后者是修改任何 `.rs` 后唯一允许的构建入口。
+- `fingerprint-scenarios.ts` / `compare-fingerprints.ts` — 24 个合成场景跑一遍并哈希每一条持久化记录；两份指纹逐行比较，任何差异退出码 1。
+- `compare-tiles.ts` — `benchmark-pipeline.ts --verify-tiles` 产出的逐瓦片指纹按字段比较，定位差异瓦片。
+- `benchmark-pipeline.ts` — 真实 Chrome（Playwright）下的端到端流水线基准，支持 `--baseline-root`/`--verify-tiles`。
+- `benchmark-kernels.ts` — Deno V8 下的核心内核微基准（投票环 observe、一致性掩码、瓦片合成）；lint 基线的另一个已知错误在此文件第 21 行。
+- `benchmark-ts-vs-rust.ts` — 同输入同算法，冻结 TS oracle 对 Rust 核心的逐内核计时对比。
+- `benchmark-png.ts` — PNG 编解码基准。
+- `benchmark-consistency.ts` — 一致性掩码基准，对照 `tests/support/reference/consistency.ts`。
+- `e2e-recordings.sh` — 真实录屏端到端证据：当前树（可选 `--baseline` 对照 `.baseline` worktree）逐瓦片/证据哈希。
+- `inspect-recording.ts` — 离线用真实录屏跑扫描趟，打印学到的区域，供人工核查。
+- `make-fixtures.ts` — 生成 `tests/fixtures/` 下的确定性编码固件。
+- `notices.ts` / `notices-about.toml` — 构建期从 `cargo about` 与 npm/jsr 依赖图生成 `dist/THIRD_PARTY_NOTICES.txt`。
+- `coverage.ts` — 带逐文件行覆盖率下限的测试运行；下限只能上调，不在本轮强制门槛内（见 common.md）。
+
+## 十二、Rust 核心边界与决策表
+
+§三给的是原则（薄 TS 外壳 + Rust/Wasm 算法核心）；下面逐项给已迁移、刻意留在 TS 的部分各自的理由与实测数字。每一行都对应过至少一次迁移或评估提交，数字来自那次测量，不是估计。
+
+| 领域                                                                                           | 归属                                                                                             | 理由与实测数字                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 瓦片 PNG 编解码                                                                                | Rust（`png` crate / image-rs，`abi/png.rs` 的 `ls_png_encode`/`_decode`，fdeflate + crc32fast）  | `Compression::Fast` + 自适应 filter，由项目 owner 选定；编码约 4×、解码约 1.7×；c.mov 总耗时 31.4 s → 21.8 s；瓦片体积 +8.8–10%；像素完全一致（831 个 blob 交叉解码验证，真实录屏瓦片逐像素相同）。曾评估浏览器原生解码，被拒绝：预乘 alpha 会改变金字塔像素、Safari canvas 回读噪声、Safari 缺 `ImageDecoder`。                                                                                                                                                      |
+| 帧转换（解码→RGBA）                                                                            | TS 外壳（浏览器 API 路径，显式释放缓冲池，`src/media/pool.ts`/`convert.ts`/`convert-worker.ts`） | c.mov 总耗时 −35%，渲染阶段 −43%（固定 30 MB 缓冲复用，避免逐帧分配触发 GC）。零拷贝进核心常驻内存**未做**：需要在 3456×2234 分辨率下再开一个 30 MB 环形槽（第 4 槽），约占 e.mov 的 7%，且 Safari 内存压力下风险更高——留作未决项。                                                                                                                                                                                                                                   |
+| Framing（呈现画布合成）                                                                        | Rust（`rust/core/src/framing.rs` + `abi/framing.rs`）                                            | e.mov framing 阶段 5.76 s → 3.55 s（−38%）。                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| 区域构建（`LayerLearner.finish` + `RegionAtlas`）                                              | Rust（`rust/core/src/regions/*`），atlas 常驻核心内存                                            | finish + atlas 比 TS oracle 快 1.9–2×；三次冗余标签上传被移除。                                                                                                                                                                                                                                                                                                                                                                                                       |
+| 位置图松弛（pose-graph relaxation）                                                            | Rust（`rust/core/src/pose_graph.rs`）                                                            | 性能中性（未出现在 profile 里），迁移理由是架构一致性，不是速度。`PoseGraph.correction()`（每帧约 6 次浮点运算）留在 TS：一次 FFI 调用的开销比这几次运算本身更贵。                                                                                                                                                                                                                                                                                                    |
+| 跟踪判定（里程计、重定位、漂移控制、各类 verdict）与关键帧候选评分                             | Rust（`rust/core/src/track.rs`）                                                                 | 曾测量并**未构建**有状态融合跟踪器：0.mov/e.mov 求解阶段耗时差异落在噪声范围内。最终的 `Math.exp`（step/重定位置信度收尾）**刻意**留在 TS：V8 的 exp（llvm-libc）与 Rust libm 的 exp 在部分输入上相差 1 ULP，而与迁移前 TS 输出的逐位一致是硬要求；切换到 Rust exp 是一个独立的、需要单独验证的行为变更，本轮不做。小块壳胶水仍在 TS：`ownFeaturesOf`（用 TS 侧 `regionContains`，是 `rust/core/src/region.rs` 的重复实现）、`isTextured`、`priorMatchesOf`、`gate`。 |
+| 时间冲突合成（连通分量、`resolveTemporal` 决策、内存态时间索引、`overwritePatch`）与金字塔装配 | Rust（`rust/core/src/temporal.rs`、`pyramid.rs`）                                                | flush 行序显式复现 JS `Map` 插入顺序。                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ZIP64 导出                                                                                     | TS 外壳（npm `client-zip`，MIT 许可）                                                            | 比手写 ZIP64 写入器更简单、不需要 IndexedDB 暂存；小条目更快（4.06 对 4.98 ms/MiB），大条目更慢（2.14 对 0.73 ms/MiB，其自带 JS CRC）——权衡后接受：导出耗时主要由 IndexedDB 读取与 PNG 编码主导，ZIP 本身不是瓶颈。                                                                                                                                                                                                                                                   |
+| 容器反封装（demuxing）                                                                         | 暂时仍手写 TS（`src/media/mp4.ts`/`webm.ts`）                                                    | 已评估 mediabunny：在全部固件与 iOS 真实录屏上与现有实现打平；其 MPL-2.0 许可义务已提交给 owner，决策待定。已知未决项：本地 WebM demuxer 的 VP9 Profile-1 codec 字符串缺陷——`vp09CodecString` 缺失字段时的默认回退固定写 `vp09.00.10.08`（profile 00），不反映真实的 profile 1 流。                                                                                                                                                                                   |
+| WebGPU 分析降采样（WGSL）                                                                      | 维持现状（GPU 路径，字节精确校准闸门）                                                           | `AnalysisComputer` 首帧 CPU/GPU 双跑校准，要求 `bitExact` 且 GPU 实测（含上传/kernel/回读）比 CPU 快，否则整段回退 CPU；不做进一步改动。                                                                                                                                                                                                                                                                                                                              |
+| 托管                                                                                           | `_headers`（COOP/COEP/CORP）开启线程构建                                                         | 开发服务器对**每个**响应（含 304）都重新附加这些头——一次遗漏 304 上 CORP 头的回归曾打断 WebKit 私密浏览下载流程，见提交历史 "dev server re-applies COOP/COEP/CORP to every response"。                                                                                                                                                                                                                                                                                |
+
+**验证工具链**（让上述每一次移植都有把握、不是凭感觉）：
+
+- 字节 + 像素两级场景指纹（`scripts/fingerprint-scenarios.ts` + `scripts/compare-fingerprints.ts`）：24 个合成场景全量跑一遍，哈希每一条持久化记录，逐行比较。
+- 冻结 oracle 的三构建 parity（`tests/unit/parity/*.test.ts` 对照 `tests/support/reference/*.ts`，在 scalar/SIMD/threads 三种构建上跑）。
+- 针对原始引擎的差分测试（对同一批扰动输入分别跑迁移前后两份引擎，逐字段比较）。
+- 真实录屏 A/B（`scripts/e2e-recordings.sh`）：解码像素哈希 + 证据瓦片哈希。
+
+上面第三项（差分测试用的对照哈希）本身不在这个代码仓库里，活在编排会话的 scratch 目录下，随每轮任务现造现用——如实说明，不假装它是仓库的一部分。
+
+Rust 核心的完整迁移时间线（哪一轮做了什么、每一步的验证方式）记录在 [docs/history/2026-09-rust-migration-log.md](history/2026-09-rust-migration-log.md)；上表只给当前状态与理由，不重复过程。
