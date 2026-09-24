@@ -47,6 +47,80 @@ export interface RelocalizationQuery {
    * target are recognised as the same physical place instead of scoring each other as rivals. */
   canonical?: (canvasId: string) => { canvasId: string; dx: number; dy: number };
 }
+/** Pure candidate evaluation core of find() (port-template §2): hypothesis matching, analysis audit, native-patch
+ * refinement, scoring and rival/ambiguity resolution over an already-fetched keyframe set. `canonical` replaces
+ * the original's per-call closure with a precomputed map from the candidate canvasIds the async half already
+ * touched, built once per query (R2: was called repeatedly per `position()` invocation). */
+export function evaluateCandidates(
+  keyframes: Keyframe[],
+  q: {
+    features: Feature[];
+    gray: Gray;
+    native: Gray | ResidentGray | (() => Gray | ResidentGray);
+    roi: Rect;
+    region: Rect;
+    factor: number;
+    radius: number;
+  },
+  canonical: Map<string, { canvasId: string; dx: number; dy: number }>,
+): (Relocalization & { strong: boolean }) | undefined {
+  const { features, gray, native, roi, region, factor, radius } = q;
+  const results: (Relocalization & { strong: boolean })[] = [];
+  for (const k of keyframes) {
+    const matches = matchFeatures(k.features, features), models = translationHypotheses(matches, 16);
+    for (const m of models.slice(0, 8)) {
+      if (m.support < 6) {
+        continue;
+      }
+      // Analysis-scale audit tolerates sub-factor misalignment; the decision is made on native pixels below.
+      const audit = auditTranslation(k.gray, gray, m.x, m.y, roi, factor > 1);
+      if (audit.overlap < .22 || !Number.isFinite(audit.error) || (audit.mismatch > .12 && audit.agreement < .5)) {
+        continue;
+      }
+      const refined = refinePatches(k.patches, typeof native === 'function' ? native() : native, region, {
+        x: m.x * factor,
+        y: m.y * factor,
+      }, radius);
+      if (!Number.isFinite(refined.error) || refined.error > 12) {
+        continue;
+      }
+      const strong = m.support >= 10 && m.unique >= 6 && m.confidence >= .45;
+      const confidence = Math.min(.95, .45 + .5 * (1 - Math.exp(-m.unique / 7))) * Math.exp(-refined.error / 20);
+      results.push({
+        keyframe: k,
+        offset: { x: refined.x, y: refined.y },
+        confidence,
+        ambiguous: m.ambiguous,
+        support: m.support,
+        unique: m.unique,
+        error: refined.error,
+        analysisError: audit.error,
+        strong,
+      });
+    }
+  }
+  const score = (r: Relocalization) => (r.support * .25 + r.unique) * r.confidence;
+  results.sort((a, b) => score(b) - score(a));
+  const best = results.find((r) => r.strong);
+  if (!best) {
+    return undefined;
+  }
+  const position = (r: Relocalization) => {
+    const x = r.keyframe.x + r.offset.x, y = r.keyframe.y + r.offset.y;
+    const c = canonical.get(r.keyframe.canvasId);
+    return c ? { canvas: c.canvasId, x: x + c.dx, y: y + c.dy } : { canvas: r.keyframe.canvasId, x, y };
+  };
+  const bp = position(best);
+  // Any other plausible place, weak or strong, that lands somewhere else makes the revisit ambiguous. Repeated cards look alike.
+  const rival = results.find((r) =>
+    r !== best && (position(r).canvas !== bp.canvas || Math.hypot(position(r).x - bp.x, position(r).y - bp.y) > 6) &&
+    score(r) > score(best) * .8
+  );
+  if (rival || best.ambiguous) {
+    best.ambiguous = true;
+  }
+  return best;
+}
 export class KeyframeIndex {
   private warnedLayers = new Set<string>();
   constructor(private db: KV, private warn: (message: string) => Promise<void>) {}
@@ -107,9 +181,9 @@ export class KeyframeIndex {
     if (truncated) {
       await this.warnOnce(layer);
     }
-    const candidates = [...votes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12),
-      results: (Relocalization & { strong: boolean })[] = [];
-    for (const [id, count] of candidates) {
+    const candidateIds = [...votes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12),
+      keyframes: Keyframe[] = [];
+    for (const [id, count] of candidateIds) {
       if (count < 3) {
         continue;
       }
@@ -117,61 +191,18 @@ export class KeyframeIndex {
       if (!k || Math.abs(k.frame - frame) < minGap) {
         continue;
       }
-      const matches = matchFeatures(k.features, features), models = translationHypotheses(matches, 16);
-      for (const m of models.slice(0, 8)) {
-        if (m.support < 6) {
-          continue;
+      keyframes.push(k);
+    }
+    // canonical() is a pure function of canvasId; memoize it once per candidate canvas instead of calling it
+    // repeatedly from evaluateCandidates' position() closure (R2).
+    const canonical = new Map<string, { canvasId: string; dx: number; dy: number }>();
+    if (q.canonical) {
+      for (const k of keyframes) {
+        if (!canonical.has(k.canvasId)) {
+          canonical.set(k.canvasId, q.canonical(k.canvasId));
         }
-        // Analysis-scale audit tolerates sub-factor misalignment; the decision is made on native pixels below.
-        const audit = auditTranslation(k.gray, gray, m.x, m.y, roi, factor > 1);
-        if (audit.overlap < .22 || !Number.isFinite(audit.error) || (audit.mismatch > .12 && audit.agreement < .5)) {
-          continue;
-        }
-        const refined = refinePatches(k.patches, typeof native === 'function' ? native() : native, region, {
-          x: m.x * factor,
-          y: m.y * factor,
-        }, radius);
-        if (!Number.isFinite(refined.error) || refined.error > 12) {
-          continue;
-        }
-        const strong = m.support >= 10 && m.unique >= 6 && m.confidence >= .45;
-        const confidence = Math.min(.95, .45 + .5 * (1 - Math.exp(-m.unique / 7))) * Math.exp(-refined.error / 20);
-        results.push({
-          keyframe: k,
-          offset: { x: refined.x, y: refined.y },
-          confidence,
-          ambiguous: m.ambiguous,
-          support: m.support,
-          unique: m.unique,
-          error: refined.error,
-          analysisError: audit.error,
-          strong,
-        });
       }
     }
-    const score = (r: Relocalization) => (r.support * .25 + r.unique) * r.confidence;
-    results.sort((a, b) => score(b) - score(a));
-    const best = results.find((r) => r.strong);
-    if (!best) {
-      return;
-    }
-    const position = (r: Relocalization) => {
-      const x = r.keyframe.x + r.offset.x, y = r.keyframe.y + r.offset.y;
-      if (!q.canonical) {
-        return { canvas: r.keyframe.canvasId, x, y };
-      }
-      const c = q.canonical(r.keyframe.canvasId);
-      return { canvas: c.canvasId, x: x + c.dx, y: y + c.dy };
-    };
-    const bp = position(best);
-    // Any other plausible place, weak or strong, that lands somewhere else makes the revisit ambiguous. Repeated cards look alike.
-    const rival = results.find((r) =>
-      r !== best && (position(r).canvas !== bp.canvas || Math.hypot(position(r).x - bp.x, position(r).y - bp.y) > 6) &&
-      score(r) > score(best) * .8
-    );
-    if (rival || best.ambiguous) {
-      best.ambiguous = true;
-    }
-    return best;
+    return evaluateCandidates(keyframes, { features, gray, native, roi, region, factor, radius }, canonical);
   }
 }

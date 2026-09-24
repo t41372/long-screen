@@ -19,6 +19,7 @@ export type { VotingBox, VotingRecord, VotingVerdict } from './wasm/voting.ts';
 export { VotingRing } from './wasm/voting.ts';
 export type { FinishAccumulators } from './wasm/regions.ts';
 export type { PoseGraphEdges, PoseGraphNodes } from './wasm/pose-graph.ts';
+export type { FragmentCauseGate, LoopVerdict, OcclusionDecision } from './wasm/track.ts';
 export type { FrameLayout, FramingSession, FramingTile, SourceFramingTile } from './wasm/framing.ts';
 export type { CompositeObservation, CompositeTile, CompositeTileStats, PreparedObservation } from './wasm/composite.ts';
 export type { ConsistencyMaskInput, ConsistencyNeighbourInput, ConsistencyVoteInput } from './wasm/consistency.ts';

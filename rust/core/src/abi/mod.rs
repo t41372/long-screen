@@ -31,6 +31,7 @@ mod png;
 mod pose_graph;
 mod raster;
 mod regions;
+mod track;
 mod voting;
 pub(crate) mod wire;
 

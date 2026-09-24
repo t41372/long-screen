@@ -15,7 +15,7 @@ use crate::motion::{
 
 /// # Safety
 /// `ptr` points at `count × MATCH_POINT_BYTES` readable bytes.
-unsafe fn read_match_points(ptr: u32, count: u32) -> Option<Vec<MatchPoints>> {
+pub(crate) unsafe fn read_match_points(ptr: u32, count: u32) -> Option<Vec<MatchPoints>> {
     let bytes = slice(ptr, count as usize * MATCH_POINT_BYTES)?;
     let f = |c: &[u8], i: usize| f64::from_le_bytes(c[i..i + 8].try_into().unwrap());
     Some(

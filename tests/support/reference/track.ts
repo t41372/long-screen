@@ -1,26 +1,23 @@
-// PARTIALLY PORTED (Rust — see docs/HANDOFF.md "已在 Rust 核心中"): the per-region tracking DECISIONS
-// region-step.ts's stepRegion() and keyframe-step.ts's keyframeStep() apply each frame. R4b phase 3a ported every
-// stateless verdict below (uncertainty, relocalizeVerdict, fragmentCause's gate, occlusionEligible, attachVerdict,
-// odometryWeight, thinOverlapEligible/Correction, loopClosureVerdict, needsKeyframe, zoomChanged, regionZoom,
-// targetPose) to rust/core/src/track.rs; each function here is now a thin call into src/core/wasm/track.ts,
-// exported under its original name/signature so region-step.ts/keyframe-step.ts need no changes. odometry,
-// reacquire and driftCorrection (below) are still TS pending phase 3b's stateful tracker handle. This split
-// (R1/R2, plus keyframe scoring's own pure core, evaluateCandidates, in src/core/keyframes.ts) is why
-// tests/support/reference/track.ts could freeze the pre-port functions' outputs as a TS oracle
-// (tests/unit/parity/track.test.ts checks the Rust replacements against it).
-import type { Feature, Gray, Match, Point, Region, RGBA } from '../../types.ts';
+/** FROZEN TypeScript oracle for the R4 port (solve pass's per-region tracking decisions and keyframe scoring →
+ * rust/core/src/track.rs). Verbatim copy of src/pipeline/solve/track.ts (post R1/R2 cleanup) plus
+ * KeyframeIndex.evaluateCandidates from src/core/keyframes.ts, frozen at the commit that ported them to Rust.
+ * Parity oracle for tests/unit/parity/track.test.ts. Not used by production code. Do not "fix" this — if the
+ * production algorithm changes, that is a behaviour change and belongs in a new round, not a silent edit here. */
+import type { Feature, Gray, Match, Point, Region, RGBA } from '../../../src/types.ts';
 import {
   auditTranslation,
+  detectScale,
   type NativeRefinement,
   type Patch,
   probeScale,
   refineNative,
   refinePatches,
   translationHypotheses,
-} from '../../core/motion.ts';
-import { regionContains } from '../../core/layers.ts';
-import { matchFeatures } from '../../core/features.ts';
-import { core, type LabelMask, type ResidentFrame, type ResidentGray } from '../../core/wasm.ts';
+} from '../../../src/core/motion.ts';
+import { regionContains } from '../../../src/core/layers.ts';
+import { matchFeatures } from '../../../src/core/features.ts';
+import type { LabelMask, ResidentFrame, ResidentGray } from '../../../src/core/wasm.ts';
+import type { Keyframe, Relocalization } from '../../../src/core/keyframes.ts';
 /** Region-step.ts's own-features/texture/prior-matches setup (R1: was inline decision logic in the shell). */
 export function ownFeaturesOf(
   features: Feature[],
@@ -62,7 +59,7 @@ export function gate(
   return 'odometry';
 }
 export function uncertainty(confidence: number, ambiguous: boolean, weakStep: boolean): boolean {
-  return core().trackUncertainty(confidence, ambiguous, weakStep);
+  return confidence < .60 || ambiguous || weakStep;
 }
 /** Confidence assigned on branches with no measurement to derive one from (R1: named so the value has one home). */
 export const STATIC_CONFIDENCE = .3;
@@ -73,7 +70,7 @@ export function relocalizeVerdict(
   match: { ambiguous: boolean; confidence: number } | undefined,
   zoomChange: boolean,
 ): boolean {
-  return core().trackRelocalizeVerdict(match, zoomChange);
+  return !!match && !match.ambiguous && match.confidence > .6 && !zoomChange;
 }
 /** Names the cause of an unplaced fragment: a magnification change is a different pixel grid, not a lost
  * trajectory (checked first); otherwise probe for a scale change against the previous frame when one is available. */
@@ -86,17 +83,13 @@ export function fragmentCause(
   ownFeatures: Feature[],
   roi: { x: number; y: number; width: number; height: number },
 ): { scale: number; error: number } | undefined {
-  switch (core().trackFragmentCauseGate(zoomChange, !!previousGray, blind)) {
-    case 'zoom-change':
-      return { scale: fieldZoom, error: 0 };
-    case 'probe-scale':
-      return probeScale(previousGray!, g, ownFeatures, roi);
-    default:
-      return undefined;
+  if (zoomChange) {
+    return { scale: fieldZoom, error: 0 };
   }
+  return previousGray && !blind ? probeScale(previousGray, g, ownFeatures, roi) : undefined;
 }
 export function occlusionEligible(hasPrevious: boolean, kind: Region['kind'], decision: 'tracked' | 'static' | 'blind' | 'lost'): boolean {
-  return core().trackOcclusionEligible(hasPrevious, kind === 'moving', decision);
+  return hasPrevious && kind === 'moving' && (decision === 'tracked' || decision === 'static');
 }
 /** A frame-global zoom gate fires for every pane at once, so one pane's pinch fragments every other pane too.
  * Measure this pane's own scale evidence against its own previous frame instead; fall back to the frame-global
@@ -106,10 +99,10 @@ export function occlusionEligible(hasPrevious: boolean, kind: Region['kind'], de
  * says nothing about how many of THIS pair's matches were usable) is what makes the "undefined" branch — the
  * frame-global fallback — reachable at all. */
 export function regionZoom(kind: Region['kind'], priorMatches: Match[]): number | undefined {
-  return core().trackRegionZoom(kind === 'moving', priorMatches);
+  return kind === 'moving' && priorMatches.filter((m) => m.unique).length >= 8 ? detectScale(priorMatches) : undefined;
 }
 export function zoomChanged(regionZoom: number | undefined, fieldZoom: number): boolean {
-  return core().trackZoomChanged(regionZoom, fieldZoom);
+  return regionZoom !== undefined ? Math.abs(regionZoom - 1) > .04 : Math.abs(fieldZoom - 1) > .04;
 }
 export interface OdometryInputs {
   f: number;
@@ -242,10 +235,19 @@ export function needsKeyframe(
   frameIndex: number,
   fieldDifference: number,
 ): boolean {
-  return core().trackNeedsKeyframe(kind === 'moving', anchor, pose, lastNodeFrame, rect, frameIndex, fieldDifference);
+  if (lastNodeFrame === undefined) {
+    return true;
+  }
+  if (kind !== 'moving') {
+    return false;
+  }
+  const anchorDistance = anchor ? Math.hypot(pose.x - anchor.x, pose.y - anchor.y) : Infinity;
+  const framesSinceLastNode = frameIndex - lastNodeFrame;
+  return anchorDistance > Math.max(48, Math.min(rect.width, rect.height) * .30) ||
+    (framesSinceLastNode > 90 && fieldDifference > .2);
 }
 export function targetPose(keyframe: Point, offset: Point, shift: Point): Point {
-  return core().trackTargetPose(keyframe, offset, shift);
+  return { x: keyframe.x + offset.x + shift.x, y: keyframe.y + offset.y + shift.y };
 }
 /** Whether a same-canvas revisit found at attachment time (`global`) should be folded onto `canvasId`: the
  * revisit's own canvas differs, the match is unambiguous, and confident enough (R1: was inline in
@@ -257,11 +259,13 @@ export function attachVerdict(
   canvasId: string,
   shift: Point,
 ): { target: string; pose: Point } | undefined {
-  const pose = core().trackAttachVerdict(global, resolvedTarget === canvasId, shift);
-  return pose ? { target: resolvedTarget, pose } : undefined;
+  if (!global || resolvedTarget === canvasId || global.ambiguous || !(global.confidence > .72)) {
+    return undefined;
+  }
+  return { target: resolvedTarget, pose: targetPose(global.keyframe, global.offset, shift) };
 }
 export function odometryWeight(weakStep: boolean): number {
-  return core().trackOdometryWeight(weakStep);
+  return weakStep ? .05 : 1;
 }
 /** Pose-graph edge weights for the three ways a loop/attachment edge is added (R1: were literal 6/5/4 inline). */
 export const LOOP_WEIGHT_CORRECTED = 6;
@@ -271,7 +275,7 @@ export const LOOP_WEIGHT_CLOSURE = 4;
  * — the original had this exact gate duplicated inline in keyframe-step.ts AND inside thinOverlapCorrection
  * itself; this is the single copy. */
 export function thinOverlapEligible(weakStep: boolean, weak: boolean, ambiguous: boolean, confidence: number, error: number): boolean {
-  return core().trackThinOverlapEligible(weakStep, weak, ambiguous, confidence, error);
+  return (weakStep || weak) && !ambiguous && confidence > .72 && error < 8;
 }
 export interface ThinOverlapInputs {
   canonicalKeyframe: Point;
@@ -289,7 +293,9 @@ export function thinOverlapCorrection(inputs: ThinOverlapInputs): { target: Poin
   // The keyframe used for this correction may itself sit on a fragment attached onto the current canvas; its
   // raw x/y must already be translated into that canvas's coordinates (by the caller, via canonicalPose)
   // before comparing to `pose`.
-  return core().trackThinOverlapCorrection(canonicalKeyframe, offset, pose);
+  const target = { x: canonicalKeyframe.x + offset.x, y: canonicalKeyframe.y + offset.y };
+  const discrepancy = Math.hypot(target.x - pose.x, target.y - pose.y);
+  return discrepancy >= 16 ? { target, discrepancy } : undefined;
 }
 export type LoopVerdict = 'closure' | 'inconsistent' | 'ambiguous' | 'none';
 /** Whether a revisit on the SAME canvas the frame already resolved to should be folded in as a global position
@@ -300,5 +306,89 @@ export function loopClosureVerdict(
   shift: Point,
   pose: Point,
 ): { verdict: LoopVerdict; discrepancy: number } {
-  return core().trackLoopClosureVerdict(global, shift, pose);
+  const discrepancy = Math.hypot(
+    global.keyframe.x + shift.x + global.offset.x - pose.x,
+    global.keyframe.y + shift.y + global.offset.y - pose.y,
+  );
+  if (!global.ambiguous && global.confidence > .72 && discrepancy < 16) {
+    return { verdict: 'closure', discrepancy };
+  } else if (discrepancy >= 16) {
+    return { verdict: 'inconsistent', discrepancy };
+  } else if (global.ambiguous) {
+    return { verdict: 'ambiguous', discrepancy };
+  }
+  return { verdict: 'none', discrepancy };
+}
+/** Pure candidate evaluation core of KeyframeIndex.find() (src/core/keyframes.ts's evaluateCandidates, frozen
+ * verbatim here alongside track.ts since Phase 4 ports it in the same Rust call as the tracking decisions'
+ * keyframe scoring). */
+export function evaluateCandidates(
+  keyframes: Keyframe[],
+  q: {
+    features: Feature[];
+    gray: Gray;
+    native: Gray | ResidentGray | (() => Gray | ResidentGray);
+    roi: { x: number; y: number; width: number; height: number };
+    region: { x: number; y: number; width: number; height: number };
+    factor: number;
+    radius: number;
+  },
+  canonical: Map<string, { canvasId: string; dx: number; dy: number }>,
+): (Relocalization & { strong: boolean }) | undefined {
+  const { features, gray, native, roi, region, factor, radius } = q;
+  const results: (Relocalization & { strong: boolean })[] = [];
+  for (const k of keyframes) {
+    const matches = matchFeatures(k.features, features), models = translationHypotheses(matches, 16);
+    for (const m of models.slice(0, 8)) {
+      if (m.support < 6) {
+        continue;
+      }
+      // Analysis-scale audit tolerates sub-factor misalignment; the decision is made on native pixels below.
+      const audit = auditTranslation(k.gray, gray, m.x, m.y, roi, factor > 1);
+      if (audit.overlap < .22 || !Number.isFinite(audit.error) || (audit.mismatch > .12 && audit.agreement < .5)) {
+        continue;
+      }
+      const refined = refinePatches(k.patches, typeof native === 'function' ? native() : native, region, {
+        x: m.x * factor,
+        y: m.y * factor,
+      }, radius);
+      if (!Number.isFinite(refined.error) || refined.error > 12) {
+        continue;
+      }
+      const strong = m.support >= 10 && m.unique >= 6 && m.confidence >= .45;
+      const confidence = Math.min(.95, .45 + .5 * (1 - Math.exp(-m.unique / 7))) * Math.exp(-refined.error / 20);
+      results.push({
+        keyframe: k,
+        offset: { x: refined.x, y: refined.y },
+        confidence,
+        ambiguous: m.ambiguous,
+        support: m.support,
+        unique: m.unique,
+        error: refined.error,
+        analysisError: audit.error,
+        strong,
+      });
+    }
+  }
+  const score = (r: Relocalization) => (r.support * .25 + r.unique) * r.confidence;
+  results.sort((a, b) => score(b) - score(a));
+  const best = results.find((r) => r.strong);
+  if (!best) {
+    return undefined;
+  }
+  const position = (r: Relocalization) => {
+    const x = r.keyframe.x + r.offset.x, y = r.keyframe.y + r.offset.y;
+    const c = canonical.get(r.keyframe.canvasId);
+    return c ? { canvas: c.canvasId, x: x + c.dx, y: y + c.dy } : { canvas: r.keyframe.canvasId, x, y };
+  };
+  const bp = position(best);
+  // Any other plausible place, weak or strong, that lands somewhere else makes the revisit ambiguous. Repeated cards look alike.
+  const rival = results.find((r) =>
+    r !== best && (position(r).canvas !== bp.canvas || Math.hypot(position(r).x - bp.x, position(r).y - bp.y) > 6) &&
+    score(r) > score(best) * .8
+  );
+  if (rival || best.ambiguous) {
+    best.ambiguous = true;
+  }
+  return best;
 }

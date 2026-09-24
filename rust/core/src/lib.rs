@@ -23,5 +23,6 @@ pub mod pose_graph;
 pub mod raster;
 pub mod region;
 pub mod regions;
+pub mod track;
 pub mod voting;
 pub mod yuv;

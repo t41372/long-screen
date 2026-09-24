@@ -216,6 +216,56 @@ export interface CoreExports {
   ls_pose_graph_residual(handle: number): number;
   ls_pose_graph_read(handle: number, xsOut: number, ysOut: number): number;
   ls_pose_graph_free(handle: number): void;
+  ls_track_uncertainty(confidence: number, ambiguous: number, weakStep: number): number;
+  ls_track_relocalize_verdict(hasMatch: number, ambiguous: number, confidence: number, zoomChange: number): number;
+  ls_track_fragment_cause_gate(zoomChange: number, hasPreviousGray: number, blind: number): number;
+  ls_track_occlusion_eligible(hasPrevious: number, kindMoving: number, decision: number): number;
+  ls_track_target_pose(kx: number, ky: number, ox: number, oy: number, sx: number, sy: number, out: number): number;
+  ls_track_attach_verdict(
+    hasGlobal: number,
+    kx: number,
+    ky: number,
+    ox: number,
+    oy: number,
+    ambiguous: number,
+    confidence: number,
+    resolvedTargetEqCanvas: number,
+    sx: number,
+    sy: number,
+    out: number,
+  ): number;
+  ls_track_odometry_weight(weakStep: number): number;
+  ls_track_thin_overlap_eligible(weakStep: number, weak: number, ambiguous: number, confidence: number, error: number): number;
+  ls_track_thin_overlap_correction(ckx: number, cky: number, ox: number, oy: number, px: number, py: number, out: number): number;
+  ls_track_loop_closure_verdict(
+    gkx: number,
+    gky: number,
+    gox: number,
+    goy: number,
+    gAmbiguous: number,
+    gConfidence: number,
+    sx: number,
+    sy: number,
+    px: number,
+    py: number,
+    out: number,
+  ): number;
+  ls_track_needs_keyframe(
+    kindMoving: number,
+    hasAnchor: number,
+    ax: number,
+    ay: number,
+    px: number,
+    py: number,
+    hasLastNode: number,
+    lastNodeFrame: number,
+    rectW: number,
+    rectH: number,
+    frameIndex: number,
+    fieldDifference: number,
+  ): number;
+  ls_track_zoom_changed(hasRegionZoom: number, regionZoom: number, fieldZoom: number): number;
+  ls_track_region_zoom(kindMoving: number, matches: number, count: number): number;
   ls_frame_layout(sourceWidth: number, sourceHeight: number, pane: number, boundsWidth: number, boundsHeight: number, out: number): number;
   ls_frame_coordinate(layout: number, x: number, y: number, out: number): number;
   ls_frame_backgrounds(

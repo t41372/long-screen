@@ -40,6 +40,8 @@ import {
   type FramingSession,
   openFramingSession as openFramingSessionImpl,
 } from './framing.ts';
+import * as track from './track.ts';
+import type { FragmentCauseGate, LoopVerdict, OcclusionDecision } from './track.ts';
 
 export interface RefinementResult {
   x: number;
@@ -420,6 +422,64 @@ export class Core {
   }
   poseGraphFree(handle: number): void {
     poseGraphFreeImpl(this.exports, handle);
+  }
+
+  /** Per-region, per-frame tracking verdicts (`src/pipeline/solve/track.ts`, R4b phase 3a): stateless,
+   *  one small call each. */
+  trackUncertainty(confidence: number, ambiguous: boolean, weakStep: boolean): boolean {
+    return track.uncertainty(this.exports, confidence, ambiguous, weakStep);
+  }
+  trackRelocalizeVerdict(match: { ambiguous: boolean; confidence: number } | undefined, zoomChange: boolean): boolean {
+    return track.relocalizeVerdict(this.exports, match, zoomChange);
+  }
+  trackFragmentCauseGate(zoomChange: boolean, hasPreviousGray: boolean, blind: boolean): FragmentCauseGate {
+    return track.fragmentCauseGate(this.exports, zoomChange, hasPreviousGray, blind);
+  }
+  trackOcclusionEligible(hasPrevious: boolean, kindMoving: boolean, decision: OcclusionDecision): boolean {
+    return track.occlusionEligible(this.exports, hasPrevious, kindMoving, decision);
+  }
+  trackTargetPose(keyframe: Point, offset: Point, shift: Point): Point {
+    return track.targetPose(this, this.exports, keyframe, offset, shift);
+  }
+  trackAttachVerdict(
+    global: { keyframe: Point; offset: Point; ambiguous: boolean; confidence: number } | undefined,
+    resolvedTargetEqCanvas: boolean,
+    shift: Point,
+  ): Point | undefined {
+    return track.attachVerdict(this, this.exports, global, resolvedTargetEqCanvas, shift);
+  }
+  trackOdometryWeight(weakStep: boolean): number {
+    return track.odometryWeight(this.exports, weakStep);
+  }
+  trackThinOverlapEligible(weakStep: boolean, weak: boolean, ambiguous: boolean, confidence: number, error: number): boolean {
+    return track.thinOverlapEligible(this.exports, weakStep, weak, ambiguous, confidence, error);
+  }
+  trackThinOverlapCorrection(canonicalKeyframe: Point, offset: Point, pose: Point): { target: Point; discrepancy: number } | undefined {
+    return track.thinOverlapCorrection(this, this.exports, canonicalKeyframe, offset, pose);
+  }
+  trackLoopClosureVerdict(
+    global: { keyframe: Point; offset: Point; ambiguous: boolean; confidence: number },
+    shift: Point,
+    pose: Point,
+  ): { verdict: LoopVerdict; discrepancy: number } {
+    return track.loopClosureVerdict(this, this.exports, global, shift, pose);
+  }
+  trackNeedsKeyframe(
+    kindMoving: boolean,
+    anchor: Point | undefined,
+    pose: Point,
+    lastNodeFrame: number | undefined,
+    rect: { width: number; height: number },
+    frameIndex: number,
+    fieldDifference: number,
+  ): boolean {
+    return track.needsKeyframe(this.exports, kindMoving, anchor, pose, lastNodeFrame, rect, frameIndex, fieldDifference);
+  }
+  trackZoomChanged(regionZoom: number | undefined, fieldZoom: number): boolean {
+    return track.zoomChanged(this.exports, regionZoom, fieldZoom);
+  }
+  trackRegionZoom(kindMoving: boolean, priorMatches: Match[]): number | undefined {
+    return track.regionZoom(this, this.exports, kindMoving, priorMatches);
   }
 
   /** `buildFramedCanvas`'s `frameLayout()`. */

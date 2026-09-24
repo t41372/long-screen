@@ -3,16 +3,34 @@
 // detection, placement construction. Not an algorithm awaiting a Rust port itself; see track.ts's header for what
 // is.
 import type { Attachment, Feature, Gray, Placement, Point, RGBA, ScanRecord } from '../../types.ts';
-import { regionContains, stickyOcclusions } from '../../core/layers.ts';
-import { type NativeRefinement, probeScale } from '../../core/motion.ts';
-import { matchFeatures } from '../../core/features.ts';
+import { stickyOcclusions } from '../../core/layers.ts';
+import type { NativeRefinement } from '../../core/motion.ts';
 import type { PoseGraph } from '../../core/pose-graph.ts';
 import type { KeyframeIndex } from '../../core/keyframes.ts';
 import type { LabelMask, ResidentFrame, ResidentGray, VotingRing } from '../../core/wasm.ts';
 import { attachmentShift } from '../attachments.ts';
 import type { RunContext } from '../context.ts';
 import { type Decision, newCanvas, type RegionState } from './state.ts';
-import { driftCorrection, odometry, reacquire, regionZoom as computeRegionZoom, targetPose, zoomChanged } from './track.ts';
+import {
+  BLIND_CONFIDENCE,
+  driftCorrection,
+  FRAGMENT_CONFIDENCE,
+  fragmentCause,
+  gate,
+  isTextured,
+  NONFINITE_CONFIDENCE,
+  occlusionEligible,
+  odometry,
+  ownFeaturesOf,
+  priorMatchesOf,
+  reacquire,
+  regionZoom as computeRegionZoom,
+  relocalizeVerdict,
+  STATIC_CONFIDENCE,
+  targetPose,
+  uncertainty,
+  zoomChanged,
+} from './track.ts';
 import { keyframeStep } from './keyframe-step.ts';
 /** Everything region-step.ts's stepRegion() needs that lives for the whole solve() pass, not just one frame:
  * services, the pose graph and keyframe index, the fragment-attachment map and its three canonicalisation
@@ -58,9 +76,9 @@ export async function stepRegion(pass: SolvePass, state: RegionState, input: Fra
   const { frame, image, scan, current, previous, g, previousGray, features, native, previousPlan, voting: votingState } = input;
   const r = state.region, code = state.code, roi = { x: r.rect.x / f, y: r.rect.y / f, width: r.rect.width / f, height: r.rect.height / f };
   const mask = { labels: pass.residentLabels, code };
-  const ownFeatures = features.filter((p) => regionContains(r, p.x * f, p.y * f, image.width, image.height));
-  const textured = ownFeatures.length >= 8;
-  const priorMatches = r.kind === 'moving' ? matchFeatures(state.previousFeatures || [], ownFeatures) : [];
+  const ownFeatures = ownFeaturesOf(features, r, f, image);
+  const textured = isTextured(ownFeatures);
+  const priorMatches = priorMatchesOf(r.kind, state.previousFeatures, ownFeatures);
   const zoom = computeRegionZoom(r.kind, priorMatches);
   const zoomChange = zoomChanged(zoom, scan.field.zoom);
   let confidence = r.unassigned ? .2 : 1,
@@ -74,25 +92,24 @@ export async function stepRegion(pass: SolvePass, state: RegionState, input: Fra
     viaAnchor: NativeRefinement | undefined,
     weakStep = false,
     stepError = Infinity;
-  if (r.kind === 'moving' && !state.started) {
+  // 0. Which branch this frame takes before any tracking math runs (track.ts's gate — R1).
+  const tag = gate(r.kind, state.started, textured, frame.index, state.blind, zoomChange, !!previous, !!previousGray);
+  if (tag === 'start') {
+    state.started = true;
+    state.canvasId = '';
+    await newCanvas(ctx, state, frame.time);
+  } else if (tag === 'fixed-init') {
+    await newCanvas(ctx, state, frame.time);
+  } else if (tag === 'fixed') {
+    // No-op: fixed-kind region, already initialised.
+  } else if (tag === 'blind') {
     // No canvas origin exists until a textured observation defines one; blank leading frames are counted, not placed.
-    if (!textured) {
-      decision = 'blind';
-    } else {
-      state.started = true;
-      state.canvasId = '';
-      await newCanvas(ctx, state, frame.time);
-    }
-  } else if (r.kind !== 'moving') {
-    if (frame.index === 0) {
-      await newCanvas(ctx, state, frame.time);
-    }
-  } else if (!textured) {
     decision = 'blind';
-  } else if (state.blind || zoomChange || !previous || !previousGray) {
+  } else if (tag === 'lost') {
     decision = 'lost';
   } else {
     // 1. Frame-to-frame odometry: analysis-scale hypotheses, block-aware audit, then a native-pixel decision.
+    // gate() only returns 'odometry' when hasPrevious && hasPreviousGray both held, so these are defined here.
     const est = odometry({
       f,
       radius,
@@ -101,9 +118,9 @@ export async function stepRegion(pass: SolvePass, state: RegionState, input: Fra
       rect: r.rect,
       region: r,
       image,
-      previous,
+      previous: previous!,
       current,
-      previousGray,
+      previousGray: previousGray!,
       g,
       velocity: state.velocity,
       matches: priorMatches,
@@ -171,7 +188,7 @@ export async function stepRegion(pass: SolvePass, state: RegionState, input: Fra
           }
         }
       }
-      uncertain = confidence < .60 || ambiguous || weakStep;
+      uncertain = uncertainty(confidence, ambiguous, weakStep);
       if (weakStep) {
         await ctx.diagnostics.emit({
           code: 'THIN_OVERLAP_STEP',
@@ -201,7 +218,7 @@ export async function stepRegion(pass: SolvePass, state: RegionState, input: Fra
       }
     } else if (decision === 'static') {
       state.velocity = { x: 0, y: 0 };
-      confidence = .3;
+      confidence = STATIC_CONFIDENCE;
       uncertain = true;
       await ctx.diagnostics.emit({
         code: 'LOW_CONFIDENCE_PLACEMENT',
@@ -214,7 +231,7 @@ export async function stepRegion(pass: SolvePass, state: RegionState, input: Fra
       });
     } else if (decision === 'blind') {
       skip = true;
-      confidence = 0;
+      confidence = BLIND_CONFIDENCE;
       uncertain = true;
       state.velocity = { x: 0, y: 0 };
       await ctx.diagnostics.emit({
@@ -241,7 +258,7 @@ export async function stepRegion(pass: SolvePass, state: RegionState, input: Fra
         exclude: state.anchor?.id,
         canonical,
       });
-      if (match && !match.ambiguous && match.confidence > .6 && !zoomChange) {
+      if (match && relocalizeVerdict(match, zoomChange)) {
         state.canvasId = resolveTarget(match.keyframe.canvasId);
         const shift = attachmentShift(attachments, match.keyframe.canvasId);
         state.pose = targetPose(match.keyframe, match.offset, shift);
@@ -268,18 +285,14 @@ export async function stepRegion(pass: SolvePass, state: RegionState, input: Fra
         });
       } else {
         // Name the cause: a magnification change is a different pixel grid, not a lost trajectory.
-        const scale = zoomChange
-          ? { scale: scan.field.zoom, error: 0 }
-          : previousGray && !state.blind
-          ? probeScale(previousGray, g, ownFeatures, roi)
-          : undefined;
+        const scale = fragmentCause(zoomChange, scan.field.zoom, previousGray, state.blind, g, ownFeatures, roi);
         state.fragment++;
         state.pose = { x: 0, y: 0 };
         state.lastNode = undefined;
         state.anchor = undefined;
         state.velocity = { x: 0, y: 0 };
         await newCanvas(ctx, state, frame.time);
-        confidence = .20;
+        confidence = FRAGMENT_CONFIDENCE;
         uncertain = true;
         await ctx.diagnostics.emit({
           code: scale ? 'SCALE_CHANGE_FRAGMENT' : 'UNPLACED_FRAGMENT',
@@ -309,7 +322,7 @@ export async function stepRegion(pass: SolvePass, state: RegionState, input: Fra
     state.pose = { x: 0, y: 0 };
     state.lastNode = undefined;
     state.anchor = undefined;
-    confidence = 0;
+    confidence = NONFINITE_CONFIDENCE;
     uncertain = true;
     await newCanvas(ctx, state, frame.time);
   }
@@ -335,7 +348,7 @@ export async function stepRegion(pass: SolvePass, state: RegionState, input: Fra
     votingState.uploaded = true;
     votingState.observed = true;
   }
-  const occlusions = previous && r.kind === 'moving' && (decision === 'tracked' || decision === 'static')
+  const occlusions = previous && occlusionEligible(!!previous, r.kind, decision)
     ? stickyOcclusions(
       previous,
       current,
