@@ -1,0 +1,33 @@
+# Cloudflare Pages and Netlify both read a `_headers` file at the site root with this exact syntax: a path pattern
+# line followed by indented `Header: value` lines, `*` as a greedy wildcard (usable mid-segment, e.g. `*.wasm`,
+# per Netlify's documented `/templates/*.html` example — Cloudflare Pages' docs describe the same splat mechanism
+# and state that headers from every matching rule apply, later values for the same header appending rather than
+# replacing). See https://docs.netlify.com/manage/routing/headers/ and
+# https://developers.cloudflare.com/pages/configuration/headers/.
+#
+# Cross-origin isolation (COOP/COEP/CORP) mirrors main.ts's dev server (createHandler in main.ts) exactly: it is
+# required for SharedArrayBuffer, which the threaded Wasm core needs (src/core/wasm/loader.ts::planCore). Every
+# resource the app loads is same-origin, so these headers cost nothing; without them the app falls back to the
+# single-thread core.
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  Cross-Origin-Resource-Policy: same-origin
+  X-Content-Type-Options: nosniff
+
+# index.html and the (non-production) test harness must always be revalidated so a new deploy is visible on the
+# next load, never served stale from a shared or browser cache.
+/*.html
+  Cache-Control: no-cache
+
+# dist/assets/*.{js,mjs,wasm} are emitted with fixed filenames (scripts/build.ts does not content-hash them), so a
+# redeploy can change their bytes without changing the URL. They can still be cached, but never as `immutable` —
+# always revalidate before reuse.
+/assets/*
+  Cache-Control: public, max-age=3600, must-revalidate
+
+# Belt-and-braces content type for the Wasm core builds: some hosts' built-in MIME inference falls back to
+# application/octet-stream for .wasm, which WebAssembly.instantiateStreaming() refuses to compile from directly.
+/assets/*.wasm
+  Content-Type: application/wasm
+  Cache-Control: public, max-age=3600, must-revalidate

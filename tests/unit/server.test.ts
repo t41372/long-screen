@@ -14,12 +14,14 @@ const get = (path: string, headers: Record<string, string> = {}, method = 'GET')
 Deno.test('server: index, mime types, no-cache and nosniff headers', async () => {
   const index = await get('/');
   assertEquals(index.status, 200);
-  assertEquals(index.headers.get('content-type'), 'text/html; charset=utf-8');
+  // @std/http's serveDir sets the charset param uppercase ("UTF-8", not "utf-8") — an RFC 2046 MIME parameter is
+  // case-insensitive, so this has no behavioural effect on a browser; only the exact string changed.
+  assertEquals(index.headers.get('content-type'), 'text/html; charset=UTF-8');
   assertEquals(index.headers.get('cache-control'), 'no-cache');
   assertEquals(index.headers.get('x-content-type-options'), 'nosniff');
   assert((await index.text()).includes('<title>'));
   const js = await get('/assets/main.js');
-  assertEquals(js.headers.get('content-type'), 'text/javascript; charset=utf-8');
+  assertEquals(js.headers.get('content-type'), 'text/javascript; charset=UTF-8');
   await js.body?.cancel();
   const bin = await get('/data.bin');
   assertEquals(bin.headers.get('content-type'), 'application/octet-stream');
@@ -28,6 +30,24 @@ Deno.test('server: index, mime types, no-cache and nosniff headers', async () =>
   const empty = await get('/empty.txt');
   assertEquals(empty.status, 200);
   assertEquals(empty.headers.get('content-length'), '0');
+});
+// FIX6 regression: `serveDir` only attaches its `headers` option to a fresh (200/206) response — a conditional GET
+// it answers with 304 Not Modified carries none of them. A COEP subresource (e.g. the RPC worker script) revalidated
+// by the browser after a page reload then arrives without cross-origin-resource-policy, which WebKit's
+// `require-corp` embedder policy treats as an absent CORP header and refuses to load — this silently broke
+// tests/browser/private.test.ts, whose WebKit Private Browsing download flow reloads the page after the first
+// blob: export and re-fetches the already-cached worker.js.
+Deno.test('server: a 304 Not Modified answer still carries COOP/COEP/CORP and nosniff, not just a fresh 200', async () => {
+  const fresh = await get('/assets/main.js');
+  const etag = fresh.headers.get('etag');
+  assert(etag, 'the file server must emit an ETag for conditional requests to revalidate against');
+  await fresh.body?.cancel();
+  const revalidated = await get('/assets/main.js', { 'if-none-match': etag });
+  assertEquals(revalidated.status, 304);
+  assertEquals(revalidated.headers.get('cross-origin-opener-policy'), 'same-origin');
+  assertEquals(revalidated.headers.get('cross-origin-embedder-policy'), 'require-corp');
+  assertEquals(revalidated.headers.get('cross-origin-resource-policy'), 'same-origin');
+  assertEquals(revalidated.headers.get('x-content-type-options'), 'nosniff');
 });
 Deno.test('server: byte ranges for large video files, including suffix and open-ended ranges', async () => {
   const part = await get('/data.bin', { range: 'bytes=10-19' });
@@ -45,8 +65,12 @@ Deno.test('server: byte ranges for large video files, including suffix and open-
   await clipped.body?.cancel();
   const bad = await get('/data.bin', { range: 'bytes=2000-3000' });
   assertEquals(bad.status, 416);
+  // @std/http's serveFile deliberately ignores Range on HEAD requests (it returns the full Content-Length with
+  // status 200 either way) — real range-seeking always goes through GET, so this only affects a HEAD-with-Range
+  // probe, which the old hand-written handler answered but this one, like most static file servers, does not.
   const head = await get('/data.bin', { range: 'bytes=0-1' }, 'HEAD');
-  assertEquals(head.status, 206);
+  assertEquals(head.status, 200);
+  assertEquals(head.headers.get('content-length'), '1000');
   assertEquals(head.body, null);
 });
 Deno.test('server: traversal, missing files, directories, methods, bad encoding and mounts', async () => {
@@ -54,13 +78,19 @@ Deno.test('server: traversal, missing files, directories, methods, bad encoding 
   assertEquals((await get('/%2e%2e/%2e%2e/etc/passwd')).status, 404);
   assertEquals((await handler(new Request('http://localhost/x', { headers: { range: 'bytes=0-1' } }))).status, 404);
   assertEquals((await get('/missing.txt')).status, 404);
-  assertEquals((await get('/assets')).status, 404);
+  // A bare directory path (no trailing slash, e.g. "/assets") gets a 301 to the slash-terminated form — standard
+  // static-file-server behaviour (and what @std/http's serveDir does); the old hand-written handler had no
+  // redirect and 404'd here instead. "/assets/" itself still 404s: no index.html in that directory and directory
+  // listing is off.
+  const bareDir = await get('/assets');
+  assertEquals(bareDir.status, 301);
+  await bareDir.body?.cancel();
   assertEquals((await get('/assets/')).status, 404);
   assertEquals((await get('/', {}, 'POST')).status, 405);
   assertEquals((await get('/%zz')).status, 400);
   const mounted = await get('/fixtures/f.json');
   assertEquals(mounted.status, 200);
-  assertEquals(mounted.headers.get('content-type'), 'application/json');
+  assertEquals(mounted.headers.get('content-type'), 'application/json; charset=UTF-8');
   await mounted.body?.cancel();
   assertEquals((await get('/fixtures/../index.html')).status, 200);
 });

@@ -76,6 +76,8 @@
         <p>需要 IndexedDB、OffscreenCanvas、CompressionStream。本机开发可直接用 HTTP localhost，无需证书；手机访问局域网 HTTP 时可选择近似 seek 测试，但可能漏帧。浏览器通常只在 localhost 或 HTTPS 开放 WebCodecs 精确解码与磁盘导出接口，这与上传无关。精确解码还需要设备支持相应 codec；MP4/MOV/WebM 容器不等于设备能解码其所有编码。</p>
         <h3>怎么得到更好的结果？</h3>
         <p>保留足够重叠；遇到低纹理区域稍慢移动。多个 pane 或悬浮层识别不准时，用“独立运动区域”手动画出区域再处理。所有诊断可从完整项目导出。</p>
+        <h3>开源授权</h3>
+        <p>本项目自身代码之外，Wasm 核心与前端资源中打包的第三方依赖及其许可见 <a href="./THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener">开源授权说明</a>（构建时生成）。</p>
       </div>
     </dialog>
     <dialog id="regions-dialog"

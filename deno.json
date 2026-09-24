@@ -4,7 +4,8 @@
   "exports": "./main.ts",
   "tasks": {
     "build:core": "bash scripts/build-core.sh",
-    "build": "deno run --allow-read --allow-write --allow-run --allow-env scripts/build.ts",
+    "build": "deno run --allow-read --allow-write --allow-run --allow-env --allow-net=jsr.io,api.jsr.io scripts/build.ts",
+    "build:prod": "deno run --allow-read --allow-write --allow-run --allow-env --allow-net=jsr.io,api.jsr.io scripts/build.ts --production",
     "start": "deno run --allow-read --allow-net --allow-run --allow-env --allow-write main.ts",
     "dev": "deno task build && deno task start",
     "check": "deno check src/**/*.ts main.ts scripts/**/*.ts tests/**/*.ts",
@@ -52,6 +53,7 @@
     "@std/assert": "jsr:@std/assert@1",
     "@std/path": "jsr:@std/path@1",
     "@std/fs": "jsr:@std/fs@1",
+    "@std/http": "jsr:@std/http@1",
     "playwright": "npm:playwright@1.58.2"
   }
 }

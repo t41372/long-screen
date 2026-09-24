@@ -1,22 +1,20 @@
-/** Static file server for the built app. Range requests, correct MIME types, no caching, no upload endpoint. */
-import { extname, fromFileUrl, join, normalize, resolve, SEPARATOR } from '@std/path';
-const MIME: Record<string, string> = {
-  '.html': 'text/html; charset=utf-8',
-  '.js': 'text/javascript; charset=utf-8',
-  '.mjs': 'text/javascript; charset=utf-8',
-  '.css': 'text/css; charset=utf-8',
-  '.json': 'application/json',
-  '.svg': 'image/svg+xml',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.mp4': 'video/mp4',
-  '.mov': 'video/quicktime',
-  '.webm': 'video/webm',
-  '.map': 'application/json',
-  '.txt': 'text/plain; charset=utf-8',
-  '.wasm': 'application/wasm',
-  '.zip': 'application/zip',
-};
+/** Static file server for the built app: delegates to @std/http's `serveDir` for MIME types, range requests and
+ *  directory-index handling (one well-known implementation instead of a hand-rolled one), but keeps its own
+ *  realpath containment pre-check in front of it — `serveDir`'s own traversal guard is string-based, so a symlink
+ *  that sits inside `root`/a mount but resolves outside it would otherwise be served (see tests/unit/server.test.ts's
+ *  symlink test, which this preserves). No caching, no upload endpoint. */
+import { serveDir } from '@std/http/file-server';
+import { fromFileUrl, join, normalize, resolve, SEPARATOR } from '@std/path';
+// Cross-origin isolation grants SharedArrayBuffer, which the threaded core needs (src/core/wasm/loader.ts::planCore).
+// Everything the app loads is same-origin, so these cost nothing; without them the single-thread core runs. Mirrored
+// exactly in static/_headers for hosted deploys (Cloudflare Pages / Netlify).
+const RESPONSE_HEADERS = [
+  'cross-origin-opener-policy: same-origin',
+  'cross-origin-embedder-policy: require-corp',
+  'cross-origin-resource-policy: same-origin',
+  'cache-control: no-cache',
+  'x-content-type-options: nosniff',
+];
 export interface ServerOptions {
   /** Directory to serve. */
   root: string;
@@ -49,93 +47,53 @@ export function createHandler(options: ServerOptions): (request: Request) => Pro
     } catch {
       return new Response('Bad request', { status: 400 });
     }
-    let base = root, relative = pathname === '/' ? 'index.html' : pathname.slice(1);
+    let base = root, relative = pathname === '/' ? '' : pathname.slice(1), urlRoot = '';
     for (const [prefix, dir] of mounts) {
       if (pathname.startsWith(prefix)) {
         base = dir;
         relative = pathname.slice(prefix.length);
+        urlRoot = prefix.replace(/^\/|\/$/g, '');
         break;
       }
     }
-    const filename = normalize(join(base, relative));
-    if (filename !== base && !filename.startsWith(base + SEPARATOR)) {
+    // Containment pre-check: resolve symlinks before comparing, so a symlink inside `base` that points outside it
+    // is rejected here rather than followed by `serveDir` below (see the module comment). A target that doesn't
+    // exist yet (typo'd path, genuinely missing file) isn't a containment problem — let `serveDir` report the 404.
+    const target = relative === '' ? base : normalize(join(base, relative));
+    if (target !== base && !target.startsWith(base + SEPARATOR)) {
       return new Response('Forbidden', { status: 403 });
     }
-    let real: string;
-    try {
-      real = await Deno.realPath(filename);
-    } catch {
-      return new Response('Not found', { status: 404 });
+    const real = await Deno.realPath(target).catch(() => undefined);
+    if (real !== undefined) {
+      const realBase = await realBaseOf(base);
+      if (real !== realBase && !real.startsWith(realBase + SEPARATOR)) {
+        return new Response('Forbidden', { status: 403 });
+      }
     }
-    const realBase = await realBaseOf(base);
-    if (real !== realBase && !real.startsWith(realBase + SEPARATOR)) {
-      return new Response('Forbidden', { status: 403 });
-    }
-    let info: Deno.FileInfo;
-    try {
-      info = await Deno.stat(real);
-    } catch {
-      return new Response('Not found', { status: 404 });
-    }
-    if (!info.isFile) {
-      return new Response('Not found', { status: 404 });
-    }
-    const headers = new Headers({
-      'content-type': MIME[extname(filename)] || 'application/octet-stream',
-      'cache-control': 'no-cache',
-      'x-content-type-options': 'nosniff',
-      'accept-ranges': 'bytes',
-      // Cross-origin isolation grants SharedArrayBuffer, which the threaded core needs (src/core/wasm/loader.ts::planCore).
-      // Everything the app loads is same-origin, so these cost nothing; without them the single-thread core runs.
-      'cross-origin-opener-policy': 'same-origin',
-      'cross-origin-embedder-policy': 'require-corp',
-      'cross-origin-resource-policy': 'same-origin',
+    const response = await serveDir(request, {
+      fsRoot: base,
+      urlRoot,
+      showDirListing: false,
+      showDotfiles: false,
+      showIndex: true,
+      quiet: true,
+      headers: RESPONSE_HEADERS,
     });
-    const range = request.headers.get('range')?.match(/^bytes=(\d*)-(\d*)$/);
-    let start = 0, end = info.size - 1;
-    if (range && (range[1] || range[2])) {
-      if (range[1]) {
-        start = Number(range[1]);
-      }
-      if (range[2]) {
-        end = Math.min(info.size - 1, Number(range[2]));
-      }
-      if (!range[1] && range[2]) {
-        start = Math.max(0, info.size - Number(range[2]));
-        end = info.size - 1;
-      }
-      if (start > end || start >= info.size) {
-        return new Response(null, { status: 416, headers: { 'content-range': `bytes */${info.size}` } });
-      }
-      headers.set('content-range', `bytes ${start}-${end}/${info.size}`);
+    // `serveDir`'s own `headers` option is only applied to a fresh (200/206) response body — a conditional GET it
+    // answers with 304 Not Modified carries none of them (and that response's Headers object, like a redirect's,
+    // is immutable — it must be rebuilt, not patched in place). A worker script (or any COEP subresource)
+    // revalidated by the browser then arrives without cross-origin-resource-policy, which WebKit's `require-corp`
+    // document policy treats as an absent CORP header and refuses to load: this is exactly what happens when a page
+    // reloads (e.g. WebKit's Private Browsing download flow reloads the page after a blob: download) and re-fetches
+    // an already-cached `assets/worker.js` — the reload's Worker constructor throws "blocked by
+    // Cross-Origin-Embedder-Policy" although the identical resource loaded fine moments earlier. Reattaching the
+    // headers here, unconditionally, covers every status `serveDir` can return (304, 301, 404... included).
+    const headers = new Headers(response.headers);
+    for (const header of RESPONSE_HEADERS) {
+      const i = header.indexOf(':');
+      headers.set(header.slice(0, i).trim(), header.slice(i + 1).trim());
     }
-    const length = info.size ? end - start + 1 : 0;
-    headers.set('content-length', String(length));
-    const status = range && (range[1] || range[2]) ? 206 : 200;
-    if (request.method === 'HEAD' || length === 0) {
-      return new Response(null, { status, headers });
-    }
-    const file = await Deno.open(real, { read: true });
-    if (start) {
-      await file.seek(start, Deno.SeekMode.Start);
-    }
-    let remaining = length;
-    const body = file.readable.pipeThrough(
-      new TransformStream<Uint8Array, Uint8Array>({
-        transform(chunk, controller) {
-          if (remaining <= 0) {
-            return;
-          }
-          const part = chunk.length > remaining ? chunk.subarray(0, remaining) : chunk;
-          remaining -= part.length;
-          controller.enqueue(part);
-          if (remaining <= 0) {
-            controller.terminate();
-          }
-        },
-      }),
-    );
-    return new Response(body, { status, headers });
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
   };
 }
 /** Newest mtime of a file under `dir` whose name ends in one of `extensions`, recursively (default: the TS/HTML/CSS
@@ -217,7 +175,15 @@ export async function isDistStale(root: string, distRoot: string): Promise<{ sta
  *  `build` task (kept in sync by hand — deno.json is out of scope for this change). */
 export async function runBuild(root: string): Promise<number> {
   const result = await new Deno.Command(Deno.execPath(), {
-    args: ['run', '--allow-read', '--allow-write', '--allow-run', '--allow-env', join(root, 'scripts/build.ts')],
+    args: [
+      'run',
+      '--allow-read',
+      '--allow-write',
+      '--allow-run',
+      '--allow-env',
+      '--allow-net=jsr.io,api.jsr.io',
+      join(root, 'scripts/build.ts'),
+    ],
     cwd: root,
     stdout: 'inherit',
     stderr: 'inherit',
