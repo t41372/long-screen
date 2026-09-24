@@ -1,7 +1,12 @@
 import { assert, assertEquals } from '@std/assert';
-import { buildScenario } from '../../src/synthetic/scenarios.ts';
+import { fromFileUrl } from '@std/path';
+import { buildScenario, SCENARIO_NAMES } from '../../src/synthetic/scenarios.ts';
 import { renderFrame } from '../../src/synthetic/world.ts';
 import type { Settings } from '../../src/types.ts';
+/** Every scenario checkScenario() can run: the named catalogue plus the one extra fixture-file-backed scenario
+ *  ('fixture', not in SCENARIO_NAMES). registerShard() below derives each shard from this single list, so it and
+ *  scripts/fingerprint-scenarios.ts always traverse exactly the same set in the same order. */
+export const SCENARIO_CATALOGUE: readonly string[] = [...SCENARIO_NAMES, 'fixture'];
 import type { FragmentReport } from '../../src/synthetic/verify.ts';
 import { type RunResult, runScenario, verifyCanvasAccounting, verifyFixed, verifyLayer } from './run.ts';
 export interface ScenarioReport {
@@ -38,7 +43,7 @@ export interface ScenarioReport {
 }
 /** Runs a named scenario through the real engine and asserts its ground-truth invariants. */
 export async function checkScenario(name: string, settings: Partial<Settings> = {}): Promise<ScenarioReport> {
-  const scenario = buildScenario(name), result = await runScenario(scenario, settings), e = scenario.expect;
+  const scenario = buildScenario(name), result = await runScenario(scenario, { ...scenario.settings, ...settings }), e = scenario.expect;
   assertEquals(result.project.status, e.status, `${name}: status ${result.project.status} (${result.project.error ?? ''})`);
   if (e.frames !== undefined) {
     assertEquals(result.project.renderedFrames, e.frames, `${name}: rendered frames`);
@@ -260,4 +265,73 @@ export async function writeReport(reports: ScenarioReport[], file: string): Prom
       2,
     ),
   );
+}
+const SHARD_COUNT = 4;
+/** Report-file label for shard index 0..SHARD_COUNT-1, in order — derived alongside the index in registerShard()
+ *  below so a shard's number, its scenario slice and its report label can never drift apart from each other. */
+const SHARD_LABELS = ['a', 'b', 'c', 'd'] as const;
+if (SHARD_LABELS.length !== SHARD_COUNT) {
+  throw new Error(`SHARD_LABELS has ${SHARD_LABELS.length} entries but SHARD_COUNT is ${SHARD_COUNT}`);
+}
+/** A deterministic, order-preserving slice of the catalogue: shard `index` of `count` gets
+ *  SCENARIO_CATALOGUE[floor(n·index/count) .. floor(n·(index+1)/count)). Every entry lands in exactly one shard by
+ *  construction, for any `count` that evenly (or near-evenly) divides the catalogue. */
+function shardSlice(index: number, count: number): readonly string[] {
+  const n = SCENARIO_CATALOGUE.length;
+  const start = Math.floor(n * index / count), end = Math.floor(n * (index + 1) / count);
+  return SCENARIO_CATALOGUE.slice(start, end);
+}
+// Self-check, run once at import time (pure and cheap — no dependency on the other shard files having run, which
+// matters under `deno test --parallel`'s per-file process isolation). Two independent things are checked: (1) the
+// floor(n·i/c) arithmetic is a true partition of SCENARIO_CATALOGUE for SHARD_COUNT shards — catches the catalogue
+// changing under a stale SHARD_COUNT; (2) tests/unit contains exactly the files scenarios-1.test.ts..
+// scenarios-SHARD_COUNT.test.ts — catches a shard file added, removed or duplicated (registerShard() below derives
+// each file's own shard index from its filename, so (1) alone can no longer catch that: every index it can ever
+// see is a real, distinct index by construction, whether or not the right set of files registered it).
+(() => {
+  const seen = new Map<string, number>();
+  for (let i = 0; i < SHARD_COUNT; i++) {
+    for (const name of shardSlice(i, SHARD_COUNT)) seen.set(name, (seen.get(name) ?? 0) + 1);
+  }
+  const missing = SCENARIO_CATALOGUE.filter((name) => !seen.has(name));
+  const duplicated = [...seen].filter(([, count]) => count > 1).map(([name]) => name);
+  if (missing.length || duplicated.length) {
+    throw new Error(`scenario shard partition is broken: missing=[${missing.join(',')}] duplicated=[${duplicated.join(',')}]`);
+  }
+  const dir = fromFileUrl(new URL('../unit/', import.meta.url));
+  const expected = new Set(Array.from({ length: SHARD_COUNT }, (_, i) => `scenarios-${i + 1}.test.ts`));
+  const found = new Set<string>();
+  for (const entry of Deno.readDirSync(dir)) {
+    if (/^scenarios-\d+\.test\.ts$/.test(entry.name)) found.add(entry.name);
+  }
+  const extra = [...found].filter((f) => !expected.has(f));
+  const absent = [...expected].filter((f) => !found.has(f));
+  if (extra.length || absent.length) {
+    throw new Error(
+      `tests/unit scenario shard files don't match SHARD_COUNT=${SHARD_COUNT}: missing=[${absent.join(',')}] extra=[${extra.join(',')}]`,
+    );
+  }
+})();
+/** Registers one Deno.test per scenario in the shard whose number is parsed out of `callerUrl` (the registering
+ *  test file's own import.meta.url, e.g. ".../tests/unit/scenarios-3.test.ts" → shard index 2), plus a final
+ *  "write report" test persisting test-results/scenarios-<label>.json. Deriving the index from the caller's own
+ *  filename (instead of a hand-passed index/count pair) means a shard file can no longer register the wrong slice,
+ *  duplicate another file's slice, or use a stale `count` — the self-check above then only has to confirm the set
+ *  of files is exactly scenarios-1..SHARD_COUNT. */
+export function registerShard(callerUrl: string): void {
+  const match = /scenarios-(\d+)\.test\.ts$/.exec(callerUrl);
+  const n = match ? Number(match[1]) : NaN;
+  if (!Number.isInteger(n) || n < 1 || n > SHARD_COUNT) {
+    throw new Error(`registerShard: caller ${callerUrl} is not one of tests/unit/scenarios-1..${SHARD_COUNT}.test.ts`);
+  }
+  const index = n - 1, label = SHARD_LABELS[index];
+  const names = shardSlice(index, SHARD_COUNT), reports: ScenarioReport[] = [];
+  for (const name of names) {
+    Deno.test(`scenario ${name}: exact placement, pixel identity, coverage set equality, fragments and diagnostics`, async () => {
+      reports.push(await checkScenario(name));
+    });
+  }
+  Deno.test(`scenario group ${label}: write report`, async () => {
+    await writeReport(reports, `scenarios-${label}.json`);
+  });
 }

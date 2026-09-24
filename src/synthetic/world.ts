@@ -1,4 +1,4 @@
-import type { Point, Rect, RGBA } from '../types.ts';
+import type { Point, Rect, RGBA, Settings } from '../types.ts';
 import { rng } from '../core/math.ts';
 export type RGB = [number, number, number];
 /** A lossless procedural page. Every pixel is known, so reconstructions can be checked for identity, not similarity. */
@@ -244,6 +244,10 @@ export interface Scenario {
   frames: { time: number; duration: number; width?: number; height?: number }[];
   background: RGB;
   expect: Expectations;
+  /** Engine settings overrides this scenario's checkScenario() run must apply (e.g. a non-default analysisSize
+   *  needed to hit a declared `expect.factor`), so the catalogue stays the single source of truth instead of the
+   *  override living at each individual test-file call site. */
+  settings?: Partial<Settings>;
 }
 export interface Expectations {
   /** Expected number of unplaced fragments per layer id (0 = one continuous canvas). */

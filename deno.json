@@ -7,13 +7,20 @@
     "build": "deno run --allow-read --allow-write --allow-run --allow-env scripts/build.ts",
     "start": "deno run --allow-read --allow-net --allow-run --allow-env --allow-write main.ts",
     "dev": "deno task build && deno task start",
-    "check": "deno check src/**/*.ts main.ts scripts/*.ts tests/**/*.ts",
-    "test": "deno test --allow-read --allow-write --allow-env tests/unit",
+    "check": "deno check src/**/*.ts main.ts scripts/**/*.ts tests/**/*.ts",
+    "test": {
+      "command": "deno test --allow-read --allow-write --allow-env --parallel tests/unit",
+      "dependencies": ["build:core"]
+    },
     "test:browser": "deno test --allow-all tests/browser",
-    "coverage": "deno run --allow-read --allow-write --allow-run --allow-env scripts/coverage.ts",
+    "coverage": {
+      "command": "deno run --allow-read --allow-write --allow-run --allow-env scripts/coverage.ts",
+      "dependencies": ["build:core"]
+    },
     "fixtures": "deno run --allow-read --allow-write --allow-run --allow-env scripts/make-fixtures.ts",
     "fmt": "deno fmt src main.ts scripts tests",
-    "lint": "deno lint src main.ts scripts tests"
+    "lint": "deno lint src main.ts scripts tests",
+    "fingerprint": "deno run -A scripts/fingerprint-scenarios.ts"
   },
   "compilerOptions": {
     "lib": [

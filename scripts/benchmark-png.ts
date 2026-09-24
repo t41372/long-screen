@@ -1,9 +1,15 @@
 import { resolve, toFileUrl } from '@std/path';
+import '../tests/support/core.ts';
 import { decodePNG, encodeRGBA } from '../src/codec/png.ts';
 
 // Usage: deno run --allow-read scripts/benchmark-png.ts <baseline checkout>
 const baseline = Deno.args[0];
 if (!baseline) throw new Error('Provide a baseline checkout to compare the exact same encoded tile bytes.');
+// The baseline checkout's decodePNG calls into ITS OWN src/core/wasm.ts core singleton — a distinct module
+// instance from the one this tree's '../tests/support/core.ts' import above loaded, since Deno's module cache
+// keys on the resolved file URL, not the module's relative path. Without loading the baseline's own core.ts first,
+// the baseline decodePNG throws CORE_NOT_LOADED.
+await import(toFileUrl(resolve(baseline, 'tests/support/core.ts')).href);
 const before = (await import(toFileUrl(resolve(baseline, 'src/codec/png.ts')).href)).decodePNG as typeof decodePNG;
 const size = 512, pixels = new Uint8ClampedArray(size * size * 4);
 let seed = 17;

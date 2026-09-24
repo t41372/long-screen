@@ -17,8 +17,6 @@ for (const arg of args) {
   cores.push([label, await Core.instantiate(await Deno.readFile(path))]);
 }
 const W = 1418, H = 1590, F = 3, AW = Math.ceil(W / F), AH = Math.ceil(H / F);
-let seed = 0x1234567;
-const rnd = () => (seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296;
 const frame = (shift: number): RGBA => {
   const data = new Uint8ClampedArray(W * H * 4);
   for (let y = 0; y < H; y++) {

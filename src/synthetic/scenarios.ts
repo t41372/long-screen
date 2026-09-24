@@ -689,6 +689,8 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           factor: 4,
           diagnostics: { present: ['ANALYSIS_PYRAMID'], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
+        // Must run at analysisSize 480 to hit factor 4 (the default 640 gives factor 3); see the description above.
+        settings: { analysisSize: 480 },
       };
     }
     case 'geometry-change': {

@@ -256,3 +256,12 @@ Deno.test('diagnostics: flush() keeps pending rows queued (not lost) when the un
     'the retried flush must still carry the rows the failed attempt lost from the journal',
   );
 });
+// Moved from takeover.test.ts (redistributed by subject: TileStore budget/eviction belongs with storage).
+Deno.test('takeover: render cache rebalance avoids a viewport-sized cyclic eviction trap without an unbounded cache', async () => {
+  const tiles = new TileStore(new MemoryKV(), 512, 128), before = tiles.maxTiles;
+  tiles.configureBudget(128, 3456 * 2234 * 5 + 16 * 1024 * 1024);
+  assert(tiles.maxTiles > before);
+  for (let i = 0; i < tiles.maxTiles + 3; i++) await tiles.get('c', i, 0);
+  assertEquals(tiles.peakResidentTiles, tiles.maxTiles);
+  assertEquals(tiles.evictions, 3);
+});
