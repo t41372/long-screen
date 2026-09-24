@@ -1,4 +1,5 @@
 import { assert, assertEquals } from '@std/assert';
+import { unzipSync } from 'fflate';
 import { harness, root } from './support.ts';
 import { decodePNG } from '../../src/codec/png.ts';
 import '../support/core.ts';
@@ -8,20 +9,12 @@ import '../support/core.ts';
 // src/export/project.ts's 'sheets' layout). Failure modes: a ZIP or sheets instead of one image, an image of a
 // different size than the canvas, a generic file name, a clipboard write that silently does nothing, the copy
 // leaving the panel disabled, or "分页导出" producing something other than a ZIP with at least one PNG and a manifest.
-/** Entry names from a ZIP64 archive's central directory (same approach as tests/unit/export.test.ts's zipEntries,
- *  duplicated here since browser tests don't share unit test helpers). */
+/** Entry names from a ZIP archive's central directory, read with a real reader (fflate, same approach as
+ *  tests/unit/export.test.ts's zipEntries, duplicated here since browser tests don't share unit test helpers) —
+ *  client-zip only emits ZIP64 records when the archive actually needs them, so a fixed-offset ZIP64 EOCD reader
+ *  is no longer a safe assumption for a small test archive like this one's. */
 function zipEntries(bytes: Uint8Array): string[] {
-  const names: string[] = [], view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const at = Number(view.getBigUint64(bytes.length - 34, true)),
-    cd = Number(view.getBigUint64(at + 48, true)),
-    count = Number(view.getBigUint64(at + 32, true));
-  let p = cd;
-  for (let i = 0; i < count; i++) {
-    const n = view.getUint16(p + 28, true), extra = view.getUint16(p + 30, true), comment = view.getUint16(p + 32, true);
-    names.push(new TextDecoder().decode(bytes.subarray(p + 46, p + 46 + n)));
-    p += 46 + n + extra + comment;
-  }
-  return names;
+  return Object.keys(unzipSync(bytes));
 }
 Deno.test({
   name: 'browser UI: download gives one PNG of the whole canvas, copy puts the same image on the clipboard',
@@ -67,6 +60,9 @@ Deno.test({
       assert(await page.isVisible('#export-project'));
       // "分页导出" is the explicit paged-sheets entry point: a ZIP with at least one native-size PNG and a manifest.
       await page.waitForFunction('!document.querySelector("#export-sheets").disabled', null, { timeout: 30000 });
+      // Real-browser throughput of the client-zip-backed writer (src/export/zip.ts), not a pass/fail assertion —
+      // informational only, for the before/after comparison in the R3-6 report.
+      const zipStarted = performance.now();
       const [sheetsDownload] = await Promise.all([
         page.waitForEvent('download', { timeout: 180000 }),
         page.click('#export-sheets'),
@@ -74,6 +70,12 @@ Deno.test({
       assertEquals(sheetsDownload.suggestedFilename(), 'long-screen-sheets.zip');
       const sheetsPath = `${root}test-results/export-ui-sheets.zip`;
       await sheetsDownload.saveAs(sheetsPath);
+      const zipMS = performance.now() - zipStarted, zipMiB = (await Deno.stat(sheetsPath)).size / (1024 * 1024);
+      console.log(
+        `export-ui: sheets ZIP ${zipMiB.toFixed(2)} MiB in ${zipMS.toFixed(0)} ms (${
+          (zipMS / zipMiB).toFixed(2)
+        } ms/MiB, click-to-download)`,
+      );
       const sheetsNames = zipEntries(await Deno.readFile(sheetsPath));
       assert(sheetsNames.includes('manifest.json'), sheetsNames.join(','));
       assert(sheetsNames.filter((n) => n.endsWith('.png')).length >= 1, sheetsNames.join(','));

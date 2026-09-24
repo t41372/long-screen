@@ -1,7 +1,7 @@
 import { assert, assertEquals } from '@std/assert';
 import { fromFileUrl } from '@std/path';
 import { buildScenario, SCENARIO_NAMES } from '../../src/synthetic/scenarios.ts';
-import { renderFrame } from '../../src/synthetic/world.ts';
+import { renderFrame, type Scenario } from '../../src/synthetic/world.ts';
 import type { Settings } from '../../src/types.ts';
 /** Every scenario checkScenario() can run: the named catalogue plus the one extra fixture-file-backed scenario
  *  ('fixture', not in SCENARIO_NAMES). registerShard() below derives each shard from this single list, so it and
@@ -43,7 +43,16 @@ export interface ScenarioReport {
 }
 /** Runs a named scenario through the real engine and asserts its ground-truth invariants. */
 export async function checkScenario(name: string, settings: Partial<Settings> = {}): Promise<ScenarioReport> {
-  const scenario = buildScenario(name), result = await runScenario(scenario, { ...scenario.settings, ...settings }), e = scenario.expect;
+  const scenario = buildScenario(name), result = await runScenario(scenario, { ...scenario.settings, ...settings });
+  try {
+    return await checkResult(name, scenario, result);
+  } finally {
+    // result.atlas (src/core/layers.ts's RegionAtlas) owns a core-resident buffer that nothing else frees.
+    result.dispose();
+  }
+}
+async function checkResult(name: string, scenario: Scenario, result: RunResult): Promise<ScenarioReport> {
+  const e = scenario.expect;
   assertEquals(result.project.status, e.status, `${name}: status ${result.project.status} (${result.project.error ?? ''})`);
   if (e.frames !== undefined) {
     assertEquals(result.project.renderedFrames, e.frames, `${name}: rendered frames`);

@@ -54,6 +54,8 @@
     "@std/path": "jsr:@std/path@1",
     "@std/fs": "jsr:@std/fs@1",
     "@std/http": "jsr:@std/http@1",
-    "playwright": "npm:playwright@1.58.2"
+    "playwright": "npm:playwright@1.58.2",
+    "client-zip": "npm:client-zip@2.5.1",
+    "fflate": "npm:fflate@0.8.3"
   }
 }

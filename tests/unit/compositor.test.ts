@@ -53,13 +53,15 @@ function makeMeta(): CanvasMeta {
 function place(x: number, y: number, confidence: number, overrides: Partial<Placement> = {}): Placement {
   return { layer: 'r', canvasId: 'c', node: 'n', x, y, confidence, uncertain: false, time: 0, ...overrides };
 }
+// atlas (src/core/layers.ts's RegionAtlas) owns a core-resident buffer nothing else frees; callers that want to
+// clean it up (test hygiene — no assertion depends on this) can call the returned dispose().
 function setup(regions: Region[], width: number, height: number, tileSize = 32, policy: 'stable' | 'latest' = 'stable') {
   const db = new MemoryKV(), tiles = new TileStore(db, tileSize, 8), diagnostics: Diagnostic[] = [];
   const atlas = new RegionAtlas(regions, width, height);
   const compositor = new Compositor(db, tiles, policy, async (d) => {
     diagnostics.push(d);
   }, atlas);
-  return { db, tiles, atlas, compositor, diagnostics };
+  return { db, tiles, atlas, compositor, diagnostics, dispose: () => atlas.dispose() };
 }
 const B = QUALITY_BLOCK;
 Deno.test('compositor: an 8px-wide pane upgrades pixels/quality/owner on a higher-confidence pass (F8)', async () => {

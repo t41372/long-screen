@@ -1,4 +1,5 @@
 import { assert, assertEquals } from '@std/assert';
+import { unzipSync } from 'fflate';
 import { harness } from './support.ts';
 import { decodePNG } from '../../src/codec/png.ts';
 // decodePNG runs its scanline filters in the Rust core, so this Deno process loads it too (as the unit tests do).
@@ -100,7 +101,10 @@ Deno.test({
       await download.saveAs(path);
       const bytes = await Deno.readFile(path), view = new DataView(bytes.buffer);
       assertEquals(view.getUint32(bytes.length - 22, true), 0x06054b50);
-      const at = Number(view.getBigUint64(bytes.length - 34, true)), count = Number(view.getBigUint64(at + 32, true));
+      // Read with a real unzip implementation (fflate), not a hand-decoded ZIP64 end record: client-zip (this
+      // round's src/export/zip.ts) only emits ZIP64 fields when the archive actually needs them, so a fixed-offset
+      // ZIP64 EOCD locator is no longer a safe assumption for every export this button can produce.
+      const count = Object.keys(unzipSync(bytes)).length;
       assert(count > 20, `zip entries ${count}`);
       await page.setViewportSize({ width: 390, height: 844 });
       await page.waitForTimeout(300);

@@ -1,6 +1,5 @@
 import type { MediaInfo, RGBA } from '../types.ts';
 import { core } from '../core/wasm.ts';
-import { frameToRGBA as coreFrameToRGBA } from '../core/wasm/raster.ts';
 import { copyFrameToRGBA, RGBA_COPY_OPTIONS } from './rgba-copy.ts';
 import { BufferPool, type PooledRGBA } from './pool.ts';
 /** Converts one decoded VideoFrame into plain RGBA (applying container rotation). Injected so the decoding pipeline is testable without a canvas. */
@@ -134,7 +133,7 @@ export function planarConverter(
       busy = true;
       const planes = own ? new Uint8Array(scratch!, 0, size) : new Uint8Array(size), layout = await frame.copyTo(planes);
       image = pool.take(width, height);
-      coreFrameToRGBA(core(), planes, format, layout, width, height, matrix, image.data);
+      core().frameToRGBA(planes, format, layout, width, height, matrix, image.data);
     } catch (error) {
       image?.release();
       if (planar) throw error;

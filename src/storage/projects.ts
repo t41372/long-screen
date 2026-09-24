@@ -3,7 +3,7 @@
  *  history/open/delete handlers and device-check.ts's cleanup — goes through here, so the three key families can
  *  never drift out of sync again (a hand-rolled delete that forgets `project-index/` or `project/` leaves a ghost
  *  entry in the app's history forever, since neither key family is ever swept independently).
- *  Key shapes must stay byte-identical to src/pipeline/engine.ts persist() (`project/${id}`,
+ *  Key shapes must stay byte-identical to src/pipeline/context.ts persist() (`project/${id}`,
  *  `project-index/${created}/${id}`) and to the `run/${id}/` namespace Engine opens its store under — this module
  *  does not replace that write path, only mirrors its layout for reads and deletes. */
 import type { KV, Row } from './db.ts';
@@ -51,9 +51,10 @@ export async function listProjects(db: KV, options: { after?: string; limit?: nu
 }
 
 /** Deletes all three key families a project can own: the `run/<id>/` namespace (canvases, tiles, diagnostics —
- *  everything Engine.persist() and the tile/diagnostic writers put under it), the `project/<id>` record, and the
- *  `project-index/<created>/<id>` history row. Deleting only `run/<id>/` (the previous device-check.ts behaviour)
- *  leaves `project/<id>` and `project-index/<created>/<id>` behind: an empty project that still shows up in history. */
+ *  everything Context.persist() (src/pipeline/context.ts) and the tile/diagnostic writers put under it), the
+ *  `project/<id>` record, and the `project-index/<created>/<id>` history row. Deleting only `run/<id>/` (the
+ *  previous device-check.ts behaviour) leaves `project/<id>` and `project-index/<created>/<id>` behind: an empty
+ *  project that still shows up in history. */
 export async function deleteProject(db: KV, id: string): Promise<void> {
   const project = await db.get<Project>(projectKey(id));
   await deletePrefix(db, runPrefix(id));

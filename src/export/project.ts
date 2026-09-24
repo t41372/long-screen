@@ -36,7 +36,7 @@ export async function exportProject(
   onProgress: (message: string, fraction: number) => void,
   handle?: FileSystemFileHandle,
 ): Promise<ExportResult> {
-  const target = await createTarget('long-screen-project.zip', handle), zip = new ZipWriter(target.sink, db), canvases: CanvasMeta[] = [];
+  const target = await createTarget('long-screen-project.zip', handle), zip = new ZipWriter(target.sink), canvases: CanvasMeta[] = [];
   try {
     for await (const { value } of iterate<CanvasMeta>(db, 'canvas/')) {
       canvases.push(value);
@@ -121,8 +121,8 @@ export async function exportProject(
     return { ...await target.result(), message: '已导出原尺寸瓦片、离线查看器、覆盖与质量数据、源帧记录和完整诊断。' };
   } catch (error) {
     await target.sink.abort?.(error);
-    // A failed export must not leave this writer's staged central-directory rows behind forever; finish()
-    // already drained them all on the success path above.
+    // A failed export must stop the ZIP writer's still-running internal pump so it never writes into a sink
+    // `abort()` has already closed out from under it.
     await zip.dispose();
     throw error;
   }
@@ -173,7 +173,7 @@ export async function exportCanvas(
       return { ...await target.result(), message: `已导出 ${rect.width} × ${rect.height} 原尺寸 PNG，缺口保持透明。` };
     }
     const overlap = 32;
-    zip = new ZipWriter(target.sink, db);
+    zip = new ZipWriter(target.sink);
     sheetPrefix = `sheet-export/${createId()}/`;
     const prefix = sheetPrefix;
     for await (const { value: t } of iterate<TileIndex>(db, `tile-index/${meta.id}/0/`)) {
@@ -242,8 +242,8 @@ export async function exportCanvas(
     };
   } catch (error) {
     await target.sink.abort?.(error);
-    // Both of this branch's own staging prefixes must not survive a failed export: zip's export-index/<uuid>/
-    // central-directory rows, and this function's own sheet-export/<uuid>/ work queue.
+    // A failed export must stop the ZIP writer's still-running internal pump (never write into an aborted sink)
+    // and must not leave this function's own sheet-export/<uuid>/ work queue behind.
     await zip?.dispose();
     if (sheetPrefix) await deletePrefix(db, sheetPrefix);
     throw error;

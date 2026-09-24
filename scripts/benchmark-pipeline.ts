@@ -90,9 +90,12 @@ interface PassReport {
   failedRequests: string[];
   externalRequests: string[];
   cpuProfile?: string;
-  /** `sha256` covers every stored PNG and evidence row; `pixelsSha256` the decoded pixels only. Per-tile hashes are
-   *  written next to the report as `<label>-pass-<n>.tiles.json`. */
-  storedTiles?: { count: number; sha256: string; pixelsSha256?: string; seconds: number };
+  /** `sha256` covers every stored PNG and evidence row, byte for byte — it legitimately differs across a codec
+   *  change even when reconstruction is unchanged. `contentSha256` covers decoded pixels plus every evidence array
+   *  (coverage/provisional/quality/conflicts/owner/score/frozen), not the PNG bytes, so it is what the cross-root
+   *  gate below actually verifies; `pixelsSha256` is pixels alone, kept for diagnosing which half of
+   *  `contentSha256` moved. Per-tile hashes are written next to the report as `<label>-pass-<n>.tiles.json`. */
+  storedTiles?: { count: number; sha256: string; pixelsSha256?: string; contentSha256?: string; seconds: number };
 }
 
 interface BenchmarkReport {
@@ -117,7 +120,8 @@ Options:
   --baseline-root DIR    also benchmark this repository root before --root
   --passes N             full pipeline passes per root (default: 1)
   --analysis-size N      analysis long-edge limit (default: 640)
-  --verify-tiles         hash tile PNG/evidence bytes after timing; fail on differences across runs
+  --verify-tiles         hash decoded tile pixels + evidence after timing; fail on differences across runs
+                         (raw PNG byte differences are reported as info, not a failure — see contentSha256)
   --dump-evidence REGEX  with --verify-tiles, also write raw evidence arrays of matching tile keys
   --allow-partial        accept a partial run (a stream-copied prefix whose container count exceeds its frames)
   --output DIR           JSON/profile directory (default: test-results/benchmark-pipeline)
@@ -474,10 +478,18 @@ async function runPass(
         tiles.push({ key, hashes: { ...hashes, pixels: await digest(image.data.slice().buffer) }, evidence });
       }
       delete (globalThis as any).benchmarkStore;
+      const evidenceFields = ['coverage', 'provisional', 'quality', 'conflicts', 'owner', 'score', 'frozen'];
       return {
         count: rows.length,
         sha256: await digest(new TextEncoder().encode(JSON.stringify(rows)).buffer),
         pixelsSha256: await digest(new TextEncoder().encode(JSON.stringify(tiles.map((t: any) => [t.key, t.hashes.pixels]))).buffer),
+        // Decoded content only: pixels plus every evidence array, deliberately excluding the PNG's own bytes
+        // (hashes.png) so a legitimate codec change (different bytes, identical pixels) does not fail this hash.
+        contentSha256: await digest(
+          new TextEncoder().encode(
+            JSON.stringify(tiles.map((t: any) => [t.key, t.hashes.pixels, ...evidenceFields.map((f) => t.hashes[f] ?? null)])),
+          ).buffer,
+        ),
         tiles,
         seconds: (performance.now() - started) / 1000,
       };
@@ -601,7 +613,9 @@ const benchmarks: Array<[string, string]> = [];
 if (options.baselineRoot) benchmarks.push(['baseline', options.baselineRoot]);
 benchmarks.push([options.baselineRoot ? 'current' : 'benchmark', options.root]);
 let referenceTiles: PassReport['storedTiles'];
-const verification: Array<{ label: string; pass: number; count: number; sha256: string; matches: boolean }> = [];
+const verification: Array<
+  { label: string; pass: number; count: number; sha256: string; contentSha256?: string; matches: boolean }
+> = [];
 for (const [label, root] of benchmarks) {
   const report = await benchmarkRoot(options, root, label);
   if (options.verifyTiles) {
@@ -609,10 +623,28 @@ for (const [label, root] of benchmarks) {
       const tiles = result.storedTiles;
       if (!tiles) throw new Error(`${label} pass ${result.pass} did not produce a tile fingerprint.`);
       referenceTiles ??= tiles;
-      const matches = tiles.count === referenceTiles.count && tiles.sha256 === referenceTiles.sha256;
-      verification.push({ label, pass: result.pass, count: tiles.count, sha256: tiles.sha256, matches });
+      // The gate is decoded pixels + evidence arrays (contentSha256), not raw PNG bytes (sha256): a codec change
+      // legitimately moves sha256 while reconstruction — the thing this benchmark actually verifies — is
+      // unchanged. A byte difference under a matching contentSha256 is reported, never thrown on.
+      const matches = tiles.count === referenceTiles.count && tiles.contentSha256 === referenceTiles.contentSha256;
+      const byteIdentical = matches && tiles.sha256 === referenceTiles.sha256;
+      verification.push({
+        label,
+        pass: result.pass,
+        count: tiles.count,
+        sha256: tiles.sha256,
+        contentSha256: tiles.contentSha256,
+        matches,
+      });
       await Deno.writeTextFile(join(options.output, 'verification.json'), JSON.stringify(verification, null, 2));
-      if (!matches) throw new Error(`${label} pass ${result.pass}: committed tile PNG/evidence differs from the first run.`);
+      if (!matches) {
+        throw new Error(`${label} pass ${result.pass}: decoded tile pixels or evidence differ from the first run.`);
+      }
+      if (!byteIdentical) {
+        console.log(
+          `(info) ${label} pass ${result.pass}: tile PNG bytes differ from the first run (codec change); decoded pixels and evidence are identical.`,
+        );
+      }
     }
   }
   console.log(`\n${label} median: ${JSON.stringify(report.summary)}`);

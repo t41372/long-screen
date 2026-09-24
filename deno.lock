@@ -17,6 +17,8 @@
     "jsr:@std/path@^1.1.5": "1.1.6",
     "jsr:@std/path@^1.1.6": "1.1.6",
     "jsr:@std/streams@^1.1.2": "1.1.2",
+    "npm:client-zip@2.5.1": "2.5.1",
+    "npm:fflate@0.8.3": "0.8.3",
     "npm:playwright@1.58.2": "1.58.2"
   },
   "jsr": {
@@ -79,6 +81,12 @@
     }
   },
   "npm": {
+    "client-zip@2.5.1": {
+      "integrity": "sha512-yOvNSBsQX1B7wtdvIVXJEIIShrlPiX+adhli7sWvQhsx3nX1DjvpSt+AwOxaX+3DCsT/Yx0nRy5hIjRLIYfebw=="
+    },
+    "fflate@0.8.3": {
+      "integrity": "sha512-tbZNuJrLwGUp3zshBtdy4W+ORxZuIh8a5ilyIEQDC5rY1f3U20JMry0Ll3WBzU58EZKsEuJFXhb5gwv8CsPvgA=="
+    },
     "fsevents@2.3.2": {
       "integrity": "sha512-xiqMQR4xAeHTuB9uWm+fFRcIOgKBMiOBP+eXiyT7jsgVCq1bkVygt00oASowB7EdtpOHaaPgKt812P9ab+DDKA==",
       "os": ["darwin"],
@@ -105,6 +113,8 @@
       "jsr:@std/fs@1",
       "jsr:@std/http@1",
       "jsr:@std/path@1",
+      "npm:client-zip@2.5.1",
+      "npm:fflate@0.8.3",
       "npm:playwright@1.58.2"
     ]
   }

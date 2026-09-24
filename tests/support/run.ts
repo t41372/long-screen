@@ -17,6 +17,10 @@ export interface RunResult extends VerifiableRun {
   memory: { peakResidentTiles: number; tileCacheLimit: number };
   events: { progress: number; diagnostics: Diagnostic[]; projects: number };
   seconds: number;
+  /** Frees `atlas`'s core-resident buffer. `atlas` now owns Wasm-side memory (src/core/layers.ts's RegionAtlas),
+   *  so a caller done reading a RunResult must call this — checkScenario() and collectRun()'s few direct callers
+   *  do. Safe to call more than once. */
+  dispose(): void;
 }
 export async function runScenario(
   scenario: Scenario,
@@ -43,7 +47,10 @@ export async function collectRun(
   project: Project,
   scenario: Scenario,
   tileSize: number,
-): Promise<VerifiableRun & { project: Project; store: KV; diagnostics: Diagnostic[]; codes: Set<string>; memory: RunResult['memory'] }> {
+): Promise<
+  & VerifiableRun
+  & { project: Project; store: KV; diagnostics: Diagnostic[]; codes: Set<string>; memory: RunResult['memory']; dispose(): void }
+> {
   const store = new Namespace(db, `run/${project.id}/`);
   const canvases: CanvasMeta[] = [], observations: Observation[] = [], diagnostics: Diagnostic[] = [];
   for await (const { value } of iterate<CanvasMeta>(store, 'canvas/')) {
@@ -70,5 +77,6 @@ export async function collectRun(
     atlas,
     memory,
     tileSize,
+    dispose: () => atlas.dispose(),
   };
 }

@@ -1,5 +1,6 @@
 import '../support/core.ts';
 import { assert, assertEquals, assertRejects } from '@std/assert';
+import { unzipSync } from 'fflate';
 import { MemoryKV, Namespace } from '../../src/storage/db.ts';
 import { markCovered, TileStore } from '../../src/storage/tiles.ts';
 import { exportCanvas, exportProject } from '../../src/export/project.ts';
@@ -48,38 +49,21 @@ function fakeHandle() {
     },
   };
 }
+// Verification goes through a real, independent ZIP reader (fflate, MIT, pinned in deno.json) rather than
+// hand-decoding client-zip's own record layout — the point of the swap away from the hand-written writer is that
+// its bytes are no longer this test's business, only that a standard reader can open them and recover exact content.
 function zipEntries(bytes: Uint8Array): string[] {
-  const names: string[] = [], view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const at = Number(view.getBigUint64(bytes.length - 34, true)),
-    cd = Number(view.getBigUint64(at + 48, true)),
-    count = Number(view.getBigUint64(at + 32, true));
-  let p = cd;
-  for (let i = 0; i < count; i++) {
-    const n = view.getUint16(p + 28, true), extra = view.getUint16(p + 30, true), comment = view.getUint16(p + 32, true);
-    names.push(new TextDecoder().decode(bytes.subarray(p + 46, p + 46 + n)));
-    p += 46 + n + extra + comment;
-  }
-  return names;
+  return Object.keys(unzipSync(bytes));
 }
-/** Reads one stored (uncompressed) entry's raw bytes back out of a ZipWriter archive, via the central directory's
- * ZIP64 extra field (uncompressed size + local header offset), for tests that need actual file content, not just names. */
+/** Reads one stored entry's exact bytes back out of an archive, via a real unzip implementation, for tests that
+ *  need actual file content (or ordering — `Object.keys` preserves the central directory's insertion order for
+ *  these non-numeric names), not just names. */
 function zipEntryBytes(bytes: Uint8Array, name: string): Uint8Array {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const at = Number(view.getBigUint64(bytes.length - 34, true)),
-    cd = Number(view.getBigUint64(at + 48, true)),
-    count = Number(view.getBigUint64(at + 32, true));
-  let p = cd;
-  for (let i = 0; i < count; i++) {
-    const n = view.getUint16(p + 28, true), extra = view.getUint16(p + 30, true), comment = view.getUint16(p + 32, true);
-    const entryName = new TextDecoder().decode(bytes.subarray(p + 46, p + 46 + n));
-    if (entryName === name) {
-      const e = p + 46 + n, size = Number(view.getBigUint64(e + 4, true)), offset = Number(view.getBigUint64(e + 20, true));
-      const contentStart = offset + 30 + n + 20;
-      return bytes.subarray(contentStart, contentStart + size);
-    }
-    p += 46 + n + extra + comment;
+  const entry = unzipSync(bytes)[name];
+  if (!entry) {
+    throw new Error(`Entry not found: ${name}`);
   }
-  throw new Error(`Entry not found: ${name}`);
+  return entry;
 }
 async function project(width = 40, height = 30) {
   const db = new MemoryKV(),
@@ -182,6 +166,9 @@ Deno.test('export: project ZIP64 contains tiles, coverage, quality, ledgers and 
     assert(names.includes(required), required);
   }
   assert(messages.length > 0);
+  // Entries stream out in the exact order exportProject() calls zip.add(): the four fixed front-matter files
+  // first, in the order they were written, then tiles/coverage/provisional/quality per committed tile.
+  assertEquals(names.slice(0, 4), ['manifest.json', 'index.html', 'README.txt', 'regions.json']);
   // regions.json: the mask is base64, not a decimal Array.from JSON array, and decodes back losslessly.
   const regions = JSON.parse(new TextDecoder().decode(zipEntryBytes(bytes, 'regions.json')));
   assertEquals(regions.length, 1);
@@ -203,8 +190,9 @@ Deno.test('export: missing committed tile aborts the export instead of writing a
   const target = fakeHandle();
   await assertRejects(() => exportProject(store, p, () => {}, target.handle), Error, 'Missing committed tile');
   assert(target.aborted);
-  // F28: manifest.json/index.html/README.txt/regions.json already succeeded (and so already staged rows under
-  // export-index/<uuid>/) before the missing tile aborted the run; none of that staging may survive the failure.
+  // F28: the ZIP writer (client-zip, streamed straight into the sink) never stages a central-directory row in
+  // storage the way the old hand-rolled writer did, so this is now a standing invariant rather than a cleanup this
+  // test needs to provoke — kept as a regression guard in case a future writer reintroduces staging.
   assertEquals((await store.scan('export-index/', { limit: 100 })).length, 0, 'a failed export must not leave export-index/ rows behind');
 });
 Deno.test('export: a sink that fails partway leaves no export-index rows behind (F28)', async () => {

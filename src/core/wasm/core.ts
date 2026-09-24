@@ -259,7 +259,8 @@ export class Core {
   ): OverwriteStats {
     return temporal.overwriteTile(this, tile, tileSize, image, blocks, ox, oy, tx, ty, frame, confidence, stable);
   }
-  /** RGBA of a decoded frame given in its `VideoFrame.copyTo` layout (see rust/core/src/yuv.rs for the codes). */
+  /** RGBA of a decoded frame given in its `VideoFrame.copyTo` layout (see rust/core/src/yuv.rs for the codes).
+   *  `dest`, when given and the right length, is filled in place instead of allocating a fresh output buffer. */
   frameToRGBA(
     src: Uint8Array,
     format: number,
@@ -267,8 +268,9 @@ export class Core {
     width: number,
     height: number,
     matrix: number,
+    dest?: Uint8ClampedArray,
   ): Uint8ClampedArray {
-    return raster.frameToRGBA(this, src, format, layout, width, height, matrix);
+    return raster.frameToRGBA(this, src, format, layout, width, height, matrix, dest);
   }
   extractFeatures(image: Gray, maxFeatures: number, roi?: Rect): Feature[] {
     return featuresDomain.extractFeatures(this, image, maxFeatures, roi);

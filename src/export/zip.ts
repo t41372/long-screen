@@ -1,8 +1,4 @@
-import type { KV } from '../storage/db.ts';
-import { deletePrefix, iterate } from '../storage/db.ts';
-import { CRC32, utf8 } from '../codec/crc.ts';
-import { pad } from '../core/math.ts';
-import { createId } from '../core/id.ts';
+import { makeZip } from 'client-zip';
 export interface ByteSink {
   write(data: Uint8Array): Promise<void>;
   close(): Promise<void>;
@@ -25,107 +21,110 @@ export async function* blobChunks(blob: Blob): AsyncGenerator<Uint8Array> {
 export async function* single(data: Uint8Array): AsyncGenerator<Uint8Array> {
   yield data;
 }
-function record(size: number): {
-  data: Uint8Array;
-  view: DataView;
-} {
-  const data = new Uint8Array(size);
-  return { data, view: new DataView(data.buffer) };
+// A fixed timestamp keeps two exports of identical content byte-identical (client-zip defaults an entry's
+// `lastModified` to `new Date()`, which would otherwise make every archive's bytes non-reproducible run to run).
+// Matches the previous hand-rolled writer, which always stamped MS-DOS date/time 0 (1980-01-01 00:00:00).
+const FIXED_MTIME = new Date(1980, 0, 1);
+interface Entry {
+  name: string;
+  input: AsyncIterable<Uint8Array>;
+  lastModified: Date;
 }
-/** Always-ZIP64, stored entries, data descriptors. Central-directory records are disk-spooled. */
+interface Pending {
+  entry: Entry;
+  /** Resolved once `client-zip` has pulled the *next* entry from `source()`, i.e. once this one has been fully
+   *  produced into its output stream — the same point at which the old writer's `add()` used to resolve. */
+  resolveConsumed: () => void;
+}
+/** Store-only ZIP, automatically ZIP64 when needed, streamed through `client-zip` (npm, MIT, 0 deps) straight into
+ *  `sink`. `add()` hands one entry at a time to a single-slot mailbox that `client-zip`'s internal generator pulls
+ *  from, so callers get the same one-entry-in-flight backpressure and memory profile as the old writer without this
+ *  module buffering entries itself. */
 export class ZipWriter {
-  private offset = 0n;
-  private count = 0;
-  private prefix = `export-index/${createId()}/`;
-  constructor(private sink: ByteSink, private db: KV) {}
-  private async write(data: Uint8Array): Promise<void> {
-    await this.sink.write(data);
-    this.offset += BigInt(data.byteLength);
+  private pending: Pending | undefined;
+  private wake: (() => void) | undefined;
+  private finished = false;
+  private aborted: unknown;
+  private readonly pump: Promise<void>;
+  constructor(private sink: ByteSink) {
+    this.pump = this.run();
+    // Attaches a handler immediately so a rejection here is never reported as unhandled; the same rejection still
+    // reaches add()/finish() callers via the await/race below.
+    this.pump.catch(() => {});
+  }
+  private async *source(): AsyncGenerator<Entry> {
+    while (true) {
+      if (this.pending) {
+        const { entry, resolveConsumed } = this.pending;
+        this.pending = undefined;
+        yield entry;
+        resolveConsumed();
+        continue;
+      }
+      if (this.aborted !== undefined) {
+        throw this.aborted;
+      }
+      if (this.finished) {
+        return;
+      }
+      await new Promise<void>((resolve) => {
+        this.wake = resolve;
+      });
+    }
+  }
+  private async run(): Promise<void> {
+    // A plain reader loop, not `for await…of` — WebKit (Safari, at least through the version this project ships
+    // against) has no `ReadableStream.prototype[Symbol.asyncIterator]`, so `for await` over `makeZip`'s stream
+    // throws immediately there (`TypeError: … is not async iterable`), which silently failed every export in
+    // Safari/WebKit private browsing: the export rejected before ever touching the sink, so no download fired and
+    // the UI just hung. `getReader().read()` is the WHATWG-streams primitive under both forms and has no such gap.
+    const reader = makeZip(this.source(), { buffersAreUTF8: true }).getReader();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        await this.sink.write(value);
+      }
+    } catch (error) {
+      await reader.cancel(error).catch(() => {});
+      throw error;
+    } finally {
+      reader.releaseLock();
+    }
   }
   async add(name: string, input: AsyncIterable<Uint8Array> | Blob | Uint8Array): Promise<void> {
-    const bytes = utf8(name), start = this.offset, { data, view } = record(30 + bytes.length + 20);
-    view.setUint32(0, 0x04034b50, true);
-    view.setUint16(4, 45, true);
-    view.setUint16(6, 0x808, true);
-    view.setUint16(10, 0, true);
-    view.setUint16(12, 0x21, true);
-    view.setUint32(18, 0xffffffff, true);
-    view.setUint32(22, 0xffffffff, true);
-    view.setUint16(26, bytes.length, true);
-    view.setUint16(28, 20, true);
-    data.set(bytes, 30);
-    const extra = 30 + bytes.length;
-    view.setUint16(extra, 1, true);
-    view.setUint16(extra + 2, 16, true);
-    await this.write(data);
-    let size = 0n;
-    const crc = new CRC32();
-    const stream = input instanceof Blob ? blobChunks(input) : input instanceof Uint8Array ? single(input) : input;
-    for await (const chunk of stream) {
-      crc.update(chunk);
-      size += BigInt(chunk.length);
-      await this.write(chunk);
+    if (this.pending) {
+      throw new Error('ZipWriter.add() called before the previous entry finished streaming.');
     }
-    const desc = record(24);
-    desc.view.setUint32(0, 0x08074b50, true);
-    desc.view.setUint32(4, crc.digest(), true);
-    desc.view.setBigUint64(8, size, true);
-    desc.view.setBigUint64(16, size, true);
-    await this.write(desc.data);
-    const central = record(46 + bytes.length + 28), v = central.view;
-    v.setUint32(0, 0x02014b50, true);
-    v.setUint16(4, 45, true);
-    v.setUint16(6, 45, true);
-    v.setUint16(8, 0x808, true);
-    v.setUint16(14, 0x21, true);
-    v.setUint32(16, crc.digest(), true);
-    v.setUint32(20, 0xffffffff, true);
-    v.setUint32(24, 0xffffffff, true);
-    v.setUint16(28, bytes.length, true);
-    v.setUint16(30, 28, true);
-    v.setUint32(42, 0xffffffff, true);
-    central.data.set(bytes, 46);
-    const e = 46 + bytes.length;
-    v.setUint16(e, 1, true);
-    v.setUint16(e + 2, 24, true);
-    v.setBigUint64(e + 4, size, true);
-    v.setBigUint64(e + 12, size, true);
-    v.setBigUint64(e + 20, start, true);
-    await this.db.put(`${this.prefix}${pad(this.count++)}`, central.data);
+    const stream = input instanceof Blob ? blobChunks(input) : input instanceof Uint8Array ? single(input) : input;
+    await Promise.race([
+      new Promise<void>((resolveConsumed) => {
+        this.pending = { entry: { name, input: stream, lastModified: FIXED_MTIME }, resolveConsumed };
+        this.wake?.();
+        this.wake = undefined;
+      }),
+      // A failed sink (disk full, aborted export…) must not hang add() forever waiting for an entry that will
+      // never be consumed.
+      this.pump,
+    ]);
   }
   async finish(): Promise<void> {
-    const start = this.offset;
-    for await (const row of iterate<Uint8Array>(this.db, this.prefix)) {
-      await this.write(row.value);
-      await this.db.delete(row.key);
-    }
-    const size = this.offset - start, zip64Offset = this.offset, z = record(56);
-    z.view.setUint32(0, 0x06064b50, true);
-    z.view.setBigUint64(4, 44n, true);
-    z.view.setUint16(12, 45, true);
-    z.view.setUint16(14, 45, true);
-    z.view.setBigUint64(24, BigInt(this.count), true);
-    z.view.setBigUint64(32, BigInt(this.count), true);
-    z.view.setBigUint64(40, size, true);
-    z.view.setBigUint64(48, start, true);
-    await this.write(z.data);
-    const locator = record(20);
-    locator.view.setUint32(0, 0x07064b50, true);
-    locator.view.setBigUint64(8, zip64Offset, true);
-    locator.view.setUint32(16, 1, true);
-    await this.write(locator.data);
-    const end = record(22);
-    end.view.setUint32(0, 0x06054b50, true);
-    end.view.setUint16(8, 0xffff, true);
-    end.view.setUint16(10, 0xffff, true);
-    end.view.setUint32(12, 0xffffffff, true);
-    end.view.setUint32(16, 0xffffffff, true);
-    await this.write(end.data);
+    this.finished = true;
+    this.wake?.();
+    this.wake = undefined;
+    await this.pump;
     await this.sink.close();
   }
-  /** Deletes any of this writer's own export-index/<uuid>/ central-directory rows left staged by a failed export;
-   * finish() already drains them all on success, so this is only ever needed on the failure path. */
+  /** No staged storage rows to clean up any more (client-zip's central directory is built in-stream, from tiny
+   *  metadata, never disk-spooled) — this only stops a still-running pump so a failed export's sink is never
+   *  written to after `sink.abort()` has already run. Safe to call more than once and safe to call when nothing
+   *  was ever added. */
   async dispose(): Promise<void> {
-    await deletePrefix(this.db, this.prefix);
+    if (this.finished) return;
+    this.aborted = new Error('ZipWriter disposed before finish().');
+    this.finished = true;
+    this.wake?.();
+    this.wake = undefined;
+    await this.pump.catch(() => {});
   }
 }

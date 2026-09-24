@@ -2,8 +2,7 @@ import '../support/core.ts';
 import { assert, assertEquals, assertRejects } from '@std/assert';
 import { decodePNG, encodePNG, encodeRGBA } from '../../src/codec/png.ts';
 import { CRC32, crc32, utf8 } from '../../src/codec/crc.ts';
-import { blobChunks, single, ZipWriter } from '../../src/export/zip.ts';
-import { MemoryKV } from '../../src/storage/db.ts';
+import { blobChunks, single } from '../../src/export/zip.ts';
 import { rng } from '../../src/core/math.ts';
 import type { RGBA } from '../../src/types.ts';
 function chunk(type: string, body: Uint8Array): Uint8Array {
@@ -194,42 +193,10 @@ Deno.test('crc32 matches the standard check vector and the convenience wrapper',
   assertEquals(crc.digest(), 0xcbf43926);
   assertEquals(crc32(utf8('123456789')), 0xcbf43926);
 });
-Deno.test('zip: streaming ZIP64 writes valid records, UTF-8 names, spools the directory to storage and cleans up', async () => {
-  const parts: Uint8Array[] = [],
-    db = new MemoryKV(),
-    sink = {
-      write: async (data: Uint8Array) => {
-        parts.push(data.slice());
-      },
-      close: async () => {},
-    };
-  const zip = new ZipWriter(sink, db);
-  await zip.add('你好.txt', utf8('canvas\n'));
-  await zip.add('transparent.bin', new Blob([new Uint8Array([0, 1, 2, 3])]));
-  async function* stream() {
-    yield new Uint8Array([9]);
-    yield new Uint8Array([8, 7]);
-  }
-  await zip.add('stream.bin', stream());
-  assertEquals((await db.scan('export-index/')).length, 3);
-  await zip.finish();
-  assertEquals((await db.scan('export-index/')).length, 0);
-  const bytes = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
-  let o = 0;
-  for (const p of parts) {
-    bytes.set(p, o);
-    o += p.length;
-  }
-  const view = new DataView(bytes.buffer);
-  assertEquals(view.getUint32(0, true), 0x04034b50);
-  assertEquals(view.getUint16(6, true), 0x808);
-  assertEquals(view.getUint32(bytes.length - 22, true), 0x06054b50);
-  assertEquals(view.getUint32(bytes.length - 42, true), 0x07064b50);
-  const at = Number(view.getBigUint64(bytes.length - 34, true));
-  assertEquals(view.getUint32(at, true), 0x06064b50);
-  assertEquals(Number(view.getBigUint64(at + 32, true)), 3);
-  const cd = Number(view.getBigUint64(at + 48, true));
-  assertEquals(view.getUint32(cd, true), 0x02014b50);
+// ZipWriter itself (now client-zip, npm/MIT, streamed straight into the sink — see src/export/zip.ts) is exercised
+// through real archives in tests/unit/export.test.ts, verified with an independent unzip implementation rather than
+// hand-decoded record offsets; only its two small adapter generators are a codec-level concern here.
+Deno.test('zip: blobChunks and single adapt a Blob/Uint8Array into the AsyncIterable<Uint8Array> ZipWriter.add() takes', async () => {
   const chunks: Uint8Array[] = [];
   for await (const c of blobChunks(new Blob([new Uint8Array([1, 2]), new Uint8Array([3])]))) {
     chunks.push(c);
@@ -240,4 +207,5 @@ Deno.test('zip: streaming ZIP64 writes valid records, UTF-8 names, spools the di
     one.push(c);
   }
   assertEquals(one.length, 1);
+  assertEquals(one[0], new Uint8Array([5]));
 });
