@@ -32,6 +32,8 @@ deno task fingerprint    # 逐场景、逐持久化行的字节级指纹工具�
 
 主应用使用 ES modules 和 Worker，需要静态文件服务器，不能直接双击 `dist/index.html`。**本机开发直接用 HTTP localhost，不需要配置证书。** 手机访问电脑的局域网 HTTP IP 也可打开应用、运行演示，并使用“近似 · 原生 seek”模式测试本地视频（浏览器须能播放该视频，可能漏帧）。浏览器通常只在安全来源开放 WebCodecs 精确解码和 OPFS 磁盘导出；`localhost` 算安全来源，局域网 IP 不算，因此手机验证这些能力需用 HTTPS，例如 GitHub Pages。应用按实际 API 能力启用功能，不会仅因 HTTP 拒绝运行；这些浏览器限制与上传无关，所有处理仍在本机。导出的**结果包**不同：解压后可直接打开其中的 `index.html` 离线查看。
 
+没有服务器、也不方便自己起一个的场合（比如一台锁定的公司电脑），用 `deno task build:portable`：它先跑 `deno task build:prod`（因此同样整份覆盖 `dist/`），再把页面、样式、Worker 和单线程 Wasm 核心内联成 `dist-portable/long-screen/long-screen.html`，连同使用说明打成 zip。在 Chrome / Edge 中双击即可打开，不需要装软件、不需要联网。做法是把各打包产物从 ES module 改写成经典脚本，并在页面和 Worker 里替换 `Worker`、`fetch`，让它们直接返回内嵌的脚本和 Wasm，不再向磁盘请求文件（原因见 `scripts/build-portable.ts` 开头的注释）。代价：`file://` 页面不能跨源隔离，Rust 核心只跑单线程构建（结果不变；在 test_case 的真实录屏上并不比多线程慢，瓶颈在解码与读写）；OPFS 不可用，导出走“另存为”，对话框被策略禁用时退回内存下载（上限 1 GB）；只支持 Chromium 内核——WebKit 在 `file://` 下的 Worker 里读不了用户选的视频文件，内置演示能跑，真实录屏不行。
+
 ## 使用
 
 选择录屏 → 可选指定独立运动区域 → 重建 → 选择画布并检查质量遮罩 / 诊断 → 导出。
