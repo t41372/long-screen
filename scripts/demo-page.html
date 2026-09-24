@@ -1,0 +1,859 @@
+<!doctype html>
+<!--
+  The page scripts/make-demo.ts records into static/demo/sample.mp4: a 2400 × 1500 trip-planning whiteboard, 2.5
+  viewports wide and tall, so the demo's print shows a big two-dimensional screenshot rather than a long strip.
+  Everything is drawn with HTML, CSS and inline SVG; the only file it loads is the app's own Baloo 2 font from
+  ../static/fonts. The background doodles come from a seeded generator, so every render is identical.
+  No fixed or sticky elements and no animation: the recording must show only the canvas moving.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Summer road trip board</title>
+    <style>
+    @font-face {
+      font-family: 'Baloo 2';
+      font-style: normal;
+      font-weight: 400 800;
+      src: url(../static/fonts/baloo-2-latin-wght-normal.woff2) format('woff2');
+    }
+    :root {
+      --cream: #fdf3e7;
+      --ink: #4a4039;
+      --pink: #ffc8d3;
+      --blue: #bfdcf5;
+      --green: #c7e8c2;
+      --yellow: #ffe48f;
+      --lilac: #dccbf3;
+      --peach: #ffd2ad;
+      --coral: #f0816d;
+      --sky: #6fb2e3;
+      --leaf: #67b96f;
+      --sun: #f6b63d;
+      --plum: #9a7dd3;
+    }
+    html,
+    body {
+      margin: 0;
+      width: 2400px;
+      height: 1500px;
+      overflow: hidden;
+      scrollbar-width: none;
+      background: var(--cream);
+    }
+    ::-webkit-scrollbar {
+      display: none;
+    }
+    #board {
+      position: relative;
+      width: 2400px;
+      height: 1500px;
+      overflow: hidden;
+      background: var(--cream);
+      font-family: 'Baloo 2', 'Arial Rounded MT Bold', sans-serif;
+      color: var(--ink);
+    }
+    #doodles,
+    #arrows {
+      position: absolute;
+      inset: 0;
+    }
+    .item {
+      position: absolute;
+      box-sizing: border-box;
+    }
+    .card {
+      border: 3px solid var(--ink);
+      border-radius: 16px;
+      box-shadow: 6px 7px 0 rgba(74, 64, 57, 0.2);
+      padding: 14px 18px;
+    }
+    .card h2 {
+      margin: 0 0 6px;
+      font-size: 32px;
+      line-height: 1.05;
+      font-weight: 800;
+    }
+    .sticky {
+      padding: 26px 18px 14px;
+      border-radius: 4px 4px 22px 4px;
+      box-shadow: 5px 7px 0 rgba(74, 64, 57, 0.18);
+      font-weight: 700;
+      font-size: 30px;
+      line-height: 1.05;
+    }
+    .sticky small {
+      display: block;
+      margin-top: 6px;
+      font-size: 21px;
+      font-weight: 600;
+    }
+    .tape {
+      position: absolute;
+      top: -14px;
+      left: 50%;
+      width: 92px;
+      height: 28px;
+      margin-left: -46px;
+      background: rgba(255, 255, 255, 0.55);
+      border: 2px dashed rgba(74, 64, 57, 0.35);
+      transform: rotate(-4deg);
+    }
+    .pin {
+      position: absolute;
+      top: -12px;
+      left: 50%;
+      width: 26px;
+      height: 26px;
+      margin-left: -13px;
+      border-radius: 50%;
+      border: 3px solid var(--ink);
+      box-shadow: 2px 3px 0 rgba(74, 64, 57, 0.25);
+    }
+    .polaroid {
+      background: #fffdf9;
+      border: 3px solid var(--ink);
+      border-radius: 6px;
+      padding: 14px 14px 0;
+      box-shadow: 6px 8px 0 rgba(74, 64, 57, 0.2);
+    }
+    .polaroid svg {
+      display: block;
+      width: 100%;
+      border: 3px solid var(--ink);
+      border-radius: 3px;
+      box-sizing: border-box;
+    }
+    .polaroid p {
+      margin: 4px 0 0;
+      text-align: center;
+      font-size: 30px;
+      font-weight: 700;
+    }
+    .fill {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+    ul.check {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      font-size: 25px;
+      font-weight: 600;
+    }
+    ul.check li {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      height: 47px;
+    }
+    ul.check li i {
+      flex: none;
+      width: 26px;
+      height: 26px;
+      border: 3px solid var(--ink);
+      border-radius: 6px;
+      background: #fff;
+      position: relative;
+    }
+    ul.check li.done span {
+      text-decoration: line-through 3px var(--coral);
+    }
+    ul.check li.done i::after {
+      content: '';
+      position: absolute;
+      left: 6px;
+      top: -8px;
+      width: 10px;
+      height: 22px;
+      border: solid var(--leaf);
+      border-width: 0 5px 5px 0;
+      transform: rotate(40deg);
+    }
+    table.cal {
+      border-collapse: separate;
+      border-spacing: 4px;
+      font-size: 21px;
+      font-weight: 700;
+      text-align: center;
+    }
+    table.cal th {
+      font-size: 18px;
+      color: var(--coral);
+      width: 42px;
+    }
+    table.cal td {
+      height: 42px;
+      border-radius: 9px;
+      background: rgba(255, 255, 255, 0.6);
+    }
+    table.cal td.a {
+      background: var(--coral);
+      color: #fff;
+      border-radius: 50%;
+    }
+    table.cal td.b {
+      background: var(--sky);
+      color: #fff;
+    }
+    table.cal td.c {
+      box-shadow: inset 0 0 0 3px var(--leaf);
+    }
+    .label {
+      font-weight: 700;
+    }
+    </style>
+  </head>
+  <body>
+    <div id="board">
+      <svg id="doodles" width="2400" height="1500" viewBox="0 0 2400 1500"></svg>
+
+      <!-- Hand-drawn arrows and route lines between the cards. -->
+      <svg id="arrows" width="2400" height="1500" viewBox="0 0 2400 1500" fill="none" stroke="#4a4039" stroke-width="5"
+        stroke-linecap="round" stroke-linejoin="round">
+        <path d="M262 470 C 330 520, 420 470, 470 380" />
+        <path d="M452 392 l 24 -20 l 2 32" />
+        <path d="M960 250 C 1000 300, 1060 350, 1030 470" stroke="#f0816d" stroke-dasharray="4 14" stroke-width="7" />
+        <path d="M1520 470 C 1560 540, 1540 600, 1470 640" />
+        <path d="M1486 618 l -20 26 l 32 4" />
+        <path d="M1260 800 C 1290 880, 1340 880, 1360 930" stroke="#6fb2e3" stroke-width="6" />
+        <path d="M1340 912 l 22 22 l 6 -30" stroke="#6fb2e3" stroke-width="6" />
+        <path d="M2010 380 C 2080 420, 2120 460, 2130 520" />
+        <path d="M2112 506 l 20 20 l 12 -26" />
+        <path d="M880 1105 C 940 1080, 1000 1150, 1060 1110 S 1160 1060, 1210 1120" stroke="#9a7dd3" stroke-width="6"
+          stroke-dasharray="18 12" />
+        <path d="M1990 1000 C 2040 960, 2020 900, 2070 880" />
+        <path d="M2052 872 l 22 6 l -8 22" />
+        <path d="M470 900 q 30 -40 70 -10 t 70 0 t 70 -10" stroke="#67b96f" stroke-width="6" />
+        <path d="M1650 1480 c 40 -30 80 30 120 0 s 80 -30 120 0 s 80 30 120 0" stroke="#f6b63d" stroke-width="6" />
+        <path d="M30 940 c 20 -30 50 -30 60 0 s 40 30 60 0" stroke="#f0816d" stroke-width="5" />
+      </svg>
+
+      <!-- Title banner -->
+      <div class="item card"
+        style="left: 50px; top: 46px; width: 430px; height: 196px; background: var(--yellow); transform: rotate(-2deg)">
+        <div style="font-size: 62px; font-weight: 800; line-height: 0.9; margin-top: 8px">Summer<br>Road Trip</div>
+        <div style="font-size: 25px; font-weight: 600; margin-top: 10px">plan &middot; pack &middot; go!</div>
+        <svg viewBox="0 0 120 120" style="position: absolute; right: 16px; top: 18px; width: 118px; height: 118px" stroke="#4a4039"
+          stroke-width="5" stroke-linecap="round">
+          <circle cx="60" cy="60" r="27" fill="#f6b63d" />
+          <path d="M60 8v16M60 96v16M8 60h16M96 60h16M23 23l11 11M86 86l11 11M97 23l-11 11M34 86l-11 11" />
+          <path d="M49 58q2 -5 5 0M66 58q2 -5 5 0M50 70q10 9 20 0" fill="none" stroke-width="4" />
+        </svg>
+      </div>
+
+      <div class="item sticky"
+        style="left: 70px; top: 292px; width: 196px; height: 184px; background: var(--pink); transform: rotate(5deg)">
+        <span class="tape"></span>Day 1<small>lake swim + picnic</small>
+      </div>
+
+      <!-- Countdown badge -->
+      <div class="item" style="left: 294px; top: 292px; width: 172px; height: 172px; transform: rotate(-8deg)">
+        <svg class="fill" viewBox="0 0 172 172">
+          <circle cx="86" cy="86" r="80" fill="#6fb2e3" stroke="#4a4039" stroke-width="5" />
+          <circle cx="86" cy="86" r="64" fill="none" stroke="#fff" stroke-width="3" stroke-dasharray="10 7" />
+          <text x="86" y="92" text-anchor="middle" font-family="Baloo 2" font-weight="800" font-size="62" fill="#fff">12</text>
+          <text x="86" y="124" text-anchor="middle" font-family="Baloo 2" font-weight="700" font-size="20" fill="#fff">days to go</text>
+        </svg>
+      </div>
+
+      <!-- Calendar -->
+      <div class="item card"
+        style="left: 38px; top: 536px; width: 400px; height: 372px; background: var(--peach); transform: rotate(-1.5deg)">
+        <span class="pin" style="background: var(--coral)"></span>
+        <h2>July</h2>
+        <table class="cal">
+          <tr>
+            <th>M</th>
+            <th>T</th>
+            <th>W</th>
+            <th>T</th>
+            <th>F</th>
+            <th>S</th>
+            <th>S</th>
+          </tr>
+          <tr>
+            <td></td>
+            <td>1</td>
+            <td>2</td>
+            <td>3</td>
+            <td>4</td>
+            <td>5</td>
+            <td>6</td>
+          </tr>
+          <tr>
+            <td>7</td>
+            <td>8</td>
+            <td>9</td>
+            <td>10</td>
+            <td class="c">11</td>
+            <td class="a">12</td>
+            <td class="b">13</td>
+          </tr>
+          <tr>
+            <td class="b">14</td>
+            <td class="b">15</td>
+            <td>16</td>
+            <td>17</td>
+            <td>18</td>
+            <td class="a">19</td>
+            <td>20</td>
+          </tr>
+          <tr>
+            <td>21</td>
+            <td>22</td>
+            <td class="c">23</td>
+            <td>24</td>
+            <td>25</td>
+            <td>26</td>
+            <td>27</td>
+          </tr>
+          <tr>
+            <td>28</td>
+            <td>29</td>
+            <td>30</td>
+            <td>31</td>
+            <td></td>
+            <td></td>
+            <td></td>
+          </tr>
+        </table>
+      </div>
+
+      <!-- Camp at night -->
+      <div class="item polaroid" style="left: 56px; top: 962px; width: 304px; height: 318px; transform: rotate(3deg)">
+        <svg viewBox="0 0 270 210" height="210">
+          <rect width="270" height="210" fill="#2f3a66" />
+          <circle cx="214" cy="46" r="24" fill="#fff4c9" />
+          <circle cx="224" cy="40" r="20" fill="#2f3a66" />
+          <g fill="#fff4c9">
+            <circle cx="30" cy="30" r="3" />
+            <circle cx="76" cy="18" r="2" />
+            <circle cx="120" cy="44" r="3.5" />
+            <circle cx="160" cy="22" r="2" />
+            <circle cx="52" cy="70" r="2" />
+            <circle cx="176" cy="80" r="2.5" />
+            <circle cx="250" cy="96" r="2" />
+            <circle cx="98" cy="84" r="1.8" />
+          </g>
+          <path d="M0 150 L50 104 L92 138 L150 90 L206 136 L270 110 V210 H0Z" fill="#435189" />
+          <rect y="160" width="270" height="50" fill="#3d6b4b" />
+          <path d="M70 184 L118 110 L166 184Z" fill="#f6b63d" stroke="#4a4039" stroke-width="4" />
+          <path d="M118 110 L108 184 H128Z" fill="#c9862a" />
+          <path d="M196 188 l12 -26 l8 16 l6 -22 l10 32z" fill="#f0816d" />
+          <path d="M188 190 h54" stroke="#8b5a3c" stroke-width="7" stroke-linecap="round" />
+        </svg>
+        <p>Camp night</p>
+      </div>
+
+      <div class="item sticky"
+        style="left: 262px; top: 1296px; width: 204px; height: 170px; background: var(--yellow); transform: rotate(-4deg)">
+        <span class="tape"></span>S'mores!<small>x 24 please</small>
+      </div>
+
+      <!-- Lake photo -->
+      <div class="item polaroid" style="left: 500px; top: 60px; width: 300px; height: 304px; transform: rotate(-3deg)">
+        <span class="pin" style="background: var(--leaf)"></span>
+        <svg viewBox="0 0 266 200" height="200">
+          <defs>
+            <linearGradient id="skyA" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#9fd3f5" />
+              <stop offset="1" stop-color="#e6f5ff" />
+            </linearGradient>
+          </defs>
+          <rect width="266" height="200" fill="url(#skyA)" />
+          <circle cx="206" cy="42" r="20" fill="#f6b63d" />
+          <path d="M0 128 L62 46 L104 96 L150 30 L214 112 L266 76 V140 H0Z" fill="#8a9bc4" />
+          <path d="M62 46 L50 62 L64 58 L76 66Z M150 30 L136 50 L152 44 L166 52Z" fill="#fff" />
+          <rect y="130" width="266" height="70" fill="#4f9fd4" />
+          <path d="M20 150 h60 M120 160 h80 M40 176 h40 M170 184 h60 M210 146 h30" stroke="#d6efff" stroke-width="4"
+            stroke-linecap="round" />
+          <path d="M14 136 l10 -34 l10 34z M36 138 l12 -44 l12 44z M226 136 l9 -30 l9 30z" fill="#3f8f55" />
+        </svg>
+        <p>Lake day</p>
+      </div>
+
+      <div class="item sticky"
+        style="left: 800px; top: 34px; width: 168px; height: 156px; background: var(--lilac); transform: rotate(7deg)">
+        Swim<small>at 9 am</small>
+      </div>
+
+      <!-- Budget bar chart -->
+      <div class="item card" style="left: 512px; top: 420px; width: 400px; height: 336px; background: #fff; transform: rotate(2deg)">
+        <h2>Budget</h2>
+        <svg viewBox="0 0 360 250" width="360" height="250" font-family="Baloo 2" font-weight="700" font-size="19" fill="#4a4039">
+          <path d="M26 206 H350" stroke="#4a4039" stroke-width="4" />
+          <rect x="36" y="86" width="48" height="120" rx="6" fill="#f0816d" stroke="#4a4039" stroke-width="3" />
+          <rect x="102" y="136" width="48" height="70" rx="6" fill="#f6b63d" stroke="#4a4039" stroke-width="3" />
+          <rect x="168" y="46" width="48" height="160" rx="6" fill="#67b96f" stroke="#4a4039" stroke-width="3" />
+          <rect x="234" y="112" width="48" height="94" rx="6" fill="#6fb2e3" stroke="#4a4039" stroke-width="3" />
+          <rect x="300" y="166" width="42" height="40" rx="6" fill="#9a7dd3" stroke="#4a4039" stroke-width="3" />
+          <text x="40" y="76">$320</text>
+          <text x="104" y="126">$180</text>
+          <text x="168" y="36">$410</text>
+          <text x="236" y="102">$240</text>
+          <text x="298" y="156">$90</text>
+          <text x="38" y="234">Food</text>
+          <text x="108" y="234">Gas</text>
+          <text x="166" y="234">Camp</text>
+          <text x="244" y="234">Fun</text>
+          <text x="300" y="234">Misc</text>
+        </svg>
+      </div>
+
+      <div class="item sticky"
+        style="left: 470px; top: 800px; width: 184px; height: 168px; background: var(--blue); transform: rotate(-5deg)">
+        <span class="tape"></span>Call Mia<small>555-0142</small>
+      </div>
+
+      <!-- Donut chart -->
+      <div class="item card"
+        style="left: 684px; top: 790px; width: 300px; height: 304px; background: var(--green); transform: rotate(-2deg)">
+        <h2>Our days</h2>
+        <svg viewBox="0 0 260 220" width="260" height="220" font-family="Baloo 2" font-weight="700" font-size="18" fill="#4a4039">
+          <g transform="translate(84 104)" stroke="#4a4039" stroke-width="3">
+            <path d="M0 -78 A78 78 0 0 1 74 24 L38 12 A40 40 0 0 0 0 -40Z" fill="#f0816d" />
+            <path d="M74 24 A78 78 0 0 1 -30 72 L-15 37 A40 40 0 0 0 38 12Z" fill="#6fb2e3" />
+            <path d="M-30 72 A78 78 0 0 1 -72 -30 L-37 -15 A40 40 0 0 0 -15 37Z" fill="#f6b63d" />
+            <path d="M-72 -30 A78 78 0 0 1 0 -78 L0 -40 A40 40 0 0 0 -37 -15Z" fill="#9a7dd3" />
+          </g>
+          <rect x="178" y="40" width="18" height="18" rx="4" fill="#f0816d" />
+          <text x="202" y="56">Drive</text>
+          <rect x="178" y="80" width="18" height="18" rx="4" fill="#6fb2e3" />
+          <text x="202" y="96">Swim</text>
+          <rect x="178" y="120" width="18" height="18" rx="4" fill="#f6b63d" />
+          <text x="202" y="136">Hike</text>
+          <rect x="178" y="160" width="18" height="18" rx="4" fill="#9a7dd3" />
+          <text x="202" y="176">Nap</text>
+        </svg>
+      </div>
+
+      <!-- Ferry ticket -->
+      <div class="item" style="left: 420px; top: 1128px; width: 440px; height: 176px; transform: rotate(3deg)">
+        <svg class="fill" viewBox="0 0 440 176" font-family="Baloo 2" font-weight="700" fill="#4a4039">
+          <path
+            d="M10 6 H430 a4 4 0 0 1 4 4 V70 a18 18 0 0 0 0 36 V166 a4 4 0 0 1 -4 4 H10 a4 4 0 0 1 -4 -4 V106 a18 18 0 0 0 0 -36 V10 a4 4 0 0 1 4 -4Z"
+            fill="#ffc8d3" stroke="#4a4039" stroke-width="4" />
+          <path d="M312 12 V164" stroke="#4a4039" stroke-width="3" stroke-dasharray="8 8" />
+          <text x="28" y="54" font-size="34" font-weight="800">FERRY</text>
+          <text x="28" y="86" font-size="21">Bay Port &gt; Gull Isle</text>
+          <text x="28" y="116" font-size="19">Sat 13 Jul &middot; 08:40</text>
+          <text x="28" y="146" font-size="19">Seat 14B &middot; Deck 2</text>
+          <g transform="translate(186 112)" stroke="#4a4039" stroke-width="3" fill="#fff">
+            <path d="M0 22 H104 L92 42 H12Z" fill="#6fb2e3" />
+            <rect x="24" y="4" width="54" height="18" rx="3" />
+            <path d="M36 4 V-12 H48 V4" fill="#f0816d" />
+          </g>
+          <g fill="#4a4039">
+            <rect x="330" y="30" width="5" height="120" />
+            <rect x="339" y="30" width="2" height="120" />
+            <rect x="345" y="30" width="7" height="120" />
+            <rect x="356" y="30" width="3" height="120" />
+            <rect x="363" y="30" width="2" height="120" />
+            <rect x="369" y="30" width="9" height="120" />
+            <rect x="382" y="30" width="3" height="120" />
+            <rect x="389" y="30" width="5" height="120" />
+            <rect x="398" y="30" width="2" height="120" />
+            <rect x="404" y="30" width="6" height="120" />
+            <rect x="414" y="30" width="3" height="120" />
+          </g>
+        </svg>
+      </div>
+
+      <div class="item sticky"
+        style="left: 600px; top: 1322px; width: 250px; height: 150px; background: var(--green); transform: rotate(2deg)">
+        <span class="tape"></span>Tickets: ok<small>print 2 copies</small>
+      </div>
+
+      <!-- Map -->
+      <div class="item card"
+        style="left: 990px; top: 58px; width: 560px; height: 424px; background: #fffaf2; transform: rotate(1deg); padding: 12px">
+        <span class="pin" style="background: var(--sun)"></span>
+        <svg class="fill" viewBox="0 0 530 394" font-family="Baloo 2" font-weight="700" font-size="21" fill="#4a4039">
+          <rect width="530" height="394" rx="10" fill="#bfe1f7" />
+          <path d="M0 60 C 60 40, 90 90, 150 70 S 250 20, 300 50 S 420 110, 450 60 S 510 30, 530 44 V394 H0Z" fill="#cfe9b9"
+            stroke="#4a4039" stroke-width="3" />
+          <path d="M330 394 C 340 330, 400 300, 440 320 S 530 300, 530 280 V394Z" fill="#bfe1f7" stroke="#4a4039" stroke-width="3" />
+          <ellipse cx="146" cy="232" rx="62" ry="38" fill="#8fcaf0" stroke="#4a4039" stroke-width="3" />
+          <path d="M240 120 C 260 170, 230 220, 262 270 S 300 340, 290 394" fill="none" stroke="#8fcaf0" stroke-width="10" />
+          <g fill="#67b96f" stroke="#4a4039" stroke-width="2.5">
+            <path d="M350 150 l14 -32 l14 32z" />
+            <path d="M376 164 l12 -28 l12 28z" />
+            <path d="M396 144 l15 -36 l15 36z" />
+            <path d="M420 172 l11 -26 l11 26z" />
+            <path d="M60 330 l12 -28 l12 28z" />
+            <path d="M84 346 l14 -32 l14 32z" />
+          </g>
+          <path d="M92 110 l30 -40 l24 30 l18 -22 l32 32z" fill="#c9b79c" stroke="#4a4039" stroke-width="3" />
+          <path d="M70 150 C 120 170, 110 240, 190 236 S 280 150, 330 190 S 400 280, 452 250" fill="none" stroke="#f0816d" stroke-width="6"
+            stroke-dasharray="3 14" stroke-linecap="round" />
+          <g stroke="#4a4039" stroke-width="3">
+            <circle cx="70" cy="150" r="14" fill="#f6b63d" />
+            <circle cx="190" cy="236" r="14" fill="#6fb2e3" />
+            <circle cx="330" cy="190" r="14" fill="#9a7dd3" />
+            <circle cx="452" cy="250" r="14" fill="#f0816d" />
+          </g>
+          <text x="64" y="157" font-size="17" fill="#fff">1</text>
+          <text x="184" y="243" font-size="17" fill="#fff">2</text>
+          <text x="324" y="197" font-size="17" fill="#fff">3</text>
+          <text x="446" y="257" font-size="17" fill="#fff">4</text>
+          <text x="20" y="196">Home</text>
+          <text x="124" y="296">Blue Lake</text>
+          <text x="300" y="232">Pine Hill</text>
+          <text x="400" y="296">Gull Isle</text>
+          <g transform="translate(474 70)" stroke="#4a4039" stroke-width="3">
+            <circle r="30" fill="#fff" />
+            <path d="M0 -24 L8 0 L0 24 L-8 0Z" fill="#f0816d" />
+            <text x="-7" y="-34" stroke="none" font-size="20">N</text>
+          </g>
+          <text x="22" y="378" font-size="17">1 cm = 10 km</text>
+        </svg>
+      </div>
+
+      <!-- Weather -->
+      <div class="item card"
+        style="left: 978px; top: 540px; width: 444px; height: 254px; background: var(--blue); transform: rotate(-1.5deg)">
+        <h2>Weather</h2>
+        <svg viewBox="0 0 400 170" width="400" height="170" font-family="Baloo 2" font-weight="700" font-size="20" fill="#4a4039"
+          stroke-linecap="round">
+          <g transform="translate(40 50)">
+            <circle r="20" fill="#f6b63d" stroke="#4a4039" stroke-width="3" />
+            <path d="M0 -34v8M0 26v8M-34 0h8M26 0h8M-24 -24l6 6M18 18l6 6M24 -24l-6 6M-18 18l-6 6" stroke="#4a4039" stroke-width="3" />
+          </g>
+          <g transform="translate(120 50)">
+            <circle cx="-8" cy="-8" r="16" fill="#f6b63d" stroke="#4a4039" stroke-width="3" />
+            <path d="M-22 16 a14 14 0 0 1 4 -26 a18 18 0 0 1 32 2 a13 13 0 0 1 2 24z" fill="#fff" stroke="#4a4039" stroke-width="3" />
+          </g>
+          <g transform="translate(200 50)">
+            <path d="M-26 10 a14 14 0 0 1 4 -26 a18 18 0 0 1 32 2 a13 13 0 0 1 2 24z" fill="#e8eef5" stroke="#4a4039" stroke-width="3" />
+            <path d="M-14 22 l-5 12 M0 22 l-5 12 M14 22 l-5 12" stroke="#2f7fc0" stroke-width="4" />
+          </g>
+          <g transform="translate(280 50)">
+            <path d="M-26 8 a14 14 0 0 1 4 -26 a18 18 0 0 1 32 2 a13 13 0 0 1 2 24z" fill="#cfd5dd" stroke="#4a4039" stroke-width="3" />
+            <path d="M-2 12 l-8 14 h10 l-8 14" fill="none" stroke="#f6b63d" stroke-width="4" />
+          </g>
+          <g transform="translate(360 50)">
+            <circle r="20" fill="#f6b63d" stroke="#4a4039" stroke-width="3" />
+            <path d="M-8 -3 q3 -5 6 0 M4 -3 q3 -5 6 0 M-8 6 q8 8 16 0" fill="none" stroke="#4a4039" stroke-width="3" />
+          </g>
+          <text x="22" y="118">Fri</text>
+          <text x="100" y="118">Sat</text>
+          <text x="180" y="118">Sun</text>
+          <text x="258" y="118">Mon</text>
+          <text x="342" y="118">Tue</text>
+          <text x="20" y="150" fill="#c2412d">27&deg;</text>
+          <text x="100" y="150">24&deg;</text>
+          <text x="180" y="150">19&deg;</text>
+          <text x="260" y="150">17&deg;</text>
+          <text x="340" y="150" fill="#c2412d">29&deg;</text>
+        </svg>
+      </div>
+
+      <!-- Forest photo -->
+      <div class="item polaroid" style="left: 1002px; top: 836px; width: 300px; height: 300px; transform: rotate(-4deg)">
+        <span class="pin" style="background: var(--plum)"></span>
+        <svg viewBox="0 0 266 196" height="196">
+          <rect width="266" height="196" fill="#e3f4d6" />
+          <circle cx="54" cy="44" r="18" fill="#ffe48f" />
+          <path d="M0 110 C 60 70, 120 90, 170 70 S 240 60, 266 80 V196 H0Z" fill="#a9d68f" />
+          <path d="M0 150 C 80 120, 160 150, 266 124 V196 H0Z" fill="#7cbf6a" />
+          <g fill="#3f8f55" stroke="#2c6b3d" stroke-width="2">
+            <path d="M34 150 l18 -64 l18 64z" />
+            <path d="M72 142 l14 -48 l14 48z" />
+            <path d="M186 136 l20 -76 l20 76z" />
+            <path d="M224 150 l14 -50 l14 50z" />
+            <path d="M150 146 l11 -38 l11 38z" />
+            <path d="M110 160 l16 -56 l16 56z" />
+          </g>
+          <path d="M120 196 C 130 176, 150 170, 144 150" fill="none" stroke="#c9a77a" stroke-width="10" stroke-linecap="round" />
+          <path d="M150 40 q8 -6 16 0 q8 -6 16 0 M196 30 q6 -5 12 0 q6 -5 12 0" fill="none" stroke="#4a4039" stroke-width="3"
+            stroke-linecap="round" />
+        </svg>
+        <p>Pine Hill</p>
+      </div>
+
+      <!-- Hike elevation -->
+      <div class="item card"
+        style="left: 912px; top: 1196px; width: 480px; height: 266px; background: var(--lilac); transform: rotate(1.5deg)">
+        <h2>Hike: 14 km</h2>
+        <svg viewBox="0 0 440 180" width="440" height="180" font-family="Baloo 2" font-weight="700" font-size="18" fill="#4a4039">
+          <path d="M20 150 L60 128 L96 136 L140 84 L176 100 L222 36 L256 70 L292 58 L330 112 L370 96 L420 146 V160 H20Z" fill="#fff"
+            stroke="#4a4039" stroke-width="4" stroke-linejoin="round" />
+          <path d="M20 160 H424" stroke="#4a4039" stroke-width="3" />
+          <circle cx="222" cy="36" r="9" fill="#f0816d" stroke="#4a4039" stroke-width="3" />
+          <path d="M222 27 V4 l18 6 l-18 6" fill="#f6b63d" stroke="#4a4039" stroke-width="3" />
+          <text x="244" y="22">940 m</text>
+          <text x="14" y="178">0</text>
+          <text x="120" y="178">4</text>
+          <text x="214" y="178">7</text>
+          <text x="318" y="178">11</text>
+          <text x="404" y="178">14</text>
+        </svg>
+      </div>
+
+      <!-- Packing checklist -->
+      <div class="item card" style="left: 1594px; top: 70px; width: 322px; height: 404px; background: #fff; transform: rotate(-2deg)">
+        <span class="pin" style="background: var(--sky)"></span>
+        <h2>Packing</h2>
+        <ul class="check">
+          <li class="done"><i></i><span>Tent + poles</span></li>
+          <li class="done"><i></i><span>Sleeping bags</span></li>
+          <li><i></i><span>Camera</span></li>
+          <li class="done"><i></i><span>Maps</span></li>
+          <li><i></i><span>Rain jackets</span></li>
+          <li><i></i><span>First aid kit</span></li>
+          <li class="done"><i></i><span>Guitar</span></li>
+        </ul>
+      </div>
+
+      <div class="item sticky"
+        style="left: 1450px; top: 522px; width: 212px; height: 190px; background: var(--peach); transform: rotate(4deg)">
+        <span class="tape"></span>Fuel stop<small>at km 120, then lunch</small>
+      </div>
+
+      <!-- Playlist -->
+      <div class="item card"
+        style="left: 1690px; top: 512px; width: 330px; height: 322px; background: var(--yellow); transform: rotate(2.5deg)">
+        <h2>Road songs</h2>
+        <svg viewBox="0 0 290 110" width="290" height="110" stroke="#4a4039" stroke-width="3">
+          <rect x="6" y="4" width="278" height="100" rx="12" fill="#f0816d" />
+          <rect x="30" y="16" width="230" height="30" rx="5" fill="#fff" />
+          <rect x="62" y="56" width="166" height="38" rx="19" fill="#4a4039" />
+          <circle cx="96" cy="75" r="13" fill="#fff" />
+          <circle cx="194" cy="75" r="13" fill="#fff" />
+          <path d="M96 64v22M85 75h22M194 64v22M183 75h22" stroke-width="2.5" />
+          <path d="M44 31 q20 -10 40 0 t40 0" fill="none" stroke="#9a7dd3" stroke-width="3" />
+        </svg>
+        <ol style="margin: 8px 0 0; padding-left: 28px; font-size: 21px; font-weight: 600; line-height: 1.3">
+          <li>Open Road</li>
+          <li>Sunny Days</li>
+          <li>Lake Song</li>
+        </ol>
+      </div>
+
+      <!-- Beach photo -->
+      <div class="item polaroid" style="left: 1354px; top: 890px; width: 324px; height: 312px; transform: rotate(5deg)">
+        <svg viewBox="0 0 290 206" height="206">
+          <rect width="290" height="206" fill="#9fd9f5" />
+          <circle cx="60" cy="46" r="22" fill="#ffe48f" stroke="#f6b63d" stroke-width="4" />
+          <rect y="96" width="290" height="50" fill="#3e9bd6" />
+          <path d="M0 104 q20 -8 40 0 t40 0 t40 0 t40 0 M170 124 q14 -6 28 0 t28 0" fill="none" stroke="#d6efff" stroke-width="3" />
+          <path d="M0 146 C 80 132, 200 150, 290 136 V206 H0Z" fill="#f7deb0" />
+          <path d="M200 196 L214 86" stroke="#8b5a3c" stroke-width="6" />
+          <path d="M154 100 Q214 40 272 100Z" fill="#f0816d" stroke="#4a4039" stroke-width="3" />
+          <path d="M184 100 Q214 50 214 100 Q214 50 244 100" fill="#fff" />
+          <circle cx="90" cy="176" r="15" fill="#fff" stroke="#4a4039" stroke-width="3" />
+          <path d="M76 172 q14 10 28 0" fill="none" stroke="#6fb2e3" stroke-width="4" />
+          <path d="M230 56 q6 -6 12 0 q6 -6 12 0" fill="none" stroke="#4a4039" stroke-width="3" stroke-linecap="round" />
+        </svg>
+        <p>Gull Isle</p>
+      </div>
+
+      <div class="item sticky"
+        style="left: 1404px; top: 1236px; width: 214px; height: 178px; background: var(--lilac); transform: rotate(-6deg)">
+        <span class="tape"></span>Sunscreen!!<small>SPF 50, hats</small>
+      </div>
+
+      <div class="item sticky"
+        style="left: 1728px; top: 876px; width: 214px; height: 178px; background: var(--blue); transform: rotate(3deg)">
+        Rain plan<small>museum + pie shop</small>
+      </div>
+
+      <!-- Ideas -->
+      <div class="item card"
+        style="left: 1652px; top: 1116px; width: 356px; height: 336px; background: var(--pink); transform: rotate(-2deg)">
+        <h2>Ideas</h2>
+        <svg viewBox="0 0 316 250" width="316" height="250" stroke="#4a4039" stroke-width="3" stroke-linejoin="round" font-family="Baloo 2"
+          font-weight="700" font-size="19" fill="#4a4039">
+          <g transform="translate(10 6)">
+            <path d="M40 0 L74 38 L40 92 L6 38Z" fill="#6fb2e3" />
+            <path d="M40 0 V92 M6 38 H74" fill="none" />
+            <path d="M40 92 q-10 16 4 26 t-4 26" fill="none" stroke-width="2.5" />
+            <path d="M36 114 l-8 6 l10 2z M38 134 l10 4 l-8 6z" fill="#f0816d" />
+            <text x="50" y="154" stroke="none">kite</text>
+          </g>
+          <g transform="translate(120 10)">
+            <path d="M8 48 L34 120 L60 48Z" fill="#f6c77a" />
+            <path d="M20 70 l26 16 M16 60 l34 24 M26 94 l14 8" fill="none" stroke-width="2" />
+            <circle cx="20" cy="38" r="18" fill="#ffc8d3" />
+            <circle cx="48" cy="36" r="18" fill="#c7e8c2" />
+            <circle cx="34" cy="18" r="17" fill="#fff4c9" />
+            <text x="-6" y="150" stroke="none">ice cream</text>
+          </g>
+          <g transform="translate(212 30)">
+            <circle cx="22" cy="72" r="20" fill="#fff" />
+            <circle cx="84" cy="72" r="20" fill="#fff" />
+            <path d="M22 72 L44 36 H72 L84 72 M44 36 L58 72 L72 36 M40 26 H54 M72 36 L68 22 H80" fill="none" stroke-width="4" />
+            <text x="34" y="130" stroke="none">bikes</text>
+          </g>
+          <g transform="translate(40 204)">
+            <path d="M0 18 H120 L104 42 H14Z" fill="#9a7dd3" />
+            <path d="M60 18 V-24 L94 12Z" fill="#fff" />
+            <path d="M-20 50 q16 -8 32 0 t32 0 t32 0 t32 0 t32 0" fill="none" stroke="#6fb2e3" stroke-width="3" />
+            <text x="146" y="38" stroke="none">boat trip</text>
+          </g>
+        </svg>
+      </div>
+
+      <!-- Sunset photo -->
+      <div class="item polaroid" style="left: 1966px; top: 46px; width: 330px; height: 318px; transform: rotate(4deg)">
+        <span class="pin" style="background: var(--coral)"></span>
+        <svg viewBox="0 0 296 212" height="212">
+          <defs>
+            <linearGradient id="skyB" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0" stop-color="#9a7dd3" />
+              <stop offset="0.55" stop-color="#f0816d" />
+              <stop offset="1" stop-color="#ffd27a" />
+            </linearGradient>
+          </defs>
+          <rect width="296" height="212" fill="url(#skyB)" />
+          <circle cx="148" cy="124" r="44" fill="#ffe48f" />
+          <rect y="124" width="296" height="88" fill="#5a6fb8" />
+          <path d="M104 136 h88 M116 150 h64 M128 164 h40 M138 178 h20 M24 146 h40 M232 158 h44 M40 186 h30" stroke="#ffe48f"
+            stroke-width="4" stroke-linecap="round" />
+          <path d="M40 120 l10 -34 l14 34z" fill="#fff" stroke="#4a4039" stroke-width="2" />
+          <path d="M30 120 h40 l-6 10 h-28z" fill="#4a4039" />
+          <path d="M200 44 q7 -7 14 0 q7 -7 14 0 M234 64 q5 -5 10 0 q5 -5 10 0" fill="none" stroke="#4a4039" stroke-width="3"
+            stroke-linecap="round" />
+        </svg>
+        <p>Sunset</p>
+      </div>
+
+      <div class="item sticky"
+        style="left: 2140px; top: 392px; width: 220px; height: 196px; background: var(--green); transform: rotate(-4deg)">
+        <span class="tape"></span>Snacks<small>chips, fruit, gum, juice</small>
+      </div>
+
+      <!-- City photo -->
+      <div class="item polaroid" style="left: 2062px; top: 640px; width: 304px; height: 314px; transform: rotate(-3deg)">
+        <svg viewBox="0 0 270 206" height="206">
+          <rect width="270" height="206" fill="#40467e" />
+          <circle cx="220" cy="40" r="18" fill="#fff4c9" />
+          <g fill="#2b2f58" stroke="#4a4039" stroke-width="2">
+            <rect x="10" y="98" width="44" height="108" />
+            <rect x="58" y="60" width="38" height="146" />
+            <rect x="100" y="120" width="34" height="86" />
+            <rect x="138" y="40" width="48" height="166" />
+            <path d="M162 40 V14" stroke="#fff4c9" stroke-width="3" />
+            <rect x="190" y="104" width="30" height="102" />
+            <rect x="224" y="78" width="40" height="128" />
+          </g>
+          <g fill="#ffe48f">
+            <rect x="18" y="108" width="8" height="10" />
+            <rect x="36" y="130" width="8" height="10" />
+            <rect x="18" y="160" width="8" height="10" />
+            <rect x="66" y="72" width="8" height="10" />
+            <rect x="80" y="98" width="8" height="10" />
+            <rect x="66" y="140" width="8" height="10" />
+            <rect x="80" y="176" width="8" height="10" />
+            <rect x="108" y="132" width="8" height="10" />
+            <rect x="146" y="52" width="8" height="10" />
+            <rect x="164" y="82" width="8" height="10" />
+            <rect x="146" y="118" width="8" height="10" />
+            <rect x="170" y="150" width="8" height="10" />
+            <rect x="198" y="116" width="8" height="10" />
+            <rect x="232" y="90" width="8" height="10" />
+            <rect x="246" y="126" width="8" height="10" />
+            <rect x="232" y="168" width="8" height="10" />
+          </g>
+          <g fill="#fff">
+            <circle cx="40" cy="30" r="2" />
+            <circle cx="110" cy="22" r="2.5" />
+            <circle cx="190" cy="60" r="1.8" />
+            <circle cx="250" cy="14" r="2" />
+          </g>
+        </svg>
+        <p>Home town</p>
+      </div>
+
+      <div class="item sticky"
+        style="left: 2086px; top: 1002px; width: 204px; height: 176px; background: var(--yellow); transform: rotate(5deg)">
+        Home by<small>Sunday 6 pm</small>
+      </div>
+
+      <!-- Route sign -->
+      <div class="item" style="left: 2104px; top: 1232px; width: 250px; height: 236px; transform: rotate(-7deg)">
+        <svg class="fill" viewBox="0 0 250 236" font-family="Baloo 2" font-weight="800" fill="#fff">
+          <path d="M125 10 C 170 10, 214 18, 232 30 C 236 110, 210 180, 125 226 C 40 180, 14 110, 18 30 C 36 18, 80 10, 125 10Z"
+            fill="#67b96f" stroke="#4a4039" stroke-width="5" />
+          <path d="M125 26 C 160 26, 196 32, 214 40 C 216 106, 196 164, 125 206 C 54 164, 34 106, 36 40 C 54 32, 90 26, 125 26Z" fill="none"
+            stroke="#fff" stroke-width="4" />
+          <text x="125" y="84" text-anchor="middle" font-size="30">ROUTE</text>
+          <text x="125" y="170" text-anchor="middle" font-size="92">7</text>
+        </svg>
+      </div>
+    </div>
+    <script>
+    // Seeded background doodles: one per jittered grid cell, so the cream between the cards always carries texture
+    // for registration without a periodic pattern (every doodle differs in kind, size, colour, offset and angle).
+    (() => {
+      let seed = 20260924;
+      const random = () => {
+        seed = (seed + 0x6d2b79f5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+      const pick = (list) => list[Math.floor(random() * list.length)];
+      const colours = ['#4a4039', '#f0816d', '#6fb2e3', '#67b96f', '#f6b63d', '#9a7dd3', '#e8a0b4', '#4a4039'];
+      const shapes = {
+        dot: (s, c) => `<circle r="${s / 4}" fill="${c}"/>`,
+        ring: (s, c) => `<circle r="${s / 2.4}" fill="none" stroke="${c}" stroke-width="3"/>`,
+        plus: (s, c) => `<path d="M${-s / 2} 0H${s / 2}M0 ${-s / 2}V${s / 2}" stroke="${c}" stroke-width="4" stroke-linecap="round"/>`,
+        star: (s, c) => {
+          let d = '';
+          for (let i = 0; i < 10; i++) {
+            const r = i % 2 ? s / 4.5 : s / 2, a = Math.PI * i / 5 - Math.PI / 2;
+            d += `${i ? 'L' : 'M'}${(r * Math.cos(a)).toFixed(1)} ${(r * Math.sin(a)).toFixed(1)}`;
+          }
+          return `<path d="${d}Z" fill="${c}" stroke="#4a4039" stroke-width="2" stroke-linejoin="round"/>`;
+        },
+        squiggle: (s, c) =>
+          `<path d="M${-s} 0q${s / 4} ${-s / 2} ${s / 2} 0t${s / 2} 0t${s / 2} 0t${
+            s / 2
+          } 0" fill="none" stroke="${c}" stroke-width="3.5" stroke-linecap="round"/>`,
+        spiral: (s, c) => {
+          let d = 'M0 0';
+          for (let i = 1; i <= 26; i++) {
+            const a = i * 0.55, r = s / 2 * i / 26;
+            d += `L${(r * Math.cos(a)).toFixed(1)} ${(r * Math.sin(a)).toFixed(1)}`;
+          }
+          return `<path d="${d}" fill="none" stroke="${c}" stroke-width="3" stroke-linecap="round"/>`;
+        },
+        heart: (s, c) =>
+          `<path d="M0 ${s / 3}C${-s / 1.6} ${-s / 8} ${-s / 5} ${-s / 1.7} 0 ${-s / 5}C${s / 5} ${-s / 1.7} ${s / 1.6} ${-s / 8} 0 ${
+            s / 3
+          }Z" fill="${c}" stroke="#4a4039" stroke-width="2"/>`,
+        triangle: (s, c) =>
+          `<path d="M0 ${-s / 2}L${s / 2} ${s / 2.6}H${-s / 2}Z" fill="none" stroke="${c}" stroke-width="3.5" stroke-linejoin="round"/>`,
+        zigzag: (s, c) =>
+          `<path d="M${-s / 1.4} ${s / 5}l${s / 3.5} ${-s / 2.5}l${s / 3.5} ${s / 2.5}l${s / 3.5} ${-s / 2.5}l${s / 3.5} ${
+            s / 2.5
+          }" fill="none" stroke="${c}" stroke-width="3.5" stroke-linejoin="round" stroke-linecap="round"/>`,
+        flower: (s, c) => {
+          let petals = '';
+          for (let i = 0; i < 5; i++) {
+            const a = i * Math.PI * 2 / 5;
+            petals += `<circle cx="${(s / 3.2 * Math.cos(a)).toFixed(1)}" cy="${(s / 3.2 * Math.sin(a)).toFixed(1)}" r="${
+              s / 5
+            }" fill="${c}"/>`;
+          }
+          return `${petals}<circle r="${s / 6}" fill="#f6b63d" stroke="#4a4039" stroke-width="2"/>`;
+        },
+      };
+      const kinds = Object.keys(shapes), cell = 92, parts = [];
+      for (let y = 0; y < 1500; y += cell) {
+        for (let x = 0; x < 2400; x += cell) {
+          const cx = x + 12 + random() * (cell - 24), cy = y + 12 + random() * (cell - 24);
+          const size = 16 + random() * 22, angle = Math.floor(random() * 360);
+          parts.push(
+            `<g transform="translate(${cx.toFixed(1)} ${cy.toFixed(1)}) rotate(${angle})">${shapes[pick(kinds)](size, pick(colours))}</g>`,
+          );
+        }
+      }
+      document.getElementById('doodles').innerHTML = parts.join('');
+    })();
+    </script>
+  </body>
+</html>

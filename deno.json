@@ -21,6 +21,7 @@
       "dependencies": ["build:core"]
     },
     "fixtures": "deno run --allow-read --allow-write --allow-run --allow-env scripts/make-fixtures.ts",
+    "demo-video": "deno run -A scripts/make-demo.ts",
     "fmt": "deno fmt src main.ts scripts tests README.md docs && cd rust && cargo fmt",
     "lint": "deno lint src main.ts scripts tests && cd rust && cargo fmt --check && cargo clippy --target wasm32-unknown-unknown -- -D warnings && RUSTC_BOOTSTRAP=1 RUSTFLAGS='-C link-arg=--export=__heap_base -C target-feature=+atomics,+bulk-memory,+mutable-globals,+simd128 -C link-arg=--shared-memory -C link-arg=--import-memory -C link-arg=--initial-memory=33554432 -C link-arg=--max-memory=2147483648 -C link-arg=--export=__stack_pointer -C link-arg=--export=__wasm_init_tls -C link-arg=--export=__tls_size -C link-arg=--export=__tls_align -C link-arg=--export=__tls_base' cargo clippy --target wasm32-unknown-unknown -Zbuild-std=panic_abort,std --target-dir target/lint-threads -- -D warnings",
     "fingerprint": "deno run -A scripts/fingerprint-scenarios.ts"
