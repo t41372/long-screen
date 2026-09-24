@@ -1,4 +1,5 @@
-//! Per-frame layer-learning evidence (`src/core/layers.ts::LayerLearner.add/addNative`): screen-space motion
+//! Per-frame layer-learning evidence (originally `LayerLearner.add`/`addNative` in TS, now frozen verbatim as
+//! the parity oracle at `tests/support/reference/layers.ts`): screen-space motion
 //! discontinuities accumulated across the WHOLE recording. `finish()` — the one-shot region construction that
 //! reads these accumulators — stays with the adapter for now; every per-frame pixel loop lives here.
 //!

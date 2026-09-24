@@ -1,4 +1,5 @@
-# Target features are chosen per build by scripts/build-core.sh (scalar and SIMD128 variants); plain `cargo`
-# invocations get the scalar baseline so `cargo test`/`cargo clippy` behave like the shipped default.
+# Target features are chosen per build by scripts/build-core.sh (scalar, SIMD128, and SIMD128 + shared-memory
+# threads variants); plain `cargo` invocations get the scalar baseline so `cargo test`/`cargo clippy` behave like
+# the shipped default.
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "link-arg=--export=__heap_base", "-C", "target-feature=-simd128"]

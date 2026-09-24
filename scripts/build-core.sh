@@ -27,9 +27,9 @@ done
 RUSTC_BOOTSTRAP=1 RUSTFLAGS="$threads" \
   cargo build --release --locked --target wasm32-unknown-unknown -Zbuild-std=panic_abort,std \
   --target-dir target/threads "$@"
-# Keep the historical single-output path for tests/tools that read it.
-mkdir -p target/wasm32-unknown-unknown/release
-cp target/scalar/wasm32-unknown-unknown/release/long_screen_core.wasm target/wasm32-unknown-unknown/release/long_screen_core.wasm
+# The threads build's "unstable feature `stdarch_wasm_atomic_wait`" warning during compilation is expected: it is
+# only reachable via RUSTC_BOOTSTRAP=1 + -Zbuild-std above, which is how this script unlocks nightly-gated wait/notify
+# on the stable toolchain pinned in rust/rust-toolchain.toml.
 ls -l target/scalar/wasm32-unknown-unknown/release/long_screen_core.wasm \
       target/simd/wasm32-unknown-unknown/release/long_screen_core.wasm \
       target/threads/wasm32-unknown-unknown/release/long_screen_core.wasm
