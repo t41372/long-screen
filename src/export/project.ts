@@ -4,6 +4,7 @@ import { deletePrefix, iterate } from '../storage/db.ts';
 import type { CanvasMeta, Project, Rect, Region } from '../types.ts';
 import { type StoredTile, type TileIndex, TileStore } from '../storage/tiles.ts';
 import { ZipWriter } from './zip.ts';
+import { exportSources } from './sources.ts';
 import { utf8 } from '../codec/crc.ts';
 import { createTarget } from './target.ts';
 import { offlineViewer } from './offline.ts';
@@ -117,6 +118,7 @@ export async function exportProject(
     for (const key of ['graph-summary', 'memory-stats', 'performance']) {
       await zip.add(`${key}.json`, utf8(JSON.stringify(await db.get(key) || {}, null, 2)));
     }
+    await exportSources(db, zip);
     onProgress(translate('exports.zipFinalize'), .98);
     await zip.finish();
     return { ...await target.result(), message: translate('exports.projectDone.message') };

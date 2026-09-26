@@ -185,8 +185,13 @@ export class ReferenceVotingRing {
     const layers = this.building;
     this.building = new Map();
     if (!layers.size) return [];
+    // Match the new ring's storage cost (packed screen support + six independent poses). The
+    // historical world-voting algorithm below remains unchanged and is still compared byte for byte.
     let bytes = 0;
-    for (const layer of layers.values()) bytes += layer.boxGray.byteLength + layer.score.byteLength + layer.comparisons.byteLength;
+    for (const layer of layers.values()) {
+      bytes += layer.boxGray.byteLength + layer.score.byteLength + layer.comparisons.byteLength + Math.ceil(layer.boxGray.byteLength / 4) +
+        96;
+    }
     this.ring.push({ index, bytes, layers });
     this.bytes += bytes;
     const out: FinalizedRecord[] = [];

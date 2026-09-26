@@ -1,7 +1,7 @@
 //! Corner detection and binary descriptors on analysis-resolution grey images.
 //!
 //! The scoring is the minimum eigenvalue of the 3×3 structure tensor computed from exact integer
-//! prefix sums; ties and ordering follow the historical implementation so keyframe words, matches
+//! rolling row sums; ties and ordering follow the historical implementation so keyframe words, matches
 //! and downstream motion hypotheses are reproducible across releases.
 
 use crate::geometry::{js_round, Rect, Rng};
@@ -72,6 +72,28 @@ struct Candidate {
     score: f64,
 }
 
+/// Horizontal three-gradient sums for one interior row, indexed by the centre pixel.
+fn tensor_row(d: &[u8], width: usize, y: usize, out: &mut [[i32; 3]]) {
+    let gradient = |x: usize| {
+        let i = y * width + x;
+        let gx = d[i + 1] as i32 - d[i - 1] as i32;
+        let gy = d[i + width] as i32 - d[i - width] as i32;
+        [gx * gx, gy * gy, gx * gy]
+    };
+    let mut left = gradient(10);
+    let mut centre = gradient(11);
+    for (x, sum) in out.iter_mut().enumerate().take(width - 11).skip(11) {
+        let right = gradient(x + 1);
+        *sum = [
+            left[0] + centre[0] + right[0],
+            left[1] + centre[1] + right[1],
+            left[2] + centre[2] + right[2],
+        ];
+        left = centre;
+        centre = right;
+    }
+}
+
 /// Spatially balanced minimum-eigenvalue corners with 256-bit BRIEF descriptors, strongest first.
 pub fn extract_features(
     gray: &[u8],
@@ -86,32 +108,30 @@ pub fn extract_features(
     if w < 23 || h < 23 {
         return Vec::new();
     }
-    // Summed-area tensors over the interior gradients; i64 is exact for any frame the analysis path produces.
-    let stride = w + 1;
-    let length = stride * (h + 1);
-    let mut tx = vec![0i64; length];
-    let mut ty = vec![0i64; length];
-    let mut txy = vec![0i64; length];
-    for y in 1..h - 1 {
-        let (mut xx, mut yy, mut xy) = (0i64, 0i64, 0i64);
-        for x in 1..w - 1 {
-            let i = y * w + x;
-            let gx = d[i + 1] as i64 - d[i - 1] as i64;
-            let gy = d[i + w] as i64 - d[i - w] as i64;
-            xx += gx * gx;
-            yy += gy * gy;
-            xy += gx * gy;
-            let j = (y + 1) * stride + x + 1;
-            tx[j] = tx[j - stride] + xx;
-            ty[j] = ty[j - stride] + yy;
-            txy[j] = txy[j - stride] + xy;
-        }
-    }
+    // Only 3×3 sums are queried. Three rows of horizontal tensors plus one cell-height score
+    // band preserve the historical cell-major order without three full-frame i64 integral planes.
+    // |gradient| <= 255, so even a 3×3 sum fits i32 (9 * 255² = 585225).
     const CELL: usize = 28;
+    let mut tensors = vec![[0i32; 3]; 3 * w];
+    let mut scores = vec![0.0; CELL * w];
+    tensor_row(&d, w, 10, &mut tensors[w..2 * w]);
+    tensor_row(&d, w, 11, &mut tensors[2 * w..3 * w]);
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut local: Vec<(i32, i32, f64)> = Vec::with_capacity(CELL * CELL);
     let mut by = 11;
     while by < h - 11 {
+        let end = (h - 11).min(by + CELL);
+        for y in by..end {
+            let slot = (y + 1) % 3 * w;
+            tensor_row(&d, w, y + 1, &mut tensors[slot..slot + w]);
+            for x in 11..w - 11 {
+                let xx = (tensors[x][0] + tensors[w + x][0] + tensors[2 * w + x][0]) as f64;
+                let yy = (tensors[x][1] + tensors[w + x][1] + tensors[2 * w + x][1]) as f64;
+                let xy = (tensors[x][2] + tensors[w + x][2] + tensors[2 * w + x][2]) as f64;
+                scores[(y - by) * w + x] =
+                    (xx + yy - ((xx - yy) * (xx - yy) + 4.0 * xy * xy).sqrt()) / 2.0;
+            }
+        }
         let mut bx = 11;
         while bx < w - 11 {
             local.clear();
@@ -122,14 +142,7 @@ pub fn extract_features(
                             continue;
                         }
                     }
-                    let a = (y - 1) * stride + x - 1;
-                    let b = a + 3;
-                    let c = a + 3 * stride;
-                    let e = c + 3;
-                    let xx = (tx[e] - tx[b] - tx[c] + tx[a]) as f64;
-                    let yy = (ty[e] - ty[b] - ty[c] + ty[a]) as f64;
-                    let xy = (txy[e] - txy[b] - txy[c] + txy[a]) as f64;
-                    let score = (xx + yy - ((xx - yy) * (xx - yy) + 4.0 * xy * xy).sqrt()) / 2.0;
+                    let score = scores[(y - by) * w + x];
                     if score > 100.0 {
                         local.push((x as i32, y as i32, score));
                     }

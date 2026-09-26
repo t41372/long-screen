@@ -102,6 +102,15 @@ pub extern "C" fn ls_pose_graph_new(
     }
 }
 
+/// Attempts the exact simple-cycle solution. Returns 1 when solved, 0 when the general solver is needed.
+#[no_mangle]
+pub extern "C" fn ls_pose_graph_solve_cycle(handle: u32) -> i32 {
+    match handles().get(handle) {
+        Some(graph) => graph.solve_cycle() as i32,
+        None => STATUS_BAD_ARGUMENT,
+    }
+}
+
 /// One Gauss-Seidel sweep (`crate::pose_graph::Graph::pass`); returns the largest single-node displacement, or a
 /// negative sentinel (`f64::MIN`, never a real displacement) on a bad handle.
 #[no_mangle]

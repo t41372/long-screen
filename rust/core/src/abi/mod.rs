@@ -35,6 +35,7 @@ mod pose_graph;
 mod pyramid;
 mod raster;
 mod regions;
+mod sources;
 mod temporal;
 mod track;
 mod track_keyframes;

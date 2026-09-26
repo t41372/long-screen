@@ -35,6 +35,7 @@ import { RunContext, StorageError } from './context.ts';
 import { presentFraming, presentPyramid } from './presentation.ts';
 import { scan } from './scan.ts';
 import { render } from './render.ts';
+import { resolveSources } from './sources.ts';
 import { solve } from './solve/solve.ts';
 export interface EngineEvents {
   progress: (p: Progress) => void;
@@ -168,6 +169,7 @@ export class Engine {
     ctx.timings.solveMS = performance.now() - phaseStart;
     phaseStart = performance.now();
     await render(ctx);
+    await resolveSources(ctx);
     ctx.timings.renderMS = performance.now() - phaseStart;
     phaseStart = performance.now();
     await presentFraming(ctx);

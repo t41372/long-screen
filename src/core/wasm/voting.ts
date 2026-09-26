@@ -14,8 +14,8 @@ export interface VotingBox {
   w: number;
   h: number;
 }
-/** Finalised verdict for one region of one frame: `bits` inconsistent, `clean` confidently consistent (LSB-first). */
-export type VotingVerdict = VotingBox & { bits: Uint8Array; clean: Uint8Array };
+/** Finalised verdict for one region of one frame: `bits` inconsistent, `clean` world-consistent, optional `screen` independently screen-occluded (LSB-first). */
+export type VotingVerdict = VotingBox & { bits: Uint8Array; clean: Uint8Array; screen?: Uint8Array };
 export interface VotingRecord {
   index: number;
   /** Per region id; absent when no region had a verdict cell. */
@@ -97,12 +97,14 @@ export class VotingRing {
       let record: Record<string, VotingVerdict> | undefined;
       for (let which = 0; which < count; which++) {
         const slot = slots[which], box = this.boxes[slot], bytes = Math.ceil(box.w * box.h / 8);
-        const [bits, clean] = this.core.scratch([bytes, bytes]);
-        this.core.check(this.exports.ls_voting_read(this.handle, which, bits, clean), 'voting read');
+        const [bits, clean, screen] = this.core.scratch([bytes, bytes, bytes]);
+        this.core.check(this.exports.ls_voting_read(this.handle, which, bits, clean, screen), 'voting read');
+        const screenBits = this.core.readBytes(screen, bytes);
         (record ??= {})[this.regions[slot].id] = {
           ...box,
           bits: this.core.readBytes(bits, bytes),
           clean: this.core.readBytes(clean, bytes),
+          ...(screenBits.some((v) => v) ? { screen: screenBits } : {}),
         };
       }
       this.exports.ls_voting_pop(this.handle);
