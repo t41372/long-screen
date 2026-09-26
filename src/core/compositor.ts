@@ -75,6 +75,7 @@ export class Compositor {
     private policy: 'stable' | 'latest',
     private emit: (d: Diagnostic) => Promise<void>,
     private atlas: RegionAtlas,
+    private noise = 0,
   ) {
     for (const region of atlas.regions) {
       if (
@@ -153,7 +154,7 @@ export class Compositor {
   /** `consistent`, when given, is a per-native-pixel (image-sized, one byte per pixel, indexed like `labels`) world-consistency
    *  mask computed by the render pass's one-frame lookahead: 0 means this pixel's placement here could be checked against a
    *  neighbouring frame and disagreed with every such check (CONSISTENT-BY-DEFAULT and genuinely-consistent pixels are both
-   *  1). Omitted for fixed regions and skipped/duplicate frames, where every pixel is treated as consistent (unchanged
+   *  1); 2 identifies a screen occluder independently of ordinary pairwise disagreement. Omitted for fixed regions and skipped/duplicate frames, where every pixel is treated as consistent (unchanged
    *  behaviour). See docs/ARCHITECTURE.md §七. A mask already resident in the core is consumed in place and only read
    *  back when a temporal conflict needs the pixel-level check. `residentFrame`, when given, is `image` already in core
    *  memory, so the frame is not copied again for compositing. */
@@ -204,6 +205,7 @@ export class Compositor {
     // resident set first keeps those tiles together while the few cold loads evict only the oldest residents.
     // One frame copy into the core per placement; each tile then round-trips its own buffers only.
     const prepared = core().prepareObservation({
+      noise: this.noise,
       image: residentFrame ?? image,
       mask: rectangular ? undefined : { labels, code },
       occlusions: p.occlusions,

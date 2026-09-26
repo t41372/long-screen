@@ -41,7 +41,7 @@ export function prefixOnly(
  * without every call site re-deriving that distinction from error messages or DOMException names. */
 export class StorageError extends Error {
   constructor(cause: unknown) {
-    super(cause instanceof Error ? cause.message : String(cause));
+    super(cause instanceof Error ? cause.message || cause.name : String(cause));
     this.name = 'StorageError';
   }
 }
@@ -149,6 +149,7 @@ export class RunContext {
     this.store = new Namespace(db, `run/${id}/`);
     this.diagnostics = new Diagnostics(this.store, (d) => events.diagnostic(d));
     this.tiles = new TileStore(this.store, settings.tileSize, settings.memoryMB);
+    this.tiles.captureSources = true;
     this.factor = analysisFactor(source.info.width, source.info.height, settings.analysisSize);
     this.refineRadius = Math.max(3, Math.ceil(this.factor / 2) + 1);
     this.noise = source.info.noise ?? DECODED_VIDEO_NOISE;

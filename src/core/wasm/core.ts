@@ -10,6 +10,8 @@ import { allocOrThrow, Arena, type BytesInput, type FrameInput, FrameRing, Resid
 import { placeFrame as placeFrameImpl, writeRect as writeRectImpl } from './marshal.ts';
 import { check as checkStatus } from './exports.ts';
 import * as raster from './raster.ts';
+import * as sources from './sources.ts';
+import * as opacity from './sources-opacity.ts';
 import * as yuv from './yuv.ts';
 import * as pyramid from './pyramid.ts';
 import * as temporal from './temporal.ts';
@@ -38,6 +40,7 @@ import {
   poseGraphPass as poseGraphPassImpl,
   poseGraphRead as poseGraphReadImpl,
   poseGraphResidual as poseGraphResidualImpl,
+  poseGraphSolveCycle as poseGraphSolveCycleImpl,
 } from './pose-graph.ts';
 import {
   frameCoordinate as frameCoordinateImpl,
@@ -197,6 +200,75 @@ export class Core {
     for (const worker of this.helpers.splice(0)) worker.terminate();
   }
   /** Transient scratch space for stateful-object wrappers (planned like any kernel call). */
+  sourceAnalysis(size: number, tx: number, ty: number, noise: number, state?: Uint8Array): sources.SourceAnalysis {
+    return sources.sourceAnalysis(this, size, tx, ty, noise, state);
+  }
+  sourceScene(): sources.SourceScene {
+    return new sources.SourceScene(this);
+  }
+  sourceEpochSweep(): sources.SourceEpochSweep {
+    return new sources.SourceEpochSweep(this);
+  }
+  sourceSameFrame(a: ResidentFrame, b: ResidentFrame): boolean {
+    if (a.width !== b.width || a.height !== b.height) return false;
+    return this.check(this.exports.ls_sources_same_frame(a.ptr, b.ptr, a.length), 'source frame identity') === 1;
+  }
+  sourceOwnershipShards(labels: Resident, parents: Resident, input: Parameters<typeof sources.ownershipShards>[3]) {
+    return sources.ownershipShards(this, labels, parents, input);
+  }
+  sourceParentLabels(
+    labels: Resident,
+    regions: import('../../types.ts').Region[],
+    code: (region: import('../../types.ts').Region) => number,
+  ): Resident | undefined {
+    return sources.parentLabels(this, labels, regions, code);
+  }
+  sourceRoles(states: sources.SourceObjectState[], region = 0): sources.SourceRoles {
+    return new sources.SourceRoles(this, states, region);
+  }
+  sourceEvidence(chunks: Uint8Array[], states: sources.SourceRoles): sources.SourceEvidence {
+    return new sources.SourceEvidence(this, chunks, states);
+  }
+  sourceFittedOpacityField(data: Uint8Array, noise: number): opacity.FittedOpacityField {
+    return new opacity.FittedOpacityField(this, data, noise);
+  }
+  sourceOpacityField(data?: Uint8Array): opacity.OpacityField {
+    return new opacity.OpacityField(this, data);
+  }
+  sourceOpacityAnnotation(data: Uint8Array, page: number, desc: opacity.OpacityDescriptor): opacity.OpacityAnnotation {
+    return new opacity.OpacityAnnotation(this, data, page, desc);
+  }
+  sourceOpacityValid(data: Uint8Array, noise: number): number {
+    return opacity.opacityValid(this, data, noise);
+  }
+  sourceOpacityExport(data: Uint8Array): Uint8Array<ArrayBuffer> {
+    return opacity.opacityExport(this, data);
+  }
+  sourceArchiveExport(data: Uint8Array, page: number, png: boolean): Uint8Array<ArrayBuffer> {
+    return sources.sourceArchiveExport(this, data, page, png);
+  }
+  sourceTracker(): sources.SourceTracker {
+    return new sources.SourceTracker(this);
+  }
+  sourceShards(size: number, tx: number, ty: number, side: number, disputes: Uint8Array): sources.SourceShard[] {
+    return sources.sourceShards(this, size, tx, ty, side, disputes);
+  }
+  sourceArchiveFrames(data: Uint8Array, page: number): number[] {
+    return sources.sourceArchiveFrames(this, data, page);
+  }
+  sourceArchiveAnnotate(
+    data: Uint8Array,
+    page: number,
+    size: number,
+    tx: number,
+    ty: number,
+    evidence: sources.SourceEvidence,
+  ): Uint8Array<ArrayBuffer> {
+    return sources.sourceArchiveAnnotate(this, data, page, size, tx, ty, evidence);
+  }
+  sourceTile(size: number, tx: number, ty: number, noise: number, disputes: Uint8Array, state?: Uint8Array): sources.SourceTile {
+    return sources.sourceTile(this, size, tx, ty, noise, disputes, state);
+  }
   scratch(sizes: number[]): number[] {
     return this.arena.plan(sizes);
   }
@@ -465,6 +537,9 @@ export class Core {
    *  sweep per `poseGraphPass`. */
   poseGraphNew(nodes: PoseGraphNodes, edges: PoseGraphEdges): number {
     return poseGraphNewImpl(this, this.exports, nodes, edges);
+  }
+  poseGraphSolveCycle(handle: number): boolean {
+    return poseGraphSolveCycleImpl(this, this.exports, handle);
   }
   poseGraphPass(handle: number, reverse: boolean): number {
     return poseGraphPassImpl(this.exports, handle, reverse);

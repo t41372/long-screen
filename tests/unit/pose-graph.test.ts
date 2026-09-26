@@ -195,3 +195,21 @@ async function assertRejectsAsync(fn: () => Promise<unknown>): Promise<void> {
   }
   assert(rejected, 'expected rejection');
 }
+
+// A weak odometry edge must absorb 20× the closure error of a reliable edge. The optimum of
+// this quadratic case follows directly from the weighted residual normal equations.
+Deno.test('pose graph: a single loop reaches the weighted optimum without diffusion stopping early', async () => {
+  const graph = new PoseGraph(new MemoryKV());
+  const nodes = [await graph.add('c', 0, { x: 0, y: 0 })];
+  for (let i = 1; i <= 120; i++) {
+    nodes.push(await graph.add('c', i, { x: i * 10 + (i >= 60 ? 2 : 0), y: 0 }, nodes[i - 1], i === 60 ? .05 : 1));
+  }
+  await graph.connect(nodes[0].id, nodes[120].id, 1200, 0, 5, 'loop');
+  await graph.optimize(async () => {});
+  const resistance = 119 + 20 + .2;
+  for (let i = 1; i <= 120; i++) {
+    const residual = nodes[i].x - nodes[i - 1].x - (10 + (i === 60 ? 2 : 0));
+    const expected = -2 / ((i === 60 ? .05 : 1) * resistance);
+    assert(Math.abs(residual - expected) < 1e-9, `edge ${i}: residual ${residual} vs optimum ${expected}`);
+  }
+});

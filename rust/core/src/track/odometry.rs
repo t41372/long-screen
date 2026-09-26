@@ -231,24 +231,48 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
 
     let mut difference = 0.0;
     let mut samples = 0u32;
+    let (mut textured_difference, mut textured_samples) = (0.0, 0u32);
+    let max_samples = ((js_ceil(roi.x + roi.width) - js_ceil(roi.x)).max(0) as u64)
+        * ((js_ceil(roi.y + roi.height) - js_ceil(roi.y)).max(0) as u64);
     let mut y = js_ceil(roi.y) as f64;
-    while y < roi.y + roi.height {
+    'rows: while y < roi.y + roi.height {
         let mut x = js_ceil(roi.x) as f64;
         while x < roi.x + roi.width {
             let contained =
                 region.is_none_or(|r| r.contains(x * f, y * f, image_width, image_height));
             if contained {
                 let (yi, xi) = (y as usize, x as usize);
-                difference += (previous_gray.data[yi * g.width + xi] as f64
-                    - g.data[yi * g.width + xi] as f64)
-                    .abs();
+                let i = yi * g.width + xi;
+                let delta = (previous_gray.data[i] as f64 - g.data[i] as f64).abs();
+                difference += delta;
                 samples += 1;
+                if xi > 0 && xi + 1 < g.width && yi > 0 && yi + 1 < g.height {
+                    let textured = |gray: &[u8]| {
+                        (gray[i - 1] as i32 - gray[i + 1] as i32)
+                            .abs()
+                            .max((gray[i - g.width] as i32 - gray[i + g.width] as i32).abs())
+                            >= 12
+                    };
+                    if textured(previous_gray.data) || textured(g.data) {
+                        textured_difference += delta;
+                        textured_samples += 1;
+                    }
+                }
+                // Remaining differences are nonnegative and membership can only reduce the divisor.
+                if difference > 5.0 * max_samples as f64 {
+                    break 'rows;
+                }
             }
-            x += 7.0;
+            x += 1.0;
         }
-        y += 7.0;
+        y += 1.0;
     }
-    let decision = if difference / (samples.max(1) as f64) > 5.0 {
+    // A sparse page can move substantially while most pixels remain background (e.mov frame 823).
+    // Silence in the blank area must not outweigh disagreement on the available structure.
+    let decision = if samples == 0
+        || difference > 5.0 * samples as f64
+        || (textured_samples >= 12 && textured_difference > 5.0 * textured_samples as f64)
+    {
         OdometryDecision::Lost
     } else {
         OdometryDecision::Static
@@ -261,5 +285,110 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
         weak_step: false,
         step_error: f64::INFINITY,
         content_change: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Failure cases: content changes between the old 7px probes; empty membership; threshold-exact
+    // noise; fractional ROI edges. Exercise the real fallback through odometry, not a test-only scorer.
+    fn fallback(a: &[u8], b: &[u8], roi: Rect, region: Option<&Region>) -> OdometryDecision {
+        let (width, height) = (49, 35);
+        let rgba = vec![0; width * height * 4];
+        odometry(OdometryInputs {
+            f: 1.0,
+            radius: 1,
+            mask: None,
+            roi,
+            rect: roi,
+            region,
+            image_width: width as f64,
+            image_height: height as f64,
+            previous: &rgba,
+            current: &rgba,
+            previous_gray: Gray {
+                data: a,
+                width,
+                height,
+            },
+            g: Gray {
+                data: b,
+                width,
+                height,
+            },
+            velocity: (0.0, 0.0),
+            previous_features: &[],
+            own_features: &[],
+            confidence: 0.9,
+        })
+        .decision
+    }
+
+    #[test]
+    fn fallback_sees_changes_between_grid_probes() {
+        let roi = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 49.0,
+            height: 35.0,
+        };
+        let a = vec![0; 49 * 35];
+        let b: Vec<u8> = (0..49 * 35)
+            .map(|i| {
+                if i % 49 % 7 == 0 && i / 49 % 7 == 0 {
+                    0
+                } else {
+                    200
+                }
+            })
+            .collect();
+        assert_eq!(fallback(&a, &b, roi, None), OdometryDecision::Lost);
+    }
+
+    #[test]
+    fn fallback_does_not_dilute_sparse_moving_texture_with_blank_background() {
+        let roi = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 49.0,
+            height: 35.0,
+        };
+        let mut a = vec![0; 49 * 35];
+        let mut b = a.clone();
+        for y in 10..13 {
+            for x in 10..13 {
+                a[y * 49 + x] = 255;
+                b[y * 49 + x + 14] = 255;
+            }
+        }
+        assert_eq!(fallback(&a, &b, roi, None), OdometryDecision::Lost);
+    }
+
+    #[test]
+    fn fallback_requires_observations_and_preserves_noise_threshold() {
+        let roi = Rect {
+            x: 0.5,
+            y: 0.5,
+            width: 47.5,
+            height: 33.5,
+        };
+        let a = vec![80; 49 * 35];
+        for (value, expected) in [
+            (80, OdometryDecision::Static),
+            (85, OdometryDecision::Static),
+            (86, OdometryDecision::Lost),
+        ] {
+            assert_eq!(fallback(&a, &vec![value; a.len()], roi, None), expected);
+        }
+        let region = Region {
+            rect: roi,
+            exclusions: vec![roi],
+            crop: None,
+            solid: false,
+            mask: None,
+        };
+        assert_eq!(fallback(&a, &a, roi, Some(&region)), OdometryDecision::Lost);
     }
 }

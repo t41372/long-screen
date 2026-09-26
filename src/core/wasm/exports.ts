@@ -2,8 +2,114 @@
  *  convention every kernel call is checked against. */
 
 export interface CoreExports {
+  ls_sources_opacity_fitted_new(data: number, len: number, noise: number): number;
+  ls_sources_opacity_fitted_free(handle: number): void;
+  ls_sources_opacity_fitted_bytes(handle: number): number;
+  ls_sources_opacity_fitted_apply(handle: number, analysis: number, key: number, keyLen: number, field: number, noise: number): number;
+
+  ls_sources_opacity_field_new(data: number, len: number): number;
+  ls_sources_opacity_field_free(handle: number): void;
+  ls_sources_opacity_field_merge(handle: number, learning: number, key: number, len: number, noise: number): number;
+  ls_sources_opacity_field_state(handle: number): number;
+  ls_sources_opacity_field_bytes(handle: number): number;
+
+  ls_sources_evidence_new(desc: number, count: number, states: number): number;
+  ls_sources_roles_new(data: number, len: number, region: number): number;
+  ls_sources_roles_free(handle: number): void;
+  ls_sources_evidence_free(handle: number): void;
+  ls_sources_same_frame(a: number, b: number, len: number): number;
+  ls_sources_analysis_baseline(
+    handle: number,
+    history: number,
+    len: number,
+    size: number,
+    tx: number,
+    ty: number,
+    rgba: number,
+    coverage: number,
+  ): number;
+  ls_sources_analysis_copy_baseline(handle: number, other: number): number;
+
+  ls_sources_opacity_learn(analysis: number, data: number, len: number, page: number, desc: number, descLen: number): number;
+  ls_sources_opacity_keys(handle: number, apply: number): number;
+  ls_sources_opacity_free(handle: number, apply: number): void;
+  ls_sources_opacity_prepare(data: number, len: number, page: number, desc: number, descLen: number): number;
+  ls_sources_opacity_archive(handle: number): number;
+  ls_sources_opacity_valid(data: number, len: number, noise: number): number;
+  ls_sources_opacity_export(data: number, len: number): number;
+
+  ls_sources_archive_export(data: number, len: number, page: number, png: number): number;
+  ls_sources_tracker_new(): number;
+  ls_sources_tracker_free(handle: number): void;
+  ls_sources_tracker_observe(
+    handle: number,
+    desc: number,
+    len: number,
+    rgba: number,
+    previous: number,
+    labels: number,
+    visibility: number,
+  ): number;
+  ls_sources_ownership_shards(labels: number, parents: number, desc: number, len: number): number;
+  ls_sources_shards(size: number, tx: number, ty: number, side: number, disputes: number): number;
+  ls_sources_analysis_epoch(handle: number, data: number, len: number, page: number, desc: number, descLen: number): number;
+  ls_sources_analysis_apply(
+    handle: number,
+    size: number,
+    tx: number,
+    ty: number,
+    rgba: number,
+    coverage: number,
+    provisional: number,
+    owner: number,
+  ): number;
+  ls_sources_archive_frames(data: number, len: number, page: number): number;
+  ls_sources_archive_annotate(data: number, len: number, page: number, desc: number, descLen: number, analysis: number): number;
+  ls_sources_opacity_feed(handle: number, analysis: number, page: number): number;
+
   memory: WebAssembly.Memory;
   ls_alloc(size: number): number;
+  ls_sources_bytes_len(handle: number): number;
+  ls_sources_bytes_read(handle: number, output: number): number;
+  ls_sources_bytes_free(handle: number): void;
+  ls_sources_tile_new(size: number, tx: number, ty: number, noise: number, disputes: number): number;
+  ls_sources_tile_load(ptr: number, length: number): number;
+  ls_sources_tile_free(handle: number): void;
+  ls_sources_tile_state(handle: number): number;
+  ls_sources_tile_spill(handle: number): number;
+  ls_sources_tile_stats(handle: number): number;
+  ls_sources_analysis_new(size: number, tx: number, ty: number, noise: number): number;
+  ls_sources_analysis_free(handle: number): void;
+  ls_sources_analysis_feed(handle: number, data: number, length: number, page: number): number;
+  ls_sources_analysis_summary(handle: number): number;
+  ls_sources_analysis_refute_needed(handle: number): number;
+  ls_sources_analysis_corroborate(handle: number, data: number, len: number, page: number): number;
+  ls_sources_analysis_refute(handle: number, data: number, length: number, page: number): number;
+  ls_sources_analysis_options(handle: number): number;
+  ls_sources_analysis_state(handle: number): number;
+  ls_sources_analysis_load(data: number, length: number): number;
+  ls_sources_analysis_block(handle: number, block: number, rgba: number, frames: number, reasons: number): number;
+  ls_sources_analysis_missing(handle: number, block: number, frame: number, component: number): number;
+  ls_sources_scene_new(): number;
+  ls_sources_scene_free(handle: number): void;
+  ls_sources_scene_add(handle: number, tx: number, ty: number, data: number, length: number): number;
+  ls_sources_scene_components(handle: number): number;
+  ls_sources_epoch_new(): number;
+  ls_sources_epoch_free(handle: number): void;
+  ls_sources_epoch_add(handle: number, expected: number, data: number, length: number, newBlock: number): number;
+  ls_sources_epoch_page(handle: number, data: number, length: number, targets: number, targetsLength: number): number;
+  ls_sources_epoch_choose(handle: number, latest: number): number;
+  ls_sources_parent_labels(labels: number, length: number, regions: number, regionsLength: number, output: number): number;
+  ls_sources_tile_capture(
+    handle: number,
+    desc: number,
+    length: number,
+    rgba: number,
+    labels: number,
+    visibility: number,
+    ownership: number,
+    contextVisibility: number,
+  ): number;
   ls_pool_helpers(): number;
   ls_layout(which: number): number;
   ls_fixed_update(
@@ -242,7 +348,7 @@ export interface CoreExports {
   ls_voting_push(handle: number, index: number): number;
   ls_voting_drain(handle: number): number;
   ls_voting_peek(handle: number, out: number): number;
-  ls_voting_read(handle: number, which: number, bits: number, clean: number): number;
+  ls_voting_read(handle: number, which: number, bits: number, clean: number, screen: number): number;
   ls_voting_pop(handle: number): number;
   ls_learner_new(width: number, height: number): number;
   ls_learner_free(handle: number): void;
@@ -311,6 +417,7 @@ export interface CoreExports {
     weight: number,
     edgeCount: number,
   ): number;
+  ls_pose_graph_solve_cycle(handle: number): number;
   ls_pose_graph_pass(handle: number, reverse: number): number;
   ls_pose_graph_residual(handle: number): number;
   ls_pose_graph_read(handle: number, xsOut: number, ysOut: number): number;

@@ -8,7 +8,7 @@ use crate::compositor::{composite_tile, Observation, TileBuffers, QUALITY_BLOCK}
 /// Tile descriptor (40 bytes): u32 pixels, coverage, provisional, quality, conflicts, owner, score, frozen
 /// pointers, u32 size, u32 padding. Observation descriptor (64 bytes): u32 rgba, u32 width, u32 height,
 /// u32 labels (0 = rectangular fast path), u32 code, u32 occlusions ptr, u32 occlusion count, u32 consistent
-/// ptr (0 = all consistent), f64 confidence, u32 uncertain, u32 frame, 8 bytes padding.
+/// ptr (0 = all consistent), f64 confidence, u32 uncertain, u32 frame, f64 source noise, 8 bytes padding.
 /// `world` points at one rect; `out` holds COMPOSITE_HEADER_BYTES + 8 × block count.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
@@ -115,6 +115,7 @@ pub extern "C" fn ls_composite_tile(
         occlusions: &occlusions,
         consistent,
         confidence: o.f64(32),
+        noise: o.f64(48),
         uncertain: o.u32(40) != 0,
         frame: o.u32(44),
     };
@@ -128,6 +129,15 @@ pub extern "C" fn ls_composite_tile(
         owner,
         score,
         frozen,
+        disputes: if t.u32(36) == 0 {
+            None
+        } else {
+            // SAFETY: separate adapter-owned block array, validated against linear memory.
+            let Some(values) = (unsafe { slice_mut(t.u32(36), blocks) }) else {
+                return STATUS_BAD_ARGUMENT;
+            };
+            Some(values)
+        },
     };
     let stats = composite_tile(
         &mut buffers,

@@ -47,6 +47,11 @@ export function poseGraphNew(core: Core, exports: CoreExports, nodes: PoseGraphN
   );
 }
 
+/** Solves one anchored simple cycle exactly when every residual stays in Huber's quadratic region. */
+export function poseGraphSolveCycle(core: Core, exports: CoreExports, handle: number): boolean {
+  return core.check(exports.ls_pose_graph_solve_cycle(handle), 'pose graph cycle') === 1;
+}
+
 /** One Gauss-Seidel sweep; returns the largest single-node displacement (`maxChange`). */
 export function poseGraphPass(exports: CoreExports, handle: number, reverse: boolean): number {
   const result = exports.ls_pose_graph_pass(handle, reverse ? 1 : 0);

@@ -19,6 +19,8 @@ pub struct Vote<'a> {
     pub bits: &'a [u8],
     /// Bit set: confidently consistent (only consulted when `bits` is clear).
     pub clean: &'a [u8],
+    /// Independent screen-motion witness (may be empty for older records).
+    pub screen: &'a [u8],
 }
 
 impl Vote<'_> {
@@ -28,7 +30,7 @@ impl Vote<'_> {
         (ax0..=ax1).any(|ax| self.verdict(ax, ay) < 0)
     }
 
-    /// −1 inconsistent, +1 confidently consistent, 0 no verdict; `(ax, ay)` are analysis cells.
+    /// −2 screen occluder, −1 inconsistent, +1 confidently consistent, 0 no verdict; `(ax, ay)` are analysis cells.
     #[inline]
     pub fn verdict(&self, ax: i32, ay: i32) -> i32 {
         let lx = ax - self.x0;
@@ -38,7 +40,9 @@ impl Vote<'_> {
         }
         let i = (ly * self.w + lx) as usize;
         let bit = 1u8 << (i & 7);
-        if self.bits.get(i >> 3).is_some_and(|b| b & bit != 0) {
+        if self.screen.get(i >> 3).is_some_and(|b| b & bit != 0) {
+            -2
+        } else if self.bits.get(i >> 3).is_some_and(|b| b & bit != 0) {
             -1
         } else if self.clean.get(i >> 3).is_some_and(|b| b & bit != 0) {
             1
@@ -147,7 +151,7 @@ impl NeighbourRow<'_, '_, '_> {
     }
 }
 
-/// Writes one byte per native pixel into `out` (1 = consistent). Pixels outside the region stay 1 and are
+/// Writes one byte per native pixel: 0 inconsistent, 1 accepted/unknown, 2 screen occluder. Pixels outside the region stay 1 and are
 /// never read by the compositor, which gates on region membership first. Rows are independent, so they are
 /// split across the pool; each row is computed identically whichever thread runs it.
 pub fn consistency_mask(input: &MaskInput<'_>, out: &mut [u8]) {
@@ -251,17 +255,23 @@ fn mask_row(ctx: &Ctx<'_, '_>, sy: i64, out_row: &mut [u8]) {
                     ay,
                 )
             });
-            if votes_clear && block_agrees(ctx, rows, lab_row, rgb_row, sx as usize) {
+            let screen_clear = ctx.neighbours.iter().flatten().all(|n| {
+                n.vote.is_none_or(|v| {
+                    (sx..sx + 4).all(|x| v.verdict(x.div_euclid(factor) as i32, ay) != -2)
+                })
+            });
+            if votes_clear && screen_clear && block_agrees(ctx, rows, lab_row, rgb_row, sx as usize)
+            {
                 sx += 4;
                 continue;
             }
             for x in sx..sx + 4 {
-                mask_pixel(ctx, rows, row_vote, ay, lab_row, rgb_row, out_row, x);
+                mask_pixel(ctx, rows, row_vote, ay, lab_row, rgb_row, out_row, sy, x);
             }
             sx += 4;
             continue;
         }
-        mask_pixel(ctx, rows, row_vote, ay, lab_row, rgb_row, out_row, sx);
+        mask_pixel(ctx, rows, row_vote, ay, lab_row, rgb_row, out_row, sy, sx);
         sx += 1;
     }
 }
@@ -340,6 +350,7 @@ fn mask_pixel(
     lab_row: &[u8],
     rgb_row: &[u8],
     out_row: &mut [u8],
+    sy: i64,
     sx: i64,
 ) {
     let code = ctx.input.code;
@@ -348,8 +359,24 @@ fn mask_pixel(
     if lab_row[x] != code {
         return;
     }
-    if row_vote.is_some_and(|v| v.verdict(sx.div_euclid(factor) as i32, ay) < 0) {
-        out_row[x] = 0;
+    // Carry a nearby frame's proven screen appearance at native resolution. Without this, a
+    // late overlay with too few independent partners could be mistaken for the clean witness.
+    let src = (sy as usize * ctx.input.width + x) * 4;
+    let inherited = ctx.neighbours.iter().flatten().any(|n| {
+        n.vote
+            .is_some_and(|v| v.verdict(sx.div_euclid(factor) as i32, ay) == -2)
+            && (0..3)
+                .map(|c| (ctx.input.rgba[src + c] as i32 - n.rgba[src + c] as i32).abs())
+                .sum::<i32>() as f64
+                <= ctx.input.noise * 3.0
+    });
+    if inherited {
+        out_row[x] = 2;
+        return;
+    }
+    let own = row_vote.map_or(0, |v| v.verdict(sx.div_euclid(factor) as i32, ay));
+    if own == -2 {
+        out_row[x] = 2;
         return;
     }
     let k = x * 4;
@@ -358,7 +385,7 @@ fn mask_pixel(
         rgb_row[k + 1] as i32,
         rgb_row[k + 2] as i32,
     );
-    let (mut checked, mut condemned, mut excused) = (0u32, false, 0u32);
+    let (mut checked, mut condemned, mut excused, mut screen_excused) = (0u32, false, 0u32, 0u32);
     for row in rows.iter().flatten() {
         // Each placement is rasterised at its own rounded pose; the difference of rounded poses is what the
         // compositor actually uses, not the rounded difference.
@@ -367,6 +394,16 @@ fn mask_pixel(
         }
         let ix = (sx + row.n.dx) as usize;
         if row.labels[ix] != code || row.occludes(sx) {
+            continue;
+        }
+        // A screen-motion witness identifies the occluder, unlike symmetric world disagreement.
+        // This neighbour cannot veto a newly revealed clean page pixel, even with two neighbours.
+        if row
+            .n
+            .vote
+            .is_some_and(|v| v.verdict((ix as i64).div_euclid(factor) as i32, row.ay) == -2)
+        {
+            screen_excused += 1;
             continue;
         }
         checked += 1;
@@ -394,7 +431,10 @@ fn mask_pixel(
             break;
         }
     }
-    if condemned || (excused > 0 && checked >= 2) {
+    if condemned
+        || (excused > 0 && checked >= 2)
+        || (own < 0 && !(screen_excused > 0 && excused == 0 && !condemned))
+    {
         out_row[x] = 0;
     }
 }
@@ -454,6 +494,7 @@ mod tests {
             h: 4,
             bits: &bits,
             clean: &clean,
+            screen: &[],
         }));
         consistency_mask(&excused, &mut out);
         assert!(out.iter().all(|&v| v == 1));

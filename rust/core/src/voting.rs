@@ -12,6 +12,11 @@ use crate::geometry::{js_ceil, js_floor, js_hypot, js_round};
 use crate::pool::SyncPtr;
 use crate::region::Region;
 
+mod screen;
+use screen::{
+    add_screen_support, complete_wide_panels, page_patch_agrees, screen_agrees, ScreenPanel,
+};
+
 pub const PARTNERS: usize = 6;
 pub const VERDICT_MIN: u32 = 3;
 
@@ -52,6 +57,7 @@ pub struct RegionSlot {
     /// 1 where the box cell maps to an in-frame analysis cell inside the region (the blur-tap test), constant
     /// for the run; `box_gray` reads this instead of re-evaluating region membership nine times per cell.
     pub inside: Vec<u8>,
+    panel: Option<ScreenPanel>,
 }
 
 /// One region's voting state in one ring frame.
@@ -62,6 +68,10 @@ pub struct Layer {
     pub score: Vec<i8>,
     pub comparisons: Vec<u8>,
     pub pairs: u32,
+    /// Two-bit saturating screen-motion support, separate from weak world-consistency votes.
+    pub screen: Vec<u8>,
+    screen_poses: Vec<(f64, f64)>,
+    screen_hits: usize,
     pub box_gray: Vec<u8>,
 }
 
@@ -77,6 +87,7 @@ pub struct Verdict {
     pub slot: usize,
     pub bits: Vec<u8>,
     pub clean: Vec<u8>,
+    pub screen: Vec<u8>,
 }
 
 pub struct Finalized {
@@ -89,6 +100,7 @@ pub struct Finalized {
 pub struct Ring {
     pub factor: i32,
     pub tau: i32,
+    screen_noise: i32,
     pub radius: i32,
     pub native_width: f64,
     pub native_height: f64,
@@ -202,6 +214,7 @@ impl Ring {
                     dmin,
                     interior,
                     inside,
+                    panel: None,
                 }
             })
             .collect::<Vec<_>>();
@@ -209,6 +222,7 @@ impl Ring {
         Ring {
             factor,
             tau,
+            screen_noise: js_round(noise * 0.5),
             radius,
             native_width: nw,
             native_height: nh,
@@ -366,6 +380,20 @@ impl Ring {
         let f = self.factor as f64;
         let dx = (t.pose_x - s.pose_x) / f;
         let dy = (t.pose_y - s.pose_y) / f;
+        let independent = |layer: &mut Layer, x: f64, y: f64| {
+            if layer.screen_poses.len() >= 6
+                || layer
+                    .screen_poses
+                    .iter()
+                    .any(|&(px, py)| js_hypot(px - x, py - y) < self.slots[slot].dmin)
+            {
+                return false;
+            }
+            layer.screen_poses.push((x, y));
+            true
+        };
+        let judge_t = independent(t, s.pose_x, s.pose_y);
+        let judge_s = independent(s, t.pose_x, t.pose_y);
         t.pairs += 1;
         s.pairs += 1;
         let radius = self.radius;
@@ -435,6 +463,52 @@ impl Ring {
                     continue;
                 }
                 let si = row_s + js_round(lx as f64 + dx) as usize;
+                {
+                    // Same-screen patch agreement is independent of world-position voting. Demand
+                    // two spatially separated witnesses; a paused overlay never gets extra support.
+                    if judge_t
+                        && screen_agrees(
+                            &t.box_gray,
+                            &s.box_gray,
+                            i,
+                            b.w as usize,
+                            &self.slots[slot].inside,
+                            self.screen_noise,
+                        )
+                        && !page_patch_agrees(
+                            &t.box_gray,
+                            &s.box_gray,
+                            i,
+                            si,
+                            b.w as usize,
+                            &self.slots[slot].inside,
+                            (self.screen_noise * 2 + 4).max(if self.factor > 1 { 12 } else { 0 }),
+                        )
+                    {
+                        t.screen_hits += add_screen_support(&mut t.screen, i) as usize;
+                    }
+                    if judge_s
+                        && screen_agrees(
+                            &t.box_gray,
+                            &s.box_gray,
+                            si,
+                            b.w as usize,
+                            &self.slots[slot].inside,
+                            self.screen_noise,
+                        )
+                        && !page_patch_agrees(
+                            &s.box_gray,
+                            &t.box_gray,
+                            si,
+                            i,
+                            b.w as usize,
+                            &self.slots[slot].inside,
+                            (self.screen_noise * 2 + 4).max(if self.factor > 1 { 12 } else { 0 }),
+                        )
+                    {
+                        s.screen_hits += add_screen_support(&mut s.screen, si) as usize;
+                    }
+                }
                 let delta: i8 = if verdicts[i] == 1 { 1 } else { -1 };
                 t.comparisons[i] = t.comparisons[i].saturating_add(1);
                 t.score[i] = t.score[i].saturating_add(delta);
@@ -455,15 +529,36 @@ impl Ring {
             score: vec![0i8; cells],
             comparisons: vec![0u8; cells],
             pairs: 0,
+            screen: vec![0; cells.div_ceil(4)],
+            screen_poses: Vec::with_capacity(6),
+            screen_hits: 0,
             box_gray: self.box_gray(&self.slots[slot], gray),
         };
+        let mut learned_panel = false;
         for at in self.partners(slot, canvas, pose_x, pose_y) {
             // Take the partner out for the duration of the comparison so `self` stays borrowable.
             let mut partner = self.frames[at].layers[slot]
                 .take()
                 .expect("partner layer present");
             self.compare(slot, &mut layer, &mut partner);
+            if self.slots[slot].panel.is_none()
+                && partner.screen_hits >= self.slots[slot].box_.w as usize * 2
+            {
+                self.slots[slot].panel = ScreenPanel::learn(&partner, &self.slots[slot]);
+                learned_panel = self.slots[slot].panel.is_some();
+            }
             self.frames[at].layers[slot] = Some(partner);
+        }
+        if let Some(panel) = &self.slots[slot].panel {
+            let noise = self.screen_noise;
+            panel.apply(&mut layer, noise);
+            if learned_panel {
+                for frame in &mut self.frames {
+                    if let Some(other) = &mut frame.layers[slot] {
+                        panel.apply(other, noise);
+                    }
+                }
+            }
         }
         self.building[slot] = Some(layer);
     }
@@ -481,7 +576,9 @@ impl Ring {
         let bytes = layers
             .iter()
             .flatten()
-            .map(|l| l.box_gray.len() + l.score.len() + l.comparisons.len())
+            .map(|l| {
+                l.box_gray.len() + l.score.len() + l.comparisons.len() + l.screen.len() + 6 * 16
+            })
             .sum();
         self.frames.push(Frame {
             index,
@@ -519,10 +616,15 @@ impl Ring {
             let bytes = layer.score.len().div_ceil(8);
             let mut bits = vec![0u8; bytes];
             let mut clean = vec![0u8; bytes];
+            let mut screen = vec![0u8; bytes];
             let mut any = false;
             for (i, (&score, &comparisons)) in
                 layer.score.iter().zip(&layer.comparisons).enumerate()
             {
+                if (layer.screen[i / 4] >> ((i % 4) * 2)) & 3 >= 2 {
+                    screen[i >> 3] |= 1 << (i & 7);
+                    any = true;
+                }
                 let (score, comparisons) = (score as i32, comparisons as u32);
                 if comparisons >= 2 && score <= threshold(comparisons) {
                     bits[i >> 3] |= 1 << (i & 7);
@@ -532,8 +634,19 @@ impl Ring {
                     any = true;
                 }
             }
+            complete_wide_panels(
+                &mut screen,
+                self.slots[slot].box_.w as usize,
+                self.slots[slot].box_.h as usize,
+                &self.slots[slot].inside,
+            );
             if any {
-                verdicts.push(Verdict { slot, bits, clean });
+                verdicts.push(Verdict {
+                    slot,
+                    bits,
+                    clean,
+                    screen,
+                });
             }
         }
         Finalized {

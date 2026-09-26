@@ -7,14 +7,14 @@ use crate::abi::STATUS_BAD_ARGUMENT;
 use crate::consistency::{consistency_mask, MaskInput, Neighbour, Vote};
 use crate::geometry::Rect;
 
-/// Vote descriptor: 4 × i32 (x0, y0, w, h) followed by two u32 pointers (bits, clean).
+/// Vote descriptor: 4 × i32 (x0, y0, w, h) followed by three u32 pointers (bits, clean, optional screen) and padding.
 /// # Safety
-/// `ptr` is zero (no vote) or points at 24 readable bytes whose bit pointers cover `ceil(w*h/8)` bytes.
+/// `ptr` is zero (no vote) or points at 32 readable bytes whose bit pointers cover `ceil(w*h/8)` bytes.
 unsafe fn read_vote<'a>(ptr: u32) -> Result<Option<Vote<'a>>, i32> {
     if ptr == 0 {
         return Ok(None);
     }
-    let d = slice(ptr, 24).ok_or(STATUS_BAD_ARGUMENT)?;
+    let d = slice(ptr, 32).ok_or(STATUS_BAD_ARGUMENT)?;
     let r = Reader(d);
     let (x0, y0, w, h) = (r.i32(0), r.i32(4), r.i32(8), r.i32(12));
     if w <= 0 || h <= 0 {
@@ -30,6 +30,11 @@ unsafe fn read_vote<'a>(ptr: u32) -> Result<Option<Vote<'a>>, i32> {
         h,
         bits,
         clean,
+        screen: if r.u32(24) == 0 {
+            &[]
+        } else {
+            slice(r.u32(24), bytes).ok_or(STATUS_BAD_ARGUMENT)?
+        },
     }))
 }
 
@@ -56,6 +61,7 @@ impl NeighbourData<'_> {
                 h: v.h,
                 bits: v.bits,
                 clean: v.clean,
+                screen: v.screen,
             }),
         }
     }

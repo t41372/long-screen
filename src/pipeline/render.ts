@@ -17,7 +17,7 @@ import { prefixOnly, type RunContext, StorageError } from './context.ts';
 import { isValidPose } from './solve/track.ts';
 /** One placement's ledger row: what canvas it targeted, its final render-time placement, and either its pixel
  * contribution (addedPixels/conflictPixels/uncertainPixels) or which shortcut skipped painting it. */
-interface RenderDecision {
+export interface RenderDecision {
   canvasId: string;
   placement: Placement;
   addedPixels: number;
@@ -127,6 +127,7 @@ export class RenderPass {
       this.ctx.project.settings.temporalPolicy,
       (d) => this.ctx.diagnostics.emit(d),
       this.ctx.atlas!,
+      this.ctx.noise,
     );
     this.regionMap = new Map(this.ctx.regions.map((r) => [r.id, r]));
     for await (const { value } of iterate<Attachment>(this.ctx.store, 'attach/')) {

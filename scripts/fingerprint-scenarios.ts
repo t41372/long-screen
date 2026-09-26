@@ -79,7 +79,21 @@ const { DEFAULT_SETTINGS } = await import(new URL('src/types.ts', root).href);
 const LEGACY_SETTINGS: Record<string, Record<string, unknown>> = { factor4: { analysisSize: 480 } };
 
 /** Wall-clock or host-dependent fields; everything else must be byte-identical. */
-const VOLATILE = new Set(['created', 'updated', 'scanMS', 'solveMS', 'renderMS', 'framingMS', 'pyramidMS', 'compute', 'id']);
+const VOLATILE = new Set([
+  'created',
+  'updated',
+  'scanMS',
+  'solveMS',
+  'renderMS',
+  'framingMS',
+  'pyramidMS',
+  'compute',
+  'id',
+  'indexMS',
+  'replayMS',
+  'analysisMS',
+  'materializeMS',
+]);
 
 async function canon(v: unknown, id: string): Promise<unknown> {
   if (v instanceof Blob) {

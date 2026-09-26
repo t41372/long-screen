@@ -955,3 +955,103 @@ Deno.test(
     await assertRejects(() => compositor.add(img2, region, place(0, 0, 0.5), 2, meta));
   },
 );
+
+// Failure cases: green/blue details, horizontal rules, source boundaries, and input order. Differences
+// stay at exactly 25 RGB levels so conflict freezing cannot conceal a broken quality comparison.
+Deno.test('compositor: sharp source wins for every colour channel and gradient axis in either order', async () => {
+  for (const channel of [0, 1, 2]) {
+    for (const axis of ['x', 'y']) {
+      for (const sharpFirst of [false, true]) {
+        const region = makeRegion({ x: 0, y: 0, width: 16, height: 16 });
+        const { tiles, compositor, dispose } = setup([region], 16, 16, 16);
+        try {
+          const blurred = solid(16, 16, [0, 0, 0, 255]), sharp = solid(16, 16, [0, 0, 0, 255]);
+          for (let y = 0; y < 16; y++) {
+            for (let x = 0; x < 16; x++) {
+              const i = (y * 16 + x) * 4 + channel;
+              blurred.data[i] = 75;
+              sharp.data[i] = Math.floor((axis === 'x' ? x : y) / 2) % 2 * 150;
+            }
+          }
+          const meta = makeMeta();
+          await compositor.add(sharpFirst ? sharp : blurred, region, place(0, 0, .9), 0, meta);
+          await compositor.add(sharpFirst ? blurred : sharp, region, place(0, 0, .9), 1, meta);
+          assertEquals((await tiles.get('c', 0, 0)).pixels, sharp.data, `${channel}/${axis}, sharpFirst=${sharpFirst}`);
+        } finally {
+          compositor.dispose();
+          dispose();
+        }
+      }
+    }
+  }
+});
+
+Deno.test('compositor: negative evidence demotes covered pixels even when no pixel replacement is eligible', async () => {
+  for (const identicalBlock of [true, false]) {
+    const region = makeRegion({ x: 0, y: 0, width: 16, height: 16 });
+    const { db, tiles, compositor, dispose } = setup([region], 16, 16, 16);
+    try {
+      const meta = makeMeta(), overlay = solid(16, 16, [30, 30, 30, 255]);
+      await compositor.add(overlay, region, place(0, 0, .9), 0, meta);
+      await tiles.flush();
+      const later = { ...overlay, data: overlay.data.slice() };
+      if (!identicalBlock) later.data[0]++;
+      const mask = new Uint8Array(256).fill(1);
+      mask[200] = 2;
+      const stats = await compositor.add(later, region, place(0, 0, .9), 1, meta, mask);
+      assertEquals(stats.provisionalPixels, 1);
+      await tiles.flush();
+      const stored = (await db.get<StoredTile>('tile/c/0/0_0'))!;
+      assertEquals(stored.provisional![200 >> 3] & (1 << (200 & 7)), 1);
+      assertEquals(stored.quality![0], 64);
+      const clean = solid(16, 16, [0, 0, 0, 255]);
+      await compositor.add(clean, region, place(0, 0, .9), 2, meta, new Uint8Array(256).fill(1));
+      const tile = await tiles.get('c', 0, 0);
+      assertEquals([...tile.pixels.slice(800, 804)], [0, 0, 0, 255]);
+      assert(!provisional(tile, 200));
+    } finally {
+      compositor.dispose();
+      dispose();
+    }
+  }
+});
+
+Deno.test('compositor: compressed screen witnesses demote matching stored pixels but weak disagreements do not', async () => {
+  const region = makeRegion({ x: 0, y: 0, width: 16, height: 16 });
+  for (const signal of [0, 2]) {
+    const db = new MemoryKV(), tiles = new TileStore(db, 16, 8), atlas = new RegionAtlas([region], 16, 16);
+    const compositor = new Compositor(db, tiles, 'stable', async () => {}, atlas, 10);
+    try {
+      const meta = makeMeta();
+      await compositor.add(solid(16, 16, [30, 30, 30, 255]), region, place(0, 0, .9), 0, meta);
+      await compositor.add(solid(16, 16, [33, 33, 33, 255]), region, place(0, 0, .9), 1, meta, new Uint8Array(256).fill(signal));
+      assertEquals(meta.provisionalPixels, signal === 2 ? 256 : 0);
+    } finally {
+      compositor.dispose();
+      atlas.dispose();
+    }
+  }
+});
+
+Deno.test('compositor: deferred source index retains sub-conflict colour changes and metadata-only disputes', async () => {
+  const region = makeRegion({ x: 0, y: 0, width: 16, height: 16 });
+  const { db, tiles, compositor, dispose } = setup([region], 16, 16, 16);
+  tiles.captureSources = true;
+  try {
+    const meta = makeMeta();
+    await compositor.add(solid(16, 16, [20, 20, 20, 255]), region, place(0, 0, .9), 0, meta);
+    await tiles.flush();
+    await compositor.add(solid(16, 16, [22, 22, 22, 255]), region, place(0, 0, .9), 1, meta);
+    await tiles.flush();
+    const stored = (await db.get<StoredTile>('tile/c/0/0_0'))!;
+    assertEquals(
+      stored.disputes![0] & 1,
+      1,
+      '2-level lossless differences must reach deferred replay even though the old conflict threshold is 25',
+    );
+    assertEquals(stored.conflicts![0], 0, 'source indexing does not rewrite the existing temporal-conflict decision');
+  } finally {
+    compositor.dispose();
+    dispose();
+  }
+});

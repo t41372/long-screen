@@ -43,6 +43,14 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 头less 运行 + Playwr
 - `toolbar-collapse`：地址栏收起使正文可视区在录制中途变大。断言只要求完成、报告冲突、错误像素低于 10%；`invented` 额外棘轮在今天实测值（48,360）之上 +~5%。这是已知局限，不是通过。
 - `blank`：大面积纯色时无纹理帧不被画到任何位置，断言其产生 `UNOBSERVABLE_FRAME` 与独立片段。
 
+## 延迟来源方案验收
+
+`tests/unit/source-resolution.test.ts`直接跑完整Engine，独立真值仅交给核对器，不作为检测mask：唯一干净帧、80帧停留、同pose消失、固定物体随后与页面同速移动、自由指针、半透明及渐退滚动条、同底色无边界顶栏、静态局部干净联集、110/101/011共同epoch、无完整epoch、自动解除固定及新增顶行、独立pane之间的指针、压缩噪声/采样相位。`floating`包含深色代码块、宽输入框、淡阴影和反向回访，missing/invented/mismatched/可恢复污染/provisional的门槛均为0。
+
+停止回放、停止应用、原生档案事务失败重试、瓦片/来源事务失败与导出另有Engine或KV测试。自动解除固定案例直接逐像素核对曾被顶栏占据的新露出行，不依赖学习到的atlas筛掉它们。采样相位案例要求覆盖不丢失、逐像素来源是真实帧，并且不能误报动态状态不完整。
+
+产物写入`test-results/full-scheme/`：每个反例的JSON精确计数、`floating-source-summary.json`、可检查的`once-clean-project.zip`。命令：`deno test --allow-read --allow-write --allow-env tests/unit/source-resolution.test.ts tests/unit/sources.test.ts`；scalar/threads用已有环境变量切换。真实f的局部来源核对不能替代全片真值，性能必须包含第四遍和全部来源分析，不能只引用前三遍时间。大幅减少provisional不代表恢复正确，仍须核对像素和来源。
+
 ## 运行测试与复现
 
 `DEFAULT_SETTINGS` 包含 `framing: 'context'` 与 `compute: 'auto'`，这样 `deno task test`（不显式覆盖 settings 的每个场景）跑的是应用实际发货的配置——每个场景真正跑过带外框呈现阶段和 `auto` 的 WebGPU/CPU 校准，而不是被 worker 校验隐式降级成 `region`/`cpu`。测试与场景数量会随开发持续变化；不要把某一次跑出的数字当成固定基线，以 `deno task test` / `deno task test:browser` 自己这次的输出、以及 `test-results/` 为准。
@@ -102,6 +110,8 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 头less 运行 + Playwr
 ## 仍未验证
 
 - 实体 Safari / iPhone / iPad / Android 全流程。移动尺寸截图不能替代真机。
-- 300MB+ / 10 分钟以上真实录屏的完整三遍重建耗时与内存峰值。
+- 300MB+ / 10 分钟以上真实录屏的完整重建及来源回放耗时与内存峰值。
 - 4GiB 以上导出、长期运行功耗。
 - 内存预算只约束自有瓦片缓存，不包括解码器、GPU 与浏览器缓存。
+
+来源阶段的容量验收必须注明浏览器模式。benchmark-pipeline.ts默认使用隔离的临时context；--persistent则为每次运行创建独立的普通Chrome磁盘profile，结束后只删除这次创建的profile。大体积来源档案在私密模式下可能先达到内存型存储限额；storage.estimate()报告的quota不能当作实际可用容量。基准记录mode、usage、quota，并在匯出失败之前保存重建状态，以免把部分结果误报为通过。相关机制见[Chromium quota settings](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/storage/browser/quota/quota_settings.cc)与[静态报告配额开关](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/storage/browser/quota/quota_features.cc)。

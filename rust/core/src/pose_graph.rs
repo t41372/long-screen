@@ -32,6 +32,97 @@ pub struct Graph {
 }
 
 impl Graph {
+    /// Exact weighted solution of a connected simple cycle with one anchor. A chain plus one
+    /// root-to-last loop has this topology regardless of node/edge order. Reject other graphs and
+    /// solutions outside Huber's quadratic region (6px), leaving the general solver untouched.
+    pub fn solve_cycle(&mut self) -> bool {
+        let n = self.nodes.len();
+        if n < 3 || self.edges.len() != 2 * n || self.nodes.iter().filter(|v| v.pinned).count() != 1
+        {
+            return false;
+        }
+        if self.offsets.windows(2).any(|w| w[1] - w[0] != 2) {
+            return false;
+        }
+        let root = self.nodes.iter().position(|v| v.pinned).unwrap();
+        if !self.nodes[root].x.is_finite() || !self.nodes[root].y.is_finite() {
+            return false;
+        }
+        let mut seen = vec![false; n];
+        let mut path = Vec::with_capacity(n);
+        let (mut current, mut previous) = (root, usize::MAX);
+        let (mut dx, mut dy, mut resistance) = (0.0, 0.0, 0.0);
+        for _ in 0..n {
+            if seen[current] {
+                return false;
+            }
+            seen[current] = true;
+            let start = self.offsets[current] as usize;
+            let candidates = &self.edges[start..start + 2];
+            let Some((offset, edge)) = candidates
+                .iter()
+                .enumerate()
+                .find(|(_, e)| e.other as usize != previous)
+            else {
+                return false;
+            };
+            if edge.other < 0
+                || edge.other as usize >= n
+                || edge.other as usize == current
+                || !edge.dx.is_finite()
+                || !edge.dy.is_finite()
+                || !edge.weight.is_finite()
+                || edge.weight <= 0.0
+            {
+                return false;
+            }
+            let next = edge.other as usize;
+            let mirrors = &self.edges[self.offsets[next] as usize..self.offsets[next + 1] as usize];
+            if mirrors
+                .iter()
+                .filter(|e| {
+                    e.other == current as i32
+                        && e.dx == -edge.dx
+                        && e.dy == -edge.dy
+                        && e.weight == edge.weight
+                })
+                .count()
+                != 1
+            {
+                return false;
+            }
+            path.push((current, start + offset));
+            dx += edge.dx;
+            dy += edge.dy;
+            resistance += 1.0 / edge.weight;
+            previous = current;
+            current = next;
+        }
+        if current != root || !dx.is_finite() || !dy.is_finite() || !resistance.is_finite() {
+            return false;
+        }
+        let mut positions = Vec::with_capacity(n);
+        let (mut x, mut y) = (self.nodes[root].x, self.nodes[root].y);
+        for &(node, index) in &path {
+            positions.push((node, x, y));
+            let e = &self.edges[index];
+            let (rx, ry) = (-dx / (e.weight * resistance), -dy / (e.weight * resistance));
+            if !rx.is_finite() || !ry.is_finite() || js_hypot(rx, ry) > 6.0 {
+                return false;
+            }
+            x += e.dx + rx;
+            y += e.dy + ry;
+            if !x.is_finite() || !y.is_finite() {
+                return false;
+            }
+        }
+        for (i, x, y) in positions {
+            self.nodes[i].x = x;
+            self.nodes[i].y = y;
+        }
+        true
+    }
+
     /// One Gauss-Seidel sweep over every unpinned node with edges, mutating positions in place exactly as
     /// `optimize()`'s per-node loop does: a neighbour update earlier in this same sweep is visible to a later one
     /// in it (via `self.nodes`, not a snapshot). Returns the largest single-node displacement (`maxChange`).
@@ -135,6 +226,84 @@ mod tests {
                     weight: 1.0,
                 },
             ],
+        }
+    }
+
+    fn cycle(n: usize, closure: f64) -> Graph {
+        let nodes = (0..n)
+            .map(|i| Node {
+                x: i as f64 * 10.0,
+                y: 0.0,
+                pinned: i == 0,
+            })
+            .collect();
+        let mut offsets = vec![0];
+        let mut edges = Vec::new();
+        for i in 0..n {
+            edges.push(Edge {
+                other: ((i + 1) % n) as i32,
+                dx: if i + 1 == n {
+                    -(n as f64 - 1.0) * 10.0 + closure
+                } else {
+                    10.0
+                },
+                dy: 0.0,
+                weight: 1.0,
+            });
+            edges.push(Edge {
+                other: ((i + n - 1) % n) as i32,
+                dx: if i == 0 {
+                    (n as f64 - 1.0) * 10.0 - closure
+                } else {
+                    -10.0
+                },
+                dy: 0.0,
+                weight: 1.0,
+            });
+            offsets.push(edges.len() as u32);
+        }
+        Graph {
+            nodes,
+            offsets,
+            edges,
+        }
+    }
+
+    #[test]
+    fn cycle_solution_obeys_normal_equations() {
+        let mut graph = cycle(40, 2.0);
+        graph.edges[20].weight = 0.05;
+        graph.edges[23].weight = 0.05;
+        assert!(graph.solve_cycle());
+        for i in 1..graph.nodes.len() {
+            let mut gradient = (0.0, 0.0);
+            for e in &graph.edges[graph.offsets[i] as usize..graph.offsets[i + 1] as usize] {
+                gradient.0 +=
+                    e.weight * (graph.nodes[i].x + e.dx - graph.nodes[e.other as usize].x);
+                gradient.1 +=
+                    e.weight * (graph.nodes[i].y + e.dy - graph.nodes[e.other as usize].y);
+            }
+            assert!(js_hypot(gradient.0, gradient.1) < 1e-10);
+        }
+        assert_eq!(graph.nodes[0].x, 0.0);
+    }
+
+    #[test]
+    fn ineligible_cycles_are_left_unchanged() {
+        for invalid in 0..6 {
+            let mut graph = cycle(8, if invalid == 0 { 100.0 } else { 2.0 });
+            match invalid {
+                1 => graph.nodes[3].pinned = true,
+                2 => graph.edges[0].weight = 0.0,
+                3 => graph.edges[0].dx = f64::NAN,
+                4 => graph.edges[0].other = -1,
+                5 => graph.edges[0].weight = 2.0, // asymmetric mirror
+                _ => {}
+            }
+            assert!(!graph.solve_cycle());
+            for (i, node) in graph.nodes.iter().enumerate() {
+                assert_eq!(node.x, i as f64 * 10.0);
+            }
         }
     }
 
