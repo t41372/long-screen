@@ -204,7 +204,7 @@ use super::{
     tile::SpillEntry,
     Visibility, SIDE,
 };
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 pub const FIELD_SIDE: i32 = 64;
 const FRINGE: i32 = 24;
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -243,6 +243,30 @@ impl Key {
             self.x,
             self.y
         )
+    }
+    fn from_label(label: &str) -> Option<Self> {
+        let (object, position) = label.split_once('/')?;
+        let mut parts = object.split('-');
+        let region = parts.next()?.parse().ok()?;
+        let object = parts.next()?.parse().ok()?;
+        let local = match parts.next()? {
+            "local" => true,
+            "screen" => false,
+            _ => return None,
+        };
+        if parts.next().is_some() {
+            return None;
+        }
+        let (x, y) = position.split_once('_')?;
+        let key = Self {
+            region,
+            object,
+            local,
+            x: x.parse().ok()?,
+            y: y.parse().ok()?,
+        };
+        // Keep exact-label lookup semantics (no leading zeros, plus signs or negative zero).
+        (key.label() == label).then_some(key)
     }
 }
 #[derive(Default, Serialize, Deserialize)]
@@ -335,6 +359,7 @@ impl Field {
 }
 #[derive(Default)]
 pub struct Learning {
+    dependencies: BTreeSet<Key>,
     fields: BTreeMap<Key, Vec<(u16, Sample)>>,
 }
 impl Learning {
@@ -342,9 +367,7 @@ impl Learning {
         let mut learning = Self::default();
         let n = analysis.size / SIDE;
         for e in entries {
-            let Some(block) = analysis.blocks.get(&e.block) else {
-                continue;
-            };
+            let block = analysis.blocks.get(&e.block);
             let wx = analysis.tx * analysis.size as i32 + (e.block as usize % n * SIDE) as i32;
             let wy = analysis.ty * analysis.size as i32 + (e.block as usize / n * SIDE) as i32;
             evidence.each_object(&e.candidate, |object, role, pose| {
@@ -358,6 +381,23 @@ impl Learning {
                 if !intersects(object, sx, sy) {
                     return;
                 }
+                // A 16px patch touches at most two 64px fields on each axis. Record the
+                // full native fringe intersection, independently of whether training has a
+                // clean background. An untrainable page can still be classified by another shard.
+                let x0 = sx.max(object.bounds.x - FRINGE);
+                let y0 = sy.max(object.bounds.y - FRINGE);
+                let x1 =
+                    (sx + SIDE as i32 - 1).min(object.bounds.x + object.bounds.width + FRINGE - 1);
+                let y1 =
+                    (sy + SIDE as i32 - 1).min(object.bounds.y + object.bounds.height + FRINGE - 1);
+                for y in [y0, y1] {
+                    for x in [x0, x1] {
+                        learning.dependencies.insert(Key::at(object, role, x, y).0);
+                    }
+                }
+                let Some(block) = block else {
+                    return;
+                };
                 for (i, p) in block.pixels.iter().enumerate() {
                     if p.rank != 3
                         || p.visible_disagreement
@@ -394,14 +434,12 @@ impl Learning {
     pub fn keys(&self) -> Vec<String> {
         self.fields.keys().map(Key::label).collect()
     }
+    pub fn dependencies(&self) -> Vec<String> {
+        self.dependencies.iter().map(Key::label).collect()
+    }
     pub fn merge(&self, key: &str, field: &mut Field, noise: u8) -> bool {
         let mut changed = false;
-        if let Some(samples) = self
-            .fields
-            .iter()
-            .find(|(k, _)| k.label() == key)
-            .map(|(_, v)| v)
-        {
+        if let Some(samples) = Key::from_label(key).and_then(|key| self.fields.get(&key)) {
             for &(pixel, sample) in samples {
                 changed |= field
                     .pixels
@@ -578,6 +616,56 @@ mod annotation_tests {
         Candidate, PIXELS,
     };
 
+    // Field lookup must retain signed coordinates and exact canonical labels. Changing lookup
+    // must not reorder the samples: the existing model deliberately retains its first valid fit.
+    #[test]
+    fn learning_lookup_preserves_labels_and_sample_order() {
+        let mut learning = Learning::default();
+        for x in [i32::MIN, -1, 0, i32::MAX] {
+            for local in [false, true] {
+                let key = Key {
+                    region: u16::MAX,
+                    object: u32::MAX,
+                    local,
+                    x,
+                    y: -19,
+                };
+                let samples: Vec<_> = [0, 40, 80, 120, 160, 200]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, background)| {
+                        (
+                            3,
+                            Sample {
+                                world_x: i as i32,
+                                background: [background; 3],
+                                observed: [background / 2 + 19; 3],
+                                ..Sample::default()
+                            },
+                        )
+                    })
+                    .collect();
+                let mut expected = Field::default();
+                for &(pixel, sample) in &samples {
+                    expected.pixels.entry(pixel).or_default().observe(sample, 2);
+                }
+                learning.fields.insert(key.clone(), samples);
+                let mut actual = Field::default();
+                assert!(learning.merge(&key.label(), &mut actual, 2));
+                assert_eq!(actual.encode().unwrap(), expected.encode().unwrap());
+            }
+        }
+        for label in [
+            "65535-4294967295-screen/-0_-19",
+            "065535-4294967295-screen/0_-19",
+            "65535-4294967295-screen/+0_-19",
+            "65535-4294967295-other/0_-19",
+            "65535-4294967295-local/0_-19/extra",
+        ] {
+            assert!(!learning.merge(label, &mut Field::default(), 2));
+        }
+    }
+
     // Applying one field must not leak into its neighbour, another source entry, or Outside pixels.
     // Exercise a patch straddling both field axes under screen and object-local coordinates.
     #[test]
@@ -626,7 +714,15 @@ mod annotation_tests {
                 let key = Key::at(&object, role, 60, 60).0.label();
                 let evidence =
                     std::rc::Rc::new(Evidence::new(vec![object.clone(), object], vec![]));
+                let learning = Learning::new(&TileAnalysis::new(256, 0, 0, 0), &entries, &evidence);
                 let mut annotation = Annotation::new(entries, 256, 0, 0, evidence);
+                // Even without a usable background witness, application dependencies must include
+                // every possible field, including clipped edges and negative/local coordinates.
+                let mut expected = annotation.keys();
+                expected.sort();
+                let mut dependencies = learning.dependencies();
+                dependencies.sort();
+                assert_eq!(dependencies, expected);
                 let fits = (0..4096)
                     .map(|i| {
                         (

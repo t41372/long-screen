@@ -2,7 +2,7 @@
  * pipeline; this adapter only owns their buffers and lifetimes. */
 import type { Core } from './core.ts';
 import { FreeGuard } from './memory.ts';
-import { sourceBytes, type SourceEvidence, sourceJSON } from './sources.ts';
+import { sourceBytes, type SourceEvidence, sourceJSON, SourcePage } from './sources.ts';
 export type { SourceEvidence } from './sources.ts';
 export interface OpacityDescriptor {
   size: number;
@@ -10,22 +10,25 @@ export interface OpacityDescriptor {
   ty: number;
   evidence: SourceEvidence;
 }
-function prepare(core: Core, data: Uint8Array, desc: OpacityDescriptor): [number, number, number, number] {
+function prepare(core: Core, data: Uint8Array | SourcePage, desc: OpacityDescriptor): [number, number, number, number, number] {
   const meta = new TextEncoder().encode(JSON.stringify({ ...desc, evidence: desc.evidence.handle })),
-    [ptr, json] = core.scratch([data.length, meta.length]);
-  core.writeBytes(ptr, data);
+    [ptr, json] = core.scratch([data instanceof SourcePage ? 0 : data.length, meta.length]);
+  if (!(data instanceof SourcePage)) core.writeBytes(ptr, data);
   core.writeBytes(json, meta);
-  return [ptr, data.length, json, meta.length];
+  return [ptr, data instanceof SourcePage ? 0 : data.length, json, meta.length, data instanceof SourcePage ? data.handle : 0];
 }
 export class OpacityLearning {
   private guard = new FreeGuard();
   readonly handle: number;
-  constructor(private core: Core, analysis: number, data: Uint8Array, page: number, desc: OpacityDescriptor) {
-    const [ptr, len, json, jsonLen] = prepare(core, data, desc);
-    this.handle = core.check(core.exports.ls_sources_opacity_learn(analysis, ptr, len, page, json, jsonLen), 'opacity witnesses');
+  constructor(private core: Core, analysis: number, data: Uint8Array | SourcePage, page: number, desc: OpacityDescriptor) {
+    const [ptr, len, json, jsonLen, decoded] = prepare(core, data, desc);
+    this.handle = core.check(core.exports.ls_sources_opacity_learn(analysis, ptr, len, page, json, jsonLen, decoded), 'opacity witnesses');
   }
   keys(): string[] {
     return sourceJSON(this.core, this.core.exports.ls_sources_opacity_keys(this.handle, 0));
+  }
+  dependencies(): string[] {
+    return sourceJSON(this.core, this.core.exports.ls_sources_opacity_keys(this.handle, 2));
   }
   free(): void {
     this.guard.once(() => this.core.exports.ls_sources_opacity_free(this.handle, 0));
@@ -34,9 +37,9 @@ export class OpacityLearning {
 export class OpacityAnnotation {
   private guard = new FreeGuard();
   private handle: number;
-  constructor(private core: Core, data: Uint8Array, page: number, desc: OpacityDescriptor) {
-    const [ptr, len, json, jsonLen] = prepare(core, data, desc);
-    this.handle = core.check(core.exports.ls_sources_opacity_prepare(ptr, len, page, json, jsonLen), 'opacity candidates');
+  constructor(private core: Core, data: Uint8Array | SourcePage, page: number, desc: OpacityDescriptor) {
+    const [ptr, len, json, jsonLen, decoded] = prepare(core, data, desc);
+    this.handle = core.check(core.exports.ls_sources_opacity_prepare(ptr, len, page, json, jsonLen, decoded), 'opacity candidates');
   }
   keys(): string[] {
     return sourceJSON(this.core, this.core.exports.ls_sources_opacity_keys(this.handle, 1));

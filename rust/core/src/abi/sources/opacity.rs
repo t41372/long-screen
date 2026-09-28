@@ -30,6 +30,7 @@ pub extern "C" fn ls_sources_opacity_learn(
     page: i32,
     desc: u32,
     desc_len: u32,
+    decoded: u32,
 ) -> i32 {
     let Some(a) = analyses().get(analysis) else {
         return STATUS_BAD_ARGUMENT;
@@ -43,21 +44,35 @@ pub extern "C" fn ls_sources_opacity_learn(
     let Ok(d) = serde_json::from_slice::<Annotation>(desc) else {
         return STATUS_BAD_ARGUMENT;
     };
-    let Ok(entries) = crate::sources::export::entries(data, page) else {
-        return STATUS_BAD_ARGUMENT;
+    let owned;
+    let entries = if decoded != 0 {
+        let Some(p) = super::page::get(decoded) else {
+            return STATUS_BAD_ARGUMENT;
+        };
+        &p.entries
+    } else {
+        let Ok(entries) = crate::sources::export::entries(data, page) else {
+            return STATUS_BAD_ARGUMENT;
+        };
+        owned = entries;
+        &owned
     };
     let Some(evidence) = super::evidence::get(d.evidence) else {
         return STATUS_BAD_ARGUMENT;
     };
-    learning().insert(Learning::new(a, &entries, &evidence))
+    learning().insert(Learning::new(a, entries, &evidence))
 }
 #[no_mangle]
 pub extern "C" fn ls_sources_opacity_keys(handle: u32, apply: u32) -> i32 {
-    if apply == 0 {
+    if apply == 0 || apply == 2 {
         let Some(l) = learning().get(handle) else {
             return STATUS_BAD_ARGUMENT;
         };
-        json(&l.keys())
+        json(&if apply == 2 {
+            l.dependencies()
+        } else {
+            l.keys()
+        })
     } else {
         let Some(a) = applying().get(handle) else {
             return STATUS_BAD_ARGUMENT;
@@ -80,6 +95,7 @@ pub extern "C" fn ls_sources_opacity_prepare(
     page: i32,
     desc: u32,
     desc_len: u32,
+    decoded: u32,
 ) -> i32 {
     // SAFETY: immutable archive and metadata buffers.
     let (Some(data), Some(desc)) = (unsafe { slice(data, len as usize) }, unsafe {
@@ -90,30 +106,21 @@ pub extern "C" fn ls_sources_opacity_prepare(
     let Ok(d) = serde_json::from_slice::<Annotation>(desc) else {
         return STATUS_BAD_ARGUMENT;
     };
-    let mut state = if page < 0 {
-        let Ok(s) = TileHistory::decode(data) else {
+    let mut owned;
+    let decoded = if decoded != 0 {
+        let Some(p) = super::page::get(decoded) else {
             return STATUS_BAD_ARGUMENT;
         };
-        Some(s)
+        p
     } else {
-        None
-    };
-    let entries = if let Some(state) = &mut state {
-        state
-            .blocks
-            .iter_mut()
-            .flat_map(|(&block, h)| {
-                std::mem::take(&mut h.resident)
-                    .into_iter()
-                    .map(move |candidate| crate::sources::tile::SpillEntry { block, candidate })
-            })
-            .collect()
-    } else {
-        let Ok(entries) = crate::sources::tile::decode_page(data) else {
+        let Ok(p) = super::page::DecodedPage::decode(data, page) else {
             return STATUS_BAD_ARGUMENT;
         };
-        entries
+        owned = p;
+        &mut owned
     };
+    let state = decoded.state.take();
+    let entries = std::mem::take(&mut decoded.entries);
     let Some(evidence) = super::evidence::get(d.evidence) else {
         return STATUS_BAD_ARGUMENT;
     };
@@ -141,7 +148,7 @@ pub extern "C" fn ls_sources_opacity_archive(handle: u32) -> i32 {
         }
         state.encode().map(result).unwrap_or(STATUS_BAD_ARGUMENT)
     } else {
-        crate::sources::archive::encode(&(1u32, &a.annotation.entries))
+        crate::sources::tile::encode_page(&a.annotation.entries)
             .map(result)
             .unwrap_or(STATUS_BAD_ARGUMENT)
     }

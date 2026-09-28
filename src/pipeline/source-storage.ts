@@ -2,6 +2,19 @@
  * original passes. Native computation and decoding errors do not pass through this boundary. */
 import type { KV, Row } from '../storage/db.ts';
 import { StorageError } from './context.ts';
+import { resolveRasterPose } from '../core/raster.ts';
+import type { Rect } from '../types.ts';
+
+/** Storage addresses must use the same integer origin as native capture and the compositor. */
+export function sourceTileBounds(rect: Rect, x: number, y: number, size: number) {
+  const { rasterX, rasterY } = resolveRasterPose(x, y);
+  return {
+    left: Math.floor((rect.x + rasterX) / size),
+    right: Math.floor((rect.x + rect.width - 1 + rasterX) / size),
+    top: Math.floor((rect.y + rasterY) / size),
+    bottom: Math.floor((rect.y + rect.height - 1 + rasterY) / size),
+  };
+}
 export class SourceStorage implements KV {
   constructor(private inner: KV) {}
   private async io<T>(operation: () => Promise<T>): Promise<T> {

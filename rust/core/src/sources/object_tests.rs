@@ -498,3 +498,59 @@ fn an_edge_surface_keeps_its_motion_uncertainty_across_text_showing_through_it()
         "a visible page glyph underneath cannot turn the contiguous thumb into a clean page source"
     );
 }
+
+// Independent page translation, excluded labels, negative Y, and partial final cell rows/columns.
+// Cell jobs may run in any order, but must produce the exact same native visibility plane.
+#[test]
+fn cell_scan_preserves_clipped_native_rows_and_label_membership() {
+    use super::objects::classify_cells;
+    let (width, height) = (97usize, 145usize);
+    let pixels = |dx: i32, dy: i32| -> Vec<u8> {
+        (0..height)
+            .flat_map(|y| {
+                (0..width).flat_map(move |x| {
+                    let (x, y) = (x as i32 + dx, y as i32 + dy);
+                    [
+                        (x * 17 + y * 29).rem_euclid(256) as u8,
+                        (x * 5 + y * 19).rem_euclid(256) as u8,
+                        ((x ^ y) & 255) as u8,
+                        255,
+                    ]
+                })
+            })
+            .collect()
+    };
+    let previous = pixels(0, 0);
+    let current = pixels(7, -3);
+    let labels: Vec<_> = (0..width * height)
+        .map(|i| if i % width % 11 == 0 { 2 } else { 1 })
+        .collect();
+    let old = View {
+        rgba: &previous,
+        labels: &labels,
+        width,
+        height,
+        code: 1,
+        pose: (0, 0),
+    };
+    let new = View {
+        rgba: &current,
+        pose: (7, -3),
+        ..old
+    };
+    for noise in [0, 2, 10] {
+        let mut visibility = vec![0; width * height];
+        let changed = classify_cells(new, old, noise, &mut visibility);
+        assert!(changed.iter().all(|v| !v));
+        for y in 0..height {
+            for x in 0..width {
+                let expected = labels[y * width + x] == 1 && x + 7 < width && (3..144).contains(&y);
+                assert_eq!(
+                    visibility[y * width + x],
+                    u8::from(expected),
+                    "{x},{y}, noise {noise}"
+                );
+            }
+        }
+    }
+}

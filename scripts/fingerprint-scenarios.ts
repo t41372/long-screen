@@ -16,6 +16,9 @@
  *  The child receives the target root via LONGSCREEN_FP_ROOT (not --root again), so it runs the body below once,
  *  instead of re-spawning itself.
  *
+ *  --source-content: compare decoded source observations across archive formats, including all frame spans,
+ *  exposures, visibility and RGBA. Uses the current checkout's decoder for either --root; build:core first.
+ *
  *  --pixels: hash every `image/png` Blob by its DECODED pixels ({width,height,sha(RGBA)}, via the fingerprinted
  *  tree's own src/codec/png.ts decodePNG) instead of its raw bytes. Everything else (non-PNG blobs, all other rows)
  *  is unchanged. Used to prove a PNG-codec change alters only bytes, never decoded pixels: run --pixels on two
@@ -35,6 +38,9 @@ if (pixelsFlag !== -1) {
   PIXELS = true;
   argv.splice(pixelsFlag, 1);
 }
+const sourceContentFlag = argv.indexOf('--source-content');
+const SOURCE_CONTENT = sourceContentFlag !== -1;
+if (SOURCE_CONTENT) argv.splice(sourceContentFlag, 1);
 const [outArg, ...only] = argv;
 
 if (rootArg !== undefined) {
@@ -49,6 +55,7 @@ if (rootArg !== undefined) {
       fromFileUrl(import.meta.url),
       out,
       ...(PIXELS ? ['--pixels'] : []),
+      ...(SOURCE_CONTENT ? ['--source-content'] : []),
       ...only,
     ],
     env: { ...Deno.env.toObject(), LONGSCREEN_FP_ROOT: targetRoot },
@@ -71,6 +78,13 @@ const { decodePNG } = PIXELS ? await import(new URL('src/codec/png.ts', root).hr
 const { MemoryKV } = await import(new URL('src/storage/db.ts', root).href);
 const { ScenarioSource } = await import(new URL('src/synthetic/source.ts', root).href);
 const { DEFAULT_SETTINGS } = await import(new URL('src/types.ts', root).href);
+// Use this script's current decoder for both roots: the old tree need not understand a new archive
+// format. This normalization preserves every candidate byte and metadata field in canonical v1.
+let sourceNormalizer: import('../src/core/wasm/core.ts').Core | undefined;
+if (SOURCE_CONTENT) {
+  await import(new URL('../tests/support/core.ts', import.meta.url).href);
+  sourceNormalizer = (await import('../src/core/wasm.ts')).core();
+}
 
 /** Fallback for a scenario built from a tree that predates Scenario.settings (e.g. the 6f838af baseline): without
  *  this, `--root <old tree>` runs factor4 at the DEFAULT_SETTINGS analysisSize (640) instead of the 480 the
@@ -151,12 +165,23 @@ for (const name of names) {
   }
   const project = await new Engine(db, new ScenarioSource(scenario), { ...DEFAULT_SETTINGS, ...settings }, handlers).run();
   const rows: Record<string, string> = {};
+  const rawRows: Record<string, string> | undefined = SOURCE_CONTENT ? {} : undefined;
   for (const [key, value] of [...db.data.entries()].sort(([a], [b]) => (a < b ? -1 : 1))) {
     const k = key.split(project.id).join('<run>').replace(/\d{4}-\d\d-\d\dT[\d:.]+Z/g, '<time>');
-    rows[k] = await sha(new TextEncoder().encode(JSON.stringify(await canon(value, project.id))));
+    const rawHash = await sha(new TextEncoder().encode(JSON.stringify(await canon(value, project.id))));
+    if (rawRows) rawRows[k] = rawHash;
+    let content = value;
+    if (sourceNormalizer && k.includes('/source-state/')) {
+      const row = value as { state: Uint8Array };
+      content = { ...row, state: sourceNormalizer.sourceArchiveCanonical(row.state, -1) };
+    } else if (sourceNormalizer && k.includes('/source-page/')) {
+      content = sourceNormalizer.sourceArchiveCanonical(value as Uint8Array, 0);
+    }
+    rows[k] = content === value ? rawHash : await sha(new TextEncoder().encode(JSON.stringify(await canon(content, project.id))));
   }
   result[name] = {
     rows,
+    ...(rawRows ? { rawRows } : {}),
     events: await sha(new TextEncoder().encode(JSON.stringify(await canon(events, project.id)))),
     project: await sha(new TextEncoder().encode(JSON.stringify(await canon(project, project.id)))),
     seconds: +((performance.now() - started) / 1000).toFixed(1),

@@ -18,7 +18,7 @@ Deno.test('deferred sources: floating replay persists alternatives and native pr
     let provenance = 0;
     for await (const _ of iterate(result.store, 'source-provenance/')) provenance++;
     assert(provenance > 0);
-    for (const prefix of ['source-analysis/', 'source-options/', 'source-blocks/']) {
+    for (const prefix of ['source-analysis/', 'source-options/', 'source-blocks/', 'source-opacity-work/']) {
       assertEquals((await result.store.scan(prefix)).length, 0, 'committed source shards must release recomputable scratch rows');
     }
     for (const canvas of result.canvases.filter((c) => c.kind !== 'presentation')) {

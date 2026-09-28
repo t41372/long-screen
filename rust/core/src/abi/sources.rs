@@ -2,6 +2,7 @@
 //! crosses JSON, and persisted candidate payloads use the versioned Postcard format.
 mod evidence;
 mod opacity;
+mod page;
 use super::memory::{slice, slice_mut, HandleTable};
 use super::STATUS_BAD_ARGUMENT;
 use crate::sources::tile::{Capture, TileHistory};
@@ -168,7 +169,7 @@ pub extern "C" fn ls_sources_tile_capture(
     0
 }
 
-use crate::sources::analysis::TileAnalysis;
+use crate::sources::analysis::{SelectionSnapshot, TileAnalysis};
 use crate::sources::scene::{EpochSweep, Scene};
 static mut ANALYSES: HandleTable<TileAnalysis> = HandleTable::new();
 static mut SCENES: HandleTable<Scene> = HandleTable::new();
@@ -184,6 +185,32 @@ fn scenes() -> &'static mut HandleTable<Scene> {
 fn epochs() -> &'static mut HandleTable<EpochSweep> {
     // SAFETY: main-instance handles, as above.
     unsafe { &mut *std::ptr::addr_of_mut!(EPOCHS) }
+}
+static mut SELECTIONS: HandleTable<SelectionSnapshot> = HandleTable::new();
+fn selections() -> &'static mut HandleTable<SelectionSnapshot> {
+    // SAFETY: snapshots are scoped to one main-instance source analysis.
+    unsafe { &mut *std::ptr::addr_of_mut!(SELECTIONS) }
+}
+#[no_mangle]
+pub extern "C" fn ls_sources_selection_new(analysis: u32) -> i32 {
+    let Some(a) = analyses().get(analysis) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    selections().insert(a.selection())
+}
+#[no_mangle]
+pub extern "C" fn ls_sources_selection_matches(handle: u32, analysis: u32) -> i32 {
+    let Some(s) = selections().get(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let Some(a) = analyses().get(analysis) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    s.matches(a) as i32
+}
+#[no_mangle]
+pub extern "C" fn ls_sources_selection_free(handle: u32) {
+    selections().free(handle);
 }
 #[no_mangle]
 pub extern "C" fn ls_sources_analysis_new(size: u32, tx: i32, ty: i32, noise: u32) -> i32 {
@@ -589,16 +616,32 @@ pub extern "C" fn ls_sources_archive_frames(data: u32, len: u32, page: i32) -> i
             return STATUS_BAD_ARGUMENT;
         };
         json(&crate::sources::annotation::frames(
-            state.blocks.into_values().flat_map(|h| h.resident),
+            state.blocks.values().flat_map(|h| &h.resident),
         ))
     } else {
         let Ok(entries) = crate::sources::tile::decode_page(data) else {
             return STATUS_BAD_ARGUMENT;
         };
         json(&crate::sources::annotation::frames(
-            entries.into_iter().map(|e| e.candidate),
+            entries.iter().map(|e| &e.candidate),
         ))
     }
+}
+/// Canonical v1 representation for cross-format auditing. Includes all source identities,
+/// exposures and visibility, not only the public patch-sheet metadata.
+#[no_mangle]
+pub extern "C" fn ls_sources_archive_canonical(data: u32, len: u32, page: i32) -> i32 {
+    // SAFETY: immutable archive copied into adapter scratch memory.
+    let Some(data) = (unsafe { slice(data, len as usize) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let encoded = if page < 0 {
+        TileHistory::decode(data).and_then(|state| crate::sources::archive::encode(&state))
+    } else {
+        crate::sources::tile::decode_page(data)
+            .and_then(|entries| crate::sources::archive::encode(&(1u32, entries)))
+    };
+    encoded.map(result).unwrap_or(STATUS_BAD_ARGUMENT)
 }
 #[derive(serde::Deserialize)]
 struct Annotation {
@@ -668,7 +711,7 @@ pub extern "C" fn ls_sources_archive_annotate(
             };
             a.feed_page(&entries, page);
         }
-        crate::sources::archive::encode(&(1u32, entries))
+        crate::sources::tile::encode_page(&entries)
             .map(result)
             .unwrap_or(STATUS_BAD_ARGUMENT)
     }

@@ -3,7 +3,7 @@
 import { core } from '../core/wasm.ts';
 import type { SourceEvidence } from '../core/wasm/sources-opacity.ts';
 import { iterate, type KV } from '../storage/db.ts';
-import { sourceKey, sourcePages, type StoredSourceTile } from '../storage/sources.ts';
+import { decodedSourcePages, sourceKey, sourcePages, type StoredSourceTile } from '../storage/sources.ts';
 import { SourceWrites } from './source-storage.ts';
 import type { RunContext } from './context.ts';
 import { pad } from '../core/math.ts';
@@ -18,12 +18,13 @@ export interface OpacityStats {
   modelWrites: number;
   peakFitBytes: number;
   visibilityConflicts: number;
+  skippedShards: number;
 }
 export async function refineSourceOpacity(
   ctx: RunContext,
   canvasId: string,
   size: number,
-  evidence: (data: Uint8Array, page: number) => Promise<SourceEvidence>,
+  evidence: (page: ReturnType<ReturnType<typeof core>['sourcePage']>) => Promise<SourceEvidence>,
   store: KV = ctx.store,
 ): Promise<OpacityStats> {
   const stats: OpacityStats = {
@@ -36,6 +37,7 @@ export async function refineSourceOpacity(
     modelWrites: 0,
     peakFitBytes: 0,
     visibilityConflicts: 0,
+    skippedShards: 0,
   };
   const checkpoint = async () => {
     await ctx.checkpoint();
@@ -53,20 +55,32 @@ export async function refineSourceOpacity(
       if (!await checkpoint()) return stats;
       const saved = (await store.get<Uint8Array>(`source-analysis/${sourceKey(row)}`))!;
       const reference = core().sourceAnalysis(size, row.x, row.y, ctx.noise, saved);
+      const dependencies = new Set<string>();
+      let requiresRecheck = false;
       try {
         if (reference.needsRefutation()) {
-          for await (const page of sourcePages(store, row)) reference.corroborate(page.data, page.page);
-          for await (const page of sourcePages(store, row)) stats.visibilityConflicts += reference.refute(page.data, page.page);
+          const selected = reference.selection();
+          try {
+            for await (const page of sourcePages(store, row)) reference.corroborate(page.data, page.page);
+            let conflicts = 0;
+            for await (const page of sourcePages(store, row)) conflicts += reference.refute(page.data, page.page);
+            stats.visibilityConflicts += conflicts;
+            requiresRecheck = conflicts > 0 || !reference.matchesSelection(selected);
+          } finally {
+            selected.free();
+          }
         }
-        for await (const page of sourcePages(store, row)) {
-          const witnesses = await evidence(page.data, page.page);
+        for await (const page of decodedSourcePages(store, row)) {
+          const witnesses = await evidence(page.native);
           let learning: ReturnType<typeof reference.opacityLearning>;
           try {
-            learning = reference.opacityLearning(page.data, page.page, { size, tx: row.x, ty: row.y, evidence: witnesses });
+            learning = reference.opacityLearning(page.native, page.page, { size, tx: row.x, ty: row.y, evidence: witnesses });
           } finally {
             witnesses.free();
+            page.native.free();
           }
           try {
+            for (const key of learning.dependencies()) dependencies.add(key);
             for (const key of learning.keys()) await models.merge(learning, key);
             stats.peakCoreBytes = Math.max(stats.peakCoreBytes, core().memoryBytes);
           } finally {
@@ -76,6 +90,7 @@ export async function refineSourceOpacity(
         await store.putMany([
           { key: 'source-analysis/' + sourceKey(row), value: reference.state() },
           { key: 'source-blocks/' + sourceKey(row), value: reference.summary() },
+          { key: 'source-opacity-work/' + sourceKey(row), value: { requiresRecheck, fields: [...dependencies] } },
         ]);
       } finally {
         reference.free();
@@ -87,10 +102,13 @@ export async function refineSourceOpacity(
     stats.modelWrites = models.writes;
     models.free();
   }
+  const validFields = new Set<string>();
+  const prefix = `source-opacity/${canvasId}/`;
   for await (const row of iterate<StoredField>(store, `source-opacity/${canvasId}/`)) {
     const validPixels = core().sourceOpacityValid(row.value.data, ctx.noise);
     stats.bytes += row.value.data.byteLength;
     if (validPixels) {
+      validFields.add(row.key.slice(prefix.length));
       stats.fields++;
       stats.pixels += validPixels;
     }
@@ -106,7 +124,15 @@ export async function refineSourceOpacity(
   try {
     for await (const { value: row } of iterate<StoredSourceTile>(store, `source-state/${canvasId}/`)) {
       if (!await checkpoint()) return stats;
-      const key = sourceKey(row), saved = (await store.get<Uint8Array>(`source-analysis/${key}`))!;
+      const key = sourceKey(row);
+      const work = await store.get<{ requiresRecheck: boolean; fields: string[] }>(`source-opacity-work/${key}`);
+      // No model can touch this shard, and corroboration preserved every output byte, frame and reason.
+      // Keep both its selected pixels and original epoch options; every raw alternative remains.
+      if (work && !work.requiresRecheck && !work.fields.some((field) => validFields.has(field))) {
+        stats.skippedShards++;
+        continue;
+      }
+      const saved = (await store.get<Uint8Array>(`source-analysis/${key}`))!;
       const reference = core().sourceAnalysis(size, row.x, row.y, ctx.noise, saved),
         resolved = core().sourceAnalysis(size, row.x, row.y, ctx.noise);
       const writes = new SourceWrites(store);
@@ -114,13 +140,14 @@ export async function refineSourceOpacity(
       let rechecked: ReturnType<ReturnType<typeof core>['sourceAnalysis']> | undefined;
       try {
         resolved.copyBaseline(reference);
-        for await (const page of sourcePages(store, row)) {
-          const witnesses = await evidence(page.data, page.page);
+        for await (const page of decodedSourcePages(store, row)) {
+          const witnesses = await evidence(page.native);
           let annotation: ReturnType<ReturnType<typeof core>['sourceOpacityAnnotation']>;
           try {
-            annotation = core().sourceOpacityAnnotation(page.data, page.page, { size, tx: row.x, ty: row.y, evidence: witnesses });
+            annotation = core().sourceOpacityAnnotation(page.native, page.page, { size, tx: row.x, ty: row.y, evidence: witnesses });
           } finally {
             witnesses.free();
+            page.native.free();
           }
           let data: Uint8Array;
           let classified = 0;
@@ -145,7 +172,7 @@ export async function refineSourceOpacity(
               key: `source-options/${key}/${page.page < 0 ? 'state' : pad(page.page)}`,
               value: { page: page.page, data: options },
             },
-          ], data.byteLength + options.byteLength);
+          ], (classified ? data.byteLength : 0) + options.byteLength);
         }
         await writes.flush();
         // Classification can leave a formerly repeated hypothesis supported by just one weak

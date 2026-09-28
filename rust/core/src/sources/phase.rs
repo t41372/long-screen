@@ -5,8 +5,7 @@ use super::{Candidate, Visibility, PIXELS, SIDE};
 use serde::{Deserialize, Serialize};
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Reference {
-    #[serde(with = "serde_bytes")]
-    rgba: Vec<u8>,
+    rgba: super::pixels::Pixels,
     valid: Vec<bool>,
 }
 impl Reference {

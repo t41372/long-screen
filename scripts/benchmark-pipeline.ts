@@ -16,6 +16,7 @@ interface Options {
   output: string;
   analysisSize: number;
   verifyTiles: boolean;
+  verifySources: boolean;
   exportCanvases: boolean;
   allowPartial: boolean;
   persistent: boolean;
@@ -95,6 +96,8 @@ interface PassReport {
   failedRequests: string[];
   externalRequests: string[];
   cpuProfile?: string;
+  /** Every source row except statistics, with complete v1 normalization for cross-format comparison. */
+  storedSources?: { count: number; sha256: string; seconds: number };
   /** `sha256` covers every stored PNG and evidence row, byte for byte — it legitimately differs across a codec
    *  change even when reconstruction is unchanged. `contentSha256` covers decoded pixels plus every evidence array
    *  (coverage/provisional/quality/conflicts/owner/score/frozen), not the PNG bytes, so it is what the cross-root
@@ -127,6 +130,7 @@ Options:
   --analysis-size N      analysis long-edge limit (default: 640)
   --verify-tiles         hash decoded tile pixels + evidence after timing; fail on differences across runs
                          (raw PNG byte differences are reported as info, not a failure — see contentSha256)
+  --verify-sources       hash every source row after timing; normalize archives to complete v1, exclude summary statistics
   --dump-evidence REGEX  with --verify-tiles, also write raw evidence arrays of matching tile keys
   --export-canvases      save native PNG canvases and observation/region metadata after timing
   --persistent           use a fresh disposable on-disk Chrome profile per pass (ordinary storage quotas)
@@ -150,6 +154,7 @@ function parseArgs(args: string[]): Options {
     output = join(Deno.cwd(), 'test-results/benchmark-pipeline'),
     analysisSize = 640,
     verifyTiles = false,
+    verifySources = false,
     exportCanvases = false,
     allowPartial = false,
     persistent = false;
@@ -170,6 +175,8 @@ function parseArgs(args: string[]): Options {
       output = resolve(valueAfter(args, i++, arg));
     } else if (arg === '--verify-tiles') {
       verifyTiles = true;
+    } else if (arg === '--verify-sources') {
+      verifySources = true;
     } else if (arg === '--export-canvases') {
       exportCanvases = true;
     } else if (arg === '--dump-evidence') {
@@ -191,7 +198,20 @@ function parseArgs(args: string[]): Options {
   if (!Deno.statSync(input).isFile) throw new Error(`Input is not a file: ${input}`);
   if (!Deno.statSync(root).isDirectory) throw new Error(`Repository root is not a directory: ${root}`);
   if (baselineRoot && !Deno.statSync(baselineRoot).isDirectory) throw new Error(`Baseline root is not a directory: ${baselineRoot}`);
-  return { input, root, baselineRoot, passes, output, analysisSize, verifyTiles, exportCanvases, allowPartial, persistent, dumpEvidence };
+  return {
+    input,
+    root,
+    baselineRoot,
+    passes,
+    output,
+    analysisSize,
+    verifyTiles,
+    verifySources,
+    exportCanvases,
+    allowPartial,
+    persistent,
+    dumpEvidence,
+  };
 }
 
 async function runBuild(root: string): Promise<void> {
@@ -244,6 +264,7 @@ async function runPass(
   exportCanvases: boolean,
   dumpEvidence?: string,
   storageMode: 'ephemeral' | 'persistent' = 'ephemeral',
+  verifySources = false,
 ): Promise<PassReport> {
   const context = await createContext();
   const page = await context.newPage();
@@ -285,7 +306,7 @@ async function runPass(
   const benchmarkInput: [string, number, boolean] = [
     `${base}/recording/${encodeURIComponent(basename(input))}`,
     analysisSize,
-    verifyTiles || exportCanvases,
+    verifyTiles || verifySources || exportCanvases,
   ];
   let report: PassReport;
   let profileBusy = false, profilePart = 0;
@@ -547,6 +568,48 @@ async function runPass(
     await Deno.writeTextFile(join(output, `${label}-pass-${pass}.tiles.json`), JSON.stringify(tiles));
     report.storedTiles = summary;
   }
+  if (verifySources) {
+    const audit = await page.evaluate(async () => {
+      const started = performance.now(), kit = (globalThis as any).longScreenKit;
+      const native = kit.core();
+      const digest = async (bytes: Uint8Array): Promise<string> => {
+        const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes.slice().buffer));
+        return [...hash].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+      };
+      const canonical = async (value: any): Promise<any> => {
+        if (ArrayBuffer.isView(value)) {
+          return { type: value.constructor.name, sha256: await digest(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
+        }
+        if (Array.isArray(value)) return await Promise.all(value.map(canonical));
+        if (value && typeof value === 'object') {
+          const out: Record<string, unknown> = {};
+          for (const key of Object.keys(value).sort()) out[key] = await canonical(value[key]);
+          return out;
+        }
+        return value;
+      };
+      const rows: { key: string; sha256: string }[] = [];
+      for await (const { key, value } of kit.iterate((globalThis as any).benchmarkStore, 'source-')) {
+        if (key === 'source-summary') continue;
+        let content = value;
+        // A pre-v2 checkout's archives already ARE canonical v1 and need no new API.
+        if (typeof native.sourceArchiveCanonical === 'function') {
+          if (key.startsWith('source-state/')) content = { ...value, state: native.sourceArchiveCanonical(value.state, -1) };
+          else if (key.startsWith('source-page/')) content = native.sourceArchiveCanonical(value, 0);
+        }
+        rows.push({ key, sha256: await digest(new TextEncoder().encode(JSON.stringify(await canonical(content)))) });
+      }
+      return {
+        count: rows.length,
+        sha256: await digest(new TextEncoder().encode(JSON.stringify(rows))),
+        seconds: (performance.now() - started) / 1000,
+        rows,
+      };
+    });
+    const { rows, ...summary } = audit;
+    await Deno.writeTextFile(join(output, `${label}-pass-${pass}.sources-hashes.json`), JSON.stringify(rows));
+    report.storedSources = summary;
+  }
   if (exportCanvases) {
     const evidence = await page.evaluate(async () => {
       const kit = (globalThis as any).longScreenKit, store = (globalThis as any).benchmarkStore;
@@ -665,6 +728,7 @@ async function benchmarkRoot(options: Options, root: string, label: string): Pro
           options.exportCanvases,
           options.dumpEvidence,
           options.persistent ? 'persistent' : 'ephemeral',
+          options.verifySources,
         );
       } catch (error) {
         try {
@@ -719,6 +783,7 @@ const benchmarks: Array<[string, string]> = [];
 if (options.baselineRoot) benchmarks.push(['baseline', options.baselineRoot]);
 benchmarks.push([options.baselineRoot ? 'current' : 'benchmark', options.root]);
 let referenceTiles: PassReport['storedTiles'];
+let referenceSources: PassReport['storedSources'];
 const verification: Array<
   { label: string; pass: number; count: number; sha256: string; contentSha256?: string; matches: boolean }
 > = [];
@@ -750,6 +815,15 @@ for (const [label, root] of benchmarks) {
         console.log(
           `(info) ${label} pass ${result.pass}: tile PNG bytes differ from the first run (codec change); decoded pixels and evidence are identical.`,
         );
+      }
+    }
+  }
+  if (options.verifySources) {
+    for (const result of report.results) {
+      if (!result.storedSources) throw new Error('Missing source audit.');
+      referenceSources ??= result.storedSources;
+      if (result.storedSources.count !== referenceSources.count || result.storedSources.sha256 !== referenceSources.sha256) {
+        throw new Error(`${label} pass ${result.pass}: source observations, models or provenance differ.`);
       }
     }
   }

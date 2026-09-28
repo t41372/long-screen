@@ -235,7 +235,7 @@ export class Core {
   sourceOpacityField(data?: Uint8Array): opacity.OpacityField {
     return new opacity.OpacityField(this, data);
   }
-  sourceOpacityAnnotation(data: Uint8Array, page: number, desc: opacity.OpacityDescriptor): opacity.OpacityAnnotation {
+  sourceOpacityAnnotation(data: Uint8Array | sources.SourcePage, page: number, desc: opacity.OpacityDescriptor): opacity.OpacityAnnotation {
     return new opacity.OpacityAnnotation(this, data, page, desc);
   }
   sourceOpacityValid(data: Uint8Array, noise: number): number {
@@ -253,8 +253,14 @@ export class Core {
   sourceShards(size: number, tx: number, ty: number, side: number, disputes: Uint8Array): sources.SourceShard[] {
     return sources.sourceShards(this, size, tx, ty, side, disputes);
   }
+  sourcePage(data: Uint8Array, page: number): sources.SourcePage {
+    return new sources.SourcePage(this, data, page);
+  }
   sourceArchiveFrames(data: Uint8Array, page: number): number[] {
     return sources.sourceArchiveFrames(this, data, page);
+  }
+  sourceArchiveCanonical(data: Uint8Array, page: number): Uint8Array<ArrayBuffer> {
+    return sources.sourceArchiveCanonical(this, data, page);
   }
   sourceArchiveAnnotate(
     data: Uint8Array,

@@ -227,6 +227,104 @@ fn withhold_edge_motion(current: View<'_>, previous: View<'_>, noise: u8, visibi
     }
 }
 
+/// Dense evidence is independent per cell. Helpers only read frames and write disjoint mask rows;
+/// object matching, allocation and all state updates remain on the calling instance.
+pub(super) fn classify_cells(
+    current: View<'_>,
+    previous: View<'_>,
+    noise: u8,
+    visibility: &mut [u8],
+) -> Vec<bool> {
+    let page = (
+        current.pose.0 - previous.pose.0,
+        current.pose.1 - previous.pose.1,
+    );
+    let texture_threshold = noise as u32 * 3 + 6;
+    let (cols, rows) = (current.width.div_ceil(CELL), current.height.div_ceil(CELL));
+    let mut changed = vec![false; cols * rows];
+    let pointers = (
+        crate::pool::SyncPtr(changed.as_mut_ptr()),
+        crate::pool::SyncPtr(visibility.as_mut_ptr()),
+    );
+    let chunks = crate::pool::chunks_for(rows, 4);
+    crate::pool::par_for(chunks, |chunk| {
+        let (a, b) = (
+            crate::pool::split(rows, chunks, chunk),
+            crate::pool::split(rows, chunks, chunk + 1),
+        );
+        if a == b {
+            return;
+        }
+        let first_pixel = a * CELL * current.width;
+        let end_pixel = (b * CELL).min(current.height) * current.width;
+        // SAFETY: each job owns whole cell rows. The final row is clipped to the frame height;
+        // both writable slices are disjoint from other jobs and from the immutable input planes.
+        let (changed, visibility) = unsafe {
+            (
+                std::slice::from_raw_parts_mut(pointers.0.get().add(a * cols), (b - a) * cols),
+                std::slice::from_raw_parts_mut(
+                    pointers.1.get().add(first_pixel),
+                    end_pixel - first_pixel,
+                ),
+            )
+        };
+        for cy in a..b {
+            for cx in 0..cols {
+                let (mut differences, mut samples, mut texture, mut screen_difference) =
+                    (0, 0, 0, 0u64);
+                for y in cy * CELL..((cy + 1) * CELL).min(current.height) {
+                    for x in cx * CELL..((cx + 1) * CELL).min(current.width) {
+                        let i = y * current.width + x;
+                        if current.labels[i] != current.code {
+                            continue;
+                        }
+                        let Some(j) = pixel(previous, x as i32 + page.0, y as i32 + page.1) else {
+                            continue;
+                        };
+                        if previous.labels[j] != current.code {
+                            continue;
+                        }
+                        let error = rgb_distance(current.rgba, i, previous.rgba, j);
+                        samples += 1;
+                        if error > noise as u32 * 3 {
+                            differences += 1;
+                        } else if gradient(current, x as i32, y as i32) >= texture_threshold {
+                            texture += 1;
+                        }
+                        screen_difference += rgb_distance(current.rgba, i, previous.rgba, i) as u64;
+                    }
+                }
+                changed[(cy - a) * cols + cx] = differences >= 4;
+                // Blank agreement alone is not a clean witness. Texture must follow the page better
+                // than screen coordinates; dynamic/occluding residuals are left unknown for tracking.
+                if samples > 0
+                    && texture >= 8
+                    && differences * 10 <= samples
+                    && screen_difference > samples as u64 * (noise as u64 * 3 + 12)
+                {
+                    for y in cy * CELL..((cy + 1) * CELL).min(current.height) {
+                        for x in cx * CELL..((cx + 1) * CELL).min(current.width) {
+                            let i = y * current.width + x;
+                            if current.labels[i] != current.code {
+                                continue;
+                            }
+                            if pixel(previous, x as i32 + page.0, y as i32 + page.1).is_some_and(
+                                |j| {
+                                    rgb_distance(current.rgba, i, previous.rgba, j)
+                                        <= noise as u32 * 3
+                                },
+                            ) {
+                                visibility[i - first_pixel] = 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+    changed
+}
+
 impl ObjectTracker {
     pub fn previous_background(
         frame: u32,
@@ -363,60 +461,7 @@ impl ObjectTracker {
             }
         }
         let (cols, rows) = (current.width.div_ceil(CELL), current.height.div_ceil(CELL));
-        let mut changed = vec![false; cols * rows];
-        for cy in 0..rows {
-            for cx in 0..cols {
-                let (mut differences, mut samples, mut texture, mut screen_difference) =
-                    (0, 0, 0, 0u64);
-                for y in cy * CELL..((cy + 1) * CELL).min(current.height) {
-                    for x in cx * CELL..((cx + 1) * CELL).min(current.width) {
-                        let i = y * current.width + x;
-                        if current.labels[i] != current.code {
-                            continue;
-                        }
-                        let Some(j) = pixel(previous, x as i32 + page.0, y as i32 + page.1) else {
-                            continue;
-                        };
-                        if previous.labels[j] != current.code {
-                            continue;
-                        }
-                        let error = rgb_distance(current.rgba, i, previous.rgba, j);
-                        samples += 1;
-                        if error > noise as u32 * 3 {
-                            differences += 1;
-                        } else if gradient(current, x as i32, y as i32) >= texture_threshold {
-                            texture += 1;
-                        }
-                        screen_difference += rgb_distance(current.rgba, i, previous.rgba, i) as u64;
-                    }
-                }
-                changed[cy * cols + cx] = differences >= 4;
-                // Blank agreement alone is not a clean witness. Texture must follow the page better
-                // than screen coordinates; dynamic/occluding residuals are left unknown for tracking.
-                if samples > 0
-                    && texture >= 8
-                    && differences * 10 <= samples
-                    && screen_difference > samples as u64 * (noise as u64 * 3 + 12)
-                {
-                    for y in cy * CELL..((cy + 1) * CELL).min(current.height) {
-                        for x in cx * CELL..((cx + 1) * CELL).min(current.width) {
-                            let i = y * current.width + x;
-                            if current.labels[i] != current.code {
-                                continue;
-                            }
-                            if pixel(previous, x as i32 + page.0, y as i32 + page.1).is_some_and(
-                                |j| {
-                                    rgb_distance(current.rgba, i, previous.rgba, j)
-                                        <= noise as u32 * 3
-                                },
-                            ) {
-                                visibility[i] = 1;
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        let mut changed = classify_cells(current, previous, noise, visibility);
         let mut components = Vec::new();
         for seed in 0..changed.len() {
             if !changed[seed] {

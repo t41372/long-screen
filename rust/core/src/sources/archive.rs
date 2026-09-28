@@ -22,12 +22,14 @@ pub fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, postcard::Error> {
     Ok(lz4_flex::block::compress_prepend_size(&raw))
 }
 pub fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, postcard::Error> {
+    postcard::from_bytes(&unpack(bytes)?)
+}
+pub(super) fn unpack(bytes: &[u8]) -> Result<Vec<u8>, postcard::Error> {
     let (size, _) = lz4_flex::block::uncompressed_size(bytes)
         .map_err(|_| postcard::Error::DeserializeBadEncoding)?;
     if size > 128 * 1024 * 1024 {
         return Err(postcard::Error::DeserializeBadEncoding);
     }
-    let raw = lz4_flex::block::decompress_size_prepended(bytes)
-        .map_err(|_| postcard::Error::DeserializeBadEncoding)?;
-    postcard::from_bytes(&raw)
+    lz4_flex::block::decompress_size_prepended(bytes)
+        .map_err(|_| postcard::Error::DeserializeBadEncoding)
 }

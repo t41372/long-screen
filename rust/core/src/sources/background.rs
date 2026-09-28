@@ -95,13 +95,51 @@ mod tests {
     }
 }
 
+fn page_neighbours(view: View<'_>, i: usize) -> [Option<usize>; 4] {
+    let (x, y) = (i % view.width, i / view.width);
+    [
+        x.checked_sub(1).map(|_| i - 1),
+        (x + 1 < view.width).then_some(i + 1),
+        y.checked_sub(1).map(|_| i - view.width),
+        (y + 1 < view.height).then_some(i + view.width),
+    ]
+}
+fn textured_witness(
+    view: View<'_>,
+    visibility: &[u8],
+    i: usize,
+    neighbours: &[Option<usize>],
+    noise: u8,
+) -> bool {
+    visibility[i] == 1
+        && neighbours.iter().flatten().any(|&j| {
+            (0..3)
+                .map(|c| view.rgba[i * 4 + c].abs_diff(view.rgba[j * 4 + c]) as u32)
+                .sum::<u32>()
+                > noise as u32 * 3 + 6
+        })
+}
+
 /// A connected native colour surface can share a page witness without borrowing the colour of
 /// a neighbour. Textured motion seeds are required; a blank match or an enclosed glyph is not one.
 /// This is affiliation evidence only, so callers must not promote these pixels to Visible.
 pub fn page_connected(view: View<'_>, visibility: &[u8], noise: u8) -> Vec<bool> {
     let n = view.width * view.height;
-    let mut visited = vec![false; n];
     let mut reached = vec![false; n];
+    // No component can reach the eight-textured-witness threshold if the whole frame cannot.
+    // Pauses and blank matches therefore need no native flood fill at all.
+    let witnesses = (0..n)
+        .filter(|&i| {
+            view.labels[i] == view.code
+                && visibility[i] == 1
+                && textured_witness(view, visibility, i, &page_neighbours(view, i), noise)
+        })
+        .take(8)
+        .count();
+    if witnesses < 8 {
+        return reached;
+    }
+    let mut visited = vec![false; n];
     let mut component = Vec::<u32>::new();
     for seed in 0..n {
         if visited[seed] || view.labels[seed] != view.code {
@@ -116,20 +154,9 @@ pub fn page_connected(view: View<'_>, visibility: &[u8], noise: u8) -> Vec<bool>
         while at < component.len() {
             let i = component[at] as usize;
             at += 1;
-            let (x, y) = (i % view.width, i / view.width);
-            let neighbours = [
-                x.checked_sub(1).map(|_| i - 1),
-                (x + 1 < view.width).then_some(i + 1),
-                y.checked_sub(1).map(|_| i - view.width),
-                (y + 1 < view.height).then_some(i + view.width),
-            ];
-            let textured = visibility[i] == 1
-                && neighbours.iter().flatten().any(|&j| {
-                    (0..3)
-                        .map(|c| view.rgba[i * 4 + c].abs_diff(view.rgba[j * 4 + c]) as u32)
-                        .sum::<u32>()
-                        > noise as u32 * 3 + 6
-                });
+            let neighbours = page_neighbours(view, i);
+            // Only the threshold matters; further witnesses cannot change this component's result.
+            let textured = support < 8 && textured_witness(view, visibility, i, &neighbours, noise);
             support += textured as usize;
             for j in neighbours.into_iter().flatten() {
                 if !visited[j]

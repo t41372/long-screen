@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 #[derive(Serialize, Deserialize)]
 pub struct TileHistory {
-    version: u32,
+    pub(super) version: u32,
     pub size: usize,
     pub tx: i32,
     pub ty: i32,
@@ -67,10 +67,16 @@ impl TileHistory {
         }
     }
     pub fn encode(&self) -> Result<Vec<u8>, postcard::Error> {
-        archive::encode(self)
+        super::packed::encode_state(self)
     }
     pub fn decode(bytes: &[u8]) -> Result<Self, postcard::Error> {
-        let s: Self = archive::decode(bytes)?;
+        let raw = archive::unpack(bytes)?;
+        let (version, _) = postcard::take_from_bytes::<u32>(&raw)?;
+        let s: Self = match version {
+            1 => postcard::from_bytes(&raw)?,
+            2 => super::packed::decode_state(&raw)?,
+            _ => return Err(postcard::Error::DeserializeBadEncoding),
+        };
         if s.version != 1 || s.size == 0 || !s.size.is_multiple_of(SIDE) {
             return Err(postcard::Error::DeserializeBadEncoding);
         }
@@ -178,7 +184,7 @@ impl TileHistory {
             return Ok(None);
         }
         self.pages += 1;
-        archive::encode(&(1u32, entries)).map(Some)
+        encode_page(&entries).map(Some)
     }
     pub fn stats(&self) -> TileStats {
         TileStats {
@@ -199,10 +205,15 @@ impl TileHistory {
     }
 }
 
+pub fn encode_page(entries: &[SpillEntry]) -> Result<Vec<u8>, postcard::Error> {
+    super::packed::encode_page(entries)
+}
 pub fn decode_page(bytes: &[u8]) -> Result<Vec<SpillEntry>, postcard::Error> {
-    let (version, entries): (u32, Vec<SpillEntry>) = archive::decode(bytes)?;
-    if version != 1 {
-        return Err(postcard::Error::DeserializeBadEncoding);
+    let raw = archive::unpack(bytes)?;
+    let (version, _) = postcard::take_from_bytes::<u32>(&raw)?;
+    match version {
+        1 => postcard::from_bytes::<(u32, Vec<SpillEntry>)>(&raw).map(|(_, entries)| entries),
+        2 => super::packed::decode_page(&raw),
+        _ => Err(postcard::Error::DeserializeBadEncoding),
     }
-    Ok(entries)
 }

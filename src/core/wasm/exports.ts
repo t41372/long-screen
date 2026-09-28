@@ -30,10 +30,18 @@ export interface CoreExports {
   ): number;
   ls_sources_analysis_copy_baseline(handle: number, other: number): number;
 
-  ls_sources_opacity_learn(analysis: number, data: number, len: number, page: number, desc: number, descLen: number): number;
+  ls_sources_opacity_learn(
+    analysis: number,
+    data: number,
+    len: number,
+    page: number,
+    desc: number,
+    descLen: number,
+    decoded: number,
+  ): number;
   ls_sources_opacity_keys(handle: number, apply: number): number;
   ls_sources_opacity_free(handle: number, apply: number): void;
-  ls_sources_opacity_prepare(data: number, len: number, page: number, desc: number, descLen: number): number;
+  ls_sources_opacity_prepare(data: number, len: number, page: number, desc: number, descLen: number, decoded: number): number;
   ls_sources_opacity_archive(handle: number): number;
   ls_sources_opacity_valid(data: number, len: number, noise: number): number;
   ls_sources_opacity_export(data: number, len: number): number;
@@ -63,7 +71,12 @@ export interface CoreExports {
     provisional: number,
     owner: number,
   ): number;
+  ls_sources_page_new(data: number, len: number, page: number): number;
+  ls_sources_page_frames(handle: number): number;
+  ls_sources_page_annotate(handle: number, desc: number, len: number, analysis: number): number;
+  ls_sources_page_free(handle: number): void;
   ls_sources_archive_frames(data: number, len: number, page: number): number;
+  ls_sources_archive_canonical(data: number, len: number, page: number): number;
   ls_sources_archive_annotate(data: number, len: number, page: number, desc: number, descLen: number, analysis: number): number;
   ls_sources_opacity_feed(handle: number, analysis: number, page: number): number;
 
@@ -78,6 +91,9 @@ export interface CoreExports {
   ls_sources_tile_state(handle: number): number;
   ls_sources_tile_spill(handle: number): number;
   ls_sources_tile_stats(handle: number): number;
+  ls_sources_selection_new(analysis: number): number;
+  ls_sources_selection_matches(handle: number, analysis: number): number;
+  ls_sources_selection_free(handle: number): void;
   ls_sources_analysis_new(size: number, tx: number, ty: number, noise: number): number;
   ls_sources_analysis_free(handle: number): void;
   ls_sources_analysis_feed(handle: number, data: number, length: number, page: number): number;

@@ -3,12 +3,17 @@
 use super::Visibility;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
+pub(super) fn bytes(values: &[Visibility]) -> &[u8] {
+    // SAFETY: Visibility is a fieldless repr(u8) enum. Every initialized element occupies one
+    // byte; this immutable view borrows the original slice and cannot introduce invalid tags.
+    unsafe { std::slice::from_raw_parts(values.as_ptr().cast(), values.len()) }
+}
+
 pub fn serialize<S: Serializer>(values: &[Visibility], serializer: S) -> Result<S::Ok, S::Error> {
     if serializer.is_human_readable() {
         return values.serialize(serializer);
     }
-    let bytes: Vec<u8> = values.iter().map(|v| *v as u8).collect();
-    serializer.serialize_bytes(&bytes)
+    serializer.serialize_bytes(bytes(values))
 }
 
 pub fn deserialize<'de, D: Deserializer<'de>>(

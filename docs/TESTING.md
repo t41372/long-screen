@@ -115,3 +115,11 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 头less 运行 + Playwr
 - 内存预算只约束自有瓦片缓存，不包括解码器、GPU 与浏览器缓存。
 
 来源阶段的容量验收必须注明浏览器模式。benchmark-pipeline.ts默认使用隔离的临时context；--persistent则为每次运行创建独立的普通Chrome磁盘profile，结束后只删除这次创建的profile。大体积来源档案在私密模式下可能先达到内存型存储限额；storage.estimate()报告的quota不能当作实际可用容量。基准记录mode、usage、quota，并在匯出失败之前保存重建状态，以免把部分结果误报为通过。相关机制见[Chromium quota settings](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/storage/browser/quota/quota_settings.cc)与[静态报告配额开关](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/storage/browser/quota/quota_features.cc)。
+
+## 来源档案格式与效能改动的内容核对
+
+`deno run -A scripts/fingerprint-scenarios.ts out.json --source-content`对每个来源state/page先解码，再规范化成完整v1表示后散列，保留RGBA、visibility、frame spans、exposures及source state；其余行照旧比较。与旧checkout比较时也由当前脚本的核心负责规范化，因此先构建当前核心，再用`--root <baseline>`。普通指纹仍检查真实落盘bytes，两份指纹须一起解释，不能用规范化掩盖格式之外的差异。
+
+`deno test -A tests/browser/sources.test.ts`在真实Chrome及Playwright WebKit运行floating的完整Engine、IndexedDB、来源修复与原尺寸PNG导出，产物为`test-results/source-optimization/browser-*.json/png`。`deno run -A scripts/benchmark-source-replay.ts f.mov chromium`另测两遍纯顺序解码与Wasm上传，并在独立的非计时遍历中逐帧SHA-256检查重复解码的RGBA一致性；此测量不代表完整替代引擎的性能。
+
+`benchmark-pipeline.ts --verify-sources`在计时之外逐行散列候选、物体证据、透明度模型、共同epoch及逐像素provenance，只排除统计summary。新格式先转为完整canonical v1，旧head无需新API；`--baseline-root`会检查两边全来源散列相同，并写出每行hash清单。只用`--verify-tiles`时包含的是PNG与旧瓦片证据数组，不能据此声称透明度模型或独立provenance也相同。

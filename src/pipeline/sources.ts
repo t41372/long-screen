@@ -2,14 +2,14 @@
  * and tile commits. Motion, visibility, source ranking, components and epochs live in rust/core/sources. */
 import { core, type SourceBlockSummary, type SourceObjectState, type SourceRoles, type SourceTracker } from '../core/wasm.ts';
 import { iterate, type KV, type Row } from '../storage/db.ts';
-import { sourceKey, sourcePages, SourceStore, type SourceTileAddress, type StoredSourceTile } from '../storage/sources.ts';
+import { decodedSourcePages, sourceKey, SourceStore, type SourceTileAddress, type StoredSourceTile } from '../storage/sources.ts';
 import type { StoredTile, TileIndex } from '../storage/tiles.ts';
 import type { CanvasMeta, Placement } from '../types.ts';
 import { pad } from '../core/math.ts';
 import { releaseUnlessHeld } from '../media/pool.ts';
 import { type RunContext, StorageError } from './context.ts';
 import { t } from '../i18n/index.ts';
-import { SourceStorage, SourceWrites } from './source-storage.ts';
+import { SourceStorage, sourceTileBounds, SourceWrites } from './source-storage.ts';
 import { type OptionsPage, SourceEpochs } from './source-epochs.ts';
 import { type OpacityStats, refineSourceOpacity } from './source-opacity.ts';
 
@@ -48,6 +48,7 @@ export interface SourceSummary {
   peakEvidenceCacheBytes: number;
   archivePages: number;
   archiveBytes: number;
+  unchangedPages: number;
   stateWrites: number;
 }
 
@@ -69,6 +70,7 @@ class DeferredSources {
       modelWrites: 0,
       peakFitBytes: 0,
       visibilityConflicts: 0,
+      skippedShards: 0,
     },
     replayPasses: 0,
     frames: 0,
@@ -85,6 +87,7 @@ class DeferredSources {
     peakEvidenceCacheBytes: 0,
     archivePages: 0,
     archiveBytes: 0,
+    unchangedPages: 0,
     stateWrites: 0,
   };
   private indexes = new Map<string, Map<string, Index>>();
@@ -283,16 +286,9 @@ class DeferredSources {
               );
             }
             // Address traversal is storage scheduling; native capture checks exact atlas membership and pose.
-            for (
-              let y = Math.floor((region.rect.y + p.y) / SOURCE_SIZE);
-              y <= Math.floor((region.rect.y + region.rect.height - 1 + p.y) / SOURCE_SIZE);
-              y++
-            ) {
-              for (
-                let x = Math.floor((region.rect.x + p.x) / SOURCE_SIZE);
-                x <= Math.floor((region.rect.x + region.rect.width - 1 + p.x) / SOURCE_SIZE);
-                x++
-              ) {
+            const bounds = sourceTileBounds(region.rect, p.x, p.y, SOURCE_SIZE);
+            for (let y = bounds.top; y <= bounds.bottom; y++) {
+              for (let x = bounds.left; x <= bounds.right; x++) {
                 const shard = shards.get(`${x}_${y}`);
                 if (!shard) continue;
                 await this.sourceStore.capture(
@@ -367,11 +363,11 @@ class DeferredSources {
     return objects;
   }
   private pages(row: StoredSourceTile) {
-    return sourcePages(this.store, row);
+    return decodedSourcePages(this.store, row);
   }
-  private async evidence(data: Uint8Array, page: number, states: SourceRoles) {
+  private async evidence(page: ReturnType<ReturnType<typeof core>['sourcePage']>, states: SourceRoles) {
     const chunks: Uint8Array[] = [];
-    for (const frame of core().sourceArchiveFrames(data, page)) {
+    for (const frame of page.frames()) {
       chunks.push(...await this.frameObjects(frame));
     }
     return core().sourceEvidence(chunks, states);
@@ -405,21 +401,23 @@ class DeferredSources {
               }
             }
             for await (const page of this.pages(row)) {
-              const evidence = await this.evidence(page.data, page.page, states);
+              const evidence = await this.evidence(page.native, states);
               let data: Uint8Array;
               try {
-                data = analysis.annotate(page.data, page.page, SOURCE_SIZE, row.x, row.y, evidence);
+                data = analysis.annotate(page.native, page.page, SOURCE_SIZE, row.x, row.y, evidence);
               } finally {
                 evidence.free();
+                page.native.free();
               }
-              const options = analysis.options();
+              const options = analysis.options(), changed = page.native.annotationChanged;
+              if (!changed) this.summary.unchangedPages++;
               await writes.add([
-                { key: page.key, value: page.page < 0 ? { ...row, state: data } : data },
+                ...(changed ? [{ key: page.key, value: page.page < 0 ? { ...row, state: data } : data }] : []),
                 {
                   key: `source-options/${key}/${page.page < 0 ? 'state' : pad(page.page)}`,
                   value: { page: page.page, data: options } satisfies OptionsPage,
                 },
-              ], data.byteLength + options.byteLength);
+              ], (changed ? data.byteLength : 0) + options.byteLength);
             }
             await writes.flush();
             const summary = analysis.summary();
@@ -436,9 +434,10 @@ class DeferredSources {
           ctx,
           canvasId,
           SOURCE_SIZE,
-          (data, page) => this.evidence(data, page, states),
+          (page) => this.evidence(page, states),
           this.store,
         );
+        this.summary.opacity.skippedShards += opacity.skippedShards;
         this.summary.opacity.fields += opacity.fields;
         this.summary.opacity.pixels += opacity.pixels;
         this.summary.opacity.classified += opacity.classified;
@@ -542,7 +541,7 @@ class DeferredSources {
         }
         // All physical tile/provenance transactions for this shard succeeded. Keep every raw
         // alternative and final decision, but release the now-recomputable analysis and epoch pages.
-        const scratch = [`source-analysis/${key}`, `source-blocks/${key}`, `source-options/${key}/state`];
+        const scratch = [`source-analysis/${key}`, `source-blocks/${key}`, `source-options/${key}/state`, `source-opacity-work/${key}`];
         for (let page = 0; page < row.pages; page++) scratch.push(`source-options/${key}/${pad(page)}`);
         await this.store.deleteMany(scratch);
         this.summary.scratchRowsRemoved += scratch.length;

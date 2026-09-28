@@ -120,7 +120,7 @@ impl Evidence {
         }
     }
 
-    pub fn apply(&self, c: &mut Candidate, wx: i32, wy: i32) {
+    pub fn apply(&self, c: &mut Candidate, wx: i32, wy: i32) -> bool {
         let mut visibility = c.visibility.clone();
         // Page-container inference may be confirmed after the frame was archived. Reclassify
         // its whole observed footprint, then apply independent overlays last (a cursor can cross a video).
@@ -295,13 +295,15 @@ impl Evidence {
                 }
             }
         }
+        let changed = c.visibility != visibility;
         c.visibility = visibility;
+        changed
     }
 }
-pub fn frames(candidates: impl Iterator<Item = Candidate>) -> Vec<u32> {
+pub fn frames<'a>(candidates: impl Iterator<Item = &'a Candidate>) -> Vec<u32> {
     let mut frames = std::collections::BTreeSet::new();
     for c in candidates {
-        for span in c.frames {
+        for span in &c.frames {
             frames.insert(span.first);
             frames.insert(span.last);
             for lead in 1..=TRANSITION_FRAMES {

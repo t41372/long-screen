@@ -132,13 +132,13 @@ worldY = tileY * tileSize + inTileY
 
 ## 原生来源档案（可选扩展）
 
-有争议区域的完整项目增加`sources/`，旧项目没有此目录仍可打开。公共表示是`alternatives/<canvas>/<shard>/<page>.png`原生16×16 patch图集及同名JSON，记录patch位置、frame/time、pose、同内容span及可见性RLE。所有候选都保留，不限于最后选中的来源；`.bin`是小端长度前缀LZ4块内的Postcard v1，PNG/JSON核对不需要Wasm或这个内部解码器。来源档案和透明度样本可能比最终PNG大得多。
+有争议区域的完整项目增加`sources/`，旧项目没有此目录仍可打开。公共表示是`alternatives/<canvas>/<shard>/<page>.png`原生16×16 patch图集及同名JSON，记录patch位置、frame/time、pose、同内容span及可见性RLE。所有候选都保留，不限于最后选中的来源；`.bin`是小端长度前缀LZ4块内的版本化Postcard；来源state/page的新写入使用v2，读取同时支持v1与v2。PNG/JSON核对不需要Wasm或这个内部解码器。来源档案和透明度样本可能比最终PNG大得多。
 
 `sources/summary.json`记录是否完整、当前阶段、停止/失败、已提交块数、候选/档案数量、阶段耗时和缓存峰值。`source-component`记录跨块共同epoch及完整性；`source-object-state`记录物体角色时段；`source-opacity`保留真实背景/观察样本及反例；`source-provenance`逐像素frame与reason优先于旧块owner和初次渲染temporal数据。frame从0开始；输出像素来自显式frame，span表示等价内容，不表示每个alias具有相同RGBA。
 
 可见性编号：0未知、1页面可见、2遮挡、3范围外、4最终placement明确排除的遮挡。状态4不能被物体运动分类回填为可见。候选归属的附加状态为5（有页面运动支持但归属待定）、6（这种候选被遮挡）、7（被placement排除）、8（没有足够归属证据，不参与输出）。来源reason编号：0未观察、1可见证据、2未获独立佐证（含仅一次观察）、3歧义、4没有确认干净来源、5动态状态不完整、6候选的正文归属不确定。它们不是校准的正确概率；旧provisional位图仍保留原世界一致性语义。
 
-内部KV以`source-state/<canvas>/<sx>_<sy>`保存四个热代表及页数；`source-page/.../<page>`保存其余候选；`source-objects/<frame>`为二进制物体观察块；`source-analysis`、`source-options`（压缩Postcard v1）与`source-blocks`为可重算中间数据，shard成功提交后释放；`source-provenance/<canvas>/<sx>_<sy>/<tx>_<ty>`与对应物理瓦片及CanvasMeta同事务提交。中断后的档案仍可导出，但`completed:false`不能解释为已完成消除遮挡。
+内部KV以`source-state/<canvas>/<sx>_<sy>`保存四个热代表及页数；`source-page/.../<page>`保存其余候选；`source-objects/<frame>`为二进制物体观察块；`source-analysis`、`source-options`（压缩Postcard v1）、`source-blocks`与`source-opacity-work`为可重算中间数据，shard成功提交后释放；`source-provenance/<canvas>/<sx>_<sy>/<tx>_<ty>`与对应物理瓦片及CanvasMeta同事务提交。中断后的档案仍可导出，但`completed:false`不能解释为已完成消除遮挡。
 
 新增诊断：`SOURCE_UNRESOLVED`说明歧义及未确认干净来源数；`SOURCE_DYNAMIC_PARTIAL`说明没有共同完整epoch的分量；`SOURCE_TRACKING_LIMIT`说明达到物体工作集上限的帧数。
 
@@ -147,3 +147,7 @@ worldY = tileY * tileSize + inTileY
 ### 原生背景归属证据
 
 来源候选的 visibility 追加状态 9（正文背景归属有支持）、10（替代 parent 假设中的相同支持）及11（支援背景内的小型原生细节）；旧状态 0–8 的数值不变。支持来自当前原生同色连通面与物件边界外、确实随正文移动的纹理。它只解除错误的物件遮挡判断，并在 Unknown 候选平局时优先保留有支持的来源；不算 Visible，不增加动态 epoch 的干净像素数。每个输出仍复制真实候选的 RGBA，canonical placement 排除仍优先。状态11保留独立物件遮挡的否决权。辅助追踪可通过下一帧同世界坐标的原始匹配，为前一帧刚进入画面的表面补足归属证据；小型细节允许单侧裁切，但不跨越背景颜色边界。PNG/JSON 导出附有完整状态说明。
+
+来源state/page v2在每个有界档案内分别建立RGBA与visibility字典，只合并完全相同的字节。每个候选仍有独立的source state、frame/time、pose、quality、frame spans及exposures，顺序不变；字典不合并观察身分。state头保留size、shard坐标、noise和页数；block目录仍区分resident与spilled。model、analysis和epoch options没有改格式。`fingerprint-scenarios.ts --source-content`可将两种来源档案完整还原成canonical v1后逐行比较，包含公开patch-sheet JSON没有的exposures和source state。
+
+`source-opacity-work`保存每个shard可能受影响的field键，以及是否仍须重选；它不取代任何候选证据。只有与有效模型无交集、没有新反证，并且佐证前后的RGBA、逐像素来源frame、reason和内容类型完全一致时，才省略该shard的opacity套用与再次选源。成功materialize后释放此临时行；summary中的`opacity.skippedShards`记录跳过数量，`unchangedPages`记录初次annotation无需重写的档案页数。

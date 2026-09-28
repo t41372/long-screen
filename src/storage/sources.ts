@@ -148,3 +148,15 @@ export async function* sourcePages(db: KV, row: StoredSourceTile): AsyncGenerato
   }
   yield { page: -1, data: row.state, key: `source-state/${key}` };
 }
+
+/** The iterator owns exactly one decoded page, including when its consumer throws or stops. */
+export async function* decodedSourcePages(db: KV, row: StoredSourceTile) {
+  for await (const page of sourcePages(db, row)) {
+    const native = core().sourcePage(page.data, page.page);
+    try {
+      yield { ...page, native };
+    } finally {
+      native.free();
+    }
+  }
+}

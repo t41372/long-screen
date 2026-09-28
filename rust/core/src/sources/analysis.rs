@@ -4,7 +4,7 @@ use super::tile::{SpillEntry, TileHistory};
 use super::*;
 use std::collections::BTreeMap;
 
-#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PixelChoice {
     pub rgba: [u8; 4],
     pub frame: u32,
@@ -33,8 +33,20 @@ pub struct EpochOption {
     pub present: u16,
     pub quality: u16,
 }
+struct LastObservation {
+    rgba: super::pixels::Pixels,
+    visibility: Vec<Visibility>,
+    frame: u32,
+    quality: u16,
+    noise: u8,
+    footprint: u64,
+    positions: u64,
+    native: u64,
+}
 #[derive(Default, Serialize, Deserialize)]
 pub struct BlockAnalysis {
+    #[serde(skip)]
+    last: Option<LastObservation>,
     raster_references: Vec<super::phase::Reference>,
     pub baseline: Vec<PixelChoice>,
     pub baseline_coverage: Vec<bool>,
@@ -136,6 +148,7 @@ impl BlockAnalysis {
             || page_witness && p.positions.count_ones() < 3 && p.visible_positions.count_ones() < 3
     }
     pub fn corroborate(&mut self, candidate: &Candidate, noise: u8) {
+        self.last = None;
         let native = native_positions(candidate);
         let coarse = position_support(candidate);
         for (i, selected) in self.pixels.iter_mut().enumerate() {
@@ -171,6 +184,7 @@ impl BlockAnalysis {
             .any(|(i, p)| Self::affiliation_conflict(p) || self.refutable(i, p))
     }
     pub fn refute(&mut self, candidate: &Candidate, noise: u8) -> usize {
+        self.last = None;
         if !self.needs_refutation() {
             return 0;
         }
@@ -315,6 +329,7 @@ impl BlockAnalysis {
         changed
     }
     pub fn set_baseline(&mut self, rgba: &[u8], coverage: &[bool]) {
+        self.last = None;
         self.baseline = rgba
             .chunks_exact(4)
             .map(|p| PixelChoice {
@@ -340,12 +355,55 @@ impl BlockAnalysis {
         }
     }
     pub(super) fn feed(&mut self, c: &Candidate, noise: u8, page: i32, entry: u32) {
+        self.feed_inner(c, noise, page, entry, true);
+    }
+    fn feed_inner(&mut self, c: &Candidate, noise: u8, page: i32, entry: u32, allow_uniform: bool) {
         if self.pixels.is_empty() {
             self.pixels.resize(PIXELS, PixelChoice::default());
         }
         let footprint = exposures(c);
         let positions = position_support(c);
         let native = native_positions(c);
+        // Only the computation is idempotent. Keep this observation's epoch option and archive
+        // identity even when another part of the frame changed the global source_state.
+        let repeated = allow_uniform
+            && self.last.as_ref().is_some_and(|last| {
+                noise == last.noise
+                    && c.frame >= last.frame
+                    && c.quality == last.quality
+                    && footprint == last.footprint
+                    && positions == last.positions
+                    && native == last.native
+                    && c.rgba == last.rgba
+                    && c.visibility == last.visibility
+            });
+        if repeated {
+            self.record_option(c, page, entry);
+            return;
+        }
+        if allow_uniform {
+            if let Some(last) = &mut self.last {
+                last.rgba.clone_from(&c.rgba);
+                last.visibility.clone_from(&c.visibility);
+                last.frame = c.frame;
+                last.quality = c.quality;
+                last.noise = noise;
+                last.footprint = footprint;
+                last.positions = positions;
+                last.native = native;
+            } else {
+                self.last = Some(LastObservation {
+                    rgba: c.rgba.clone(),
+                    visibility: c.visibility.clone(),
+                    frame: c.frame,
+                    quality: c.quality,
+                    noise,
+                    footprint,
+                    positions,
+                    native,
+                });
+            }
+        }
         let contradictory = self.pixels.iter().enumerate().any(|(i, p)| {
             p.rank == 3
                 && c.visibility[i] == Visibility::Visible
@@ -356,7 +414,24 @@ impl BlockAnalysis {
                 .raster_references
                 .iter()
                 .any(|r| r.explains(c, noise) || r.incomplete_raster_evidence(c, noise));
-        for (i, old) in self.pixels.iter_mut().enumerate() {
+        // A flat patch still carries every frame, exposure and visibility decision. When all
+        // per-pixel inputs AND accumulated states agree, execute that decision once and copy it.
+        // One unlike pixel (including alpha, coverage or a refutation) forces the ordinary path.
+        fn uniform<T: PartialEq>(values: &[T]) -> bool {
+            values.windows(2).all(|pair| pair[0] == pair[1])
+        }
+        let flat = allow_uniform
+            && uniform(&c.visibility)
+            && c.rgba.chunks_exact(4).all(|rgba| rgba == &c.rgba[..4])
+            && uniform(&self.pixels)
+            && (self.baseline.is_empty()
+                || self.baseline.len() == PIXELS && uniform(&self.baseline))
+            && (self.baseline_coverage.is_empty()
+                || self.baseline_coverage.len() == PIXELS && uniform(&self.baseline_coverage))
+            && (self.refutations.is_empty()
+                || self.refutations.len() == PIXELS && uniform(&self.refutations));
+        let count = if flat { 1 } else { PIXELS };
+        for (i, old) in self.pixels.iter_mut().take(count).enumerate() {
             let rgba = c.rgba[i * 4..i * 4 + 4].try_into().unwrap();
             let nominal = rank(c.visibility[i]);
             let refuted = self
@@ -488,6 +563,13 @@ impl BlockAnalysis {
                 .and_then(|r| *r)
                 .is_some_and(|rgba| close(rgba, old.rgba, noise));
         }
+        if flat {
+            let choice = self.pixels[0];
+            self.pixels.fill(choice);
+            if let Some(&baseline) = self.baseline.first() {
+                self.baseline.fill(baseline);
+            }
+        }
         if let Some(reference) = super::phase::Reference::from_candidate(c) {
             if let Some(old) = self
                 .raster_references
@@ -510,6 +592,9 @@ impl BlockAnalysis {
                 }
             }
         }
+        self.record_option(c, page, entry);
+    }
+    fn record_option(&mut self, c: &Candidate, page: i32, entry: u32) {
         self.candidates += 1;
         self.options.push(EpochOption {
             page,
@@ -634,7 +719,30 @@ impl BlockAnalysis {
         }
     }
 }
+/// Bounded, exact observable-state comparison across corroboration. Internal support counters may
+/// grow without changing pixels, source frames, reasons or component classification.
+pub struct SelectionSnapshot(Vec<(u16, BlockResolution)>);
+impl SelectionSnapshot {
+    pub fn matches(&self, analysis: &TileAnalysis) -> bool {
+        self.0.len() == analysis.blocks.len()
+            && self.0.iter().all(|(block, selected)| {
+                analysis
+                    .blocks
+                    .get(block)
+                    .is_some_and(|b| b.resolution() == *selected)
+            })
+    }
+}
 impl TileAnalysis {
+    pub fn selection(&self) -> SelectionSnapshot {
+        SelectionSnapshot(
+            self.blocks
+                .iter()
+                .map(|(&block, b)| (block, b.resolution()))
+                .collect(),
+        )
+    }
+
     pub fn new(size: usize, tx: i32, ty: i32, noise: u8) -> Self {
         Self {
             size,
@@ -669,6 +777,7 @@ impl TileAnalysis {
                 continue;
             }
             let next = self.blocks.entry(block).or_default();
+            next.last = None;
             next.baseline = b
                 .baseline
                 .iter()
@@ -700,6 +809,7 @@ impl TileAnalysis {
             let by =
                 self.ty * self.size as i32 + (block as usize / n * SIDE) as i32 - ty * size as i32;
             let b = self.blocks.entry(block).or_default();
+            b.last = None;
             if b.baseline.is_empty() {
                 b.baseline.resize(PIXELS, PixelChoice::default());
                 b.baseline_coverage.resize(PIXELS, false);
@@ -790,6 +900,7 @@ impl TileAnalysis {
         b.epoch = Some(frame);
         b.component = Some(component);
         b.complete = complete;
+        b.last = None;
         b.pixels.clear();
         b.pixels.resize(PIXELS, PixelChoice::default());
         if let Some(c) = candidate {
@@ -816,5 +927,173 @@ impl TileAnalysis {
             return Err(postcard::Error::DeserializeBadEncoding);
         }
         Ok(t)
+    }
+}
+
+#[cfg(test)]
+mod uniform_tests {
+    use super::*;
+    #[test]
+    fn repeated_observations_keep_epochs_and_reconsider_earlier_or_changed_sources() {
+        let mut fast = BlockAnalysis::default();
+        let mut scalar = BlockAnalysis::default();
+        let pixels: Vec<_> = (0..PIXELS).flat_map(|i| [i as u8, 40, 90, 255]).collect();
+        for (at, frame) in [20, 21, 22, 1, 23, 24, 25, 26].into_iter().enumerate() {
+            let mut c = Candidate::new(
+                frame,
+                frame as f64,
+                0,
+                0,
+                pixels.clone(),
+                vec![Visibility::Visible; PIXELS],
+                90,
+            );
+            c.exposures.push(Exposure {
+                x: 0,
+                y: 0,
+                visibility: 1,
+            });
+            if at == 4 {
+                c.visibility[255] = Visibility::Occluded;
+            }
+            if at == 6 {
+                c.rgba[0] += 1;
+            }
+            if at == 7 {
+                fast.set_baseline(&pixels, &vec![true; PIXELS]);
+                scalar.set_baseline(&pixels, &vec![true; PIXELS]);
+            }
+            fast.feed(&c, 2, 3, at as u32);
+            scalar.feed_inner(&c, 2, 3, at as u32, false);
+            assert_eq!(
+                postcard::to_allocvec(&fast).unwrap(),
+                postcard::to_allocvec(&scalar).unwrap()
+            );
+        }
+    }
+    // The fast path must agree with independent per-pixel execution. Include changing ranks,
+    // baseline support, refuted colours, clipped coverage and a single unlike edge pixel.
+    #[test]
+    fn repeated_observations_recheck_a_changed_noise_parameter() {
+        let mut fast = BlockAnalysis::default();
+        let mut scalar = BlockAnalysis::default();
+        let mut c = Candidate::new(
+            0,
+            0.,
+            0,
+            0,
+            [50, 50, 50, 255].repeat(PIXELS),
+            vec![Visibility::Visible; PIXELS],
+            100,
+        );
+        fast.feed(&c, 2, 0, 0);
+        scalar.feed_inner(&c, 2, 0, 0, false);
+        c.rgba[0] += 1;
+        c.frame = 1;
+        c.quality = 90;
+        for noise in [2, 0] {
+            fast.feed(&c, noise, 0, 1);
+            scalar.feed_inner(&c, noise, 0, 1, false);
+            assert_eq!(
+                postcard::to_allocvec(&fast).unwrap(),
+                postcard::to_allocvec(&scalar).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn selection_snapshot_checks_pixels_provenance_reasons_and_block_membership() {
+        let mut analysis = TileAnalysis::new(16, 0, 0, 0);
+        analysis.blocks.insert(
+            0,
+            BlockAnalysis {
+                pixels: vec![
+                    PixelChoice {
+                        rgba: [30, 40, 50, 255],
+                        rank: 3,
+                        frame: 7,
+                        ..PixelChoice::default()
+                    };
+                    PIXELS
+                ],
+                ..BlockAnalysis::default()
+            },
+        );
+        let snapshot = analysis.selection();
+        assert!(snapshot.matches(&analysis));
+        analysis.blocks.get_mut(&0).unwrap().pixels[255].positions = 8;
+        assert!(snapshot.matches(&analysis));
+        for field in 0..3 {
+            let pixel = &mut analysis.blocks.get_mut(&0).unwrap().pixels[255];
+            let old = *pixel;
+            match field {
+                0 => pixel.rgba[0] += 1,
+                1 => pixel.frame += 1,
+                _ => pixel.rank = 2,
+            }
+            assert!(!snapshot.matches(&analysis));
+            analysis.blocks.get_mut(&0).unwrap().pixels[255] = old;
+        }
+        analysis.blocks.clear();
+        assert!(!snapshot.matches(&analysis));
+    }
+
+    #[test]
+    fn uniform_selection_matches_per_pixel_execution() {
+        let states = [
+            Visibility::Unknown,
+            Visibility::Visible,
+            Visibility::Background,
+            Visibility::Occluded,
+            Visibility::Context,
+            Visibility::Outside,
+        ];
+        for perturbation in 0..5 {
+            let mut fast = BlockAnalysis::default();
+            let mut scalar = BlockAnalysis::default();
+            let mut baseline = [70, 70, 70, 255].repeat(PIXELS);
+            let mut coverage = vec![true; PIXELS];
+            if perturbation == 1 {
+                baseline[PIXELS * 4 - 4] = 71;
+            }
+            if perturbation == 2 {
+                coverage[PIXELS - 1] = false;
+            }
+            fast.set_baseline(&baseline, &coverage);
+            scalar.set_baseline(&baseline, &coverage);
+            for frame in 0..36 {
+                let colour = [70, 70, 71, 100, 30, 71][frame % 6];
+                let mut c = Candidate::new(
+                    frame as u32,
+                    frame as f64,
+                    frame as i32 * 16,
+                    0,
+                    [colour, colour, colour, 255].repeat(PIXELS),
+                    vec![states[frame % states.len()]; PIXELS],
+                    100 - frame as u16,
+                );
+                c.exposures.push(Exposure {
+                    x: frame as i32,
+                    y: 0,
+                    visibility: frame as u32,
+                });
+                if perturbation == 3 {
+                    c.rgba[PIXELS * 4 - 4] = colour + 1;
+                }
+                if perturbation == 4 {
+                    c.visibility[PIXELS - 1] = Visibility::Outside;
+                }
+                if frame == 12 {
+                    fast.refutations = vec![Some([100, 100, 100, 255]); PIXELS];
+                    scalar.refutations = fast.refutations.clone();
+                }
+                fast.feed(&c, 2, 0, frame as u32);
+                scalar.feed_inner(&c, 2, 0, frame as u32, false);
+                assert_eq!(
+                    postcard::to_allocvec(&fast).unwrap(),
+                    postcard::to_allocvec(&scalar).unwrap()
+                );
+            }
+        }
     }
 }

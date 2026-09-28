@@ -13,7 +13,9 @@ pub mod materialize;
 pub mod objects;
 pub mod opacity;
 pub mod ownership;
+mod packed;
 mod phase;
+mod pixels;
 mod resolve;
 pub mod scene;
 mod surface;
@@ -120,8 +122,7 @@ pub struct Candidate {
     pub time: f64,
     pub pose_x: i32,
     pub pose_y: i32,
-    #[serde(with = "serde_bytes")]
-    pub rgba: Vec<u8>,
+    pub rgba: pixels::Pixels,
     #[serde(with = "visibility")]
     pub visibility: Vec<Visibility>,
     pub quality: u16,
@@ -144,7 +145,7 @@ impl Candidate {
             time,
             pose_x,
             pose_y,
-            rgba,
+            rgba: rgba.into(),
             visibility,
             quality,
             frames: vec![FrameSpan {
@@ -188,6 +189,7 @@ impl History {
     }
 }
 
+#[derive(PartialEq, Eq)]
 pub struct BlockResolution {
     pub kind: ContentKind,
     pub rgba: Vec<u8>,

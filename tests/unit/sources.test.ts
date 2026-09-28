@@ -3,8 +3,33 @@ import { assert, assertEquals, assertRejects } from '@std/assert';
 import { core } from '../../src/core/wasm.ts';
 import { MemoryKV } from '../../src/storage/db.ts';
 import { SourceStore, type StoredSourceTile } from '../../src/storage/sources.ts';
-import { SourceStorage, SourceWrites } from '../../src/pipeline/source-storage.ts';
+import { SourceStorage, sourceTileBounds, SourceWrites } from '../../src/pipeline/source-storage.ts';
 import { StorageError } from '../../src/pipeline/context.ts';
+
+// Scheduling must visit every native pixel's shard at fractional poses, including negative worlds,
+// half-integer rounding, clipped-sized ROIs, and simultaneous crossings on both axes.
+Deno.test('source storage: fractional shard bounds agree with native pixel enumeration', () => {
+  const poses = [-512.6, -256.6, -0.6, -0.5, -0.4, 0, 0.4, 0.5, 0.6, 255.5, 256.6];
+  for (const x of poses) {
+    for (const y of poses) {
+      for (const width of [1, 16, 32, 255, 256, 257]) {
+        for (const offset of [0, 1, 17]) {
+          const rect = { x: offset, y: offset, width, height: width % 2 ? 32 : 256 };
+          const columns = new Set<number>(), rows = new Set<number>();
+          for (let i = 0; i < rect.width; i++) columns.add(Math.floor((rect.x + i + Math.floor(x + 0.5)) / 256));
+          for (let i = 0; i < rect.height; i++) rows.add(Math.floor((rect.y + i + Math.floor(y + 0.5)) / 256));
+          const bounds = sourceTileBounds(rect, x, y, 256);
+          assertEquals(bounds, {
+            left: Math.min(...columns),
+            right: Math.max(...columns),
+            top: Math.min(...rows),
+            bottom: Math.max(...rows),
+          });
+        }
+      }
+    }
+  }
+});
 
 // Fused analysis must preserve hot-state metadata, spilled entry addresses, candidate order, and
 // drained epoch options. An unchanged opacity page must remain usable without a codec round trip.
@@ -29,12 +54,20 @@ Deno.test('source analysis: resident annotations match archive round trips for h
       const roundtrip = core().sourceAnalysis(32, -1, 2, 0), fused = core().sourceAnalysis(32, -1, 2, 0);
       const opacity = core().sourceOpacityAnnotation(data, page, { size: 32, tx: -1, ty: 2, evidence });
       const opacityRoundtrip = core().sourceAnalysis(32, -1, 2, 0), opacityFused = core().sourceAnalysis(32, -1, 2, 0);
+      const decoded = core().sourcePage(data, page);
+      const decodedAnalysis = core().sourceAnalysis(32, -1, 2, 0);
       try {
         const annotated = core().sourceArchiveAnnotate(data, page, 32, -1, 2, evidence);
         roundtrip.feed(annotated, page);
         assertEquals(fused.annotate(data, page, 32, -1, 2, evidence), annotated);
-        assertEquals(fused.options(), roundtrip.options());
+        const expectedOptions = roundtrip.options();
+        assertEquals(fused.options(), expectedOptions);
         assertEquals(fused.state(), roundtrip.state());
+        assertEquals(decoded.frames(), core().sourceArchiveFrames(data, page));
+        assertEquals(decodedAnalysis.annotate(decoded, page, 32, -1, 2, evidence), annotated);
+        assertEquals(decoded.annotationChanged, false, 'an unchanged page needs no archive write');
+        assertEquals(decodedAnalysis.options(), expectedOptions);
+        assertEquals(decodedAnalysis.state(), roundtrip.state());
         assertEquals(opacity.archive(), data);
         opacityRoundtrip.feed(opacity.archive(), page);
         opacityFused.feedOpacity(opacity, page);
@@ -46,6 +79,8 @@ Deno.test('source analysis: resident annotations match archive round trips for h
         opacity.free();
         opacityRoundtrip.free();
         opacityFused.free();
+        decoded.free();
+        decodedAnalysis.free();
       }
     }
   } finally {

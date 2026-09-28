@@ -99,8 +99,10 @@ impl History {
     }
     pub fn resident_bytes(&self) -> usize {
         std::mem::size_of::<Self>()
-            + self.resident.capacity() * std::mem::size_of::<Candidate>()
-            + self.spilled.capacity() * std::mem::size_of::<Candidate>()
+            + self.resident.capacity()
+                * (std::mem::size_of::<Candidate>() + super::pixels::LEGACY_HEADER_BYTES)
+            + self.spilled.capacity()
+                * (std::mem::size_of::<Candidate>() + super::pixels::LEGACY_HEADER_BYTES)
             + self
                 .resident
                 .iter()

@@ -34,6 +34,23 @@ export function sourceBytes(core: Core, handle: number): Uint8Array<ArrayBuffer>
 export function sourceJSON<T>(core: Core, handle: number): T {
   return JSON.parse(new TextDecoder().decode(sourceBytes(core, handle)));
 }
+/** A single native decoded archive. Lifetime is scoped to one storage-page iteration. */
+export class SourcePage {
+  annotationChanged = false;
+  private readonly guard = new FreeGuard();
+  readonly handle: number;
+  constructor(private core: Core, readonly bytes: Uint8Array, readonly page: number) {
+    const [ptr] = core.scratch([bytes.length]);
+    core.writeBytes(ptr, bytes);
+    this.handle = core.check(core.exports.ls_sources_page_new(ptr, bytes.length, page), 'decode source page');
+  }
+  frames(): number[] {
+    return sourceJSON(this.core, this.core.exports.ls_sources_page_frames(this.handle));
+  }
+  free(): void {
+    this.guard.once(() => this.core.exports.ls_sources_page_free(this.handle));
+  }
+}
 export class SourceTile {
   private readonly freeGuard = new FreeGuard();
   constructor(private core: Core, private handle: number) {}
@@ -148,6 +165,13 @@ function jsonInput(core: Core, value: unknown): [number, number] {
   core.writeBytes(ptr, data);
   return [ptr, data.length];
 }
+export class SourceSelection {
+  private guard = new FreeGuard();
+  constructor(private core: Core, readonly handle: number) {}
+  free(): void {
+    this.guard.once(() => this.core.exports.ls_sources_selection_free(this.handle));
+  }
+}
 export class SourceAnalysis {
   private freeGuard = new FreeGuard();
   constructor(private core: Core, private handle: number) {}
@@ -163,6 +187,16 @@ export class SourceAnalysis {
   }
   copyBaseline(other: SourceAnalysis): void {
     this.core.check(this.core.exports.ls_sources_analysis_copy_baseline(this.handle, other.handle), 'copy existing sources');
+  }
+  selection(): SourceSelection {
+    return new SourceSelection(
+      this.core,
+      this.core.check(this.core.exports.ls_sources_selection_new(this.handle), 'source selection snapshot'),
+    );
+  }
+  matchesSelection(snapshot: SourceSelection): boolean {
+    return this.core.check(this.core.exports.ls_sources_selection_matches(snapshot.handle, this.handle), 'unchanged source selection') !==
+      0;
   }
   needsRefutation(): boolean {
     return this.core.check(this.core.exports.ls_sources_analysis_refute_needed(this.handle), 'source confidence') !== 0;
@@ -180,14 +214,21 @@ export class SourceAnalysis {
       'occluded appearance witness',
     );
   }
-  opacityLearning(data: Uint8Array, page: number, desc: OpacityDescriptor): OpacityLearning {
+  opacityLearning(data: Uint8Array | SourcePage, page: number, desc: OpacityDescriptor): OpacityLearning {
     return new OpacityLearning(this.core, this.handle, data, page, desc);
   }
   applyFittedOpacity(annotation: OpacityAnnotation, key: string, field: FittedOpacityField, noise: number): number {
     return annotation.applyFitted(this.handle, key, field, noise);
   }
   /** Annotate and select while the decoded archive is resident in the core. */
-  annotate(data: Uint8Array, page: number, size: number, tx: number, ty: number, evidence: SourceEvidence): Uint8Array<ArrayBuffer> {
+  annotate(
+    data: Uint8Array | SourcePage,
+    page: number,
+    size: number,
+    tx: number,
+    ty: number,
+    evidence: SourceEvidence,
+  ): Uint8Array<ArrayBuffer> {
     return sourceArchiveAnnotate(this.core, data, page, size, tx, ty, evidence, this.handle);
   }
   feedOpacity(annotation: OpacityAnnotation, page: number): void {
@@ -374,7 +415,7 @@ export function sourceArchiveFrames(core: Core, data: Uint8Array, page: number):
 }
 export function sourceArchiveAnnotate(
   core: Core,
-  data: Uint8Array,
+  data: Uint8Array | SourcePage,
   page: number,
   size: number,
   tx: number,
@@ -382,6 +423,12 @@ export function sourceArchiveAnnotate(
   evidence: SourceEvidence,
   analysis = 0,
 ): Uint8Array<ArrayBuffer> {
+  if (data instanceof SourcePage) {
+    const [ptr, len] = jsonInput(core, { size, tx, ty, evidence: evidence.handle });
+    const result = core.check(core.exports.ls_sources_page_annotate(data.handle, ptr, len, analysis), 'annotate source page');
+    data.annotationChanged = result !== 0;
+    return result ? sourceBytes(core, result) : data.bytes.slice();
+  }
   const meta = new TextEncoder().encode(JSON.stringify({ size, tx, ty, evidence: evidence.handle })),
     [ptr, desc] = core.scratch([data.length, meta.length]);
   core.writeBytes(ptr, data);
@@ -393,6 +440,12 @@ export function sourceArchiveExport(core: Core, data: Uint8Array, page: number, 
   const [ptr] = core.scratch([data.length]);
   core.writeBytes(ptr, data);
   return sourceBytes(core, core.exports.ls_sources_archive_export(ptr, data.length, page, png ? 1 : 0));
+}
+
+export function sourceArchiveCanonical(core: Core, data: Uint8Array, page: number): Uint8Array<ArrayBuffer> {
+  const [ptr] = core.scratch([data.length]);
+  core.writeBytes(ptr, data);
+  return sourceBytes(core, core.exports.ls_sources_archive_canonical(ptr, data.length, page));
 }
 
 export class SourceRoles {
