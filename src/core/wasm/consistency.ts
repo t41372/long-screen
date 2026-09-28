@@ -10,6 +10,7 @@ export interface ConsistencyVoteInput {
   h: number;
   bits: Uint8Array;
   clean: Uint8Array;
+  screen?: Uint8Array;
 }
 export interface ConsistencyNeighbourInput {
   image: FrameInput;
@@ -55,11 +56,13 @@ function runConsistencyMask(core: Core, input: ConsistencyMaskInput, resident?: 
         n.image instanceof ResidentFrame ? 0 : pixels * 4,
         48,
         (n.occlusions?.length || 0) * 32,
-        24,
+        32,
+        voteBytes(n.voting),
         voteBytes(n.voting),
         voteBytes(n.voting),
       ]
       : [
+        0,
         0,
         0,
         0,
@@ -71,14 +74,16 @@ function runConsistencyMask(core: Core, input: ConsistencyMaskInput, resident?: 
     residentImage ? 0 : pixels * 4,
     residentLabels ? 0 : pixels,
     32,
-    24,
+    32,
+    voteBytes(input.voting),
     voteBytes(input.voting),
     voteBytes(input.voting),
     ...neighbourSizes(input.prev),
     ...neighbourSizes(input.next),
     resident ? 0 : pixels,
   ]);
-  const [rgbaScratch, labelsScratch, region, voteDesc, voteBits, voteClean] = ptr, output = resident ? resident.ptr : ptr[ptr.length - 1];
+  const [rgbaScratch, labelsScratch, region, voteDesc, voteBits, voteClean, voteScreen] = ptr,
+    output = resident ? resident.ptr : ptr[ptr.length - 1];
   const rgba = core.placeFrame(input.image, rgbaScratch);
   let labels: number;
   if (input.labels instanceof Resident) {
@@ -89,25 +94,28 @@ function runConsistencyMask(core: Core, input: ConsistencyMaskInput, resident?: 
     core.writeBytes(labels, input.labels);
   }
   core.writeRect(region, input.region);
-  const writeVote = (desc: number, bits: number, clean: number, v?: ConsistencyVoteInput): number => {
+  const writeVote = (desc: number, bits: number, clean: number, screen: number, v?: ConsistencyVoteInput): number => {
     if (!v) return 0;
     const bytes = voteBytes(v);
     if (v.bits.length < bytes || v.clean.length < bytes) throw new Error('CORE_BAD_ARGUMENT: truncated consistency vote bitset.');
     core.writeBytes(bits, v.bits.subarray(0, bytes));
     core.writeBytes(clean, v.clean.subarray(0, bytes));
-    const view = new DataView(core.exports.memory.buffer, desc, 24);
+    const view = new DataView(core.exports.memory.buffer, desc, 32);
     view.setInt32(0, v.x0, true);
     view.setInt32(4, v.y0, true);
     view.setInt32(8, v.w, true);
     view.setInt32(12, v.h, true);
     view.setUint32(16, bits, true);
     view.setUint32(20, clean, true);
+    if (v.screen && v.screen.length < bytes) throw new Error('CORE_BAD_ARGUMENT: truncated screen witness bitset.');
+    if (v.screen) core.writeBytes(screen, v.screen.subarray(0, bytes));
+    view.setUint32(24, v.screen ? screen : 0, true);
     return desc;
   };
-  const vote = writeVote(voteDesc, voteBits, voteClean, input.voting);
+  const vote = writeVote(voteDesc, voteBits, voteClean, voteScreen, input.voting);
   const writeNeighbour = (offset: number, n?: ConsistencyNeighbourInput): number => {
     if (!n) return 0;
-    const [imageScratch, desc, occlusions, nVoteDesc, nBits, nClean] = ptr.slice(offset, offset + 6);
+    const [imageScratch, desc, occlusions, nVoteDesc, nBits, nClean, nScreen] = ptr.slice(offset, offset + 7);
     if (n.image.width !== width || n.image.height !== height) throw new Error('CORE_BAD_ARGUMENT: neighbour frame size differs.');
     const image = core.placeFrame(n.image, imageScratch);
     (n.occlusions || []).forEach((r, i) => core.writeRect(occlusions + i * 32, r));
@@ -117,10 +125,10 @@ function runConsistencyMask(core: Core, input: ConsistencyMaskInput, resident?: 
     view.setFloat64(16, n.y, true);
     view.setUint32(24, n.occlusions?.length ? occlusions : 0, true);
     view.setUint32(28, n.occlusions?.length || 0, true);
-    view.setUint32(32, writeVote(nVoteDesc, nBits, nClean, n.voting), true);
+    view.setUint32(32, writeVote(nVoteDesc, nBits, nClean, nScreen, n.voting), true);
     return desc;
   };
-  const prev = writeNeighbour(6, input.prev), next = writeNeighbour(12, input.next);
+  const prev = writeNeighbour(7, input.prev), next = writeNeighbour(14, input.next);
   core.check(
     core.exports.ls_consistency_mask(
       rgba,

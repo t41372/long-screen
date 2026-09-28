@@ -1,6 +1,7 @@
 import '../support/core.ts';
 import { assert, assertEquals, assertRejects } from '@std/assert';
 import { AnalysisComputer, BOX_LUMA_WGSL, type GPUProvider } from '../../src/core/compute.ts';
+import { core } from '../../src/core/wasm.ts';
 import { downscaleGray, equalRGBA } from '../../src/core/raster.ts';
 import type { RGBA } from '../../src/types.ts';
 const image = (): RGBA => ({
@@ -63,7 +64,9 @@ Deno.test('compute: duplicate detection is exact native RGBA, including alpha an
 // A deterministic in-process WebGPU stand-in: writeBuffer stores raw bytes, submit() runs an exact JS box-luma over
 // the stored input using the stored Params (so parity with the CPU path is genuinely exercised, not assumed), and
 // mapAsync/lost are the only controllable knobs (readback latency, device loss) a real adapter would also expose.
-function fakeGPU(options: { corrupt?: boolean; delayMS?: number; lost?: Promise<{ message?: string }> } = {}): GPUProvider {
+function fakeGPU(
+  options: { corrupt?: boolean; delayMS?: number; lost?: Promise<{ message?: string }>; rejectResidentView?: boolean } = {},
+): GPUProvider {
   const delayMS = options.delayMS ?? 0;
   class FakeBuffer {
     bytes: Uint8Array;
@@ -108,6 +111,9 @@ function fakeGPU(options: { corrupt?: boolean; delayMS?: number; lost?: Promise<
     lost: options.lost ?? new Promise<{ message?: string }>(() => {}),
     queue: {
       writeBuffer(buffer: FakeBuffer, offset: number, data: ArrayBuffer | ArrayBufferView): void {
+        if (options.rejectResidentView && ArrayBuffer.isView(data) && data.byteOffset !== 0) {
+          throw new TypeError('This runtime does not accept a view of core memory');
+        }
         const view = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
         buffer.bytes.set(view, offset);
       },
@@ -198,4 +204,25 @@ Deno.test('compute: auto mode stays on CPU when a bit-exact fake GPU measures sl
   assertEquals(c.stats.gpuFrames, 0);
   assertEquals(c.stats.cpuFrames, 1);
   c.dispose();
+});
+
+// Real engines upload resident frames; a browser may reject shared-memory views and require a copy.
+// Both paths must preserve the frame, keep GPU execution, and upload a subsequent changed frame.
+Deno.test('compute: resident GPU uploads preserve pixels when direct views are accepted or require a copy', async () => {
+  for (const rejectResidentView of [false, true]) {
+    const c = new AnalysisComputer('webgpu', fakeGPU({ rejectResidentView })), src = image();
+    const resident = core().frame(src.width, src.height);
+    try {
+      for (let frame = 0; frame < 2; frame++) {
+        src.data[0] = frame * 100;
+        resident.write(src.data);
+        assertEquals(await c.gray(resident, 2), downscaleGray(src, 2));
+      }
+      assertEquals(c.stats.gpuFrames, 2);
+      assertEquals(c.stats.backend, 'WebGPU box-luma + CPU registration');
+    } finally {
+      c.dispose();
+      resident.free();
+    }
+  }
 });

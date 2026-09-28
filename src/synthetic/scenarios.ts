@@ -165,6 +165,7 @@ export const SCENARIO_NAMES = [
   'geometry-change',
   'toolbar-collapse',
   'chrome-everything',
+  'floating',
   'glimpse',
 ] as const;
 export type ScenarioName = typeof SCENARIO_NAMES[number];
@@ -548,35 +549,10 @@ export function buildScenario(name: ScenarioName | string): Scenario {
       let path = linearPath([{ x: 0, y: 0 }, { x: 0, y: 1400 }, { x: 0, y: 1100 }, { x: 0, y: 2600 }], [30, 8, 26]);
       path = jitter(path, 5, 2, 3);
       const layer: Layer = { id: 'body', viewport: { x: 0, y: TOP, width: PW, height: PH - TOP - NAV }, world, path };
-      // Precise overlay-contamination split (docs/ARCHITECTURE.md §七, issue #2; verify.ts's contaminatedOverlayUnobservable
-      // / contaminatedOverlayRecoverable): measured 3,192px total overlay contamination (was 4,334px).
-      // 1,517px are UNOBSERVABLE — the analytic ceiling for this scenario, computed the same way over every
-      // ever-visible main-canvas world pixel regardless of contamination — almost entirely the scrollbar
-      // thumb's own interior: this page never scrolls horizontally, and the thumb is drawn on every single
-      // frame with no fade, so that ~6-native-px column is never once observed clean. maxContaminatedOverlay-
-      // Unobservable is seeded from this exact analytic count.
-      //
-      // maxContaminatedOverlayRecoverable is DECLARED here (1,759 = measured 1,675 +5%) rather than left at
-      // the target 0 — a known limitation with one traced mechanism, not an open question. Every one of the
-      // 1,675 is detectable in principle (scrollbar grey #969696 1,223px and FAB #cf6750 452px, both a mean
-      // |ΔRGB| ≈ 100 from the true page — nothing here is under a comparison threshold), and 1,240 of them
-      // ARE correctly flagged provisional. What is missing is a frame that can HEAL them, and the reason is
-      // always the same shape: THE ONLY CLEAN LOOK IS A BOUNDARY FRAME OF THE RECORDING, which the very same
-      // pairwise disagreement condemns.
-      //   - World (382, 45), frames 0–1: frame 0 is the run's first frame and covers the pixel under the
-      //     scrollbar; frame 1 is clean but its only comparable neighbour is frame 0 (frame 2 maps out of
-      //     region), so it is condemned too and cannot heal.
-      //   - World (335, 3217), frames 63–64: the mirror image at the end. Frame 63 first covers it under the
-      //     FAB and is correctly flagged; frame 64 is genuinely clean and is the last frame of the run.
-      //   - World (387, 3072), frames 62–64: the thumb is 150px tall against ~58px of scroll per frame, so
-      //     the first look (frame 62, prev out of region) has one comparable neighbour — frame 63, also under
-      //     the thumb, which AGREES — and only frame 64 is clean, again the last frame.
-      // Engine.consistencyMask()'s lone-neighbour excuse exists for exactly this and cannot fire: it needs
-      // voting to have independently found the neighbour inconsistent, and voting has no verdict at a
-      // recording's boundary — a world position entering at the leading edge with one or two frames left is
-      // off screen in every ring partner that clears Dmin, so no comparison is ever possible for it. That is
-      // a property of where the recording stops, not of the detector. Only 2 of the 1,675 sit in analysis
-      // cells the voting interior mask (`RegionSlot.interior`, rust/core/src/voting.rs) excludes from voting, so the mask is not what stands in the way.
+      // Recoverable contamination must be zero, including clean boundary observations. Automatic
+      // fixed islands retain parent candidates and contribute source disputes even when the first
+      // compositor never saw a colour disagreement. Unobservable contamination has a separate
+      // analytic ceiling; it must not excuse a pixel with an actual clean observation.
       return {
         name,
         description: '手机竖屏：状态栏、底部导航、悬浮按钮、滚动条、手抖。',
@@ -595,7 +571,7 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           fragments: { body: 0 },
           maxContaminatedOverlay: 3352,
           maxContaminatedOverlayUnobservable: 1517,
-          maxContaminatedOverlayRecoverable: 1759,
+          maxContaminatedOverlayRecoverable: 0,
           maxProvisional: 1832,
           diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
@@ -773,29 +749,9 @@ export function buildScenario(name: ScenarioName | string): Scenario {
     case 'chrome-everything': {
       const world = makeWorld(900, 2600, 211, 'article');
       const path = linearPath([{ x: 0, y: 0 }, { x: 0, y: 1200 }, { x: 0, y: 900 }, { x: 0, y: 1900 }], [24, 8, 20]);
-      // Split ratchets (world-consistency mask + displacement-spread voting, docs/ARCHITECTURE.md §七).
-      // maxContaminatedDynamic covers the caret/counter/video trio alone (legitimately allowed to keep one
-      // moment): measured 57,579px; the ratchet keeps its earlier, higher value rather than being re-seeded up.
-      // Precise overlay split (docs/ARCHITECTURE.md §七, issue #2): measured 3,569px total overlay contamination, down
-      // from 9,534px. 1,664px are UNOBSERVABLE — the analytic ceiling, computed the same way over every
-      // ever-visible main-canvas world pixel regardless of contamination — the FAB's own trailing-corner
-      // content that never migrates toward any future frame's leading edge before the fixed-length recording
-      // ends (its 52×52 footprint sits at the viewport's OWN bottom-right corner, the freshest-revealed
-      // content in most frames it touches). maxContaminatedOverlayUnobservable is seeded from that count.
-      //
-      // maxContaminatedOverlayRecoverable is DECLARED here (2,001 = measured 1,905 +5%) rather than left at
-      // the target 0 — a known limitation with one traced mechanism. It was 7,870 before this pass; ~2,880 of
-      // that was the FAB's white [255,255,255] glyph over this page's [251,250,246] background, a mean
-      // |ΔRGB| of 6 that no comparison could see until the world-consistency tolerance started coming from
-      // the source (`MediaInfo.noise`: 0 for a lossless scenario, the H.264/VP9 headroom for a real
-      // recording). What is left is the same recording-boundary shape traced pixel by pixel on `phone`:
-      // 1,615 of the 1,905 ARE flagged provisional and simply never meet a frame allowed to heal them.
-      // World (603, 2209) is the type case — frame 51 first covers it under the FAB and is correctly
-      // flagged, frame 52 is genuinely clean and is the LAST frame of the run, and the same pairwise
-      // disagreement condemns frame 52 as well, with voting silent for both (a world position entering at
-      // the leading edge one frame before the end is off screen in every ring partner that clears Dmin).
-      // NONE of the 1,905 sit in analysis cells the voting interior mask (`RegionSlot.interior`, rust/core/src/voting.rs) excludes from voting.
-      // maxProvisional is the net unhealed flag count at the end: measured 32,151px, +~5%.
+      // Dynamic page widgets may retain one observed moment. Recoverable screen overlays may not:
+      // even the recording's final clean frame must displace an incorrectly tracked background.
+      // The unobservable ceiling is checked independently from recoverable contamination.
       return {
         name,
         description: '固定栏、悬浮按钮、toast、闪烁光标、实时计数器、播放中的视频同时存在。',
@@ -822,11 +778,61 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           fragments: { body: 0 },
           maxContaminatedOverlay: 3748,
           maxContaminatedOverlayUnobservable: 1664,
-          maxContaminatedOverlayRecoverable: 2001,
+          maxContaminatedOverlayRecoverable: 0,
           maxContaminatedDynamic: 60436,
           maxProvisional: 33759,
           diagnostics: { present: ['TEMPORAL_OR_ALIGNMENT_CONFLICT'], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
+      };
+    }
+    case 'floating': {
+      // f.mov: dark page/code blocks and a wide floating input with a translucent shadow. The
+      // stationary surface shares the code blocks' colour, so grey agreement alone is not visibility.
+      const world = makeWorld(W, 2400, 733, 'article');
+      for (let i = 0; i < world.data.length; i += 4) {
+        for (let c = 0; c < 3; c++) world.data[i + c] = 255 - world.data[i + c];
+      }
+      for (const top of [400, 1200]) {
+        world.fill({ x: 64, y: top, width: 512, height: 168 }, [30, 30, 30]);
+        for (let row = 0; row < 6; row++) world.textLine(76, top + row * 28, 400 + row * 10, top * 13 + row, [200, 205, 210]);
+      }
+      const path = linearPath([{ x: 0, y: 0 }, { x: 0, y: 1540 }, { x: 0, y: 1008 }, { x: 0, y: 1820 }], [55, 19, 29]);
+      const bar = fixedBand('floating-input', { x: 64, y: 360, width: 512, height: 48 }, 923, [30, 30, 30]);
+      return {
+        name,
+        description: '深色正文与代码块上方的宽悬浮输入框，带半透明阴影与反向回访。',
+        // Fix the two pane rectangles here to isolate visibility/source selection from layer learning;
+        // f.mov is also exercised with the automatic layout in the real-recording benchmark.
+        settings: {
+          analysisSize: 640,
+          regions: [
+            { id: 'body', name: 'body', kind: 'moving', rect: bodyViewport },
+            { id: 'header', name: 'header', kind: 'fixed', rect: { x: 0, y: 0, width: W, height: HEADER } },
+          ],
+        },
+        width: W,
+        height: H,
+        background: [0, 0, 0],
+        layers: [body(world, path)],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 26), {
+          id: 'floating-input',
+          kind: 'dynamic',
+          draw: (frame, index, time) => {
+            if (index === path.length - 1) return []; // a single clean final observation must remain usable
+            const r = { x: 64, y: 408, width: 512, height: 20 };
+            for (let y = r.y; y < r.y + r.height; y++) {
+              for (let x = r.x; x < r.x + r.width; x++) {
+                const i = (y * W + x) * 4, alpha = (r.y + r.height - y) / r.height * .65;
+                for (let c = 0; c < 3; c++) frame.data[i + c] *= 1 - alpha;
+              }
+            }
+            return [...bar.draw(frame, index, time), r];
+          },
+        }],
+        frames: frames(path.length),
+        // Measured against clean main: 39,671 recoverable overlay pixels / 34,304 provisional.
+        // Deferred native visibility + learned fringe witnesses recover the faint 3×5 shadow too.
+        expect: expect({ fragments: { body: 0 } }),
       };
     }
     case 'glimpse': {

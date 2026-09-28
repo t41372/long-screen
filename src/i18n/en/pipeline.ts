@@ -3,6 +3,21 @@ import type { pipelineSections as zh } from '../zh/pipeline.ts';
 
 export const pipelineSections: Catalog<typeof zh> = {
   diag: {
+    SOURCE_UNRESOLVED: {
+      message:
+        'Some sources remain unresolved: {{ambiguous}} pixels have competing observations and {{unverified}} pixels have no confirmed clean source.',
+      action:
+        'The current observations and per-pixel source records remain in the project package. This label does not establish that those pixels are wrong.',
+    },
+    SOURCE_DYNAMIC_PARTIAL: {
+      message: 'Some dynamic regions have no fully visible common state. One observed time is retained with uncertainty markers.',
+      action: 'Other native observations and source records remain in the project package for comparison.',
+    },
+    SOURCE_TRACKING_LIMIT: {
+      message: 'Some frames exceeded the independent-object tracking capacity. Their sources remain uncertain.',
+      action: 'Native alternatives remain in the project package; tracking overflow is not treated as clean evidence.',
+    },
+
     MODEL_ASSUMPTIONS: {
       message:
         'Reconstruction uses layered panning canvases with geometric loop-closure constraints. Automatic masking and dynamic-region detection are heuristic inference; confidence scores are not calibrated correctness probabilities. World-consistency comparisons run at this source’s declared decode noise of ±{{noise}} levels{{margin}}.',
@@ -202,6 +217,7 @@ export const pipelineSections: Catalog<typeof zh> = {
     },
   },
   progress: {
+    resolveSources: 'Replaying and checking native sources in disputed regions…',
     runPartial: 'An explicitly marked partial reconstruction was saved.',
     runComplete: 'Reconstruction complete; check the diagnostics and unobserved areas.',
     render: 'Compositing native-size tiles from observed evidence; gaps stay transparent.',

@@ -24,6 +24,7 @@ pub mod pyramid;
 pub mod raster;
 pub mod region;
 pub mod regions;
+pub mod sources;
 pub mod temporal;
 pub mod track;
 pub mod voting;

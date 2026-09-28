@@ -209,9 +209,15 @@ pub extern "C" fn ls_voting_peek(handle: u32, out: u32) -> i32 {
     record.verdicts.len() as i32
 }
 
-/// Copies verdict `which` of the oldest pending record: `bits` then `clean`, each `ceil(w·h/8)` bytes.
+/// Copies verdict `which` of the oldest pending record: `bits`, `clean`, and `screen`, each `ceil(w·h/8)` bytes.
 #[no_mangle]
-pub extern "C" fn ls_voting_read(handle: u32, which: u32, bits: u32, clean: u32) -> i32 {
+pub extern "C" fn ls_voting_read(
+    handle: u32,
+    which: u32,
+    bits: u32,
+    clean: u32,
+    screen: u32,
+) -> i32 {
     let Some(v) = voting(handle) else {
         return STATUS_BAD_ARGUMENT;
     };
@@ -230,6 +236,10 @@ pub extern "C" fn ls_voting_read(handle: u32, which: u32, bits: u32, clean: u32)
     };
     b.copy_from_slice(&verdict.bits);
     c.copy_from_slice(&verdict.clean);
+    let Some(s) = (unsafe { slice_mut(screen, verdict.screen.len()) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    s.copy_from_slice(&verdict.screen);
     crate::abi::STATUS_OK
 }
 

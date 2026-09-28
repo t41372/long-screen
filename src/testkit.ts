@@ -1,5 +1,6 @@
 /** Browser test kit: exposes the shipped modules on window for Playwright-driven integration tests. Not loaded by the app. */
 import { Engine } from './pipeline/engine.ts';
+import { releaseUnlessHeld } from './media/pool.ts';
 import { Database, iterate, MemoryKV, Namespace } from './storage/db.ts';
 import { PoseGraph } from './core/pose-graph.ts';
 import { RegionAtlas } from './core/layers.ts';
@@ -22,6 +23,7 @@ import { analysisFactor, downscaleGray } from './core/raster.ts';
 const corePlan = await loadPlannedCore(planCore(), new URL('./core-helper.js', import.meta.url));
 const kit = {
   corePlan,
+  releaseUnlessHeld,
   coreThreads: () => core().threads,
   core,
   AnalysisComputer,

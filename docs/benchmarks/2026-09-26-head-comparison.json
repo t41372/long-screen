@@ -1,0 +1,3354 @@
+{
+  "schema": 1,
+  "measuredOn": "2026-09-26",
+  "baselineCommit": "63763e97b0b86aa200dd03fb24e0b58dc72cd168",
+  "environment": {
+    "head": "63763e97b0b86aa200dd03fb24e0b58dc72cd168",
+    "hardware": "      Model Name: MacBook Pro\n      Model Identifier: Mac17,6\n      Chip: Apple M5 Max\n      Total Number of Cores: 18 (6 Super and 12 Performance)\n      Memory: 64 GB",
+    "deno": "deno 2.9.7 (stable, release, aarch64-apple-darwin)\nv8 15.0.245.2-rusty\ntypescript 6.0.3\n",
+    "chrome": "Google Chrome 153.0.8010.53 \n",
+    "artifacts": {
+      "head": {
+        "core.simd.wasm": "27630618c7526697f2bcb3a1e834052b46690c80a7c033ead9b91549632ded92",
+        "core.threads.wasm": "7d7a619486e1737bfd88f44f708fd4d2213acde8c32f287d083b9ae67033bb56",
+        "core.wasm": "e461309199a0f60f7610bee6e76605863564e72da277b0604ebf38c28c29a427"
+      },
+      "current": {
+        "core.simd.wasm": "4e7e5224343d887db82f3c86f7f46f99a1ec27bc9a8f0ed0429019bee8e779e9",
+        "core.threads.wasm": "3f5fd73487c9f4a5e19c5a0e93c6df419fd02a9ad31a2bb2dd94535917aa5413",
+        "core.wasm": "a4c29bdd0dea784c26ca519cfa980d1bfb0bf42ba279ac036da057c64f5b8788"
+      }
+    }
+  },
+  "method": {
+    "realRunsPerVersion": 1,
+    "syntheticRunsPerVersion": 3,
+    "realMemoryMB": 128,
+    "realAnalysisSize": 640,
+    "realStorageMode": "fresh persistent Chrome profile per run",
+    "realCore": "threads, 8 helpers, CPU analysis",
+    "syntheticCore": "SIMD, CPU analysis, MemoryKV",
+    "syntheticInputs": "Same current-version generators supplied to both engines, with a fixture warm-up in each fresh process.",
+    "execution": "Sequential, alternating version order. Engine.run timed; build, media opening, tile hashing, and export excluded.",
+    "artifacts": "Raw profiles, logs and full samples remain in local test-results/head-performance-20260926; recordings remain in gitignored test_case."
+  },
+  "real": [
+    {
+      "name": "0.mov",
+      "headSeconds": 9.895980000019074,
+      "currentSeconds": 65.373814999938,
+      "ratio": 6.6060981327581505,
+      "sourceSeconds": 53.03000999999046,
+      "sourceShare": 0.8111812045853642,
+      "statuses": [
+        "complete",
+        "complete"
+      ],
+      "frames": [
+        394,
+        394
+      ],
+      "renderedFrames": [
+        394,
+        394
+      ],
+      "headStages": {
+        "scanMS": 2.417204999923706,
+        "solveMS": 4.960710000038147,
+        "renderMS": 2.24440499997139,
+        "framingMS": 0.01456000006198883,
+        "pyramidMS": 0.2577350000143051
+      },
+      "currentStages": {
+        "scanMS": 2.2686849999427796,
+        "solveMS": 7.5058900001049045,
+        "renderMS": 55.285289999961854,
+        "framingMS": 0.012539999961853027,
+        "pyramidMS": 0.2998300000429153
+      },
+      "sourceTimings": {
+        "indexMS": 12.639999985694885,
+        "replayMS": 30428.014999985695,
+        "analysisMS": 20346.730000019073,
+        "materializeMS": 2242.625
+      },
+      "sourceCompleted": true,
+      "archiveBytes": 182711536,
+      "candidates": 1618153,
+      "writes": [
+        507,
+        4710
+      ],
+      "writeSeconds": [
+        0.7230100009441376,
+        6.678414994597435
+      ],
+      "storageUsage": [
+        17633159,
+        212486805
+      ],
+      "core": {
+        "variant": "threads",
+        "threads": 8,
+        "reason": "8 threads (18 logical CPUs)"
+      },
+      "outputs": [
+        {
+          "canvases": [
+            {
+              "id": "layer-0-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 1418,
+                "height": 10778
+              },
+              "tileCount": 66,
+              "observedPixels": 15283204,
+              "conflictPixels": 2370044
+            }
+          ],
+          "consistency": {
+            "exactDuplicateFrames": 0,
+            "skippedPaints": 0,
+            "votedLayers": 394,
+            "thinLayers": 10,
+            "diagnostics": {
+              "MODEL_ASSUMPTIONS": 1,
+              "ANALYSIS_PYRAMID": 1,
+              "MEDIA_NOTICE": 1,
+              "COMPUTE_BACKEND": 1,
+              "TEMPORAL_UNDERSAMPLING": 5,
+              "AUTOMATIC_LAYER_MASK": 1,
+              "PARTIAL_CONTENT_CHANGE": 144,
+              "LOOP_CLOSURE": 9,
+              "INCOMPLETE_TEMPORAL_PATCH": 26,
+              "TEMPORAL_OR_ALIGNMENT_CONFLICT": 196,
+              "PRESENTATION_FRAME": 1
+            }
+          },
+          "memory": {
+            "stats": {
+              "peakResidentTiles": 66,
+              "tileCacheLimit": 74,
+              "budgetMB": 128,
+              "note": "Codec/browser/GPU allocations are additional, not a hard process-RSS bound. The render pass also holds one extra decoded native RGBA frame: a one-frame lookahead the world-consistency mask compares against (docs/ARCHITECTURE.md §七)."
+            },
+            "native": {
+              "TaskDuration": 7.409342,
+              "ScriptDuration": 0.099149,
+              "LayoutDuration": 0,
+              "RecalcStyleDuration": 0,
+              "LayoutCount": 0,
+              "RecalcStyleCount": 0,
+              "RasterTaskDuration": 0,
+              "JSHeapUsedSize": 3072496,
+              "JSHeapTotalSize": 36438016,
+              "ThreadTime": 7.562502,
+              "ProcessTime": 17.686235
+            },
+            "page": {
+              "jsHeapUsedBytes": 5563464,
+              "jsHeapTotalBytes": 40075264
+            }
+          },
+          "error": null
+        },
+        {
+          "canvases": [
+            {
+              "id": "layer-0-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 1418,
+                "height": 10778
+              },
+              "tileCount": 66,
+              "observedPixels": 15283204,
+              "conflictPixels": 2080632
+            }
+          ],
+          "consistency": {
+            "exactDuplicateFrames": 0,
+            "skippedPaints": 0,
+            "votedLayers": 394,
+            "thinLayers": 13,
+            "diagnostics": {
+              "MODEL_ASSUMPTIONS": 1,
+              "ANALYSIS_PYRAMID": 1,
+              "MEDIA_NOTICE": 1,
+              "COMPUTE_BACKEND": 1,
+              "TEMPORAL_UNDERSAMPLING": 5,
+              "AUTOMATIC_LAYER_MASK": 1,
+              "PARTIAL_CONTENT_CHANGE": 144,
+              "LOOP_CLOSURE": 9,
+              "INCOMPLETE_TEMPORAL_PATCH": 26,
+              "TEMPORAL_OR_ALIGNMENT_CONFLICT": 178,
+              "SOURCE_UNRESOLVED": 1,
+              "SOURCE_DYNAMIC_PARTIAL": 1,
+              "SOURCE_TRACKING_LIMIT": 1,
+              "PRESENTATION_FRAME": 1
+            }
+          },
+          "memory": {
+            "stats": {
+              "peakResidentTiles": 66,
+              "tileCacheLimit": 74,
+              "budgetMB": 128,
+              "note": "Codec/browser/GPU allocations are additional, not a hard process-RSS bound. The render pass also holds one extra decoded native RGBA frame: a one-frame lookahead the world-consistency mask compares against (docs/ARCHITECTURE.md §七)."
+            },
+            "native": {
+              "TaskDuration": 56.987726,
+              "ScriptDuration": 0.38375200000000004,
+              "LayoutDuration": 0,
+              "RecalcStyleDuration": 0,
+              "LayoutCount": 0,
+              "RecalcStyleCount": 0,
+              "RasterTaskDuration": 0,
+              "JSHeapUsedSize": 3505908,
+              "JSHeapTotalSize": 37486592,
+              "ThreadTime": 57.202489,
+              "ProcessTime": 72.93369
+            },
+            "page": {
+              "jsHeapUsedBytes": 6113696,
+              "jsHeapTotalBytes": 41140224
+            }
+          },
+          "error": null
+        }
+      ],
+      "input": {
+        "bytes": 19698454,
+        "sha256": "725265aa868f39ba993a3c706e5918106bc7f32a432b62bf16013f46445ad857",
+        "name": "0.mov",
+        "width": 1418,
+        "height": 1590,
+        "duration": 9.788333333333334,
+        "frames": 394,
+        "codec": "avc1.4d0032",
+        "notices": []
+      }
+    },
+    {
+      "name": "0-1.mov",
+      "headSeconds": 15.418560000061989,
+      "currentSeconds": 127.39945500004292,
+      "ratio": 8.262733679379314,
+      "sourceSeconds": 111.73383499991894,
+      "sourceShare": 0.8770354237377334,
+      "statuses": [
+        "complete",
+        "complete"
+      ],
+      "frames": [
+        394,
+        394
+      ],
+      "renderedFrames": [
+        394,
+        394
+      ],
+      "headStages": {
+        "scanMS": 2.6952599999904634,
+        "solveMS": 7.045610000014305,
+        "renderMS": 5.274544999957085,
+        "framingMS": 0.03320500004291534,
+        "pyramidMS": 0.3683349999189377
+      },
+      "currentStages": {
+        "scanMS": 2.5081349999904634,
+        "solveMS": 8.38812999999523,
+        "renderMS": 116.1979700000286,
+        "framingMS": 0.025934999942779542,
+        "pyramidMS": 0.27744000005722047
+      },
+      "sourceTimings": {
+        "indexMS": 14.625,
+        "replayMS": 28866.12999999523,
+        "analysisMS": 80855.4549999237,
+        "materializeMS": 1997.625
+      },
+      "sourceCompleted": true,
+      "archiveBytes": 405884587,
+      "candidates": 1604543,
+      "writes": [
+        2717,
+        7563
+      ],
+      "writeSeconds": [
+        3.7762200028896333,
+        11.436970002770424
+      ],
+      "storageUsage": [
+        22898662,
+        459703813
+      ],
+      "core": {
+        "variant": "threads",
+        "threads": 8,
+        "reason": "8 threads (18 logical CPUs)"
+      },
+      "outputs": [
+        {
+          "canvases": [
+            {
+              "id": "layer-0-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 1140,
+                "height": 8678
+              },
+              "tileCount": 51,
+              "observedPixels": 9892920,
+              "conflictPixels": 17519745
+            },
+            {
+              "id": "layer-0-part-1",
+              "kind": "moving",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 1140,
+                "height": 1359
+              },
+              "tileCount": 9,
+              "observedPixels": 1549260,
+              "conflictPixels": 40280
+            },
+            {
+              "id": "layer-0-part-2",
+              "kind": "moving",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 1140,
+                "height": 1312
+              },
+              "tileCount": 9,
+              "observedPixels": 1495680,
+              "conflictPixels": 49089
+            }
+          ],
+          "consistency": {
+            "exactDuplicateFrames": 0,
+            "skippedPaints": 0,
+            "votedLayers": 394,
+            "thinLayers": 44,
+            "diagnostics": {
+              "MODEL_ASSUMPTIONS": 1,
+              "ANALYSIS_PYRAMID": 1,
+              "MEDIA_NOTICE": 1,
+              "COMPUTE_BACKEND": 1,
+              "TEMPORAL_UNDERSAMPLING": 4,
+              "UNRESOLVED_MOTION": 23,
+              "AUTOMATIC_LAYER_MASK": 1,
+              "LOW_CONFIDENCE_PLACEMENT": 122,
+              "PARTIAL_CONTENT_CHANGE": 13,
+              "RELOCALIZED": 6,
+              "UNPLACED_FRAGMENT": 2,
+              "INCOMPLETE_TEMPORAL_PATCH": 3215,
+              "TEMPORAL_OR_ALIGNMENT_CONFLICT": 48679,
+              "PRESENTATION_FRAME": 1
+            }
+          },
+          "memory": {
+            "stats": {
+              "peakResidentTiles": 69,
+              "tileCacheLimit": 79,
+              "budgetMB": 128,
+              "note": "Codec/browser/GPU allocations are additional, not a hard process-RSS bound. The render pass also holds one extra decoded native RGBA frame: a one-frame lookahead the world-consistency mask compares against (docs/ARCHITECTURE.md §七)."
+            },
+            "native": {
+              "TaskDuration": 11.422616999999999,
+              "ScriptDuration": 0.269075,
+              "LayoutDuration": 0,
+              "RecalcStyleDuration": 0,
+              "LayoutCount": 0,
+              "RecalcStyleCount": 0,
+              "RasterTaskDuration": 0,
+              "JSHeapUsedSize": 29806284,
+              "JSHeapTotalSize": 68157440,
+              "ThreadTime": 11.90581,
+              "ProcessTime": 22.820114
+            },
+            "page": {
+              "jsHeapUsedBytes": 32297252,
+              "jsHeapTotalBytes": 71794688
+            }
+          },
+          "error": null
+        },
+        {
+          "canvases": [
+            {
+              "id": "layer-0-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 1140,
+                "height": 8678
+              },
+              "tileCount": 51,
+              "observedPixels": 9892920,
+              "conflictPixels": 17516617
+            },
+            {
+              "id": "layer-0-part-1",
+              "kind": "moving",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 1140,
+                "height": 1359
+              },
+              "tileCount": 9,
+              "observedPixels": 1549260,
+              "conflictPixels": 40280
+            },
+            {
+              "id": "layer-0-part-2",
+              "kind": "moving",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 1140,
+                "height": 1312
+              },
+              "tileCount": 9,
+              "observedPixels": 1495680,
+              "conflictPixels": 49089
+            }
+          ],
+          "consistency": {
+            "exactDuplicateFrames": 0,
+            "skippedPaints": 0,
+            "votedLayers": 394,
+            "thinLayers": 56,
+            "diagnostics": {
+              "MODEL_ASSUMPTIONS": 1,
+              "ANALYSIS_PYRAMID": 1,
+              "MEDIA_NOTICE": 1,
+              "COMPUTE_BACKEND": 1,
+              "TEMPORAL_UNDERSAMPLING": 4,
+              "UNRESOLVED_MOTION": 23,
+              "AUTOMATIC_LAYER_MASK": 1,
+              "LOW_CONFIDENCE_PLACEMENT": 122,
+              "PARTIAL_CONTENT_CHANGE": 13,
+              "RELOCALIZED": 6,
+              "UNPLACED_FRAGMENT": 2,
+              "INCOMPLETE_TEMPORAL_PATCH": 3212,
+              "TEMPORAL_OR_ALIGNMENT_CONFLICT": 48691,
+              "SOURCE_UNRESOLVED": 1,
+              "SOURCE_DYNAMIC_PARTIAL": 1,
+              "SOURCE_TRACKING_LIMIT": 1,
+              "PRESENTATION_FRAME": 1
+            }
+          },
+          "memory": {
+            "stats": {
+              "peakResidentTiles": 69,
+              "tileCacheLimit": 79,
+              "budgetMB": 128,
+              "note": "Codec/browser/GPU allocations are additional, not a hard process-RSS bound. The render pass also holds one extra decoded native RGBA frame: a one-frame lookahead the world-consistency mask compares against (docs/ARCHITECTURE.md §七)."
+            },
+            "native": {
+              "TaskDuration": 114.82723299999999,
+              "ScriptDuration": 1.211083,
+              "LayoutDuration": 0,
+              "RecalcStyleDuration": 0,
+              "LayoutCount": 0,
+              "RecalcStyleCount": 0,
+              "RasterTaskDuration": 0,
+              "JSHeapUsedSize": 32024420,
+              "JSHeapTotalSize": 71041024,
+              "ThreadTime": 115.253648,
+              "ProcessTime": 131.61452
+            },
+            "page": {
+              "jsHeapUsedBytes": 34632220,
+              "jsHeapTotalBytes": 74694656
+            }
+          },
+          "error": null
+        }
+      ],
+      "input": {
+        "bytes": 12941261,
+        "sha256": "4c2b41d23087821b19a233114060c9fd6928314eb6f88eef882b8c95d89dfd0d",
+        "name": "0-1.mov",
+        "width": 1140,
+        "height": 1280,
+        "duration": 9.608333333333333,
+        "frames": 394,
+        "codec": "avc1.4d0028",
+        "notices": []
+      }
+    },
+    {
+      "name": "a.mov",
+      "headSeconds": 75.71950999999046,
+      "currentSeconds": 1795.9475149999857,
+      "ratio": 23.71842494754934,
+      "sourceSeconds": 1702.8221399999857,
+      "sourceShare": 0.9481469395835875,
+      "statuses": [
+        "complete",
+        "complete"
+      ],
+      "frames": [
+        1274,
+        1274
+      ],
+      "renderedFrames": [
+        1274,
+        1274
+      ],
+      "headStages": {
+        "scanMS": 21.398134999990464,
+        "solveMS": 23.223829999923705,
+        "renderMS": 28.603425000071525,
+        "framingMS": 1.3935449999570846,
+        "pyramidMS": 1.0991749999523164
+      },
+      "currentStages": {
+        "scanMS": 21.444175000071525,
+        "solveMS": 27.556329999923705,
+        "renderMS": 1743.542975000024,
+        "framingMS": 1.8102250000238418,
+        "pyramidMS": 1.5918899999856948
+      },
+      "sourceTimings": {
+        "indexMS": 44.044999957084656,
+        "replayMS": 808790.8350000381,
+        "analysisMS": 868606.8600000143,
+        "materializeMS": 25380.399999976158
+      },
+      "sourceCompleted": true,
+      "archiveBytes": 3178829765,
+      "candidates": 28321855,
+      "writes": [
+        4490,
+        221118
+      ],
+      "writeSeconds": [
+        5.056879999756813,
+        288.36553499674795
+      ],
+      "storageUsage": [
+        30850706,
+        4476768167
+      ],
+      "core": {
+        "variant": "threads",
+        "threads": 8,
+        "reason": "8 threads (18 logical CPUs)"
+      },
+      "outputs": [
+        {
+          "canvases": [
+            {
+              "id": "layer-0-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": -1647,
+                "y": -4668,
+                "width": 6994,
+                "height": 8308
+              },
+              "tileCount": 219,
+              "observedPixels": 47016972,
+              "conflictPixels": 121858729
+            },
+            {
+              "id": "layer-0-part-0-framed",
+              "kind": "presentation",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 7474,
+                "height": 8718
+              },
+              "tileCount": 245,
+              "observedPixels": 49309452,
+              "conflictPixels": 121858729
+            },
+            {
+              "id": "layer-1-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 228
+              },
+              "tileCount": 7,
+              "observedPixels": 787968,
+              "conflictPixels": 2348945
+            },
+            {
+              "id": "layer-2-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 2052,
+                "width": 3456,
+                "height": 182
+              },
+              "tileCount": 7,
+              "observedPixels": 628992,
+              "conflictPixels": 0
+            },
+            {
+              "id": "layer-3-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 228,
+                "width": 480,
+                "height": 1824
+              },
+              "tileCount": 5,
+              "observedPixels": 875520,
+              "conflictPixels": 0
+            }
+          ],
+          "consistency": {
+            "exactDuplicateFrames": 0,
+            "skippedPaints": 255,
+            "votedLayers": 1274,
+            "thinLayers": 128,
+            "diagnostics": {
+              "MODEL_ASSUMPTIONS": 1,
+              "ANALYSIS_PYRAMID": 1,
+              "MEDIA_NOTICE": 1,
+              "FRAME_MEMORY_PRESSURE": 1,
+              "COMPUTE_BACKEND": 1,
+              "UNRESOLVED_MOTION": 2,
+              "AUTOMATIC_LAYER_MASK": 1,
+              "PARTIAL_CONTENT_CHANGE": 562,
+              "LOOP_CLOSURE": 40,
+              "LOW_CONFIDENCE_PLACEMENT": 12,
+              "INCONSISTENT_LOOP_REJECTED": 3,
+              "AMBIGUOUS_LOOP": 1,
+              "MEMORY_BUDGET_RAISED": 1,
+              "INCOMPLETE_TEMPORAL_PATCH": 2506,
+              "TEMPORAL_OR_ALIGNMENT_CONFLICT": 19345,
+              "PRESENTATION_FRAME": 1
+            }
+          },
+          "memory": {
+            "stats": {
+              "peakResidentTiles": 50,
+              "tileCacheLimit": 50,
+              "budgetMB": 128,
+              "note": "Codec/browser/GPU allocations are additional, not a hard process-RSS bound. The render pass also holds one extra decoded native RGBA frame: a one-frame lookahead the world-consistency mask compares against (docs/ARCHITECTURE.md §七)."
+            },
+            "native": {
+              "TaskDuration": 38.755093,
+              "ScriptDuration": 0.629914,
+              "LayoutDuration": 0,
+              "RecalcStyleDuration": 0,
+              "LayoutCount": 0,
+              "RecalcStyleCount": 0,
+              "RasterTaskDuration": 0,
+              "JSHeapUsedSize": 25331268,
+              "JSHeapTotalSize": 40370176,
+              "ThreadTime": 39.409698999999996,
+              "ProcessTime": 122.14026899999999
+            },
+            "page": {
+              "jsHeapUsedBytes": 27822236,
+              "jsHeapTotalBytes": 44007424
+            }
+          },
+          "error": null
+        },
+        {
+          "canvases": [
+            {
+              "id": "layer-0-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": -1647,
+                "y": -4668,
+                "width": 6994,
+                "height": 8308
+              },
+              "tileCount": 219,
+              "observedPixels": 47016972,
+              "conflictPixels": 120104406
+            },
+            {
+              "id": "layer-0-part-0-framed",
+              "kind": "presentation",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 7474,
+                "height": 8718
+              },
+              "tileCount": 245,
+              "observedPixels": 49309452,
+              "conflictPixels": 120104406
+            },
+            {
+              "id": "layer-1-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 228
+              },
+              "tileCount": 7,
+              "observedPixels": 787968,
+              "conflictPixels": 2141951
+            },
+            {
+              "id": "layer-2-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 2052,
+                "width": 3456,
+                "height": 182
+              },
+              "tileCount": 7,
+              "observedPixels": 628992,
+              "conflictPixels": 0
+            },
+            {
+              "id": "layer-3-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 228,
+                "width": 480,
+                "height": 1824
+              },
+              "tileCount": 5,
+              "observedPixels": 875520,
+              "conflictPixels": 0
+            }
+          ],
+          "consistency": {
+            "exactDuplicateFrames": 0,
+            "skippedPaints": 255,
+            "votedLayers": 1274,
+            "thinLayers": 143,
+            "diagnostics": {
+              "MODEL_ASSUMPTIONS": 1,
+              "ANALYSIS_PYRAMID": 1,
+              "MEDIA_NOTICE": 1,
+              "FRAME_MEMORY_PRESSURE": 1,
+              "COMPUTE_BACKEND": 1,
+              "UNRESOLVED_MOTION": 2,
+              "AUTOMATIC_LAYER_MASK": 1,
+              "PARTIAL_CONTENT_CHANGE": 562,
+              "LOOP_CLOSURE": 40,
+              "LOW_CONFIDENCE_PLACEMENT": 2,
+              "INCONSISTENT_LOOP_REJECTED": 3,
+              "AMBIGUOUS_LOOP": 1,
+              "MEMORY_BUDGET_RAISED": 1,
+              "INCOMPLETE_TEMPORAL_PATCH": 2505,
+              "TEMPORAL_OR_ALIGNMENT_CONFLICT": 19189,
+              "SOURCE_UNRESOLVED": 1,
+              "SOURCE_DYNAMIC_PARTIAL": 1,
+              "SOURCE_TRACKING_LIMIT": 1,
+              "PRESENTATION_FRAME": 1
+            }
+          },
+          "memory": {
+            "stats": {
+              "peakResidentTiles": 50,
+              "tileCacheLimit": 50,
+              "budgetMB": 128,
+              "note": "Codec/browser/GPU allocations are additional, not a hard process-RSS bound. The render pass also holds one extra decoded native RGBA frame: a one-frame lookahead the world-consistency mask compares against (docs/ARCHITECTURE.md §七)."
+            },
+            "native": {
+              "TaskDuration": 1299.428294,
+              "ScriptDuration": 15.598042,
+              "LayoutDuration": 0,
+              "RecalcStyleDuration": 0,
+              "LayoutCount": 0,
+              "RecalcStyleCount": 0,
+              "RasterTaskDuration": 0,
+              "JSHeapUsedSize": 25804612,
+              "JSHeapTotalSize": 57671680,
+              "ThreadTime": 1302.476565,
+              "ProcessTime": 1535.938306
+            },
+            "page": {
+              "jsHeapUsedBytes": 28412400,
+              "jsHeapTotalBytes": 61325312
+            }
+          },
+          "error": null
+        }
+      ],
+      "input": {
+        "bytes": 59352825,
+        "sha256": "8fca515b2587656d76859cca058a4d4986d04bd64d36ef42e0a49803f247725f",
+        "name": "a.mov",
+        "width": 3456,
+        "height": 2234,
+        "duration": 23.513333333333332,
+        "frames": 1274,
+        "codec": "avc1.4d0034",
+        "notices": []
+      }
+    },
+    {
+      "name": "b.mov",
+      "headSeconds": 36.89814499998093,
+      "currentSeconds": 331.64302000010014,
+      "ratio": 8.988067557333073,
+      "sourceSeconds": 293.0593699998856,
+      "sourceShare": 0.8836590922365775,
+      "statuses": [
+        "complete",
+        "complete"
+      ],
+      "frames": [
+        370,
+        370
+      ],
+      "renderedFrames": [
+        370,
+        370
+      ],
+      "headStages": {
+        "scanMS": 7.037219999909401,
+        "solveMS": 7.8903300000429155,
+        "renderMS": 19.75396500003338,
+        "framingMS": 1.1074599999189376,
+        "pyramidMS": 1.1074950000047683
+      },
+      "currentStages": {
+        "scanMS": 7.079084999918938,
+        "solveMS": 7.59956500005722,
+        "renderMS": 314.6367999999523,
+        "framingMS": 1.0890650000572204,
+        "pyramidMS": 1.236
+      },
+      "sourceTimings": {
+        "indexMS": 32.50499999523163,
+        "replayMS": 165823.64999997616,
+        "analysisMS": 122122.75999999046,
+        "materializeMS": 5080.454999923706
+      },
+      "sourceCompleted": true,
+      "archiveBytes": 1047273314,
+      "candidates": 4286609,
+      "writes": [
+        2930,
+        37838
+      ],
+      "writeSeconds": [
+        4.0019450021982195,
+        49.810730006456374
+      ],
+      "storageUsage": [
+        31401583,
+        1194077375
+      ],
+      "core": {
+        "variant": "threads",
+        "threads": 8,
+        "reason": "8 threads (18 logical CPUs)"
+      },
+      "outputs": [
+        {
+          "canvases": [
+            {
+              "id": "layer-0-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 1255,
+                "y": 228,
+                "width": 2201,
+                "height": 9989
+              },
+              "tileCount": 100,
+              "observedPixels": 21659197,
+              "conflictPixels": 13623006
+            },
+            {
+              "id": "layer-0-part-0-framed",
+              "kind": "presentation",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 10399
+              },
+              "tileCount": 147,
+              "observedPixels": 25365277,
+              "conflictPixels": 13623006
+            },
+            {
+              "id": "layer-1-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 228,
+                "width": 1255,
+                "height": 1824
+              },
+              "tileCount": 15,
+              "observedPixels": 2289120,
+              "conflictPixels": 0
+            },
+            {
+              "id": "layer-2-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 228
+              },
+              "tileCount": 7,
+              "observedPixels": 787968,
+              "conflictPixels": 1356943
+            },
+            {
+              "id": "layer-3-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 2052,
+                "width": 3456,
+                "height": 182
+              },
+              "tileCount": 7,
+              "observedPixels": 628992,
+              "conflictPixels": 0
+            },
+            {
+              "id": "layer-4-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 2448,
+                "y": 1584,
+                "width": 1008,
+                "height": 468
+              },
+              "tileCount": 6,
+              "observedPixels": 326592,
+              "conflictPixels": 163590
+            },
+            {
+              "id": "layer-4-part-0-framed",
+              "kind": "presentation",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 2234
+              },
+              "tileCount": 25,
+              "observedPixels": 4032672,
+              "conflictPixels": 163590
+            }
+          ],
+          "consistency": {
+            "exactDuplicateFrames": 0,
+            "skippedPaints": 17,
+            "votedLayers": 603,
+            "thinLayers": 328,
+            "diagnostics": {
+              "MODEL_ASSUMPTIONS": 1,
+              "ANALYSIS_PYRAMID": 1,
+              "MEDIA_NOTICE": 1,
+              "FRAME_MEMORY_PRESSURE": 1,
+              "COMPUTE_BACKEND": 1,
+              "TEMPORAL_UNDERSAMPLING": 6,
+              "AUTOMATIC_LAYER_MASK": 1,
+              "MULTIPLE_SCROLL_LAYERS": 1,
+              "UNOBSERVABLE_FRAME": 137,
+              "PARTIAL_CONTENT_CHANGE": 69,
+              "LOW_CONFIDENCE_PLACEMENT": 20,
+              "LOOP_CLOSURE": 5,
+              "MEMORY_BUDGET_RAISED": 1,
+              "TEMPORAL_OR_ALIGNMENT_CONFLICT": 4750,
+              "INCOMPLETE_TEMPORAL_PATCH": 999,
+              "PRESENTATION_FRAME": 1
+            }
+          },
+          "memory": {
+            "stats": {
+              "peakResidentTiles": 50,
+              "tileCacheLimit": 50,
+              "budgetMB": 128,
+              "note": "Codec/browser/GPU allocations are additional, not a hard process-RSS bound. The render pass also holds one extra decoded native RGBA frame: a one-frame lookahead the world-consistency mask compares against (docs/ARCHITECTURE.md §七)."
+            },
+            "native": {
+              "TaskDuration": 20.921842,
+              "ScriptDuration": 0.445919,
+              "LayoutDuration": 0,
+              "RecalcStyleDuration": 0,
+              "LayoutCount": 0,
+              "RecalcStyleCount": 0,
+              "RasterTaskDuration": 0,
+              "JSHeapUsedSize": 8797428,
+              "JSHeapTotalSize": 22806528,
+              "ThreadTime": 21.251873,
+              "ProcessTime": 50.737388
+            },
+            "page": {
+              "jsHeapUsedBytes": 11288396,
+              "jsHeapTotalBytes": 26443776
+            }
+          },
+          "error": null
+        },
+        {
+          "canvases": [
+            {
+              "id": "layer-0-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 1255,
+                "y": 228,
+                "width": 2201,
+                "height": 9989
+              },
+              "tileCount": 100,
+              "observedPixels": 21659197,
+              "conflictPixels": 13602807
+            },
+            {
+              "id": "layer-0-part-0-framed",
+              "kind": "presentation",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 10399
+              },
+              "tileCount": 147,
+              "observedPixels": 25365277,
+              "conflictPixels": 13602807
+            },
+            {
+              "id": "layer-1-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 228,
+                "width": 1255,
+                "height": 1824
+              },
+              "tileCount": 15,
+              "observedPixels": 2289120,
+              "conflictPixels": 0
+            },
+            {
+              "id": "layer-2-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 228
+              },
+              "tileCount": 7,
+              "observedPixels": 787968,
+              "conflictPixels": 1302157
+            },
+            {
+              "id": "layer-3-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 2052,
+                "width": 3456,
+                "height": 182
+              },
+              "tileCount": 7,
+              "observedPixels": 628992,
+              "conflictPixels": 0
+            },
+            {
+              "id": "layer-4-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 2448,
+                "y": 1584,
+                "width": 1008,
+                "height": 468
+              },
+              "tileCount": 6,
+              "observedPixels": 326592,
+              "conflictPixels": 163590
+            },
+            {
+              "id": "layer-4-part-0-framed",
+              "kind": "presentation",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 2234
+              },
+              "tileCount": 25,
+              "observedPixels": 4032672,
+              "conflictPixels": 163590
+            }
+          ],
+          "consistency": {
+            "exactDuplicateFrames": 0,
+            "skippedPaints": 17,
+            "votedLayers": 603,
+            "thinLayers": 336,
+            "diagnostics": {
+              "MODEL_ASSUMPTIONS": 1,
+              "ANALYSIS_PYRAMID": 1,
+              "MEDIA_NOTICE": 1,
+              "FRAME_MEMORY_PRESSURE": 1,
+              "COMPUTE_BACKEND": 1,
+              "TEMPORAL_UNDERSAMPLING": 6,
+              "AUTOMATIC_LAYER_MASK": 1,
+              "MULTIPLE_SCROLL_LAYERS": 1,
+              "UNOBSERVABLE_FRAME": 137,
+              "PARTIAL_CONTENT_CHANGE": 69,
+              "LOW_CONFIDENCE_PLACEMENT": 20,
+              "LOOP_CLOSURE": 5,
+              "MEMORY_BUDGET_RAISED": 1,
+              "TEMPORAL_OR_ALIGNMENT_CONFLICT": 4439,
+              "INCOMPLETE_TEMPORAL_PATCH": 1000,
+              "SOURCE_UNRESOLVED": 1,
+              "SOURCE_DYNAMIC_PARTIAL": 1,
+              "SOURCE_TRACKING_LIMIT": 1,
+              "PRESENTATION_FRAME": 1
+            }
+          },
+          "memory": {
+            "stats": {
+              "peakResidentTiles": 50,
+              "tileCacheLimit": 50,
+              "budgetMB": 128,
+              "note": "Codec/browser/GPU allocations are additional, not a hard process-RSS bound. The render pass also holds one extra decoded native RGBA frame: a one-frame lookahead the world-consistency mask compares against (docs/ARCHITECTURE.md §七)."
+            },
+            "native": {
+              "TaskDuration": 257.342201,
+              "ScriptDuration": 3.2676510000000003,
+              "LayoutDuration": 0,
+              "RecalcStyleDuration": 0,
+              "LayoutCount": 0,
+              "RecalcStyleCount": 0,
+              "RasterTaskDuration": 0,
+              "JSHeapUsedSize": 9308320,
+              "JSHeapTotalSize": 54788096,
+              "ThreadTime": 259.483643,
+              "ProcessTime": 316.23317599999996
+            },
+            "page": {
+              "jsHeapUsedBytes": 11916108,
+              "jsHeapTotalBytes": 58441728
+            }
+          },
+          "error": null
+        }
+      ],
+      "input": {
+        "bytes": 27831730,
+        "sha256": "c34df19fc1f5d4e640875190284112213d3a30171e7d8822c2f146feed04ed91",
+        "name": "b.mov",
+        "width": 3456,
+        "height": 2234,
+        "duration": 8.405,
+        "frames": 370,
+        "codec": "avc1.4d0034",
+        "notices": []
+      }
+    },
+    {
+      "name": "c.mov",
+      "headSeconds": 21.55452999997139,
+      "currentSeconds": 149.01997500002383,
+      "ratio": 6.9136267411176044,
+      "sourceSeconds": 124.58144000005721,
+      "sourceShare": 0.836004971816948,
+      "statuses": [
+        "complete",
+        "complete"
+      ],
+      "frames": [
+        170,
+        170
+      ],
+      "renderedFrames": [
+        170,
+        170
+      ],
+      "headStages": {
+        "scanMS": 3.570424999952316,
+        "solveMS": 3.7810049999952318,
+        "renderMS": 12.930025000095368,
+        "framingMS": 0.6124299999475479,
+        "pyramidMS": 0.6580249999761582
+      },
+      "currentStages": {
+        "scanMS": 3.587164999961853,
+        "solveMS": 3.865600000023842,
+        "renderMS": 140.1648600000143,
+        "framingMS": 0.6577000000476837,
+        "pyramidMS": 0.7422300000190735
+      },
+      "sourceTimings": {
+        "indexMS": 24.125,
+        "replayMS": 78932.19000005722,
+        "analysisMS": 42612.62000000477,
+        "materializeMS": 3012.5049999952316
+      },
+      "sourceCompleted": true,
+      "archiveBytes": 403196668,
+      "candidates": 1918628,
+      "writes": [
+        2358,
+        22628
+      ],
+      "writeSeconds": [
+        2.864895001769066,
+        25.984549997448923
+      ],
+      "storageUsage": [
+        19620476,
+        535322914
+      ],
+      "core": {
+        "variant": "threads",
+        "threads": 8,
+        "reason": "8 threads (18 logical CPUs)"
+      },
+      "outputs": [
+        {
+          "canvases": [
+            {
+              "id": "layer-0-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 990,
+                "y": 432,
+                "width": 2466,
+                "height": 4594
+              },
+              "tileCount": 60,
+              "observedPixels": 11328804,
+              "conflictPixels": 1313207
+            },
+            {
+              "id": "layer-0-part-0-framed",
+              "kind": "presentation",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 5004
+              },
+              "tileCount": 70,
+              "observedPixels": 14551524,
+              "conflictPixels": 1313207
+            },
+            {
+              "id": "layer-1-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 228,
+                "width": 990,
+                "height": 1824
+              },
+              "tileCount": 10,
+              "observedPixels": 1805760,
+              "conflictPixels": 443090
+            },
+            {
+              "id": "layer-2-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 228
+              },
+              "tileCount": 7,
+              "observedPixels": 787968,
+              "conflictPixels": 761881
+            },
+            {
+              "id": "layer-3-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 2052,
+                "width": 3456,
+                "height": 182
+              },
+              "tileCount": 7,
+              "observedPixels": 628992,
+              "conflictPixels": 0
+            },
+            {
+              "id": "layer-4-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 990,
+                "y": 228,
+                "width": 2466,
+                "height": 388
+              },
+              "tileCount": 12,
+              "observedPixels": 956808,
+              "conflictPixels": 529978
+            },
+            {
+              "id": "layer-4-part-0-framed",
+              "kind": "presentation",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 2234
+              },
+              "tileCount": 25,
+              "observedPixels": 4179528,
+              "conflictPixels": 529978
+            }
+          ],
+          "consistency": {
+            "exactDuplicateFrames": 0,
+            "skippedPaints": 0,
+            "votedLayers": 340,
+            "thinLayers": 140,
+            "diagnostics": {
+              "MODEL_ASSUMPTIONS": 1,
+              "ANALYSIS_PYRAMID": 1,
+              "MEDIA_NOTICE": 1,
+              "FRAME_MEMORY_PRESSURE": 1,
+              "COMPUTE_BACKEND": 1,
+              "TEMPORAL_UNDERSAMPLING": 1,
+              "AUTOMATIC_LAYER_MASK": 1,
+              "MULTIPLE_SCROLL_LAYERS": 1,
+              "PARTIAL_CONTENT_CHANGE": 7,
+              "STICKY_OCCLUSION": 16,
+              "LOW_CONFIDENCE_PLACEMENT": 9,
+              "LOOP_CLOSURE": 4,
+              "MEMORY_BUDGET_RAISED": 1,
+              "TEMPORAL_OR_ALIGNMENT_CONFLICT": 2710,
+              "INCOMPLETE_TEMPORAL_PATCH": 171,
+              "PRESENTATION_FRAME": 1
+            }
+          },
+          "memory": {
+            "stats": {
+              "peakResidentTiles": 50,
+              "tileCacheLimit": 50,
+              "budgetMB": 128,
+              "note": "Codec/browser/GPU allocations are additional, not a hard process-RSS bound. The render pass also holds one extra decoded native RGBA frame: a one-frame lookahead the world-consistency mask compares against (docs/ARCHITECTURE.md §七)."
+            },
+            "native": {
+              "TaskDuration": 12.647375,
+              "ScriptDuration": 0.301771,
+              "LayoutDuration": 0,
+              "RecalcStyleDuration": 0,
+              "LayoutCount": 0,
+              "RecalcStyleCount": 0,
+              "RasterTaskDuration": 0,
+              "JSHeapUsedSize": 5866764,
+              "JSHeapTotalSize": 13107200,
+              "ThreadTime": 12.818658000000001,
+              "ProcessTime": 26.46728
+            },
+            "page": {
+              "jsHeapUsedBytes": 8357732,
+              "jsHeapTotalBytes": 16744448
+            }
+          },
+          "error": null
+        },
+        {
+          "canvases": [
+            {
+              "id": "layer-0-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 990,
+                "y": 432,
+                "width": 2466,
+                "height": 4594
+              },
+              "tileCount": 60,
+              "observedPixels": 11328804,
+              "conflictPixels": 1307418
+            },
+            {
+              "id": "layer-0-part-0-framed",
+              "kind": "presentation",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 5004
+              },
+              "tileCount": 70,
+              "observedPixels": 14551524,
+              "conflictPixels": 1307418
+            },
+            {
+              "id": "layer-1-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 228,
+                "width": 990,
+                "height": 1824
+              },
+              "tileCount": 10,
+              "observedPixels": 1805760,
+              "conflictPixels": 443090
+            },
+            {
+              "id": "layer-2-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 228
+              },
+              "tileCount": 7,
+              "observedPixels": 787968,
+              "conflictPixels": 746837
+            },
+            {
+              "id": "layer-3-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 2052,
+                "width": 3456,
+                "height": 182
+              },
+              "tileCount": 7,
+              "observedPixels": 628992,
+              "conflictPixels": 0
+            },
+            {
+              "id": "layer-4-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 990,
+                "y": 228,
+                "width": 2466,
+                "height": 388
+              },
+              "tileCount": 12,
+              "observedPixels": 956808,
+              "conflictPixels": 456602
+            },
+            {
+              "id": "layer-4-part-0-framed",
+              "kind": "presentation",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 2234
+              },
+              "tileCount": 25,
+              "observedPixels": 4179528,
+              "conflictPixels": 456602
+            }
+          ],
+          "consistency": {
+            "exactDuplicateFrames": 0,
+            "skippedPaints": 0,
+            "votedLayers": 340,
+            "thinLayers": 158,
+            "diagnostics": {
+              "MODEL_ASSUMPTIONS": 1,
+              "ANALYSIS_PYRAMID": 1,
+              "MEDIA_NOTICE": 1,
+              "FRAME_MEMORY_PRESSURE": 1,
+              "COMPUTE_BACKEND": 1,
+              "TEMPORAL_UNDERSAMPLING": 1,
+              "AUTOMATIC_LAYER_MASK": 1,
+              "MULTIPLE_SCROLL_LAYERS": 1,
+              "PARTIAL_CONTENT_CHANGE": 7,
+              "STICKY_OCCLUSION": 16,
+              "LOW_CONFIDENCE_PLACEMENT": 8,
+              "LOOP_CLOSURE": 4,
+              "MEMORY_BUDGET_RAISED": 1,
+              "TEMPORAL_OR_ALIGNMENT_CONFLICT": 2401,
+              "INCOMPLETE_TEMPORAL_PATCH": 154,
+              "SOURCE_UNRESOLVED": 1,
+              "SOURCE_DYNAMIC_PARTIAL": 1,
+              "SOURCE_TRACKING_LIMIT": 1,
+              "PRESENTATION_FRAME": 1
+            }
+          },
+          "memory": {
+            "stats": {
+              "peakResidentTiles": 50,
+              "tileCacheLimit": 50,
+              "budgetMB": 128,
+              "note": "Codec/browser/GPU allocations are additional, not a hard process-RSS bound. The render pass also holds one extra decoded native RGBA frame: a one-frame lookahead the world-consistency mask compares against (docs/ARCHITECTURE.md §七)."
+            },
+            "native": {
+              "TaskDuration": 108.327933,
+              "ScriptDuration": 1.372592,
+              "LayoutDuration": 0,
+              "RecalcStyleDuration": 0,
+              "LayoutCount": 0,
+              "RecalcStyleCount": 0,
+              "RasterTaskDuration": 0,
+              "JSHeapUsedSize": 5679332,
+              "JSHeapTotalSize": 57409536,
+              "ThreadTime": 109.128115,
+              "ProcessTime": 136.18691
+            },
+            "page": {
+              "jsHeapUsedBytes": 8287120,
+              "jsHeapTotalBytes": 61063168
+            }
+          },
+          "error": null
+        }
+      ],
+      "input": {
+        "bytes": 5432211,
+        "sha256": "22a9fb58035250488eb0d859ce71520566aa5f9e06ee51de26ef6a0e80415f65",
+        "name": "c.mov",
+        "width": 3456,
+        "height": 2234,
+        "duration": 3.453333333333333,
+        "frames": 170,
+        "codec": "avc1.4d0034",
+        "notices": []
+      }
+    },
+    {
+      "name": "d.mov",
+      "headSeconds": 70.99600499999524,
+      "currentSeconds": 1539.5974150000811,
+      "ratio": 21.685690835705255,
+      "sourceSeconds": 1440.2709750000238,
+      "sourceShare": 0.9354854463690743,
+      "statuses": [
+        "complete",
+        "complete"
+      ],
+      "frames": [
+        1152,
+        1152
+      ],
+      "renderedFrames": [
+        1152,
+        1152
+      ],
+      "headStages": {
+        "scanMS": 18.639004999995233,
+        "solveMS": 22.93839999997616,
+        "renderMS": 27.147105000019074,
+        "framingMS": 1.268945000052452,
+        "pyramidMS": 1.001164999961853
+      },
+      "currentStages": {
+        "scanMS": 22.622300000071526,
+        "solveMS": 32.02252999997139,
+        "renderMS": 1482.4746849999428,
+        "framingMS": 1.3361750000715256,
+        "pyramidMS": 1.1400199999809266
+      },
+      "sourceTimings": {
+        "indexMS": 54.19500005245209,
+        "replayMS": 680657.1100000143,
+        "analysisMS": 742934.2450000048,
+        "materializeMS": 16625.424999952316
+      },
+      "sourceCompleted": true,
+      "archiveBytes": 3227116080,
+      "candidates": 23076047,
+      "writes": [
+        5323,
+        201768
+      ],
+      "writeSeconds": [
+        5.025869999170303,
+        256.86549001729486
+      ],
+      "storageUsage": [
+        32088492,
+        4808438970
+      ],
+      "core": {
+        "variant": "threads",
+        "threads": 8,
+        "reason": "8 threads (18 logical CPUs)"
+      },
+      "outputs": [
+        {
+          "canvases": [
+            {
+              "id": "layer-0-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 421,
+                "y": 66,
+                "width": 5498,
+                "height": 8780
+              },
+              "tileCount": 214,
+              "observedPixels": 46428683,
+              "conflictPixels": 25584732
+            },
+            {
+              "id": "layer-0-part-0-framed",
+              "kind": "presentation",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 5978,
+                "height": 9190
+              },
+              "tileCount": 216,
+              "observedPixels": 48721163,
+              "conflictPixels": 25584732
+            },
+            {
+              "id": "layer-1-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 228
+              },
+              "tileCount": 7,
+              "observedPixels": 787968,
+              "conflictPixels": 3649594
+            },
+            {
+              "id": "layer-2-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 2052,
+                "width": 3456,
+                "height": 182
+              },
+              "tileCount": 7,
+              "observedPixels": 628992,
+              "conflictPixels": 0
+            },
+            {
+              "id": "layer-3-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 228,
+                "width": 480,
+                "height": 1824
+              },
+              "tileCount": 5,
+              "observedPixels": 875520,
+              "conflictPixels": 0
+            }
+          ],
+          "consistency": {
+            "exactDuplicateFrames": 2,
+            "skippedPaints": 51,
+            "votedLayers": 1150,
+            "thinLayers": 62,
+            "diagnostics": {
+              "MODEL_ASSUMPTIONS": 1,
+              "ANALYSIS_PYRAMID": 1,
+              "MEDIA_NOTICE": 1,
+              "FRAME_MEMORY_PRESSURE": 1,
+              "COMPUTE_BACKEND": 1,
+              "UNRESOLVED_MOTION": 1,
+              "TEMPORAL_UNDERSAMPLING": 2,
+              "AUTOMATIC_LAYER_MASK": 1,
+              "PARTIAL_CONTENT_CHANGE": 480,
+              "LOOP_CLOSURE": 75,
+              "INCONSISTENT_LOOP_REJECTED": 1,
+              "STICKY_OCCLUSION": 20,
+              "MEMORY_BUDGET_RAISED": 1,
+              "INCOMPLETE_TEMPORAL_PATCH": 3523,
+              "TEMPORAL_OR_ALIGNMENT_CONFLICT": 22721,
+              "PRESENTATION_FRAME": 1
+            }
+          },
+          "memory": {
+            "stats": {
+              "peakResidentTiles": 50,
+              "tileCacheLimit": 50,
+              "budgetMB": 128,
+              "note": "Codec/browser/GPU allocations are additional, not a hard process-RSS bound. The render pass also holds one extra decoded native RGBA frame: a one-frame lookahead the world-consistency mask compares against (docs/ARCHITECTURE.md §七)."
+            },
+            "native": {
+              "TaskDuration": 38.573715,
+              "ScriptDuration": 0.758988,
+              "LayoutDuration": 0,
+              "RecalcStyleDuration": 0,
+              "LayoutCount": 0,
+              "RecalcStyleCount": 0,
+              "RasterTaskDuration": 0,
+              "JSHeapUsedSize": 29251648,
+              "JSHeapTotalSize": 47857664,
+              "ThreadTime": 39.307105,
+              "ProcessTime": 113.768203
+            },
+            "page": {
+              "jsHeapUsedBytes": 31742616,
+              "jsHeapTotalBytes": 51494912
+            }
+          },
+          "error": null
+        },
+        {
+          "canvases": [
+            {
+              "id": "layer-0-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 421,
+                "y": 66,
+                "width": 5498,
+                "height": 8780
+              },
+              "tileCount": 214,
+              "observedPixels": 46428683,
+              "conflictPixels": 25933909
+            },
+            {
+              "id": "layer-0-part-0-framed",
+              "kind": "presentation",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 5978,
+                "height": 9190
+              },
+              "tileCount": 216,
+              "observedPixels": 48721163,
+              "conflictPixels": 25933909
+            },
+            {
+              "id": "layer-1-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 228
+              },
+              "tileCount": 7,
+              "observedPixels": 787968,
+              "conflictPixels": 3473847
+            },
+            {
+              "id": "layer-2-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 2052,
+                "width": 3456,
+                "height": 182
+              },
+              "tileCount": 7,
+              "observedPixels": 628992,
+              "conflictPixels": 0
+            },
+            {
+              "id": "layer-3-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 228,
+                "width": 480,
+                "height": 1824
+              },
+              "tileCount": 5,
+              "observedPixels": 875520,
+              "conflictPixels": 0
+            }
+          ],
+          "consistency": {
+            "exactDuplicateFrames": 2,
+            "skippedPaints": 51,
+            "votedLayers": 1150,
+            "thinLayers": 71,
+            "diagnostics": {
+              "MODEL_ASSUMPTIONS": 1,
+              "ANALYSIS_PYRAMID": 1,
+              "MEDIA_NOTICE": 1,
+              "FRAME_MEMORY_PRESSURE": 1,
+              "COMPUTE_BACKEND": 1,
+              "UNRESOLVED_MOTION": 1,
+              "TEMPORAL_UNDERSAMPLING": 2,
+              "AUTOMATIC_LAYER_MASK": 1,
+              "PARTIAL_CONTENT_CHANGE": 480,
+              "LOOP_CLOSURE": 75,
+              "INCONSISTENT_LOOP_REJECTED": 1,
+              "STICKY_OCCLUSION": 20,
+              "MEMORY_BUDGET_RAISED": 1,
+              "INCOMPLETE_TEMPORAL_PATCH": 3519,
+              "TEMPORAL_OR_ALIGNMENT_CONFLICT": 27044,
+              "SOURCE_UNRESOLVED": 1,
+              "SOURCE_DYNAMIC_PARTIAL": 1,
+              "SOURCE_TRACKING_LIMIT": 1,
+              "PRESENTATION_FRAME": 1
+            }
+          },
+          "memory": {
+            "stats": {
+              "peakResidentTiles": 50,
+              "tileCacheLimit": 50,
+              "budgetMB": 128,
+              "note": "Codec/browser/GPU allocations are additional, not a hard process-RSS bound. The render pass also holds one extra decoded native RGBA frame: a one-frame lookahead the world-consistency mask compares against (docs/ARCHITECTURE.md §七)."
+            },
+            "native": {
+              "TaskDuration": 1087.98835,
+              "ScriptDuration": 12.620769,
+              "LayoutDuration": 0,
+              "RecalcStyleDuration": 0,
+              "LayoutCount": 0,
+              "RecalcStyleCount": 0,
+              "RasterTaskDuration": 0,
+              "JSHeapUsedSize": 20161620,
+              "JSHeapTotalSize": 70926336,
+              "ThreadTime": 1102.422016,
+              "ProcessTime": 1320.6924740000002
+            },
+            "page": {
+              "jsHeapUsedBytes": 22769408,
+              "jsHeapTotalBytes": 74579968
+            }
+          },
+          "error": null
+        }
+      ],
+      "input": {
+        "bytes": 97036025,
+        "sha256": "cc87bcb7376147197bd572a5c4737c9007fe2e39fd060d102547ce3eee52ddc4",
+        "name": "d.mov",
+        "width": 3456,
+        "height": 2234,
+        "duration": 21.358333333333334,
+        "frames": 1152,
+        "codec": "avc1.4d0034",
+        "notices": []
+      }
+    },
+    {
+      "name": "e.mov",
+      "headSeconds": 53.8665,
+      "currentSeconds": 825.0041799999475,
+      "ratio": 15.31571904615944,
+      "sourceSeconds": 769.5370199999809,
+      "sourceShare": 0.9327674194329899,
+      "statuses": [
+        "complete",
+        "complete"
+      ],
+      "frames": [
+        936,
+        936
+      ],
+      "renderedFrames": [
+        936,
+        936
+      ],
+      "headStages": {
+        "scanMS": 15.084875,
+        "solveMS": 18.307,
+        "renderMS": 17.404959999918937,
+        "framingMS": 1.7454650000333787,
+        "pyramidMS": 1.322850000023842
+      },
+      "currentStages": {
+        "scanMS": 15.172270000100136,
+        "solveMS": 18.869659999966622,
+        "renderMS": 787.7157949999571,
+        "framingMS": 1.835930000066757,
+        "pyramidMS": 1.4089950000047684
+      },
+      "sourceTimings": {
+        "indexMS": 56.00999999046326,
+        "replayMS": 336965.17999994755,
+        "analysisMS": 417754.625,
+        "materializeMS": 14761.205000042915
+      },
+      "sourceCompleted": true,
+      "archiveBytes": 1048753703,
+      "candidates": 19240881,
+      "writes": [
+        4446,
+        152602
+      ],
+      "writeSeconds": [
+        3.4966499997377394,
+        91.07655002617835
+      ],
+      "storageUsage": [
+        40792118,
+        1282108126
+      ],
+      "core": {
+        "variant": "threads",
+        "threads": 8,
+        "reason": "8 threads (18 logical CPUs)"
+      },
+      "outputs": [
+        {
+          "canvases": [
+            {
+              "id": "layer-0-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 0,
+                "y": -4,
+                "width": 7962,
+                "height": 9330
+              },
+              "tileCount": 312,
+              "observedPixels": 73412940,
+              "conflictPixels": 24639118
+            },
+            {
+              "id": "layer-0-part-0-framed",
+              "kind": "presentation",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 7962,
+                "height": 9500
+              },
+              "tileCount": 304,
+              "observedPixels": 74000460,
+              "conflictPixels": 24639118
+            },
+            {
+              "id": "layer-1-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 170
+              },
+              "tileCount": 7,
+              "observedPixels": 587520,
+              "conflictPixels": 4340562
+            }
+          ],
+          "consistency": {
+            "exactDuplicateFrames": 0,
+            "skippedPaints": 85,
+            "votedLayers": 936,
+            "thinLayers": 78,
+            "diagnostics": {
+              "MODEL_ASSUMPTIONS": 1,
+              "ANALYSIS_PYRAMID": 1,
+              "MEDIA_NOTICE": 1,
+              "FRAME_MEMORY_PRESSURE": 1,
+              "COMPUTE_BACKEND": 1,
+              "TEMPORAL_UNDERSAMPLING": 12,
+              "AUTOMATIC_LAYER_MASK": 1,
+              "PARTIAL_CONTENT_CHANGE": 122,
+              "LOOP_CLOSURE": 57,
+              "LOW_CONFIDENCE_PLACEMENT": 8,
+              "INCONSISTENT_LOOP_REJECTED": 3,
+              "MEMORY_BUDGET_RAISED": 1,
+              "TEMPORAL_OR_ALIGNMENT_CONFLICT": 29876,
+              "INCOMPLETE_TEMPORAL_PATCH": 1587,
+              "PRESENTATION_FRAME": 1
+            }
+          },
+          "memory": {
+            "stats": {
+              "peakResidentTiles": 50,
+              "tileCacheLimit": 50,
+              "budgetMB": 128,
+              "note": "Codec/browser/GPU allocations are additional, not a hard process-RSS bound. The render pass also holds one extra decoded native RGBA frame: a one-frame lookahead the world-consistency mask compares against (docs/ARCHITECTURE.md §七)."
+            },
+            "native": {
+              "TaskDuration": 25.954716,
+              "ScriptDuration": 0.459909,
+              "LayoutDuration": 0,
+              "RecalcStyleDuration": 0,
+              "LayoutCount": 0,
+              "RecalcStyleCount": 0,
+              "RasterTaskDuration": 0,
+              "JSHeapUsedSize": 19662860,
+              "JSHeapTotalSize": 49692672,
+              "ThreadTime": 26.528422,
+              "ProcessTime": 84.562066
+            },
+            "page": {
+              "jsHeapUsedBytes": 22153828,
+              "jsHeapTotalBytes": 53329920
+            }
+          },
+          "error": null
+        },
+        {
+          "canvases": [
+            {
+              "id": "layer-0-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 0,
+                "y": -4,
+                "width": 7962,
+                "height": 9330
+              },
+              "tileCount": 312,
+              "observedPixels": 73412940,
+              "conflictPixels": 24325399
+            },
+            {
+              "id": "layer-0-part-0-framed",
+              "kind": "presentation",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 7962,
+                "height": 9500
+              },
+              "tileCount": 304,
+              "observedPixels": 74000460,
+              "conflictPixels": 24325399
+            },
+            {
+              "id": "layer-1-part-0",
+              "kind": "fixed",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 3456,
+                "height": 170
+              },
+              "tileCount": 7,
+              "observedPixels": 587520,
+              "conflictPixels": 4340562
+            }
+          ],
+          "consistency": {
+            "exactDuplicateFrames": 0,
+            "skippedPaints": 85,
+            "votedLayers": 936,
+            "thinLayers": 100,
+            "diagnostics": {
+              "MODEL_ASSUMPTIONS": 1,
+              "ANALYSIS_PYRAMID": 1,
+              "MEDIA_NOTICE": 1,
+              "FRAME_MEMORY_PRESSURE": 1,
+              "COMPUTE_BACKEND": 1,
+              "TEMPORAL_UNDERSAMPLING": 12,
+              "AUTOMATIC_LAYER_MASK": 1,
+              "PARTIAL_CONTENT_CHANGE": 122,
+              "LOOP_CLOSURE": 57,
+              "LOW_CONFIDENCE_PLACEMENT": 8,
+              "INCONSISTENT_LOOP_REJECTED": 3,
+              "MEMORY_BUDGET_RAISED": 1,
+              "TEMPORAL_OR_ALIGNMENT_CONFLICT": 29630,
+              "INCOMPLETE_TEMPORAL_PATCH": 1584,
+              "SOURCE_UNRESOLVED": 1,
+              "SOURCE_DYNAMIC_PARTIAL": 1,
+              "SOURCE_TRACKING_LIMIT": 1,
+              "PRESENTATION_FRAME": 1
+            }
+          },
+          "memory": {
+            "stats": {
+              "peakResidentTiles": 50,
+              "tileCacheLimit": 50,
+              "budgetMB": 128,
+              "note": "Codec/browser/GPU allocations are additional, not a hard process-RSS bound. The render pass also holds one extra decoded native RGBA frame: a one-frame lookahead the world-consistency mask compares against (docs/ARCHITECTURE.md §七)."
+            },
+            "native": {
+              "TaskDuration": 655.7510719999999,
+              "ScriptDuration": 5.05158,
+              "LayoutDuration": 0,
+              "RecalcStyleDuration": 0,
+              "LayoutCount": 0,
+              "RecalcStyleCount": 0,
+              "RasterTaskDuration": 0,
+              "JSHeapUsedSize": 20074620,
+              "JSHeapTotalSize": 61489152,
+              "ThreadTime": 666.792627,
+              "ProcessTime": 791.504508
+            },
+            "page": {
+              "jsHeapUsedBytes": 22682408,
+              "jsHeapTotalBytes": 65142784
+            }
+          },
+          "error": null
+        }
+      ],
+      "input": {
+        "bytes": 49776045,
+        "sha256": "d1bf20faf9fdb6a1bcfea7c71b89969e87c875bd25e5430d660b5b1912723bd8",
+        "name": "e.mov",
+        "width": 3456,
+        "height": 2234,
+        "duration": 20.363333333333333,
+        "frames": 936,
+        "codec": "avc1.4d0034",
+        "notices": []
+      }
+    },
+    {
+      "name": "f.mov",
+      "headSeconds": 12.133304999947548,
+      "currentSeconds": 154.8447350000143,
+      "ratio": 12.761958510124298,
+      "sourceSeconds": 141.34117500007153,
+      "sourceShare": 0.9127929018707576,
+      "statuses": [
+        "complete",
+        "complete"
+      ],
+      "frames": [
+        387,
+        387
+      ],
+      "renderedFrames": [
+        387,
+        387
+      ],
+      "headStages": {
+        "scanMS": 2.285314999938011,
+        "solveMS": 5.549865000009537,
+        "renderMS": 3.971649999976158,
+        "framingMS": 0.013370000004768371,
+        "pyramidMS": 0.3117400000095367
+      },
+      "currentStages": {
+        "scanMS": 2.2755600000619887,
+        "solveMS": 7.813079999923706,
+        "renderMS": 144.4392350000143,
+        "framingMS": 0.010870000004768371,
+        "pyramidMS": 0.30457500004768373
+      },
+      "sourceTimings": {
+        "indexMS": 23.5,
+        "replayMS": 42481.295000076294,
+        "analysisMS": 94684.74500000477,
+        "materializeMS": 4151.634999990463
+      },
+      "sourceCompleted": true,
+      "archiveBytes": 239151416,
+      "candidates": 3166714,
+      "writes": [
+        1583,
+        15243
+      ],
+      "writeSeconds": [
+        1.6714650015830994,
+        16.44549499118328
+      ],
+      "storageUsage": [
+        25978986,
+        358157678
+      ],
+      "core": {
+        "variant": "threads",
+        "threads": 8,
+        "reason": "8 threads (18 logical CPUs)"
+      },
+      "outputs": [
+        {
+          "canvases": [
+            {
+              "id": "layer-0-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 1876,
+                "height": 13814
+              },
+              "tileCount": 108,
+              "observedPixels": 25915064,
+              "conflictPixels": 68568659
+            }
+          ],
+          "consistency": {
+            "exactDuplicateFrames": 5,
+            "skippedPaints": 5,
+            "votedLayers": 382,
+            "thinLayers": 89,
+            "diagnostics": {
+              "MODEL_ASSUMPTIONS": 1,
+              "ANALYSIS_PYRAMID": 1,
+              "MEDIA_NOTICE": 1,
+              "COMPUTE_BACKEND": 1,
+              "UNRESOLVED_MOTION": 14,
+              "TEMPORAL_UNDERSAMPLING": 2,
+              "AUTOMATIC_LAYER_MASK": 1,
+              "PARTIAL_CONTENT_CHANGE": 57,
+              "LOOP_CLOSURE": 8,
+              "RELOCALIZED": 2,
+              "LOW_CONFIDENCE_PLACEMENT": 6,
+              "INCOMPLETE_TEMPORAL_PATCH": 465,
+              "TEMPORAL_OR_ALIGNMENT_CONFLICT": 20186,
+              "PRESENTATION_FRAME": 1
+            }
+          },
+          "memory": {
+            "stats": {
+              "peakResidentTiles": 74,
+              "tileCacheLimit": 74,
+              "budgetMB": 128,
+              "note": "Codec/browser/GPU allocations are additional, not a hard process-RSS bound. The render pass also holds one extra decoded native RGBA frame: a one-frame lookahead the world-consistency mask compares against (docs/ARCHITECTURE.md §七)."
+            },
+            "native": {
+              "TaskDuration": 8.944026,
+              "ScriptDuration": 0.208256,
+              "LayoutDuration": 0,
+              "RecalcStyleDuration": 0,
+              "LayoutCount": 0,
+              "RecalcStyleCount": 0,
+              "RasterTaskDuration": 0,
+              "JSHeapUsedSize": 18603996,
+              "JSHeapTotalSize": 73924608,
+              "ThreadTime": 9.253871,
+              "ProcessTime": 19.501934
+            },
+            "page": {
+              "jsHeapUsedBytes": 21094964,
+              "jsHeapTotalBytes": 77561856
+            }
+          },
+          "error": null
+        },
+        {
+          "canvases": [
+            {
+              "id": "layer-0-part-0",
+              "kind": "moving",
+              "bounds": {
+                "x": 0,
+                "y": 0,
+                "width": 1876,
+                "height": 13814
+              },
+              "tileCount": 108,
+              "observedPixels": 25915064,
+              "conflictPixels": 47699937
+            }
+          ],
+          "consistency": {
+            "exactDuplicateFrames": 5,
+            "skippedPaints": 5,
+            "votedLayers": 382,
+            "thinLayers": 94,
+            "diagnostics": {
+              "MODEL_ASSUMPTIONS": 1,
+              "ANALYSIS_PYRAMID": 1,
+              "MEDIA_NOTICE": 1,
+              "COMPUTE_BACKEND": 1,
+              "UNRESOLVED_MOTION": 14,
+              "TEMPORAL_UNDERSAMPLING": 2,
+              "AUTOMATIC_LAYER_MASK": 1,
+              "PARTIAL_CONTENT_CHANGE": 57,
+              "LOOP_CLOSURE": 8,
+              "RELOCALIZED": 2,
+              "LOW_CONFIDENCE_PLACEMENT": 5,
+              "INCOMPLETE_TEMPORAL_PATCH": 444,
+              "TEMPORAL_OR_ALIGNMENT_CONFLICT": 6524,
+              "SOURCE_UNRESOLVED": 1,
+              "SOURCE_DYNAMIC_PARTIAL": 1,
+              "SOURCE_TRACKING_LIMIT": 1,
+              "PRESENTATION_FRAME": 1
+            }
+          },
+          "memory": {
+            "stats": {
+              "peakResidentTiles": 74,
+              "tileCacheLimit": 74,
+              "budgetMB": 128,
+              "note": "Codec/browser/GPU allocations are additional, not a hard process-RSS bound. The render pass also holds one extra decoded native RGBA frame: a one-frame lookahead the world-consistency mask compares against (docs/ARCHITECTURE.md §七)."
+            },
+            "native": {
+              "TaskDuration": 133.82168199999998,
+              "ScriptDuration": 1.4780540000000002,
+              "LayoutDuration": 0,
+              "RecalcStyleDuration": 0,
+              "LayoutCount": 0,
+              "RecalcStyleCount": 0,
+              "RasterTaskDuration": 0,
+              "JSHeapUsedSize": 10298940,
+              "JSHeapTotalSize": 61079552,
+              "ThreadTime": 134.684198,
+              "ProcessTime": 154.568552
+            },
+            "page": {
+              "jsHeapUsedBytes": 12906728,
+              "jsHeapTotalBytes": 64733184
+            }
+          },
+          "error": null
+        }
+      ],
+      "input": {
+        "bytes": 19232814,
+        "sha256": "d726dafca0b52aed28bd87cf1b5cdd00ae53ca1270ff8b4156a0da579a3de6a8",
+        "name": "f.mov",
+        "width": 1876,
+        "height": 1272,
+        "duration": 7.391666666666667,
+        "frames": 387,
+        "codec": "avc1.4d0032",
+        "notices": []
+      }
+    }
+  ],
+  "synthetic": [
+    {
+      "name": "traversal",
+      "headSeconds": 1.25258975,
+      "currentSeconds": 3.140089583,
+      "ratio": 2.5068779167321145,
+      "headSamples": [
+        1.25258975,
+        1.265434166,
+        1.2432978749999997
+      ],
+      "currentSamples": [
+        3.140089583,
+        3.270896958,
+        3.138564417
+      ],
+      "sourceSeconds": 1.0536773759999996,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "vertical",
+      "headSeconds": 1.331027666,
+      "currentSeconds": 1.726002167,
+      "ratio": 1.2967440204958145,
+      "headSamples": [
+        1.3184982500000002,
+        1.3456706669999998,
+        1.331027666
+      ],
+      "currentSamples": [
+        1.7012175420000002,
+        1.7557376250000003,
+        1.726002167
+      ],
+      "sourceSeconds": 0.0,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "horizontal",
+      "headSeconds": 1.154149708,
+      "currentSeconds": 1.9105565839999998,
+      "ratio": 1.6553802082667075,
+      "headSamples": [
+        1.1612248749999998,
+        1.154149708,
+        1.142972583
+      ],
+      "currentSamples": [
+        1.902877084,
+        1.927316209,
+        1.9105565839999998
+      ],
+      "sourceSeconds": 0.0,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "diagonal",
+      "headSeconds": 1.2088404169999998,
+      "currentSeconds": 1.6898821670000002,
+      "ratio": 1.397936521012269,
+      "headSamples": [
+        1.305166208,
+        1.2088404169999998,
+        1.185005708
+      ],
+      "currentSamples": [
+        1.7579908329999998,
+        1.6898821670000002,
+        1.673415708
+      ],
+      "sourceSeconds": 0.0,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "fling",
+      "headSeconds": 0.5300254580000001,
+      "currentSeconds": 1.1546039160000001,
+      "ratio": 2.1783933178545545,
+      "headSamples": [
+        0.5242268750000001,
+        0.533210791,
+        0.5300254580000001
+      ],
+      "currentSamples": [
+        1.0852278329999998,
+        1.1546039160000001,
+        1.154652708
+      ],
+      "sourceSeconds": 0.466338209,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "revisit",
+      "headSeconds": 1.7877152500000002,
+      "currentSeconds": 2.405095959,
+      "ratio": 1.345346222783522,
+      "headSamples": [
+        1.789137625,
+        1.7877152500000002,
+        1.777926834
+      ],
+      "currentSamples": [
+        2.404369375,
+        2.4201122079999995,
+        2.405095959
+      ],
+      "sourceSeconds": 0.0,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "panes",
+      "headSeconds": 1.1036877920000001,
+      "currentSeconds": 1.58482,
+      "ratio": 1.43593143956783,
+      "headSamples": [
+        1.097904333,
+        1.1036877920000001,
+        1.105613291
+      ],
+      "currentSamples": [
+        1.5683725,
+        1.58482,
+        1.687677208
+      ],
+      "sourceSeconds": 0.0,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "gap",
+      "headSeconds": 1.3470841660000001,
+      "currentSeconds": 2.167005666,
+      "ratio": 1.6086638984367663,
+      "headSamples": [
+        1.339144083,
+        1.348429708,
+        1.3470841660000001
+      ],
+      "currentSamples": [
+        2.150776458,
+        2.167005666,
+        2.1688651250000004
+      ],
+      "sourceSeconds": 0.0,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "dynamic",
+      "headSeconds": 1.354201583,
+      "currentSeconds": 3.463415,
+      "ratio": 2.5575328248600933,
+      "headSamples": [
+        1.3468397909999998,
+        1.3597252499999999,
+        1.354201583
+      ],
+      "currentSamples": [
+        3.463415,
+        3.466735167,
+        3.4413382089999995
+      ],
+      "sourceSeconds": 1.2846579169999996,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "lazy-load",
+      "headSeconds": 1.167143667,
+      "currentSeconds": 2.426410458,
+      "ratio": 2.078930406431276,
+      "headSamples": [
+        1.165330625,
+        1.204764292,
+        1.167143667
+      ],
+      "currentSamples": [
+        2.4131755000000004,
+        2.463868709,
+        2.426410458
+      ],
+      "sourceSeconds": 0.8410312090000002,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "zoom",
+      "headSeconds": 0.8658855000000001,
+      "currentSeconds": 1.8654895829999998,
+      "ratio": 2.1544298674593807,
+      "headSamples": [
+        0.8658855000000001,
+        0.8684791249999999,
+        0.8649243750000002
+      ],
+      "currentSamples": [
+        1.871683209,
+        1.8654895829999998,
+        1.847372375
+      ],
+      "sourceSeconds": 0.5929322500000003,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "blank",
+      "headSeconds": 0.5277729169999998,
+      "currentSeconds": 0.7888405000000001,
+      "ratio": 1.4946589235460908,
+      "headSamples": [
+        0.524356417,
+        0.5277729169999998,
+        0.529175333
+      ],
+      "currentSamples": [
+        0.7869530410000001,
+        0.7892654590000001,
+        0.7888405000000001
+      ],
+      "sourceSeconds": 0.0,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "repeated-list",
+      "headSeconds": 2.219566417,
+      "currentSeconds": 3.1582537500000005,
+      "ratio": 1.4229147304673788,
+      "headSamples": [
+        2.212965959,
+        2.222045166,
+        2.219566417
+      ],
+      "currentSamples": [
+        3.1582537500000005,
+        3.174844792,
+        3.1576967080000005
+      ],
+      "sourceSeconds": 0.0,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "repeated-list-reversal",
+      "headSeconds": 3.049230959,
+      "currentSeconds": 4.299028625,
+      "ratio": 1.4098730738355987,
+      "headSamples": [
+        3.049230959,
+        3.2430711659999996,
+        3.0427772909999997
+      ],
+      "currentSamples": [
+        4.282506166999999,
+        4.299028625,
+        4.331346708999999
+      ],
+      "sourceSeconds": 0.0,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "comic",
+      "headSeconds": 1.3934082920000002,
+      "currentSeconds": 1.5359940419999998,
+      "ratio": 1.1023287652432023,
+      "headSamples": [
+        1.394196,
+        1.3934082920000002,
+        1.3681889580000002
+      ],
+      "currentSamples": [
+        1.5454931669999996,
+        1.5236163749999998,
+        1.5359940419999998
+      ],
+      "sourceSeconds": 0.0,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "phone",
+      "headSeconds": 0.9140667920000001,
+      "currentSeconds": 3.663070083,
+      "ratio": 4.007442470352866,
+      "headSamples": [
+        0.916382875,
+        0.8891705000000001,
+        0.9140667920000001
+      ],
+      "currentSamples": [
+        3.663070083,
+        3.6597973329999993,
+        3.6708635830000005
+      ],
+      "sourceSeconds": 2.5590860410000005,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "vfr",
+      "headSeconds": 0.642093334,
+      "currentSeconds": 1.4154551669999997,
+      "ratio": 2.2044383457187546,
+      "headSamples": [
+        0.642093334,
+        0.639766125,
+        0.654226625
+      ],
+      "currentSamples": [
+        1.412497917,
+        1.418205708,
+        1.4154551669999997
+      ],
+      "sourceSeconds": 0.5153425819999999,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "retina",
+      "headSeconds": 1.392569,
+      "currentSeconds": 3.885789625,
+      "ratio": 2.790374929357181,
+      "headSamples": [
+        1.422768458,
+        1.392569,
+        1.379584916
+      ],
+      "currentSamples": [
+        3.8530933750000003,
+        3.9922687499999996,
+        3.885789625
+      ],
+      "sourceSeconds": 1.965108624,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "factor4",
+      "headSeconds": 0.968022416,
+      "currentSeconds": 2.5206704589999998,
+      "ratio": 2.6039381085985096,
+      "headSamples": [
+        0.968022416,
+        0.9600647919999998,
+        0.9718602500000002
+      ],
+      "currentSamples": [
+        2.5326797919999997,
+        2.5206704589999998,
+        2.510874417
+      ],
+      "sourceSeconds": 1.379957791,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "geometry-change",
+      "headSeconds": 0.308565334,
+      "currentSeconds": 0.44631341700000005,
+      "ratio": 1.4464146416395562,
+      "headSamples": [
+        0.305670208,
+        0.30897299999999994,
+        0.308565334
+      ],
+      "currentSamples": [
+        0.44015350000000003,
+        0.46728099999999995,
+        0.44631341700000005
+      ],
+      "sourceSeconds": 0.0,
+      "statuses": {
+        "head": [
+          "partial"
+        ],
+        "current": [
+          "partial"
+        ]
+      }
+    },
+    {
+      "name": "toolbar-collapse",
+      "headSeconds": 0.903618208,
+      "currentSeconds": 2.733449709,
+      "ratio": 3.025005123624069,
+      "headSamples": [
+        0.900587667,
+        0.926298958,
+        0.903618208
+      ],
+      "currentSamples": [
+        2.7243429999999997,
+        2.733449709,
+        2.740850291
+      ],
+      "sourceSeconds": 1.0103202490000003,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "chrome-everything",
+      "headSeconds": 1.323223708,
+      "currentSeconds": 3.7025325,
+      "ratio": 2.798115297976508,
+      "headSamples": [
+        1.334076417,
+        1.323223708,
+        1.323002125
+      ],
+      "currentSamples": [
+        3.6927790409999997,
+        3.767626875,
+        3.7025325
+      ],
+      "sourceSeconds": 1.861146541,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "floating",
+      "headSeconds": 1.887774958,
+      "currentSeconds": 7.114978959,
+      "ratio": 3.768976237791581,
+      "headSamples": [
+        1.8857435,
+        1.887774958,
+        2.109096042
+      ],
+      "currentSamples": [
+        7.074606209,
+        7.114978959,
+        7.205391125
+      ],
+      "sourceSeconds": 4.008590875,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "glimpse",
+      "headSeconds": 0.506435625,
+      "currentSeconds": 0.6421401250000001,
+      "ratio": 1.2679600195977527,
+      "headSamples": [
+        0.5065756670000001,
+        0.506435625,
+        0.499996709
+      ],
+      "currentSamples": [
+        0.638204792,
+        0.6504345420000001,
+        0.6421401250000001
+      ],
+      "sourceSeconds": 0.0,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "fixture",
+      "headSeconds": 0.22143074999999998,
+      "currentSeconds": 0.44429308300000003,
+      "ratio": 2.006465149939654,
+      "headSamples": [
+        0.2209085,
+        0.22210562500000003,
+        0.22143074999999998
+      ],
+      "currentSamples": [
+        0.42676225,
+        0.44429308300000003,
+        0.45045054100000004
+      ],
+      "sourceSeconds": 0.1470484590000001,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "source/once-clean",
+      "headSeconds": 0.14551766699999996,
+      "currentSeconds": 0.4407054999999999,
+      "ratio": 3.028536047104164,
+      "headSamples": [
+        0.14459587499999998,
+        0.163757292,
+        0.14551766699999996
+      ],
+      "currentSamples": [
+        0.437603833,
+        0.44335895900000005,
+        0.4407054999999999
+      ],
+      "sourceSeconds": 0.2914265419999999,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "source/once-clean-shared-background",
+      "headSeconds": 0.12321062499999993,
+      "currentSeconds": 0.5209133750000001,
+      "ratio": 4.227828363016585,
+      "headSamples": [
+        0.12222291700000006,
+        0.12472474999999997,
+        0.12321062499999993
+      ],
+      "currentSamples": [
+        0.5209133750000001,
+        0.5247412499999999,
+        0.519471083
+      ],
+      "sourceSeconds": 0.3930721649999999,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "source/long-pause",
+      "headSeconds": 0.17850058300000002,
+      "currentSeconds": 0.7017456670000001,
+      "ratio": 3.9313354343498137,
+      "headSamples": [
+        0.17609066699999995,
+        0.17850058300000002,
+        0.19204254100000004
+      ],
+      "currentSamples": [
+        0.701348167,
+        0.7017456670000001,
+        0.709102583
+      ],
+      "sourceSeconds": 0.5219342509999998,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "source/same-pose-disappearance",
+      "headSeconds": 0.11688974999999999,
+      "currentSeconds": 0.3980325,
+      "ratio": 3.405195921798105,
+      "headSamples": [
+        0.11735416599999997,
+        0.11686912499999993,
+        0.11688974999999999
+      ],
+      "currentSamples": [
+        0.439904625,
+        0.3980325,
+        0.394462083
+      ],
+      "sourceSeconds": 0.27420399899999987,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "source/following-page-overlay",
+      "headSeconds": 0.14239525000000003,
+      "currentSeconds": 0.44451987500000006,
+      "ratio": 3.1217324664973023,
+      "headSamples": [
+        0.1423695,
+        0.14278324999999994,
+        0.14239525000000003
+      ],
+      "currentSamples": [
+        0.5101905419999999,
+        0.44451987500000006,
+        0.4442534589999999
+      ],
+      "sourceSeconds": 0.2991451260000001,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "source/arriving-page-overlay",
+      "headSeconds": 0.144008917,
+      "currentSeconds": 0.39452200000000004,
+      "ratio": 2.7395664672625797,
+      "headSamples": [
+        0.144008917,
+        0.14350058300000001,
+        0.14410679200000004
+      ],
+      "currentSamples": [
+        0.39452200000000004,
+        0.395418375,
+        0.39450895800000013
+      ],
+      "sourceSeconds": 0.24735466699999994,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "source/moving-pointer",
+      "headSeconds": 0.14310025000000007,
+      "currentSeconds": 0.27902912500000004,
+      "ratio": 1.9498856570830583,
+      "headSamples": [
+        0.144890666,
+        0.14310025000000007,
+        0.14155262500000004
+      ],
+      "currentSamples": [
+        0.2799299169999999,
+        0.27802416700000004,
+        0.27902912500000004
+      ],
+      "sourceSeconds": 0.13425224999999988,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "source/translucent-scrollbar",
+      "headSeconds": 0.14449145900000007,
+      "currentSeconds": 0.22281650000000003,
+      "ratio": 1.54207384673166,
+      "headSamples": [
+        0.14449145900000007,
+        0.16305075,
+        0.14246720799999998
+      ],
+      "currentSamples": [
+        0.2215118749999999,
+        0.23648183299999995,
+        0.22281650000000003
+      ],
+      "sourceSeconds": 0.07901212400000009,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "source/fading-scrollbar",
+      "headSeconds": 0.147033167,
+      "currentSeconds": 0.22405554200000005,
+      "ratio": 1.523843542049258,
+      "headSamples": [
+        0.147033167,
+        0.16071770800000001,
+        0.14238816599999995
+      ],
+      "currentSamples": [
+        0.223477708,
+        0.22512816699999996,
+        0.22405554200000005
+      ],
+      "sourceSeconds": 0.0794208759999999,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "source/no-boundary-header",
+      "headSeconds": 0.12227641700000004,
+      "currentSeconds": 0.41363524999999995,
+      "ratio": 3.3827884407178845,
+      "headSamples": [
+        0.12227641700000004,
+        0.12250137499999994,
+        0.12210833300000001
+      ],
+      "currentSamples": [
+        0.41363524999999995,
+        0.412524125,
+        0.416961459
+      ],
+      "sourceSeconds": 0.28745887500000006,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "source/partial-union",
+      "headSeconds": 0.147605416,
+      "currentSeconds": 0.2719280000000001,
+      "ratio": 1.8422630237362032,
+      "headSamples": [
+        0.147605416,
+        0.14839329199999998,
+        0.1453315
+      ],
+      "currentSamples": [
+        0.2719280000000001,
+        0.27190362500000004,
+        0.28053245800000004
+      ],
+      "sourceSeconds": 0.12346895700000005,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "dynamic-epochs",
+      "headSeconds": 0.1479435420000001,
+      "currentSeconds": 0.22574324999999998,
+      "ratio": 1.5258743095389715,
+      "headSamples": [
+        0.14708400000000005,
+        0.1718873749999999,
+        0.1479435420000001
+      ],
+      "currentSamples": [
+        0.22477912500000002,
+        0.254590459,
+        0.22574324999999998
+      ],
+      "sourceSeconds": 0.07961804000000007,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "dynamic-partial",
+      "headSeconds": 0.157874417,
+      "currentSeconds": 0.31171483299999986,
+      "ratio": 1.9744480386584728,
+      "headSamples": [
+        0.157874417,
+        0.17767933300000005,
+        0.15508724999999993
+      ],
+      "currentSamples": [
+        0.31171483299999986,
+        0.306722084,
+        0.34759154200000003
+      ],
+      "sourceSeconds": 0.15113937500000008,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "unpin",
+      "headSeconds": 0.530935667,
+      "currentSeconds": 1.33594625,
+      "ratio": 2.5162111589689076,
+      "headSamples": [
+        0.5957152919999998,
+        0.530935667,
+        0.5290809999999999
+      ],
+      "currentSamples": [
+        1.453270541,
+        1.33594625,
+        1.3028163750000001
+      ],
+      "sourceSeconds": 0.5678318749999999,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    },
+    {
+      "name": "independent-panes",
+      "headSeconds": 0.38471345799999995,
+      "currentSeconds": 0.8289733329999999,
+      "ratio": 2.1547812164138014,
+      "headSamples": [
+        0.4247094589999999,
+        0.38471345799999995,
+        0.38038750000000005
+      ],
+      "currentSamples": [
+        0.8474499160000001,
+        0.8289733329999999,
+        0.825872166
+      ],
+      "sourceSeconds": 0.36021904099999985,
+      "statuses": {
+        "head": [
+          "complete"
+        ],
+        "current": [
+          "complete"
+        ]
+      }
+    }
+  ],
+  "changedSourceFilesDuringBenchmark": [],
+  "realTotal": {
+    "head": 296.4825349999666,
+    "current": 4988.830110000134
+  },
+  "syntheticTotal": {
+    "head": 32.136626252,
+    "current": 66.898462127
+  },
+  "analysis": {
+    "real": {
+      "cases": 8,
+      "ratio": 16.82672508854761,
+      "sourceSeconds": 4636.375964999914,
+      "sourceShare": 0.929351343455508,
+      "otherSeconds": 352.4541450002198
+    },
+    "synthetic": {
+      "cases": 40,
+      "runs": 240,
+      "sumOfMediansRatio": 2.0816890236832695,
+      "geometricMeanRatio": 2.113143182195764,
+      "minRatio": 1.1023287652432023,
+      "maxRatio": 4.227828363016585,
+      "slowerCases": 40,
+      "slowerOver10Percent": 40,
+      "fasterCases": 0
+    },
+    "productSourceUnchanged": true
+  },
+  "candidateCommit": "edfff432d57b6ddba94cd1e9cc4b3374ec6e599f"
+}

@@ -1,4 +1,4 @@
-import { assert, assertEquals } from '@std/assert';
+import { assert, assertEquals, assertThrows } from '@std/assert';
 import { pad } from '../../src/core/math.ts';
 import { constantFrames, fillRGBA, World } from '../../src/synthetic/world.ts';
 import type { Layer, Overlay, RGB, Scenario } from '../../src/synthetic/world.ts';
@@ -487,4 +487,26 @@ Deno.test('consistency mask: the ±1 tolerance comes from the source, so a lossl
   } finally {
     atlas.dispose();
   }
+});
+
+import { core } from '../../src/core/wasm.ts';
+Deno.test('consistency: persisted screen witnesses retain their partial byte and reject a truncated plane', () => {
+  const width = 3, height = 3;
+  const input = {
+    image: { width, height, data: new Uint8ClampedArray(width * height * 4).fill(30) },
+    labels: new Uint8Array(width * height).fill(1),
+    region: { x: 0, y: 0, width, height },
+    code: 1,
+    pose: { x: 0, y: 0 },
+    factor: 1,
+    noise: 0,
+    voting: { x0: 0, y0: 0, w: width, h: height, bits: new Uint8Array(2), clean: new Uint8Array(2), screen: new Uint8Array([0, 1]) },
+  };
+  const mask = core().consistencyMask(input);
+  assertEquals(mask[8], 2, 'the ninth screen witness must survive native marshalling');
+  assertThrows(
+    () => core().consistencyMask({ ...input, voting: { ...input.voting, screen: new Uint8Array(1) } }),
+    Error,
+    'truncated screen witness',
+  );
 });

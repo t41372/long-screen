@@ -571,7 +571,7 @@ pub fn mask_complete(
                     return false;
                 }
                 if let Some(c) = consistent {
-                    if c[(sy * atlas_width + sx) as usize] == 0 {
+                    if c[(sy * atlas_width + sx) as usize] != 1 {
                         return false;
                     }
                 }

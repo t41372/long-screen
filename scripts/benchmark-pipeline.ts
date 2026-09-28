@@ -1,9 +1,8 @@
 import { basename, dirname, join, resolve, toFileUrl } from '@std/path';
-import { type Browser, chromium, type Page } from 'playwright';
+import { type BrowserContext, chromium, type Page } from 'playwright';
 
 /**
- * Benchmarks the shipped browser pipeline, rather than a Node/Deno substitute. It deliberately writes only JSON and
- * Chrome CPU profiles: the recording and reconstructed pixels never leave the local browser or get copied to output.
+ * Benchmarks the shipped browser pipeline, rather than a Node/Deno substitute. It writes JSON and Chrome CPU profiles, with optional local PNG exports for visual comparison.
  *
  * Examples:
  *   deno run --allow-all scripts/benchmark-pipeline.ts --input recording.mov
@@ -17,7 +16,10 @@ interface Options {
   output: string;
   analysisSize: number;
   verifyTiles: boolean;
+  verifySources: boolean;
+  exportCanvases: boolean;
   allowPartial: boolean;
+  persistent: boolean;
   /** Tile keys matching this pattern also get their raw evidence arrays written (diagnosing a hash difference). */
   dumpEvidence?: string;
 }
@@ -52,6 +54,7 @@ interface PassReport {
     seconds: number;
     phases: PhaseTimes;
     persistedTimings?: Record<string, unknown>;
+    sourceResolution?: Record<string, unknown>;
   };
   consistency: {
     exactDuplicateFrames?: number;
@@ -72,6 +75,9 @@ interface PassReport {
     putManyCalls: number;
     rows: number;
     writeMS: number;
+    usage?: number;
+    quota?: number;
+    mode?: 'ephemeral' | 'persistent';
   };
   memory: {
     stats?: unknown;
@@ -90,6 +96,8 @@ interface PassReport {
   failedRequests: string[];
   externalRequests: string[];
   cpuProfile?: string;
+  /** Every source row except statistics, with complete v1 normalization for cross-format comparison. */
+  storedSources?: { count: number; sha256: string; seconds: number };
   /** `sha256` covers every stored PNG and evidence row, byte for byte — it legitimately differs across a codec
    *  change even when reconstruction is unchanged. `contentSha256` covers decoded pixels plus every evidence array
    *  (coverage/provisional/quality/conflicts/owner/score/frozen), not the PNG bytes, so it is what the cross-root
@@ -122,7 +130,10 @@ Options:
   --analysis-size N      analysis long-edge limit (default: 640)
   --verify-tiles         hash decoded tile pixels + evidence after timing; fail on differences across runs
                          (raw PNG byte differences are reported as info, not a failure — see contentSha256)
+  --verify-sources       hash every source row after timing; normalize archives to complete v1, exclude summary statistics
   --dump-evidence REGEX  with --verify-tiles, also write raw evidence arrays of matching tile keys
+  --export-canvases      save native PNG canvases and observation/region metadata after timing
+  --persistent           use a fresh disposable on-disk Chrome profile per pass (ordinary storage quotas)
   --allow-partial        accept a partial run (a stream-copied prefix whose container count exceeds its frames)
   --output DIR           JSON/profile directory (default: test-results/benchmark-pipeline)
 `;
@@ -143,7 +154,10 @@ function parseArgs(args: string[]): Options {
     output = join(Deno.cwd(), 'test-results/benchmark-pipeline'),
     analysisSize = 640,
     verifyTiles = false,
-    allowPartial = false;
+    verifySources = false,
+    exportCanvases = false,
+    allowPartial = false,
+    persistent = false;
   let dumpEvidence: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -161,8 +175,14 @@ function parseArgs(args: string[]): Options {
       output = resolve(valueAfter(args, i++, arg));
     } else if (arg === '--verify-tiles') {
       verifyTiles = true;
+    } else if (arg === '--verify-sources') {
+      verifySources = true;
+    } else if (arg === '--export-canvases') {
+      exportCanvases = true;
     } else if (arg === '--dump-evidence') {
       dumpEvidence = valueAfter(args, i++, arg);
+    } else if (arg === '--persistent') {
+      persistent = true;
     } else if (arg === '--allow-partial') {
       allowPartial = true;
     } else if (arg === '--help' || arg === '-h') {
@@ -178,7 +198,20 @@ function parseArgs(args: string[]): Options {
   if (!Deno.statSync(input).isFile) throw new Error(`Input is not a file: ${input}`);
   if (!Deno.statSync(root).isDirectory) throw new Error(`Repository root is not a directory: ${root}`);
   if (baselineRoot && !Deno.statSync(baselineRoot).isDirectory) throw new Error(`Baseline root is not a directory: ${baselineRoot}`);
-  return { input, root, baselineRoot, passes, output, analysisSize, verifyTiles, allowPartial, dumpEvidence };
+  return {
+    input,
+    root,
+    baselineRoot,
+    passes,
+    output,
+    analysisSize,
+    verifyTiles,
+    verifySources,
+    exportCanvases,
+    allowPartial,
+    persistent,
+    dumpEvidence,
+  };
 }
 
 async function runBuild(root: string): Promise<void> {
@@ -220,7 +253,7 @@ async function waitForHarness(page: Page, base: string): Promise<void> {
 }
 
 async function runPass(
-  browser: Browser,
+  createContext: () => Promise<BrowserContext>,
   base: string,
   input: string,
   analysisSize: number,
@@ -228,9 +261,12 @@ async function runPass(
   output: string,
   label: string,
   verifyTiles: boolean,
+  exportCanvases: boolean,
   dumpEvidence?: string,
+  storageMode: 'ephemeral' | 'persistent' = 'ephemeral',
+  verifySources = false,
 ): Promise<PassReport> {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const context = await createContext();
   const page = await context.newPage();
   const progressPath = join(output, `${label}-pass-${pass}.progress.jsonl`);
   await Deno.writeTextFile(progressPath, '');
@@ -267,9 +303,31 @@ async function runPass(
   } catch (error) {
     console.warn(`CPU profiler unavailable for ${label} pass ${pass}: ${String(error)}`);
   }
+  const benchmarkInput: [string, number, boolean] = [
+    `${base}/recording/${encodeURIComponent(basename(input))}`,
+    analysisSize,
+    verifyTiles || verifySources || exportCanvases,
+  ];
   let report: PassReport;
+  let profileBusy = false, profilePart = 0;
+  const profileTimer = setInterval(async () => {
+    if (!profilerStarted || profileBusy) return;
+    profileBusy = true;
+    try {
+      const part = (await cdp.send('Profiler.stop') as { profile: unknown }).profile;
+      await Deno.writeTextFile(
+        join(output, `${label}-pass-${pass}.cpu-${String(profilePart++).padStart(3, '0')}.json`),
+        JSON.stringify(part),
+      );
+      await cdp.send('Profiler.start');
+    } catch (error) {
+      console.warn(`Profile checkpoint failed: ${String(error)}`);
+    } finally {
+      profileBusy = false;
+    }
+  }, 10_000);
   try {
-    report = await page.evaluate(async ([sourceURL, analysis, verify]: [string, number, boolean]) => {
+    const measure = async ([sourceURL, analysis, retainStore]: [string, number, boolean]) => {
       const kit = (globalThis as any).longScreenKit;
       const inputName = decodeURIComponent(sourceURL.split('/').pop() || 'recording');
       const file = new File([await (await fetch(sourceURL)).blob()], inputName);
@@ -292,7 +350,7 @@ async function runPass(
       let phase = '', phaseStarted = performance.now(), lastProgressAt = 0;
       const diagnostics: Record<string, number> = {};
       const engine = new kit.Engine(db, source, { ...kit.DEFAULT_SETTINGS, analysisSize: analysis }, {
-        progress: (progress: { phase: string; frames: number }) => {
+        progress: (progress: { phase: string; frames: number; message?: string }) => {
           const now = performance.now();
           const phaseChanged = progress.phase !== phase;
           if (progress.phase !== phase) {
@@ -301,7 +359,7 @@ async function runPass(
             phaseStarted = now;
           }
           if (phaseChanged || now - lastProgressAt >= 10000) {
-            console.log(`BENCHMARK ${phase} (${progress.frames} frames)`);
+            console.log(`BENCHMARK ${phase} (${progress.frames} frames): ${progress.message || ''}`);
             lastProgressAt = now;
           }
         },
@@ -346,7 +404,10 @@ async function runPass(
       for await (const { value } of kit.iterate(engine.store, 'diagnostic/')) diagnosticsRows.push(value);
       const info = source.info;
       source.dispose();
-      if (verify) (globalThis as any).benchmarkStore = engine.store;
+      if (retainStore) {
+        (globalThis as any).benchmarkStore = engine.store;
+        (globalThis as any).benchmarkProject = project;
+      }
       return {
         pass: 0,
         core: kit.corePlan ? { variant: kit.corePlan.variant, threads: kit.coreThreads(), reason: kit.corePlan.reason } : undefined,
@@ -368,6 +429,7 @@ async function runPass(
           seconds,
           phases,
           persistedTimings: performanceRow,
+          sourceResolution: await engine.store.get('source-summary'),
         },
         consistency: {
           exactDuplicateFrames: (performanceRow as any)?.exactDuplicateFrames,
@@ -393,7 +455,8 @@ async function runPass(
         failedRequests: [],
         externalRequests: [],
       } satisfies PassReport;
-    }, [`${base}/recording/${encodeURIComponent(basename(input))}`, analysisSize, verifyTiles] as [string, number, boolean]);
+    };
+    report = await page.evaluate(measure, benchmarkInput);
   } catch (error) {
     failed = true;
     await Deno.writeTextFile(
@@ -413,6 +476,8 @@ async function runPass(
     );
     throw error;
   } finally {
+    clearInterval(profileTimer);
+    while (profileBusy) await new Promise((resolve) => setTimeout(resolve, 10));
     if (profilerStarted) {
       try {
         cpuProfile = (await cdp.send('Profiler.stop') as { profile: unknown }).profile;
@@ -450,6 +515,12 @@ async function runPass(
   if (cpuProfile) {
     report.cpuProfile = profilePath;
   }
+  const estimate = await page.evaluate(async () => await navigator.storage.estimate());
+  report.storage.mode = storageMode;
+  report.storage.usage = estimate.usage;
+  report.storage.quota = estimate.quota;
+  // Preserve measured status, phase and quota evidence even when post-run PNG export fails.
+  await Deno.writeTextFile(join(output, `${label}-pass-${pass}.json`), JSON.stringify(report, null, 2));
   if (verifyTiles) {
     report.storedTiles = await page.evaluate(async (dump: string | undefined) => {
       const started = performance.now(), kit = (globalThis as any).longScreenKit;
@@ -477,7 +548,6 @@ async function runPass(
           : undefined;
         tiles.push({ key, hashes: { ...hashes, pixels: await digest(image.data.slice().buffer) }, evidence });
       }
-      delete (globalThis as any).benchmarkStore;
       const evidenceFields = ['coverage', 'provisional', 'quality', 'conflicts', 'owner', 'score', 'frozen'];
       return {
         count: rows.length,
@@ -497,6 +567,90 @@ async function runPass(
     const { tiles, ...summary } = report.storedTiles as PassReport['storedTiles'] & { tiles: unknown[] };
     await Deno.writeTextFile(join(output, `${label}-pass-${pass}.tiles.json`), JSON.stringify(tiles));
     report.storedTiles = summary;
+  }
+  if (verifySources) {
+    const audit = await page.evaluate(async () => {
+      const started = performance.now(), kit = (globalThis as any).longScreenKit;
+      const native = kit.core();
+      const digest = async (bytes: Uint8Array): Promise<string> => {
+        const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes.slice().buffer));
+        return [...hash].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+      };
+      const canonical = async (value: any): Promise<any> => {
+        if (ArrayBuffer.isView(value)) {
+          return { type: value.constructor.name, sha256: await digest(new Uint8Array(value.buffer, value.byteOffset, value.byteLength)) };
+        }
+        if (Array.isArray(value)) return await Promise.all(value.map(canonical));
+        if (value && typeof value === 'object') {
+          const out: Record<string, unknown> = {};
+          for (const key of Object.keys(value).sort()) out[key] = await canonical(value[key]);
+          return out;
+        }
+        return value;
+      };
+      const rows: { key: string; sha256: string }[] = [];
+      for await (const { key, value } of kit.iterate((globalThis as any).benchmarkStore, 'source-')) {
+        if (key === 'source-summary') continue;
+        let content = value;
+        // A pre-v2 checkout's archives already ARE canonical v1 and need no new API.
+        if (typeof native.sourceArchiveCanonical === 'function') {
+          if (key.startsWith('source-state/')) content = { ...value, state: native.sourceArchiveCanonical(value.state, -1) };
+          else if (key.startsWith('source-page/')) content = native.sourceArchiveCanonical(value, 0);
+        }
+        rows.push({ key, sha256: await digest(new TextEncoder().encode(JSON.stringify(await canonical(content)))) });
+      }
+      return {
+        count: rows.length,
+        sha256: await digest(new TextEncoder().encode(JSON.stringify(rows))),
+        seconds: (performance.now() - started) / 1000,
+        rows,
+      };
+    });
+    const { rows, ...summary } = audit;
+    await Deno.writeTextFile(join(output, `${label}-pass-${pass}.sources-hashes.json`), JSON.stringify(rows));
+    report.storedSources = summary;
+  }
+  if (exportCanvases) {
+    const evidence = await page.evaluate(async () => {
+      const kit = (globalThis as any).longScreenKit, store = (globalThis as any).benchmarkStore;
+      const rows: Record<string, unknown[]> = {};
+      for (const prefix of ['canvas/', 'observation/', 'node/', 'diagnostic/']) {
+        rows[prefix] = [];
+        for await (const { value } of kit.iterate(store, prefix)) rows[prefix].push(value);
+      }
+      const regions = await store.get('regions');
+      return { regions: regions.map((r: any) => ({ ...r, mask: r.mask ? Array.from(r.mask) : undefined })), rows };
+    });
+    await Deno.writeTextFile(join(output, `${label}-pass-${pass}.evidence.json`), JSON.stringify(evidence));
+    if (dumpEvidence) {
+      const sources = await page.evaluate(async (pattern: string) => {
+        const kit = (globalThis as any).longScreenKit, store = (globalThis as any).benchmarkStore;
+        const rows = [], match = new RegExp(pattern);
+        for await (const row of kit.iterate(store, 'source-')) {
+          if (match.test(row.key)) rows.push(row);
+        }
+        return JSON.stringify(rows, (_, value) => ArrayBuffer.isView(value) ? Array.from(value as unknown as number[]) : value);
+      }, dumpEvidence);
+      await Deno.writeTextFile(join(output, `${label}-pass-${pass}.sources.json`), sources);
+    }
+    for (const canvas of report.canvases.filter((c) => c.observedPixels > 0)) {
+      const url = await page.evaluate(async (id: string) => {
+        const kit = (globalThis as any).longScreenKit, store = (globalThis as any).benchmarkStore;
+        const meta = await store.get(`canvas/${id}`);
+        const result = await kit.exportCanvas(store, (globalThis as any).benchmarkProject, meta, () => {}, undefined, 'single');
+        const blob = result.blob || await (await navigator.storage.getDirectory()).getFileHandle(result.temporary).then((f) => f.getFile());
+        return URL.createObjectURL(blob);
+      }, canvas.id);
+      const downloaded = page.waitForEvent('download');
+      await page.evaluate((url: string) => {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'canvas.png';
+        a.click();
+      }, url);
+      await (await downloaded).saveAs(join(output, `${label}-pass-${pass}-${canvas.id}.png`));
+      await page.evaluate((url: string) => URL.revokeObjectURL(url), url);
+    }
   }
   await context.close();
   return report;
@@ -541,7 +695,17 @@ async function benchmarkRoot(options: Options, root: string, label: string): Pro
     // benchmark runnable without a system Chrome while LONGSCREEN_CHROME still allows testing the platform decoder.
     browserOptions.executablePath = executablePath || chromium.executablePath();
   }
-  const browser = await chromium.launch(browserOptions);
+  const browser = options.persistent ? undefined : await chromium.launch(browserOptions);
+  const profiles: string[] = [], contexts: BrowserContext[] = [];
+  const createContext = async (): Promise<BrowserContext> => {
+    const viewport = { width: 1440, height: 1000 };
+    if (browser) return browser.newContext({ viewport });
+    const directory = await Deno.makeTempDir({ prefix: 'long-screen-benchmark-' });
+    profiles.push(directory);
+    const context = await chromium.launchPersistentContext(directory, { ...browserOptions, viewport });
+    contexts.push(context);
+    return context;
+  };
   try {
     const results: PassReport[] = [];
     for (let pass = 1; pass <= options.passes; pass++) {
@@ -553,7 +717,7 @@ async function benchmarkRoot(options: Options, root: string, label: string): Pro
       let result: PassReport;
       try {
         result = await runPass(
-          browser,
+          createContext,
           server.base,
           options.input,
           options.analysisSize,
@@ -561,7 +725,10 @@ async function benchmarkRoot(options: Options, root: string, label: string): Pro
           options.output,
           label,
           options.verifyTiles,
+          options.exportCanvases,
           options.dumpEvidence,
+          options.persistent ? 'persistent' : 'ephemeral',
+          options.verifySources,
         );
       } catch (error) {
         try {
@@ -602,7 +769,10 @@ async function benchmarkRoot(options: Options, root: string, label: string): Pro
     await Deno.writeTextFile(join(options.output, `${label}.json`), JSON.stringify(report, null, 2));
     return report;
   } finally {
-    await browser.close();
+    await browser?.close();
+    for (const context of contexts) await context.close().catch(() => {});
+    // Only delete the fresh profiles created by this benchmark, never a user's browser profile.
+    for (const directory of profiles) await Deno.remove(directory, { recursive: true });
     await server.close();
   }
 }
@@ -613,6 +783,7 @@ const benchmarks: Array<[string, string]> = [];
 if (options.baselineRoot) benchmarks.push(['baseline', options.baselineRoot]);
 benchmarks.push([options.baselineRoot ? 'current' : 'benchmark', options.root]);
 let referenceTiles: PassReport['storedTiles'];
+let referenceSources: PassReport['storedSources'];
 const verification: Array<
   { label: string; pass: number; count: number; sha256: string; contentSha256?: string; matches: boolean }
 > = [];
@@ -644,6 +815,15 @@ for (const [label, root] of benchmarks) {
         console.log(
           `(info) ${label} pass ${result.pass}: tile PNG bytes differ from the first run (codec change); decoded pixels and evidence are identical.`,
         );
+      }
+    }
+  }
+  if (options.verifySources) {
+    for (const result of report.results) {
+      if (!result.storedSources) throw new Error('Missing source audit.');
+      referenceSources ??= result.storedSources;
+      if (result.storedSources.count !== referenceSources.count || result.storedSources.sha256 !== referenceSources.sha256) {
+        throw new Error(`${label} pass ${result.pass}: source observations, models or provenance differ.`);
       }
     }
   }

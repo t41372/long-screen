@@ -44,6 +44,8 @@ After picking a file, the app uses WebCodecs to decode the first frame directly 
 
 Automatic mode keeps moving content and fixed UI separate; multiple independent panes each have their own coordinate system. Observations whose position can't be confirmed become exportable independent fragments rather than being forced onto the end of the main long image; if a later revisit provides reliable evidence, the fragment is reattached as a whole and recorded. Transparent areas mean no observation is available there, not a white page.
 
+Disputed regions receive one additional ordered replay after final placement. Sparse native alternatives are kept on disk, screen/local objects contribute visibility evidence, and changing page components choose a common observed moment. Output pixels always come from actual frames. The project ZIP includes inspectable source PNG sheets, provenance, and unresolved/partial diagnostics; this adds processing and storage cost on heavily occluded recordings.
+
 ## Export
 
 **Full project ZIP64**: native-size PNG tiles, preview pyramid, offline viewer, pixel coverage bitmap, block-level confidence / conflict / source-frame data, a contribution record for every processed frame, motion analysis logs, the pose graph, and all diagnostics. The original video is not copied into the project.

@@ -20,6 +20,7 @@ pub struct TileBuffers<'a> {
     pub owner: &'a mut [u32],
     pub score: &'a mut [f32],
     pub frozen: &'a [u8],
+    pub disputes: Option<&'a mut [u8]>,
 }
 
 pub struct Observation<'a> {
@@ -29,9 +30,10 @@ pub struct Observation<'a> {
     /// Atlas label plane; `None` when the region is rectangular and fully owned (fast path).
     pub labels: Option<(&'a [u8], u8)>,
     pub occlusions: &'a [Rect],
-    /// Per-pixel world-consistency mask (1 = consistent); `None` treats every pixel as consistent.
+    /// 0 = pairwise inconsistent, 1 = accepted/unknown, 2 = screen occluder. None accepts every pixel.
     pub consistent: Option<&'a [u8]>,
     pub confidence: f64,
+    pub noise: f64,
     pub uncertain: bool,
     pub frame: u32,
 }
@@ -108,6 +110,7 @@ struct Rows<'t> {
     owner: &'t mut [u32],
     score: &'t mut [f32],
     frozen: &'t [u8],
+    disputes: Option<&'t mut [u8]>,
     /// This call's conflict flag per block of these rows.
     flagged: &'t mut [u8],
     by0: i64,
@@ -181,6 +184,7 @@ pub fn composite_tile(
         SyncPtr(parts.as_mut_ptr()),
     );
     let frozen = tile.frozen;
+    let disputes = tile.disputes.as_mut().map(|s| SyncPtr(s.as_mut_ptr()));
     crate::pool::par_for(chunks, |c| {
         let (ra, rb) = (
             crate::pool::split(rows, chunks, c),
@@ -223,6 +227,9 @@ pub fn composite_tile(
                     n * row_blocks,
                 ),
                 frozen: &frozen[a * row_blocks..(a + n) * row_blocks],
+                disputes: disputes.map(|p| {
+                    std::slice::from_raw_parts_mut(p.get().add(a * row_blocks), n * row_blocks)
+                }),
                 flagged: std::slice::from_raw_parts_mut(
                     ptrs.7.get().add(ra * row_blocks),
                     n * row_blocks,
@@ -280,7 +287,8 @@ fn row_stats_simd(
     coverage: &[u8],
     dst0: usize,
     src0: usize,
-) -> (u32, u32, u32, u32) {
+    capture: bool,
+) -> (u32, u32, u32, u32, u8) {
     use core::arch::wasm32::*;
     let inside: u32 = match obs.labels {
         None => 0xffff,
@@ -291,7 +299,8 @@ fn row_stats_simd(
         },
     };
     let cov = coverage[dst0 >> 3] as u32 | (coverage[(dst0 >> 3) + 1] as u32) << 8;
-    let (mut eq, mut mism) = (0u32, 0u32);
+    let (mut eq, mut mism, mut disputed) = (0u32, 0u32, 0u32);
+    let noise = u32x4_splat((obs.noise * 3.).floor().clamp(0., 765.) as u32);
     let rgb = u32x4_splat(0x00ff_ffff);
     let limit = u32x4_splat(75);
     for g in 0..4 {
@@ -306,13 +315,27 @@ fn row_stats_simd(
         let d = v128_and(v128_or(u8x16_sub_sat(t, o), u8x16_sub_sat(o, t)), rgb);
         let sum = u32x4_extadd_pairwise_u16x8(u16x8_extadd_pairwise_u8x16(d));
         mism |= (i32x4_bitmask(u32x4_gt(sum, limit)) as u32) << (4 * g);
+        if capture {
+            disputed |= (i32x4_bitmask(u32x4_gt(sum, noise)) as u32) << (4 * g);
+        }
     }
     let ov = cov & inside;
+    let mut flags = if disputed & ov != 0 { 1 } else { 0 };
+    if capture {
+        if let Some(mask) = obs.consistent {
+            // SAFETY: this full row has sixteen in-frame mask bytes, just like its label plane.
+            let values = unsafe { v128_load(mask.as_ptr().add(src0) as *const v128) };
+            if (!u8x16_bitmask(u8x16_eq(values, u8x16_splat(1))) as u32) & inside != 0 {
+                flags |= 2;
+            }
+        }
+    }
     (
         inside.count_ones(),
         ov.count_ones(),
         (ov & eq).count_ones(),
         (ov & mism).count_ones(),
+        flags,
     )
 }
 
@@ -326,6 +349,10 @@ fn composite_block(geo: &Geometry<'_, '_>, t: &mut Rows<'_>, bx: i64, by: i64, s
     let q = (ly * geo.blocks + bx) as usize;
     let inside = |src: usize| obs.labels.is_none_or(|(labels, code)| labels[src] == code);
     let (mut mismatch, mut overlap, mut count, mut identical) = (0u32, 0u32, 0u32, 0u32);
+    let mut screen_occluded = false;
+    let before_disputes = t.disputes.as_ref().map_or(0, |d| d[q]);
+    let capture = t.disputes.is_some() && before_disputes != 3;
+    let mut disputes = before_disputes;
     let sy0 = js_ceil(((by * b) as f64).max(world.y - tile_y)) as i64;
     let sy1 = js_ceil((((by + 1) * b) as f64).min(world.y + world.height - tile_y)) as i64;
     let sx0 = js_ceil(((bx * b) as f64).max(world.x - tile_x)) as i64;
@@ -340,19 +367,25 @@ fn composite_block(geo: &Geometry<'_, '_>, t: &mut Rows<'_>, bx: i64, by: i64, s
             continue;
         }
         let occluded_row = row_occluded(obs.occlusions, sy);
+        if let Some(mask) = obs.consistent {
+            let start = (sy * w + cx0 + geo.dx) as usize;
+            screen_occluded |= mask[start..start + (cx1 - cx0) as usize].contains(&2);
+        }
         #[cfg(target_feature = "simd128")]
         if full && !occluded_row {
-            let (c, o, i, m) = row_stats_simd(
+            let (c, o, i, m, flags) = row_stats_simd(
                 obs,
                 t.pixels,
                 t.coverage,
                 dst_of(cx0, y),
                 (sy * w + cx0 + geo.dx) as usize,
+                capture,
             );
             count += c;
             overlap += o;
             identical += i;
             mismatch += m;
+            disputes |= flags;
             continue;
         }
         let _ = full;
@@ -367,6 +400,9 @@ fn composite_block(geo: &Geometry<'_, '_>, t: &mut Rows<'_>, bx: i64, by: i64, s
             }
             let dst = dst_of(x, y);
             count += 1;
+            if capture && obs.consistent.is_some_and(|m| m[src] != 1) {
+                disputes |= 2;
+            }
             if bit(t.coverage, dst) {
                 overlap += 1;
                 if px32(t.pixels, dst) == px32(obs.rgba, src) {
@@ -379,6 +415,9 @@ fn composite_block(geo: &Geometry<'_, '_>, t: &mut Rows<'_>, bx: i64, by: i64, s
                     + (t.pixels[i + 2] as i32 - obs.rgba[j + 2] as i32).abs())
                     as f64
                     / 3.0;
+                if capture && diff > obs.noise {
+                    disputes |= 1;
+                }
                 if diff > 25.0 {
                     mismatch += 1;
                 }
@@ -388,6 +427,10 @@ fn composite_block(geo: &Geometry<'_, '_>, t: &mut Rows<'_>, bx: i64, by: i64, s
     if count == 0 {
         return;
     }
+    if let Some(index) = &mut t.disputes {
+        index[q] = disputes;
+        sum.changed |= disputes != before_disputes;
+    }
     let (mut covered_in_block, mut provisional_in_block) = (0u32, 0i32);
     for row in 0..b {
         let i = dst_of(bx * b, by * b + row) >> 3;
@@ -395,9 +438,9 @@ fn composite_block(geo: &Geometry<'_, '_>, t: &mut Rows<'_>, bx: i64, by: i64, s
         provisional_in_block +=
             (t.provisional[i].count_ones() + t.provisional[i + 1].count_ones()) as i32;
     }
-    // Exact whole-block reproduction is corroboration, not a write; but standing provisional bits still need
-    // healing, so only skip when there is nothing to clear either.
-    if identical == count && provisional_in_block == 0 {
+    // Reproduction corroborates ordinary pairwise evidence. An independently identified screen
+    // occluder can still condemn identical stored pixels; standing provisional bits also need healing.
+    if identical == count && provisional_in_block == 0 && !screen_occluded {
         return;
     }
     let conflict = overlap >= 12 && mismatch as f64 / overlap as f64 > 0.16;
@@ -424,8 +467,21 @@ fn composite_block(geo: &Geometry<'_, '_>, t: &mut Rows<'_>, bx: i64, by: i64, s
                 let src = (sy * w + sx) as usize;
                 if inside(src) {
                     let j = src * 4;
-                    sharpness +=
-                        (obs.rgba[j - 4] as i32 - obs.rgba[j + 4] as i32).unsigned_abs() as u64;
+                    let mut gradient = 0u32;
+                    for c in 0..3 {
+                        gradient = gradient.max(
+                            (obs.rgba[j - 4 + c] as i32 - obs.rgba[j + 4 + c] as i32)
+                                .unsigned_abs(),
+                        );
+                        if sy > 0 && sy + 1 < h {
+                            let row = w as usize * 4;
+                            gradient = gradient.max(
+                                (obs.rgba[j - row + c] as i32 - obs.rgba[j + row + c] as i32)
+                                    .unsigned_abs(),
+                            );
+                        }
+                    }
+                    sharpness += gradient as u64;
                 }
             }
         }
@@ -441,7 +497,7 @@ fn composite_block(geo: &Geometry<'_, '_>, t: &mut Rows<'_>, bx: i64, by: i64, s
         sum.conflicts += mismatch;
         sum.changed = true;
     }
-    if replace || overlap < count || provisional_in_block > 0 {
+    if replace || overlap < count || provisional_in_block > 0 || screen_occluded {
         for y in sy0..sy1 {
             let sy = y + geo.dy;
             if sy < 0 || sy >= h {
@@ -459,7 +515,7 @@ fn composite_block(geo: &Geometry<'_, '_>, t: &mut Rows<'_>, bx: i64, by: i64, s
                 }
                 let dst = dst_of(x, y);
                 let fresh = !bit(t.coverage, dst);
-                let bad = obs.consistent.is_some_and(|c| c[src] == 0);
+                let bad = obs.consistent.is_some_and(|c| c[src] == 0 || c[src] == 2);
                 let was_provisional = bit(t.provisional, dst);
                 // Fresh pixels are always written; an inconsistent observation never overwrites covered content;
                 // a covered provisional pixel is healed by any consistent observation; otherwise the ordinary
@@ -472,8 +528,19 @@ fn composite_block(geo: &Geometry<'_, '_>, t: &mut Rows<'_>, bx: i64, by: i64, s
                     was_provisional || replace
                 };
                 if !write {
-                    // A rejected observation that reproduces what is stored condemns the stored pixel too.
-                    if bad && !was_provisional && px32(t.pixels, dst) == px32(obs.rgba, src) {
+                    // Weak disagreements require exact reproduction. A screen-motion witness can
+                    // also match the stored observation within the source's declared decode noise.
+                    let screen_match = obs.consistent.is_some_and(|c| c[src] == 2)
+                        && (0..3)
+                            .map(|c| {
+                                (t.pixels[dst * 4 + c] as i32 - obs.rgba[src * 4 + c] as i32).abs()
+                            })
+                            .sum::<i32>() as f64
+                            <= obs.noise * 3.0;
+                    if bad
+                        && !was_provisional
+                        && (px32(t.pixels, dst) == px32(obs.rgba, src) || screen_match)
+                    {
                         set_bit(t.provisional, dst);
                         sum.provisional_delta += 1;
                         provisional_in_block += 1;
@@ -558,6 +625,7 @@ mod tests {
             owner: &mut owner,
             score: &mut score,
             frozen: &frozen,
+            disputes: None,
         };
         let rgba: Vec<u8> = (0..20 * 10).flat_map(|i| [i as u8, 7, 9, 255]).collect();
         let obs = Observation {
@@ -568,6 +636,7 @@ mod tests {
             occlusions: &[],
             consistent: None,
             confidence: 0.9,
+            noise: 0.0,
             uncertain: false,
             frame: 3,
         };

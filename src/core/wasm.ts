@@ -40,3 +40,21 @@ export type {
 } from './wasm/temporal.ts';
 export type { ConsistencyMaskInput, ConsistencyNeighbourInput, ConsistencyVoteInput } from './wasm/consistency.ts';
 export { core, coreBuild, coreLoaded, type CorePlan, loadCore, loadPlannedCore, planCore, simdSupported } from './wasm/loader.ts';
+
+export { SourceTile } from './wasm/sources.ts';
+export type { SourceCapture, SourceTileStats } from './wasm/sources.ts';
+
+export { SourceAnalysis, SourceEpochSweep, SourceScene } from './wasm/sources.ts';
+export type { SourceBlockSummary, SourceComponent, SourceEpochOption } from './wasm/sources.ts';
+
+export type {
+  SourceBlockAddress,
+  SourceEpoch,
+  SourceFrameSpan,
+  SourceObject,
+  SourceObjectState,
+  SourceObjectUpdate,
+  SourceTracker,
+} from './wasm/sources.ts';
+
+export type { SourceEvidence, SourceRoles } from './wasm/sources.ts';

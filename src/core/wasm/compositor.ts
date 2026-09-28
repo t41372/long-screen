@@ -15,6 +15,7 @@ export interface CompositeTile {
   owner: Uint32Array;
   score: Float32Array;
   frozen: Uint8Array;
+  disputes?: Uint8Array;
 }
 export interface CompositeObservation {
   image: FrameInput;
@@ -22,6 +23,7 @@ export interface CompositeObservation {
   mask?: { labels: BytesInput; code: number };
   occlusions?: Rect[];
   consistent?: BytesInput;
+  noise?: number;
   confidence: number;
   uncertain: boolean;
   frame: number;
@@ -68,6 +70,7 @@ export function prepareObservation(core: Core, obs: CompositeObservation, tileSi
     blocks * 4,
     blocks * 4,
     blocks,
+    blocks,
   ]);
   const [
     rgbaScratch,
@@ -86,6 +89,7 @@ export function prepareObservation(core: Core, obs: CompositeObservation, tileSi
     tOwner,
     tScore,
     tFrozen,
+    tDisputes,
   ] = ptr;
   const rgba = residentImage ? residentImage.ptr : rgbaScratch;
   if (!residentImage) core.writeBytes(rgba, (obs.image as RGBA).data);
@@ -106,6 +110,7 @@ export function prepareObservation(core: Core, obs: CompositeObservation, tileSi
   view.setFloat64(32, obs.confidence, true);
   view.setUint32(40, obs.uncertain ? 1 : 0, true);
   view.setUint32(44, obs.frame, true);
+  view.setFloat64(48, obs.noise ?? 0, true);
   const tileView = new DataView(core.exports.memory.buffer, tileDesc, 40);
   [tPixels, tCoverage, tProvisional, tQuality, tConflicts, tOwner, tScore, tFrozen].forEach((p, i) => tileView.setUint32(i * 4, p, true));
   tileView.setUint32(32, tileSize, true);
@@ -120,6 +125,8 @@ export function prepareObservation(core: Core, obs: CompositeObservation, tileSi
       core.writeBytes(tOwner, tile.owner);
       core.writeBytes(tScore, tile.score);
       core.writeBytes(tFrozen, tile.frozen);
+      if (tile.disputes) core.writeBytes(tDisputes, tile.disputes);
+      new DataView(core.exports.memory.buffer, tileDesc, 40).setUint32(36, tile.disputes ? tDisputes : 0, true);
       core.writeRect(world, rect);
       core.check(core.exports.ls_composite_tile(tileDesc, desc, world, ox, oy, tx, ty, output), 'compositeTile');
       const result = new DataView(core.exports.memory.buffer, output, COMPOSITE_HEADER + 8 * blocks);
@@ -136,6 +143,7 @@ export function prepareObservation(core: Core, obs: CompositeObservation, tileSi
       tile.conflicts.set(mem.subarray(tConflicts, tConflicts + blocks));
       tile.owner.set(new Uint32Array(mem.buffer, tOwner, blocks));
       tile.score.set(new Float32Array(mem.buffer, tScore, blocks));
+      if (tile.disputes) tile.disputes.set(mem.subarray(tDisputes, tDisputes + blocks));
       const conflictBlocks: [number, number][] = [];
       for (let i = 0; i < count; i++) {
         conflictBlocks.push([result.getUint32(COMPOSITE_HEADER + i * 8, true), result.getUint32(COMPOSITE_HEADER + i * 8 + 4, true)]);

@@ -20,6 +20,8 @@ export interface Tile {
   owner: Uint32Array;
   score: Float32Array;
   frozen: Uint8Array;
+  /** Sparse replay index: bit 0 photometric disagreement, bit 1 uncertain/occluded observation. */
+  disputes?: Uint8Array;
   dirty: boolean;
   existed: boolean;
   /** `performance.now()` of the last write that dirtied this tile; lets flush() skip tiles still being painted. */
@@ -30,6 +32,7 @@ export interface StoredTile extends TilePayload {
   owner: Uint32Array;
   score: Float32Array;
   frozen?: Uint8Array;
+  disputes?: Uint8Array;
 }
 export interface TileIndex {
   canvasId: string;
@@ -74,6 +77,7 @@ export function countCovered(coverage: Uint8Array): number {
 }
 export class TileStore {
   private cache = new Map<string, Tile>();
+  captureSources = false;
   maxTiles: number;
   encodedTiles = 0;
   decodedTiles = 0;
@@ -141,6 +145,7 @@ export class TileStore {
       owner: stored?.owner || new Uint32Array(blocks),
       score: stored?.score || new Float32Array(blocks),
       frozen: stored?.frozen || new Uint8Array(blocks),
+      ...(stored?.disputes || (this.captureSources && level === 0) ? { disputes: stored?.disputes || new Uint8Array(blocks) } : {}),
       dirty: false,
       existed: !!stored,
     };
@@ -162,6 +167,7 @@ export class TileStore {
       owner: t.owner,
       score: t.score,
       frozen: t.frozen,
+      ...(t.disputes?.some(Boolean) ? { disputes: t.disputes } : {}),
       level: t.level,
       x: t.x,
       y: t.y,
@@ -170,6 +176,21 @@ export class TileStore {
       key: `tile-index/${key}`,
       value: { canvasId: t.canvasId, level: t.level, x: t.x, y: t.y, observed: countCovered(t.coverage) } satisfies TileIndex,
     }];
+  }
+  /** Commit one native output tile and the metadata that describes those exact pixels atomically.
+   * A failed transaction discards the mutated cache entry, so a later generic flush cannot leak
+   * uncommitted pixels without their provenance/canvas counters. The committed PNG remains intact. */
+  async commit(t: Tile, metadata: Row[]): Promise<void> {
+    try {
+      await this.db.putMany([...(t.dirty ? await this.encodeRows(t) : []), ...metadata]);
+    } catch (error) {
+      this.cache.delete(tileKey(t.canvasId, t.level, t.x, t.y));
+      throw error;
+    }
+    if (t.dirty) {
+      t.dirty = false;
+      t.existed = true;
+    }
   }
   async save(t: Tile): Promise<void> {
     if (!t.dirty) {

@@ -74,6 +74,15 @@ const INCLUDE = '--include=^file:.*/(src/.*|main\\.ts)$';
  *  tests it has. media/sniff.ts (the chosen-file type check) is new at 100: its direct test names one file per
  *  recognized kind. */
 const FLOORS: [RegExp, number][] = [
+  [/^core\/wasm\/sources-opacity\.ts$/, 99],
+  [/^core\/wasm\/sources\.ts$/, 100],
+  [/^export\/sources\.ts$/, 97],
+  [/^pipeline\/source-epochs\.ts$/, 95],
+  [/^pipeline\/source-opacity\.ts$/, 97],
+  [/^pipeline\/source-storage\.ts$/, 89],
+  [/^pipeline\/sources\.ts$/, 95],
+  [/^storage\/source-models\.ts$/, 81],
+  [/^storage\/sources\.ts$/, 99],
   [/^codec\/crc\.ts$/, 100],
   [/^codec\/png\.ts$/, 96],
   [/^core\/compositor\.ts$/, 97],

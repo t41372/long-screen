@@ -6,6 +6,19 @@
  *  wordings, a piece per wording — see the call sites in src/pipeline/**, src/core/compositor.ts). */
 export const pipelineSections = {
   diag: {
+    SOURCE_UNRESOLVED: {
+      message: '部分位置的来源仍未确定：{{ambiguous}} 个像素有多个可选观测，{{unverified}} 个像素尚未确认干净来源。',
+      action: '保留了当前观测与逐像素来源记录，可在项目包中核对。这个标记不等于这些像素一定错误。',
+    },
+    SOURCE_DYNAMIC_PARTIAL: {
+      message: '部分动态区域没有同时完整可见的状态，已保留单一时刻及未确定标记。',
+      action: '项目包保留其他原生观测与来源记录，可按时间核对。',
+    },
+    SOURCE_TRACKING_LIMIT: {
+      message: '部分影格中的独立运动物件超过追踪容量，相关来源保持未确定。',
+      action: '原生候选仍保存在项目包中，没有把追踪溢位当成干净证据。',
+    },
+
     MODEL_ASSUMPTIONS: {
       message:
         '重建采用分层平移画布与几何回环约束。自动遮罩和动态区域属于启发式推断；置信分数不是经过校准的正确概率。世界一致性比较按本片源声明的解码噪声 ±{{noise}} 级执行{{margin}}。',
@@ -168,6 +181,7 @@ export const pipelineSections = {
     },
   },
   progress: {
+    resolveSources: '正在回放并核对冲突区域的原生来源…',
     runPartial: '已保存拼好的部分，结果标记为不完整。',
     runComplete: '拼好了。棋盘格是没拍到的地方，细节见日志。',
     render: '按原尺寸把拍到的画面拼起来，没拍到的地方留空。',

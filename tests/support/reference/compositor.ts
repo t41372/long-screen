@@ -1,3 +1,5 @@
+// Historical TS oracle, with the RGB/dual-axis quality rule and screen-witness demotion explicitly
+// advanced alongside their independent behavioural regressions. All other compositor semantics stay frozen.
 /** FROZEN pre-migration Compositor (parity oracle for rust/core/src/compositor.rs). Not used by production code. */
 import type { CanvasMeta, Diagnostic, Placement, Rect, Region, RGBA } from '../../../src/types.ts';
 import type { KV } from '../../../src/storage/db.ts';
@@ -114,7 +116,7 @@ export class ReferenceCompositor {
       for (let by = by0; by < by1; by++) {
         for (let bx = bx0; bx < bx1; bx++) {
           const q = by * blocks + bx;
-          let mismatch = 0, overlap = 0, sharpness = 0, count = 0, identical = 0;
+          let mismatch = 0, overlap = 0, sharpness = 0, count = 0, identical = 0, screenOccluded = false;
           const sy0 = Math.ceil(Math.max(by * B, world.y - ty * size)),
             sy1 = Math.ceil(Math.min((by + 1) * B, world.y + world.height - ty * size));
           const sx0 = Math.ceil(Math.max(bx * B, world.x - tx * size)),
@@ -135,6 +137,7 @@ export class ReferenceCompositor {
               }
               const dst = y * size + x, i = dst * 4, j = src * 4;
               count++;
+              screenOccluded ||= consistent?.[src] === 2;
               if (covered(tile, dst)) {
                 overlap++;
                 if (pixels32[dst] === source32[src]) {
@@ -168,7 +171,7 @@ export class ReferenceCompositor {
           // reproduces the WHOLE block exactly is corroborating evidence even when the mask rejected it, so
           // the demotion below deliberately does not reach here: it is for blocks this observation genuinely
           // disagrees with somewhere, not for ones it reproduces verbatim.
-          if (identical === count && !provisionalInBlock) continue;
+          if (identical === count && !provisionalInBlock && !screenOccluded) continue;
           const conflict = overlap >= 12 && mismatch / overlap > .16;
           const complete = overlap === coveredInBlock;
           const edge = Math.min(
@@ -189,7 +192,14 @@ export class ReferenceCompositor {
                   continue;
                 }
                 const src = sy * W + sx, j = src * 4;
-                if (rectangular || labels[src] === code) sharpness += Math.abs(image.data[j - 4] - image.data[j + 4]);
+                if (rectangular || labels[src] === code) {
+                  // Quality rule revision: independently evaluate RGB gradients in both axes.
+                  const gradients = [0, 1, 2].flatMap((c) => [
+                    Math.abs(image.data[j - 4 + c] - image.data[j + 4 + c]),
+                    sy > 0 && sy + 1 < H ? Math.abs(image.data[j - W * 4 + c] - image.data[j + W * 4 + c]) : 0,
+                  ]);
+                  sharpness += Math.max(...gradients);
+                }
               }
             }
           }
@@ -206,7 +216,7 @@ export class ReferenceCompositor {
           // heal it, independent of `replace`/`frozen` — frozen protects a chosen moment from being re-picked,
           // not screen-chrome burn-in from being fixed (see docs/ARCHITECTURE.md §七) — so the block must be
           // walked even when neither `replace` nor a fresh pixel would otherwise justify entering it.
-          if (replace || overlap < count || provisionalInBlock) {
+          if (replace || overlap < count || provisionalInBlock || screenOccluded) {
             for (let y = sy0; y < sy1; y++) {
               const sy = ty * size + y - oy;
               if (sy < 0 || sy >= H) {
@@ -219,7 +229,7 @@ export class ReferenceCompositor {
                 }
                 const dst = y * size + x, src = sy * W + sx;
                 if (!rectangular && labels[src] !== code) continue;
-                const fresh = !covered(tile, dst), bad = !!consistent && !consistent[src], wasProvisional = provisional(tile, dst);
+                const fresh = !covered(tile, dst), bad = !!consistent && consistent[src] !== 1, wasProvisional = provisional(tile, dst);
                 // Priority: a fresh pixel is always written (a hole would be worse than a guess); an
                 // inconsistent observation never overwrites already-covered content, provisional or not;
                 // a covered provisional pixel is healed by any consistent observation regardless of
@@ -465,7 +475,7 @@ export class ReferenceCompositor {
           for (let x = bx * B; x < bx * B + B; x++) {
             if (
               !this.atlas.contains(code, x - ox, y - oy) || occluded(p.occlusions, x - ox, y - oy) ||
-              (consistent && !consistent[(y - oy) * image.width + (x - ox)])
+              (consistent && consistent[(y - oy) * image.width + (x - ox)] !== 1)
             ) {
               maskComplete = false;
               break;
