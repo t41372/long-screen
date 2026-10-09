@@ -96,3 +96,29 @@ Deno.test('core parity: PNG Sub filtering is byte-exact; the frozen unfilter ora
   }
   assert(threw, 'invalid filter byte must be reported explicitly');
 });
+
+// Rolling tensors must preserve cell visitation, ties, ROI edges and the last partial score band.
+Deno.test('core parity: rolling corner tensors preserve scores and descriptor order across cell boundaries', async () => {
+  const core = await ensureCore();
+  const random = rng(713);
+  for (const [width, height] of [[22, 57], [23, 23], [49, 50], [51, 79], [107, 131], [481, 271]]) {
+    for (const pattern of ['flat', 'checker', 'noise']) {
+      const data = Uint8Array.from(
+        { length: width * height },
+        (_, i) =>
+          pattern === 'flat'
+            ? 100
+            : pattern === 'checker'
+            ? ((Math.floor(i / width / 4) + Math.floor(i % width / 4)) % 2) * 255
+            : Math.floor(random() * 256),
+      );
+      const gray = { width, height, data };
+      for (const roi of [undefined, { x: 11.5, y: 12.5, width: width / 2, height: height / 2 }]) {
+        assertEquals(
+          core.extractFeatures(gray, 480, roi),
+          reference.extractFeatures(gray, 480, roi).map((f) => ({ ...f, score: Math.fround(f.score) })),
+        );
+      }
+    }
+  }
+});
