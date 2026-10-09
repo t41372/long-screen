@@ -245,6 +245,7 @@ export class Compositor {
       });
       const components = this.components(new Set(orderedConflictBlocks), B);
       let patchedPixels = 0, patchedTiles = 0, patchedConflictPixels = 0, patchedProvisional = 0;
+      const conflicted: Rect[] = [];
       for (const component of components) {
         // `consistent` is passed straight through to the one Rust call that reads it (`maskCompleteAndCommit`,
         // via `resolveTemporal`): a `Resident`'s own pointer is growth-stable (no view-staleness concern, unlike
@@ -267,23 +268,28 @@ export class Compositor {
         // every pixel this patch rewrote, not only the ones that differed.
         patchedConflictPixels += result.conflictPixels;
         patchedProvisional += result.provisionalPixels;
-        // stats.conflicts is the running frame-wide total (accumulated across every conflicting component
-        // this frame, not just this one), so the message says so explicitly instead of implying it is this
-        // component's own count; `region` below still names this one component.
-        await this.emit({
-          code: 'TEMPORAL_OR_ALIGNMENT_CONFLICT',
-          severity: 'warning',
-          time: p.time,
-          frame,
-          canvasId: p.canvasId,
-          region: component.bounds,
-          confidence: p.confidence,
-          message: t('diag.TEMPORAL_OR_ALIGNMENT_CONFLICT.message', { conflicts: stats.conflicts.toLocaleString() }),
-          action: this.policy === 'stable'
-            ? t('diag.TEMPORAL_OR_ALIGNMENT_CONFLICT.actionStable')
-            : t('diag.TEMPORAL_OR_ALIGNMENT_CONFLICT.actionRolling'),
-        });
+        conflicted.push(component.bounds);
       }
+      // One journal row per frame and canvas, not per component: a recording can have tens of thousands of
+      // conflicting components (about 52,000 on a 400-frame phone recording), and each row cost a share of a
+      // storage transaction. `region` names the largest component, so "locate" still lands on one conflict rather
+      // than the whole pane (F12); `detail.regions` keeps every component's bounds and `count` how many there were.
+      // stats.conflicts is the frame-wide total, which the message says explicitly.
+      await this.emit({
+        code: 'TEMPORAL_OR_ALIGNMENT_CONFLICT',
+        severity: 'warning',
+        time: p.time,
+        frame,
+        canvasId: p.canvasId,
+        region: conflicted.reduce((a, b) => b.width * b.height > a.width * a.height ? b : a),
+        confidence: p.confidence,
+        count: conflicted.length,
+        detail: { regions: conflicted },
+        message: t('diag.TEMPORAL_OR_ALIGNMENT_CONFLICT.message', { conflicts: stats.conflicts.toLocaleString() }),
+        action: this.policy === 'stable'
+          ? t('diag.TEMPORAL_OR_ALIGNMENT_CONFLICT.actionStable')
+          : t('diag.TEMPORAL_OR_ALIGNMENT_CONFLICT.actionRolling'),
+      });
       stats.added += patchedPixels;
       stats.tiles += patchedTiles;
       stats.conflicts += patchedConflictPixels;

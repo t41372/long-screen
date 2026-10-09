@@ -243,6 +243,28 @@ Deno.test('compositor: TEMPORAL_OR_ALIGNMENT_CONFLICT reports the component boun
   assert(diag, 'expected a TEMPORAL_OR_ALIGNMENT_CONFLICT diagnostic');
   assertEquals(diag!.region, { x: 32, y: 0, width: 32, height: 16 });
 });
+Deno.test('compositor: one TEMPORAL_OR_ALIGNMENT_CONFLICT per frame and canvas, located at its largest component and listing them all', async () => {
+  // A frame with many conflicting components used to journal one row each (about 52,000 on a 400-frame phone
+  // recording); every component box must survive in the one row, and "locate" must still point at one component.
+  const region = makeRegion({ x: 0, y: 0, width: 160, height: 16 });
+  const { compositor, diagnostics } = setup([region], 160, 16, 32);
+  const meta = makeMeta();
+  const base: RGB4 = [70, 70, 70, 255], hot: RGB4 = [250, 5, 5, 255];
+  await compositor.add(solid(160, 16, base), region, place(0, 0, 0.5), 0, meta);
+  const img1 = solid(160, 16, base);
+  paintRect(img1, { x: 16, y: 0, width: 16, height: 16 }, hot);
+  paintRect(img1, { x: 96, y: 0, width: 48, height: 16 }, hot);
+  await compositor.add(img1, region, place(0, 0, 0.5), 1, meta);
+  const conflicts = diagnostics.filter((d) => d.code === 'TEMPORAL_OR_ALIGNMENT_CONFLICT');
+  assertEquals(conflicts.length, 1, 'one row for the frame');
+  assertEquals(conflicts[0].frame, 1);
+  assertEquals(conflicts[0].count, 2, 'the components it stands for');
+  assertEquals(conflicts[0].region, { x: 96, y: 0, width: 48, height: 16 }, 'located at the largest component');
+  assertEquals((conflicts[0].detail as { regions: unknown[] }).regions, [
+    { x: 16, y: 0, width: 16, height: 16 },
+    { x: 96, y: 0, width: 48, height: 16 },
+  ]);
+});
 Deno.test('compositor: add() rejects a frame whose dimensions do not match the region atlas (F-guard)', async () => {
   const region = makeRegion({ x: 0, y: 0, width: 16, height: 16 });
   const { compositor } = setup([region], 32, 32, 32);
