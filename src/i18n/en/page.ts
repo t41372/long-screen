@@ -48,6 +48,7 @@ export const pageSections: Catalog<typeof zh> = {
     },
     controls: {
       print: 'Run',
+      progress: 'Progress',
       knobs: 'Settings',
       clear: 'Clear',
       clearTitle: 'Clear the printer: take the recording out and clear this result and its log',

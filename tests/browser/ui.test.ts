@@ -38,8 +38,35 @@ Deno.test({
       const subtitle = await page.textContent('#file-subtitle');
       assert(subtitle?.includes('320 × 240') && subtitle.includes('avc1'), subtitle ?? '');
       assert(!(await page.isDisabled('#regions-btn')), 'regions button enabled after probe');
+      // Progress is a labelled bar on the printer itself, with the percentage written out and progressbar semantics;
+      // every value it shows during the run is recorded to check that it moved through the middle, not only 0 → 100.
+      const gauge = () =>
+        page.evaluate(() => {
+          const bar = document.querySelector('#progress')!,
+            inside = (a: DOMRect, b: DOMRect) => a.left >= b.left && a.right <= b.right && a.top >= b.top && a.bottom <= b.bottom;
+          return {
+            role: bar.getAttribute('role'),
+            label: document.getElementById(bar.getAttribute('aria-labelledby') || '')?.textContent,
+            now: bar.getAttribute('aria-valuenow'),
+            text: document.querySelector('#progress-pct')?.textContent,
+            onPrinter: inside(bar.getBoundingClientRect(), document.querySelector('#machine')!.getBoundingClientRect()),
+            done: document.querySelector('#gauge')!.classList.contains('done'),
+          };
+        });
+      assertEquals(await gauge(), { role: 'progressbar', label: '进度', now: '0', text: '0%', onPrinter: true, done: false });
+      await page.evaluate(() => {
+        const seen: string[] = ((globalThis as unknown as { gaugeSeen: string[] }).gaugeSeen = []);
+        new MutationObserver(() => seen.push(document.querySelector('#progress')!.getAttribute('aria-valuenow')!))
+          .observe(document.querySelector('#progress')!, { attributes: true, attributeFilter: ['aria-valuenow'] });
+      });
       await page.click('#start-btn');
       await page.waitForFunction('["complete","error","partial"].includes(longScreen.getProject()?.status)', null, { timeout: 180000 });
+      await page.waitForFunction(() => document.querySelector('#progress')?.getAttribute('aria-valuenow') === '100', null, {
+        timeout: 30000,
+      });
+      assertEquals(await gauge(), { role: 'progressbar', label: '进度', now: '100', text: '100%', onPrinter: true, done: true });
+      const seen = (await page.evaluate('gaugeSeen') as string[]).map(Number);
+      assert(seen.some((v) => v > 0 && v < 100), `the gauge never showed a value between 0 and 100: ${seen.join(',')}`);
       const project = await page.evaluate('longScreen.getProject()') as {
         status: string;
         renderedFrames: number;
@@ -71,12 +98,16 @@ Deno.test({
       const png = await decodePNG(await Deno.readFile(path));
       assertEquals(png.width, selected.w);
       assertEquals(png.height, selected.h);
+      // The export reports through the gauge, then hands it back to the finished print.
+      await page.waitForFunction('!document.querySelector("#export-png").disabled', null, { timeout: 30000 });
+      assertEquals(await gauge(), { role: 'progressbar', label: '进度', now: '100', text: '100%', onPrinter: true, done: true });
       // The browser keeps the last print, so a reload (or a closed tab) puts it back on screen.
       await page.reload();
       await page.waitForFunction('!!window.longScreen');
       await page.waitForFunction(`longScreen.getProject()?.id === ${JSON.stringify(project.id)}`, null, { timeout: 30000 });
       await page.waitForFunction('document.body.classList.contains("has-result")', null, { timeout: 30000 });
       await page.waitForFunction(() => document.querySelector('#status-title')?.textContent === '拼好了', null, { timeout: 30000 });
+      assertEquals(await gauge(), { role: 'progressbar', label: '进度', now: '100', text: '100%', onPrinter: true, done: true });
       assertEquals(h.errors, []);
       assertEquals(h.external, []);
     } finally {

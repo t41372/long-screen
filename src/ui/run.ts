@@ -1,9 +1,9 @@
 /** The reconstruction run lifecycle: starting it (settings + capability preflight), the busy/enablement state every
  *  other feature reads, `resetView`/`updateProject` (composed here because both touch project, canvas and
- *  diagnostic state at once), and the progress bar. */
+ *  diagnostic state at once), and the run's overall progress (each phase's share of the gauge, dom.ts's setProgress). */
 import type { AppState } from './state.ts';
 import { syncControls } from './state.ts';
-import { $, NO_COMPRESSION_STREAM, phaseName, setReceiptOpen, timeText, toast } from './dom.ts';
+import { $, NO_COMPRESSION_STREAM, phaseName, setProgress, setReceiptOpen, timeText, toast } from './dom.ts';
 import { preview } from './video.ts';
 import { call } from './rpc.ts';
 import { flightStart } from './flight.ts';
@@ -89,7 +89,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     $('elapsed').textContent = timeText(0);
     $('frames-metric').textContent = '0';
     $('canvases-metric').textContent = '0';
-    $('progress-bar').style.width = '0';
+    setProgress(0);
   }
   function updateProject(value: Project): void {
     state.project = value;
@@ -111,7 +111,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     setBusy(false);
     $('status-title').textContent = interrupted ? t('ui.run.interruptedStatus') : phaseName(project.status);
     if (project.status === 'complete') {
-      $('progress-bar').style.width = '100%';
+      setProgress(1, phaseName(project.status));
     }
     $('progress-message').textContent = project.error || t(interrupted ? 'ui.run.interruptedMessage' : 'ui.run.restoredMessage');
     $('progress-count').textContent = t('ui.count.frames', { count: project.renderedFrames, frames: String(project.renderedFrames) });
@@ -201,7 +201,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     }`;
     $('progress-message').textContent = p.message;
     const [base, weight] = phaseWeight[p.phase] || [0, 0];
-    $('progress-bar').style.width = `${Math.min(100, (base + Math.max(0, p.fraction || 0) * weight) * 100)}%`;
+    setProgress(base + Math.max(0, p.fraction || 0) * weight, phaseName(p.phase));
     if (p.canvas?.tileCount) {
       canvases.mergeCanvas(p.canvas);
     }

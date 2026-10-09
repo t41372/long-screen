@@ -326,9 +326,9 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 
 - `main.ts` — 启动：按依赖顺序建立每个功能模块、把 worker 事件路由给它们、少量无状态的监听器（帮助对话框、对话框关闭、查看器缩放）。UI。
 - `state.ts` — 多个功能模块共读写的字段集合；其余状态私有于各自模块。UI。
-- `dom.ts` — DOM 查找、toast、纯格式化小工具。UI。
+- `dom.ts` — DOM 查找、toast、打印机上的进度条（`setProgress`：填充、写出来的百分比和 progressbar 的 aria 值，运行与导出共用）、纯格式化小工具。UI。
 - `rpc.ts` — 有类型 worker RPC 客户端：请求/响应、`WorkerEvent` 订阅、compatibility 模式的帧请求桥接。UI，兼 worker RPC。
-- `run.ts` — 重建运行生命周期：启动（设置 + 能力预检）、忙态、`resetView`/`updateProject`、页面加载时恢复浏览器保留的上一张结果（`restore`）、进度条。UI。
+- `run.ts` — 重建运行生命周期：启动（设置 + 能力预检）、忙态、`resetView`/`updateProject`、页面加载时恢复浏览器保留的上一张结果（`restore`）、把各阶段的进度折算成整体进度交给 `setProgress`。UI。
 - `canvases.ts` — 画布选择器：项目画布列表获取、排序/标注、切换查看器画布；`mergeCanvas` 处理实时进度事件的增量更新。UI。
 - `viewer.ts` — `TiledViewer`：瓦片查看器的绘制、缩放、缓存。UI。
 - `diagnostics.ts` — 诊断面板：警告徽标计数、可筛选分页列表、"查看原始时刻/定位受影响区域"。UI。

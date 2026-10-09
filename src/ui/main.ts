@@ -3,7 +3,7 @@
  *  this file, and everything it imports from src/ui/**, is the "thin TypeScript" shell over the Rust core. */
 // First import: picks the page language before any other module can produce text.
 import { t, translatePage, wireLanguageSelect } from '../i18n/page.ts';
-import { $, NO_COMPRESSION_STREAM, phaseName, setReceiptOpen, toast } from './dom.ts';
+import { $, NO_COMPRESSION_STREAM, phaseName, setProgress, setReceiptOpen, toast } from './dom.ts';
 import { call, on, onError, onFrameRequest, onMessageError } from './rpc.ts';
 import { TiledViewer } from './viewer.ts';
 import { createState, syncControls } from './state.ts';
@@ -154,9 +154,9 @@ on('finished', (m) => {
   });
   void diagnostics.loadDiagnostics();
   $('status-title').textContent = phaseName(m.data.status);
-  // The last progress event can land short of the end; a finished print shows every gumball filled.
+  // The last progress event can land short of the end; a finished print shows the gauge full.
   if (m.data.status === 'complete') {
-    $('progress-bar').style.width = '100%';
+    setProgress(1, phaseName(m.data.status));
   }
   if (m.data.error) {
     toast(m.data.error, true);
@@ -171,7 +171,7 @@ on('fatal', (m) => {
 on('export-progress', (m) => {
   $('progress-message').textContent = m.data.message;
   if (m.data.fraction) {
-    $('progress-bar').style.width = `${m.data.fraction * 100}%`;
+    setProgress(m.data.fraction, m.data.message);
   }
 });
 onError((message) => {

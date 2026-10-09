@@ -1,5 +1,5 @@
 /* Long Screen — a pocket printer on a desk. A 2.5D low-poly cartoon device: flat-shaded faces, hard offset shadows and
- * faceted keys. The recording goes onto the printer's screen, the LCD and LED segments report the run, the keys and the
+ * faceted keys. The recording goes onto the printer's screen, the LCD and the progress gauge report the run, the keys and the
  * settings dial sit on the device, and the print comes out as an instant photo (the tile viewer).
  *
  * Body classes drive the states: `is-processing` (src/ui/run.ts, a run or an export is busy), `has-result`
@@ -490,7 +490,7 @@ button:disabled {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
-  grid-template-areas: "plate plate" "screen lcd" "controls controls" "slot slot";
+  grid-template-areas: "plate plate" "screen lcd" "gauge gauge" "controls controls" "slot slot";
   gap: 12px;
   padding: 14px 18px 24px;
   --screw: #5a9fd6 0 2.4px, #a9d8fa 2.6px 3.4px, transparent 3.6px;
@@ -662,7 +662,7 @@ button:disabled {
   }
 }
 
-/* The LCD: what the printer is doing, for how long, and how far along. */
+/* The LCD: what the printer is doing and for how long. How far along is the gauge below it. */
 .lcd {
   grid-area: lcd;
   display: flex;
@@ -714,36 +714,65 @@ button:disabled {
 .progress-count:not(:empty)::after {
   content: " · ";
 }
-.segments {
-  position: relative;
-  margin-top: auto;
-  padding-top: 8px;
-  container-type: inline-size;
-}
-.seg-row {
+/* The gauge: a plain progress bar across the printer, labelled and with the percentage written out. In user tests an
+   unlabelled LED strip inside the LCD was not recognised as progress at all. */
+.gauge {
+  grid-area: gauge;
   display: grid;
-  grid-template-columns: repeat(20, minmax(0, 1fr));
-  gap: 2px;
+  gap: 6px;
+  padding: 0 2px;
+  font-variant-numeric: tabular-nums;
 }
-.seg-row i {
-  height: 8px;
-  border-radius: 2px;
-  background: #26301d17;
+.gauge-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--white);
+  text-shadow: 0 1px 0 #3d353040;
 }
-.seg-fill {
-  position: absolute;
-  top: 8px;
-  bottom: 0;
-  left: 0;
-  width: 0;
+.gauge-label {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+.gauge-pct {
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+}
+.gauge-track {
+  position: relative;
+  height: 16px;
   overflow: hidden;
+  border-radius: 8px;
+  background: #2b2622;
+  box-shadow: 0 2px 0 #ffffff55, inset 0 3px 4px #000;
+}
+.gauge-fill {
+  position: absolute;
+  inset: 3px auto 3px 3px;
+  width: 0;
+  max-width: calc(100% - 6px);
+  border-radius: 5px;
+  background: var(--led);
+  box-shadow: 0 0 10px #ffd24d88;
   transition: width .3s ease-out;
 }
-.seg-fill .seg-row {
-  width: 100cqw;
+/* Moving stripes while the printer works, so the bar reads as alive even between updates. */
+.is-processing .gauge-fill {
+  background: repeating-linear-gradient(-45deg, var(--led) 0 10px, #ffe58a 10px 20px);
+  background-size: 28.28px 100%;
+  animation: gauge-stripes .9s linear infinite;
 }
-.seg-fill i {
-  background: #26301d;
+.gauge.done .gauge-fill {
+  background: #7ee08a;
+  box-shadow: 0 0 10px #7ee08a88;
+}
+@keyframes gauge-stripes {
+  to {
+    background-position: 28.28px 0;
+  }
 }
 
 /* The keys. Every cap is a flat-shaded solid: a darker copy of its shape sits under it as the extrusion. */
@@ -1886,7 +1915,7 @@ dialog::backdrop {
   }
   .printer-front {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "plate" "screen" "lcd" "controls" "slot";
+    grid-template-areas: "plate" "screen" "lcd" "gauge" "controls" "slot";
     padding: 14px 14px 24px;
   }
   .lcd-head {
@@ -1901,6 +1930,9 @@ dialog::backdrop {
   }
   .lcd-line {
     -webkit-line-clamp: 2;
+  }
+  .gauge-pct {
+    font-size: 18px;
   }
   .controls {
     flex-wrap: wrap;

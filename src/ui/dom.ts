@@ -22,6 +22,25 @@ export function setReceiptOpen(open: boolean): void {
   $('expand-btn').setAttribute('aria-pressed', String(open));
 }
 
+let gauge: { fraction: number; stage?: string } = { fraction: 0 };
+/** The printer's progress gauge, from one fraction of the whole run (or export): the bar's fill, the percentage written
+ *  next to it and the progressbar's aria values. `stage` (what it is doing now) goes into the spoken value. The
+ *  number is floored, so 100% only shows once the run is really done. */
+export function setProgress(fraction: number, stage?: string): void {
+  const clamped = Math.max(0, Math.min(1, Number.isFinite(fraction) ? fraction : 0)), percent = Math.floor(clamped * 100);
+  gauge = { fraction: clamped, stage };
+  $('progress-bar').style.width = `${clamped * 100}%`;
+  $('progress-pct').textContent = `${percent}%`;
+  const bar = $('progress');
+  bar.setAttribute('aria-valuenow', String(percent));
+  bar.setAttribute('aria-valuetext', stage ? `${percent}% · ${stage}` : `${percent}%`);
+  $('gauge').classList.toggle('done', percent === 100);
+}
+/** What the gauge shows now, so an export that borrows it can put the print's own progress back when it ends. */
+export function shownProgress(): { fraction: number; stage?: string } {
+  return gauge;
+}
+
 export const humanBytes = (n: number) => n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : `${(n / 1e6).toFixed(1)} MB`;
 export const timeText = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
 

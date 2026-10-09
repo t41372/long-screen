@@ -47,6 +47,7 @@ export const pageSections = {
     },
     controls: {
       print: '运行',
+      progress: '进度',
       knobs: '设置',
       clear: '清空',
       clearTitle: '清空打印机：取出录屏，清掉这次的结果和记录',

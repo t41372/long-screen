@@ -1,7 +1,7 @@
 /** "下载大截图" (one native-size PNG) and "导出完整项目" (the archival ZIP), plus "复制大截图" to the clipboard. Both
  *  downloads prefer a native save-file picker and fall back to an anchor download / OPFS temporary copy. */
 import type { AppState } from './state.ts';
-import { $, humanBytes, toast } from './dom.ts';
+import { $, humanBytes, setProgress, shownProgress, toast } from './dom.ts';
 import { call } from './rpc.ts';
 import { t } from '../i18n/page.ts';
 import type { ExportResult } from '../export/project.ts';
@@ -32,6 +32,8 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
     const format = kind === 'png' ? 'png' : kind === 'sheets' ? 'png' : 'project';
     const name = kind === 'png' ? imageFileName(state) : kind === 'sheets' ? 'long-screen-sheets.zip' : 'long-screen-project.zip';
     const isZip = kind !== 'png';
+    // The export reports through the printer's gauge; afterwards it shows the print's own progress again.
+    const shown = shownProgress();
     run.setBusy(true);
     $('run-controls').hidden = true;
     try {
@@ -110,6 +112,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
         action: t('ui.export.exportErrorAction'),
       });
     } finally {
+      setProgress(shown.fraction, shown.stage);
       run.setBusy(false);
     }
   }
@@ -122,6 +125,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
       toast(t('ui.export.clipboardUnsupported'), true);
       return;
     }
+    const shown = shownProgress();
     run.setBusy(true);
     $('run-controls').hidden = true;
     let temporary: string | undefined;
@@ -136,6 +140,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
       item = new ClipboardItem({ 'image/png': png });
     } catch (error) {
       png.then((b) => b, () => undefined).finally(() => cleanupTemporary(temporary));
+      setProgress(shown.fraction, shown.stage);
       run.setBusy(false);
       toast(t('ui.export.copyFailedCtor', { error: String(error) }), true);
       return;
@@ -145,6 +150,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
       .catch((error) => toast(t('ui.export.copyFailed', { error: String(error) }), true))
       .finally(() => {
         void png.catch(() => {}).finally(() => cleanupTemporary(temporary));
+        setProgress(shown.fraction, shown.stage);
         run.setBusy(false);
       });
   }

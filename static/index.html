@@ -59,8 +59,12 @@
               <div class="lcd">
                 <div class="lcd-head"><strong id="status-title" data-i18n="page.canvas.statusReady">准备好了</strong><span class="elapsed" id="elapsed">0:00</span></div>
                 <div class="lcd-line"><span class="progress-count" id="progress-count"></span><span class="progress-message" id="progress-message" data-i18n="page.canvas.progressMessageDefault">放录屏 → 按运行 → 拿整张</span></div>
-                <!-- The LED segments are the progress bar: src/ui/run.ts sets #progress-bar's width, which lights them. -->
-                <div class="segments" aria-hidden="true"><div class="seg-row"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="seg-fill" id="progress-bar"><div class="seg-row"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div></div>
+              </div>
+              <!-- Progress where people look for one: a labelled bar across the printer with the percentage written out.
+                   src/ui/dom.ts's setProgress() sets the fill, the number and the aria values. -->
+              <div class="gauge" id="gauge">
+                <div class="gauge-head"><span class="gauge-label" id="progress-label" data-i18n="page.controls.progress">进度</span><span class="gauge-pct" id="progress-pct" aria-hidden="true">0%</span></div>
+                <div class="gauge-track" id="progress" role="progressbar" aria-labelledby="progress-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="gauge-fill" id="progress-bar"></div></div>
               </div>
               <div class="controls">
                 <div class="aux">
