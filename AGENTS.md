@@ -24,7 +24,7 @@ deno task fingerprint out.json   # hash every persisted row of every synthetic s
 
 - One Deno test file: `deno test --allow-read --allow-write --allow-env tests/unit/motion.test.ts --filter "<name>"`. It loads the core from `rust/target/`, so run `deno task build:core` after changing Rust. `LONGSCREEN_CORE=scalar|threads` picks another core build (default simd) and `LONGSCREEN_THREADS` sets the helper count.
 - One Rust test: `cd rust && cargo test --lib <name>`. A bare `cargo build` uses the scalar flags from `rust/.cargo/config.toml` and does not produce the three builds the app loads.
-- One browser file: `deno test --allow-all tests/browser/ui.test.ts`. The full browser suite takes over ten minutes because one known WebKit test times out at 600 s.
+- One browser file: `deno test --allow-all tests/browser/ui.test.ts`. The full browser suite takes a few minutes; `docs/TESTING.md` lists the tests known to fail.
 - A/B against another checkout: `deno run -A scripts/fingerprint-scenarios.ts b.json --root ../other`, then `deno run -A scripts/compare-fingerprints.ts a.json b.json`.
 
 ## Architecture
@@ -58,7 +58,7 @@ In this repository:
 - The artifact goes in `test-results/`, as the existing tests already do: a JSON report with exact counts or content hashes, a screenshot or an exported ZIP, plus the command that regenerates it. For a pipeline change, a fingerprint JSON compared against clean main is the artifact. Every changed row must be explained by the change; a byte-identical output is not required.
 - Isolation tests cover Rust `#[cfg(test)]` modules, parity tests and anything else below the engine. For those, write the failure cases as tests before the code.
 - The existing unit and parity suites stay and keep running. Scenario ratchets (`maxMissing`, `maxContaminated*`, and the rest) only move down, and coverage floors only move up; review the `--update-floors` diff line by line.
-- Compare a failing browser test against clean main before blaming your change: `docs/TESTING.md` lists the known WebKit failures. Real recordings live in `test_case/`, which is gitignored and present only in the main checkout, so worktrees skip those tests. Run long browser suites in a worktree nobody is merging into.
+- Compare a failing browser test against clean main before blaming your change: `docs/TESTING.md` lists the known browser failures. Real recordings live in `test_case/`, which is gitignored and present only in the main checkout, so worktrees skip those tests. Run long browser suites in a worktree nobody is merging into.
 - Deno can expose a real WebGPU adapter (it does on macOS with Metal), so compute results depend on the host. Pass `null`, not `undefined`, to mean "no GPU".
 - When feeding a `test_case/*.mov` to ffmpeg, pass `-fps_mode passthrough`. The recordings are variable frame rate, and without it frames are duplicated and every result is silently wrong. Read the frame size from ffprobe.
 

@@ -1,6 +1,8 @@
 import { assert, assertEquals } from '@std/assert';
 import { harness, realRecordings } from './support.ts';
 import { decodePNG } from '../../src/codec/png.ts';
+// decodePNG runs in the core, which the Deno side of this test needs loaded too.
+import '../support/core.ts';
 const results = new URL('../../test-results/', import.meta.url).pathname;
 interface LayerSummary {
   maxError: number;

@@ -283,22 +283,35 @@ Deno.test({
       for (const name of names) {
         const r = await h.page.evaluate(async (name: string) => {
           const kit = (window as any).longScreenKit, blob = await (await fetch('/test_case/' + name)).blob(), file = new File([blob], name);
-          const demux = await kit.openDemuxer(file);
+          const demux = await kit.openDemuxer(file), stamps: number[] = [];
           let packets = 0;
-          for await (const _ of demux.packets()) {
+          for await (const p of demux.packets()) {
+            stamps.push(p.timestamp);
             packets++;
           }
-          const source = await kit.openMedia(file), t0 = performance.now();
+          const source = await kit.openMedia(file), t0 = performance.now(), times: number[] = [];
           let count = 0, last = -Infinity, mono = true;
           for await (const f of source.frames()) {
             if (f.time < last) {
               mono = false;
             }
             last = f.time;
+            times.push(Math.round(f.time * 1e6));
             count++;
           }
           source.dispose();
-          return { packets, frames: count, mono, last, seconds: Math.round((performance.now() - t0) / 100) / 10, info: source.info };
+          stamps.sort((a, b) => a - b);
+          // Microseconds by which a frame's time differs from the packet it was decoded from, worst case.
+          const drift = Math.max(...times.map((t, i) => Math.abs(t - stamps[i])));
+          return {
+            packets,
+            frames: count,
+            mono,
+            last,
+            drift,
+            seconds: Math.round((performance.now() - t0) / 100) / 10,
+            info: source.info,
+          };
         }, name);
         console.log(
           name,
@@ -306,7 +319,11 @@ Deno.test({
         );
         assertEquals(r.frames, r.packets, `${name}: every packet became a frame`);
         assert(r.mono, `${name}: presentation order`);
-        assert(r.last <= r.info.duration + .1, `${name}: timestamps inside the recording`);
+        // Each frame keeps its packet's presentation time. A recording may hold a frame past its declared duration (e.mov's
+        // last frame is 0.295 s past the end of its edit list, h's starts exactly at it), and that frame is kept: it is a
+        // real capture of the screen. A misread offset puts a frame days away (an unsigned `ctts` gave ~7,158,278 s).
+        assert(r.drift <= 1, `${name}: frames keep their packets' timestamps (off by up to ${r.drift} µs)`);
+        assert(r.last < r.info.duration + 1, `${name}: timestamps near the recording (last ${r.last} s of ${r.info.duration} s)`);
       }
     } finally {
       await h.close();

@@ -61,7 +61,7 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 头less 运行 + Playwr
 
 必须使用真实 Google Chrome，不能用 Playwright 自带的 Chromium（不含 H.264）；WebKit 一侧用 Playwright 自带的 WebKit （`npx playwright@1.58.2 install webkit`，见 README）。可用 `LONGSCREEN_CHROME` 或 `LONGSCREEN_CHANNEL` 覆盖 Chrome 路径。上面的数字是某一轮实测；`0.mov` 的画布尺寸与耗时会随 `DEFAULT_SETTINGS`（分析加速、外框策略）与硬件变化，重新测量请看 `test-results/`，不要照抄这里的数字当作恒定基线。
 
-`deno task test:browser` 在这台机器上有两个已知的 WebKit 失败，Chrome 侧没有：`browser webkit: LAN HTTP supports explicit native-seek reconstruction…`（`TimeoutError`，600000 ms 后超时——这一个测试会让整个套件跑超过 10 分钟）与 `browser (WebKit): without copyTo(RGBA) the core converts every frame…`（`EncodingError: Decoder failure`）。这两个是已知且预期的；出现在其他测试上的失败不是。
+`deno task test:browser` 在 M5 Max 上约两分半跑完，目前没有已知的失败。两个只在有 `test_case/` 的主检出里才跑的真实录屏测试以前在主线上一直失败，现在都通过：`browser: real recordings in test_case/ decode completely…` 改为核对每一帧都带着它那个包的呈现时间（以前要求最后一帧不超过容器时长 + 0.1 s，而 e.mov 的最后一帧在编辑表结束之后 0.295 s，h 的最后一帧正好从时长处开始；这样的帧是屏幕的真实截取，照常保留），另留一条「不超过时长 1 s」的宽松界限，拦住把偏移读错到几百万秒那一类错误；`browser: real recordings reconstruct end to end…` 的 `CORE_NOT_LOADED` 来自测试自己在 Deno 一侧用 `decodePNG` 前没有加载核心，已补上。以前记录的两个 WebKit 失败（LAN HTTP 的 600 s 超时与平面转换的 `Decoder failure`）也都通过。任何失败都不是已知的。
 
 `tests/browser/gpu-convert.test.ts` 覆盖 WebGPU 帧转换：真实解码帧和奇数尺寸的手工帧（I420/NV12、BT.709/BT.601、有限/全范围）与 Chrome 自己的 `copyTo(RGBA)` 的差距，BT.2020、旋转、没有 WebGPU、没有适配器、「仅 CPU」、首帧不一致、GPU 实测更慢时都不能走 GPU，选定 GPU 后设备丢失要让运行失败而不是换路，停在半路的一趟与下一趟逐字节相同，以及发货的 worker 转换链。Playwright 的 WebKit 没有 WebGPU，那一侧只验证干净地回退到平面转换。
 
