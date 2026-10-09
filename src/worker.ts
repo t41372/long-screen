@@ -1,11 +1,12 @@
-import { type CanvasMeta, DEFAULT_SETTINGS, type Diagnostic, type MediaInfo, type Project, type Settings } from './types.ts';
-import { Database } from './storage/db.ts';
+import { type CanvasMeta, DEFAULT_SETTINGS, type Diagnostic, type MediaInfo, type Project, type Rect, type Settings } from './types.ts';
+import { Database, iterate } from './storage/db.ts';
 import { keepLatest, projectKey, runStore, sweepProjects } from './storage/projects.ts';
 import { Engine } from './pipeline/engine.ts';
 import { CompatibilitySource, frameConverter, openMedia, PreciseSource } from './media/source.ts';
 import { DemoSource } from './media/demo.ts';
 import { type CanvasLayout, exportCanvas, exportProject } from './export/project.ts';
 import { cleanupExport } from './export/target.ts';
+import { clampCrop, coversCanvas, CROP_PREFIX } from './export/crop.ts';
 import { core, coreLoaded, loadPlannedCore, planCore } from './core/wasm.ts';
 import { tileKey } from './storage/tiles.ts';
 import type { StoredTile } from './storage/tiles.ts';
@@ -258,10 +259,38 @@ const handlers: Handlers = {
       // payload.layout is typed as CanvasLayout, but the debug handle (globalThis.longScreen.rpc, src/ui/main.ts)
       // can post any string, so it is re-validated here rather than trusted straight through to exportCanvas.
       const layout: CanvasLayout = payload.layout === 'single' || payload.layout === 'sheets' ? payload.layout : 'auto';
-      return await exportCanvas(store, project, meta, progress, payload.handle, layout);
+      // The canvas's kept crop, if any, applies to every per-canvas export (PNG, sheets, the clipboard copy).
+      const crop = await store.get<Rect>(`${CROP_PREFIX}${meta.id}`);
+      return await exportCanvas(store, project, meta, progress, payload.handle, layout, crop);
     } finally {
       exporting = false;
     }
+  },
+  async crops(payload, database) {
+    const crops: Record<string, Rect> = {};
+    for await (const { key, value } of iterate<Rect>(runStore(database, requireProjectId(payload.projectId)), CROP_PREFIX)) {
+      crops[key.slice(CROP_PREFIX.length)] = value;
+    }
+    return crops;
+  },
+  async crop(payload, database) {
+    if (active || exporting || starting) busyError();
+    const store = runStore(database, requireProjectId(payload.projectId)), key = `${CROP_PREFIX}${payload.canvasId}`;
+    const meta = await store.get<CanvasMeta>(`canvas/${payload.canvasId}`);
+    if (!meta) {
+      throw new Error('Canvas not found.');
+    }
+    const rect = payload.rect ? clampCrop(payload.rect, meta.bounds) : undefined;
+    if (payload.rect && !rect) {
+      throw new Error(`The crop ${JSON.stringify(payload.rect)} leaves nothing of this canvas.`);
+    }
+    // A crop that keeps the whole canvas is no crop: nothing is kept, so the export stays exactly the uncropped one.
+    if (!rect || coversCanvas(rect, meta.bounds)) {
+      await store.delete(key);
+      return null;
+    }
+    await store.put(key, rect);
+    return rect;
   },
   async 'cleanup-export'(payload) {
     await cleanupExport(payload.key);

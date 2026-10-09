@@ -60,6 +60,12 @@ export const uiSections: Catalog<typeof zh> = {
       copySuccess: 'Copied a {{width}} × {{height}} long image; paste it directly.',
       copyFailed: 'Copy failed: {{error}}. The image may exceed the system clipboard limit; use “Take the screenshot” instead.',
     },
+    crop: {
+      buttonCropped: 'Crop · {{width}} × {{height}}',
+      applied:
+        'Done. Downloads, copies and paged exports now take only this part ({{width}} × {{height}}). The full project ZIP is not cropped.',
+      removed: 'Crop removed; exports take the whole print again.',
+    },
     main: {
       offscreenMissing: 'This browser is missing OffscreenCanvas; the render worker cannot run.',
       webcodecsMissingToast: 'This browser has no WebCodecs. Choose “Approximate · native seek” explicitly; it may miss frames.',

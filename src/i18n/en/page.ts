@@ -181,6 +181,17 @@ export const pageSections: Catalog<typeof zh> = {
     source: {
       title: 'Original observation',
     },
+    crop: {
+      button: 'Crop',
+      groupLabel: 'Crop area',
+      left: 'Left',
+      top: 'Top',
+      width: 'Width',
+      height: 'Height',
+      full: 'Whole print',
+      cancel: 'Cancel',
+      apply: 'Apply crop',
+    },
     footer: {
       stackLead: 'The core is written in',
       stackMid: 'and compiled to',

@@ -1178,6 +1178,108 @@ button:disabled {
   font-weight: 600;
   color: var(--faint);
 }
+/* Cropping (src/ui/crop.ts): the box sits over the print in screen pixels and the viewer veils the rest; the bar
+   under the tools types the box's edges. */
+.crop-box {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border: 2px solid var(--white);
+  outline: 1.5px solid #3d3530cc;
+  cursor: move;
+  touch-action: none;
+}
+.crop-box i {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  margin: -9px 0 0 -9px;
+  border-radius: 4px;
+  background: var(--white);
+  box-shadow: 0 0 0 1.5px #3d3530cc;
+}
+.crop-box i[data-grip="nw"] {
+  left: 0;
+  top: 0;
+  cursor: nwse-resize;
+}
+.crop-box i[data-grip="n"] {
+  left: 50%;
+  top: 0;
+  cursor: ns-resize;
+}
+.crop-box i[data-grip="ne"] {
+  left: 100%;
+  top: 0;
+  cursor: nesw-resize;
+}
+.crop-box i[data-grip="e"] {
+  left: 100%;
+  top: 50%;
+  cursor: ew-resize;
+}
+.crop-box i[data-grip="se"] {
+  left: 100%;
+  top: 100%;
+  cursor: nwse-resize;
+}
+.crop-box i[data-grip="s"] {
+  left: 50%;
+  top: 100%;
+  cursor: ns-resize;
+}
+.crop-box i[data-grip="sw"] {
+  left: 0;
+  top: 100%;
+  cursor: nesw-resize;
+}
+.crop-box i[data-grip="w"] {
+  left: 0;
+  top: 50%;
+  cursor: ew-resize;
+}
+.crop-size {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: #3d3530d9;
+  color: var(--white);
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.crop-bar {
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+.crop-field {
+  display: grid;
+  gap: 3px;
+  font-size: 11.5px;
+  font-weight: 800;
+  color: var(--muted);
+}
+.crop-field input {
+  width: 86px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--white);
+  box-shadow: inset 0 0 0 1.5px #3d35302a;
+  font-variant-numeric: tabular-nums;
+}
+.crop-field input[aria-invalid] {
+  box-shadow: inset 0 0 0 2px var(--err);
+}
+#crop-apply {
+  margin-left: auto;
+}
 .take-row {
   flex-wrap: wrap;
   align-items: flex-start;
@@ -1952,6 +2054,12 @@ dialog::backdrop {
   }
   .stage {
     height: 360px;
+  }
+  .crop-field {
+    flex: 1 1 calc(25% - 8px);
+  }
+  .crop-field input {
+    width: 100%;
   }
   .has-result .stage {
     height: 62vh;

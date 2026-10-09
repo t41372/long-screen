@@ -333,6 +333,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `viewer.ts` — `TiledViewer`：瓦片查看器的绘制、缩放、缓存。UI。
 - `diagnostics.ts` — 诊断面板：警告徽标计数、可筛选分页列表、"查看原始时刻/定位受影响区域"。UI。
 - `export.ts` — "下载大截图"/"导出完整项目"/"复制大截图"：优先原生保存文件选择器，回退锚点下载/OPFS 临时副本。UI。
+- `crop.ts` — 裁切：在结果上拖出（或输入四边）一个矩形，按画布交给 worker 保存（`crop`/`crops` 命令），查看器把裁掉的部分盖住；单图、分页和复制只取这一块，完整项目 ZIP 不受影响。只记矩形，像素由导出裁。UI。
 - `regions.ts` — 手动区域编辑对话框：在首帧上绘制 fixed/ignore/moving 矩形，写入 `state.manualRegions`。UI。
 - `source-file.ts` — 选择源录屏：文件输入/拖放、按文件头拦下不是 MP4/MOV/WebM/MKV 的文件并给出指引（`media/sniff.ts`）、探测 RPC（含原生播放器回退）、内容指纹（供 diagnostics.ts 校验重开文件与项目来源一致）。UI，兼浏览器 API（File）。
 - `video.ts` — 原生 `<video>` seek + 帧捕获原语，供 source-file.ts/diagnostics.ts/compatibility 帧请求桥接共用。UI，兼浏览器 API。
@@ -368,6 +369,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `export/target.ts` — 同步文件写入目标的小接口与实现（`createId` 用于临时命名）。TS 外壳：I/O。
 - `export/project.ts` — 完整项目 ZIP64 导出：画布/瓦片/诊断从 KV 读出并交给 `ZipWriter`。TS 外壳：编排 + I/O。
 - `export/png.ts` — 从磁盘瓦片流式产出原生分辨率行，未观察像素透明。TS 外壳：I/O。
+- `export/crop.ts` — 裁切矩形的整像素换算：画布导出覆盖的整像素范围、把用户的矩形取整并夹进画布（什么都不剩就拒绝）、判断是否等于整张；`exportCanvas` 的单图/分页按它取范围，worker 存 `crop/<canvas>` 行之前也用它校验。只有矩形算术，不碰像素。TS 外壳：I/O 参数。
 - `export/offline.ts` — 生成自包含 `file://` 离线查看器 HTML。TS 外壳：I/O（静态资源生成）。
 - `storage/db.ts` — `KV`/`Row`/`Database`/`MemoryKV`/`Namespace` 等存储抽象与遍历/前缀删除工具。TS 外壳：I/O。
 - `storage/tiles.ts` — `TileStore`：瓦片读写、coverage/quality 位图、金字塔构建入口（内核已转发到 Rust）。TS 外壳：I/O + 绑定转发。

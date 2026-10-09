@@ -84,6 +84,7 @@
         <div class="receipt" id="receipt" role="region" aria-label="大截图" data-i18n-attr="aria-label:page.canvas.ariaLabel">
           <div class="stage" id="stage">
             <canvas id="viewer" aria-label="大截图，可以拖动和缩放" data-i18n-attr="aria-label:page.canvas.viewerAriaLabel"></canvas>
+            <div class="crop-box" id="crop-box" hidden><span class="crop-size" id="crop-size"></span></div>
             <div class="tray-idle">
               <!-- What the tool does, as a loop: a recording's window wanders over a page (REC), everything it has seen
                    fills in behind it, then the whole page lands as one screenshot. One SMIL timeline (12 s) drives the
@@ -242,7 +243,19 @@
               <label class="quality-toggle"><input type="checkbox" id="quality-toggle"> <span data-i18n="page.canvas.qualityMask">显示拼接质量</span></label>
               <button id="fit-btn" class="chip" title="缩放到能看到整张图" data-i18n-attr="title:page.canvas.fitTitle" data-i18n="page.canvas.fitBtn">看全图</button>
               <button id="native-btn" class="chip" title="原尺寸" data-i18n-attr="title:page.canvas.nativeTitle">1:1</button>
+              <button id="crop-btn" class="chip" aria-pressed="false" disabled data-i18n="page.crop.button">裁切</button>
               <span class="lod-label" id="lod-label" data-i18n="page.canvas.lodLabel">棋盘格 = 没看到的地方</span>
+            </div>
+            <!-- Cropping (src/ui/crop.ts): the box over the print is dragged, these fields type its edges, relative to the
+                 print's top-left corner. -->
+            <div class="crop-bar" id="crop-bar" role="group" aria-label="裁切范围" data-i18n-attr="aria-label:page.crop.groupLabel" hidden>
+              <label class="crop-field"><span data-i18n="page.crop.left">距左</span><input type="number" id="crop-left" step="1" inputmode="numeric"></label>
+              <label class="crop-field"><span data-i18n="page.crop.top">距上</span><input type="number" id="crop-top" step="1" inputmode="numeric"></label>
+              <label class="crop-field"><span data-i18n="page.crop.width">宽</span><input type="number" id="crop-width" min="1" step="1" inputmode="numeric"></label>
+              <label class="crop-field"><span data-i18n="page.crop.height">高</span><input type="number" id="crop-height" min="1" step="1" inputmode="numeric"></label>
+              <button id="crop-full" class="chip" data-i18n="page.crop.full">整张</button>
+              <button id="crop-cancel" class="chip" data-i18n="page.crop.cancel">取消</button>
+              <button id="crop-apply" class="primary" data-i18n="page.crop.apply">裁好了</button>
             </div>
             <div class="take-row">
               <button id="export-png" class="primary big" disabled data-i18n-html="page.export.downloadPng">下载大截图 · PNG <span>↓</span></button>

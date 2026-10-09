@@ -14,6 +14,7 @@ import { createSourceFile, forgetHashes } from './source-file.ts';
 import { createRun } from './run.ts';
 import { createRegions } from './regions.ts';
 import { createExport } from './export.ts';
+import { createCrop } from './crop.ts';
 import { flightEnd, flightProgress, takeInterruptedFlight } from './flight.ts';
 import { MEMORY_EXPORT_LIMIT } from '../export/target.ts';
 
@@ -29,16 +30,19 @@ const viewer = new TiledViewer(
   (error) => toast(String(error), true),
 );
 
-// Dependency order: canvases and diagnostics need only the viewer; source-file needs diagnostics' addDiagnostic;
-// run composes resetView/updateProject out of canvases+diagnostics; export needs run for setBusy/resetView; regions is
+// Dependency order: crop needs only the viewer; canvases tells crop when the canvas changes; diagnostics needs the
+// viewer; source-file needs diagnostics' addDiagnostic; run composes resetView/updateProject out of
+// canvases+diagnostics+crop; export needs run for setBusy/resetView and crop for the size it copies; regions is
 // independent.
-const canvases = createCanvases(state, viewer);
+const crop = createCrop(state, viewer);
+const canvases = createCanvases(state, viewer, () => crop.show());
 const diagnostics = createDiagnostics(state, viewer, canvases);
 const sourceFile = createSourceFile(state, { addDiagnostic: diagnostics.addDiagnostic });
-const run = createRun(state, viewer, canvases, diagnostics);
+const run = createRun(state, viewer, canvases, diagnostics, crop);
 const regions = createRegions(state);
-const exporter = createExport(state, viewer, run, diagnostics.addDiagnostic);
+const exporter = createExport(state, viewer, run, diagnostics.addDiagnostic, crop);
 
+crop.wire();
 canvases.wire();
 diagnostics.wire();
 sourceFile.wire();

@@ -12,6 +12,7 @@ import { t } from '../i18n/page.ts';
 import { DEFAULT_SETTINGS, type Project, type Settings } from '../types.ts';
 import { PRINT_LOCK, type RestoreResult, type WorkerProgress } from '../protocol.ts';
 import type { Canvases } from './canvases.ts';
+import type { Crop } from './crop.ts';
 import type { Diagnostics } from './diagnostics.ts';
 import type { TiledViewer } from './viewer.ts';
 
@@ -37,7 +38,7 @@ export interface Run {
   wire(): void;
 }
 
-export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvases, diagnostics: Diagnostics): Run {
+export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvases, diagnostics: Diagnostics, crop: Crop): Run {
   let paused = false;
   // The LCD's run timer: wall-clock time of the current run, not counting time spent paused.
   let startedAt = 0, pausedAt = 0, pausedFor = 0, ticker: ReturnType<typeof setInterval> | undefined;
@@ -80,6 +81,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     state.canvases = [];
     canvases.reset();
     diagnostics.reset();
+    crop.reset();
     viewer.clear();
     document.body.classList.remove('has-result');
     setReceiptOpen(false);
@@ -105,6 +107,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     state.project = project;
     hold(project.id);
     await canvases.refreshCanvases(true);
+    await crop.load();
     updateProject(project);
     await diagnostics.loadDiagnostics();
     viewer.fit();

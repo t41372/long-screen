@@ -9,6 +9,7 @@ import { createTarget } from './target.ts';
 import { offlineViewer } from './offline.ts';
 import { encodePNG } from '../codec/png.ts';
 import { rasterRows } from './png.ts';
+import { canvasRect, clampCrop } from './crop.ts';
 import { t as translate } from '../i18n/index.ts';
 export interface ExportResult {
   blob?: Blob;
@@ -131,7 +132,9 @@ export async function exportProject(
 /** `single`: always one PNG of the whole canvas at native size (the PNG format allows 2³¹−1 per side and rows are
  *  streamed, so size only costs time); `auto`: one PNG when it stays within common viewer limits, otherwise
  *  overlapping native-size sheets in a ZIP; `sheets`: always the paged ZIP, even when the canvas would fit one PNG
- *  (a canvas that fits one page still yields a ZIP, with exactly one sheet plus its manifest). */
+ *  (a canvas that fits one page still yields a ZIP, with exactly one sheet plus its manifest). `crop` (world pixels,
+ *  src/export/crop.ts) exports only that part of the canvas, in every layout; a crop with nothing inside the canvas
+ *  is refused. */
 export type CanvasLayout = 'single' | 'auto' | 'sheets';
 export async function exportCanvas(
   db: KV,
@@ -140,12 +143,12 @@ export async function exportCanvas(
   onProgress: (message: string, fraction: number) => void,
   handle?: FileSystemFileHandle,
   layout: CanvasLayout = 'auto',
+  crop?: Rect,
 ): Promise<ExportResult> {
-  const left = Math.floor(meta.bounds.x),
-    top = Math.floor(meta.bounds.y),
-    right = Math.ceil(meta.bounds.x + meta.bounds.width),
-    bottom = Math.ceil(meta.bounds.y + meta.bounds.height);
-  const rect = { x: left, y: top, width: right - left, height: bottom - top };
+  const rect = crop ? clampCrop(crop, meta.bounds) : canvasRect(meta.bounds);
+  if (!rect) {
+    throw new Error(`The crop ${JSON.stringify(crop)} leaves nothing of this canvas to export.`);
+  }
   // These are viewer/interoperability and cache limits, not false claims about the PNG specification.
   const sheetWidth = Math.min(
       4096,

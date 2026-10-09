@@ -8,6 +8,8 @@ import type { ExportResult } from '../export/project.ts';
 import type { Diagnostic } from '../types.ts';
 import type { Run } from './run.ts';
 import type { TiledViewer } from './viewer.ts';
+import type { Crop } from './crop.ts';
+import { canvasRect } from '../export/crop.ts';
 
 /** File name for the downloaded image: the recording's name, not a generic one. */
 function imageFileName(state: AppState): string {
@@ -17,14 +19,14 @@ function imageFileName(state: AppState): string {
 
 type ExportKind = 'project' | 'png' | 'sheets';
 
-export function createExport(state: AppState, viewer: TiledViewer, run: Run, addDiagnostic: (d: Diagnostic) => void) {
+export function createExport(state: AppState, viewer: TiledViewer, run: Run, addDiagnostic: (d: Diagnostic) => void, crop: Crop) {
   let downloadURL: string | undefined;
 
   function cleanupTemporary(key?: string): void {
     if (key) void call('cleanup-export', { key }).catch(() => {});
   }
   async function doExport(kind: ExportKind): Promise<void> {
-    if (!state.project || state.busy) {
+    if (!state.project || state.busy || state.cropping) {
       return;
     }
     let handle: FileSystemFileHandle | undefined;
@@ -120,7 +122,9 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
    *  refuses clipboard writes started later) with the image as a promise, which the worker fulfils once encoded. */
   function doCopy(): void {
     const c = viewer.current;
-    if (!state.project || state.busy || !c) return;
+    if (!state.project || state.busy || state.cropping || !c) return;
+    // What the copy holds: the canvas's kept crop if it has one (the worker applies it), else the whole canvas.
+    const copied = crop.current() ?? canvasRect(c.bounds);
     if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
       toast(t('ui.export.clipboardUnsupported'), true);
       return;
@@ -146,7 +150,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
       return;
     }
     navigator.clipboard.write([item])
-      .then(() => toast(t('ui.export.copySuccess', { width: Math.round(c.bounds.width), height: Math.round(c.bounds.height) })))
+      .then(() => toast(t('ui.export.copySuccess', { width: copied.width, height: copied.height })))
       .catch((error) => toast(t('ui.export.copyFailed', { error: String(error) }), true))
       .finally(() => {
         void png.catch(() => {}).finally(() => cleanupTemporary(temporary));

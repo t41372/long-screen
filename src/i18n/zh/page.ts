@@ -174,6 +174,17 @@ export const pageSections = {
     source: {
       title: '录屏原画面',
     },
+    crop: {
+      button: '裁切',
+      groupLabel: '裁切范围',
+      left: '距左',
+      top: '距上',
+      width: '宽',
+      height: '高',
+      full: '整张',
+      cancel: '取消',
+      apply: '裁好了',
+    },
     footer: {
       stackLead: '核心用',
       stackMid: '写成，编译成',

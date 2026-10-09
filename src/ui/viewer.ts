@@ -54,6 +54,12 @@ export class TiledViewer {
   /** The bounds the view last saw, as text: the canvas list updates a CanvasMeta in place (canvases.ts mergeCanvas), so
    *  the previous bounds cannot be read back from `meta` itself. */
   private boundsKey = '';
+  /** The part of the canvas an export takes (src/ui/crop.ts), in world pixels: veiled around while it is being
+   *  edited, and while applied the view fits it and nearly hides the rest. */
+  private crop?: Rect;
+  private cropEditing = false;
+  /** Called after every redraw, so an overlay positioned in screen pixels (the crop box) can follow pans and zooms. */
+  onDraw?: () => void;
   constructor(
     private canvas: HTMLCanvasElement,
     private fetch: (canvasId: string, level: number, x: number, y: number) => Promise<TilePayload | null>,
@@ -123,6 +129,8 @@ export class TiledViewer {
     this.follow = true;
     this.boundsKey = '';
     this.meta = undefined;
+    this.crop = undefined;
+    this.cropEditing = false;
     this.invalidate();
     this.schedule();
   }
@@ -160,18 +168,46 @@ export class TiledViewer {
     };
     requestAnimationFrame(step);
   }
+  /** Shows `rect` as the canvas's crop: `editing` veils lightly around it (the whole canvas stays in view to drag
+   *  over); otherwise the view fits the crop and nearly hides the rest, as the export will. */
+  setCrop(rect: Rect | undefined, editing = false): void {
+    const before = this.view();
+    this.crop = rect;
+    this.cropEditing = editing;
+    const after = this.view();
+    if (
+      this.follow &&
+      (before?.x !== after?.x || before?.y !== after?.y || before?.width !== after?.width || before?.height !== after?.height)
+    ) {
+      this.fit();
+    } else {
+      this.schedule();
+    }
+  }
+  /** What Fit frames: the applied crop, else the whole canvas. */
+  private view(): Rect | undefined {
+    return this.crop && !this.cropEditing ? this.crop : this.meta?.bounds;
+  }
   fit(animate = true): void {
     this.follow = true;
-    const m = this.meta;
-    if (!m || !m.bounds.width || !m.bounds.height) return;
+    const v = this.view();
+    if (!v || !v.width || !v.height) return;
     const w = this.canvas.clientWidth, h = this.canvas.clientHeight;
-    const scale = Math.max(1e-8, Math.min((w - 64) / m.bounds.width, (h - 64) / m.bounds.height));
-    this.moveTo(
-      scale,
-      (w - m.bounds.width * scale) / 2 - m.bounds.x * scale,
-      (h - m.bounds.height * scale) / 2 - m.bounds.y * scale,
-      animate,
-    );
+    const scale = Math.max(1e-8, Math.min((w - 64) / v.width, (h - 64) / v.height));
+    this.moveTo(scale, (w - v.width * scale) / 2 - v.x * scale, (h - v.height * scale) / 2 - v.y * scale, animate);
+  }
+  /** `rect` (world pixels) in the viewer's CSS pixels. */
+  toScreen(rect: Rect): Rect {
+    return {
+      x: this.ox + rect.x * this.scale,
+      y: this.oy + rect.y * this.scale,
+      width: rect.width * this.scale,
+      height: rect.height * this.scale,
+    };
+  }
+  /** Screen CSS pixels per world pixel. */
+  get zoomScale(): number {
+    return this.scale;
   }
   native(): void {
     this.zoom(1 / this.scale, undefined, undefined, true);
@@ -321,6 +357,23 @@ export class TiledViewer {
       entry.bitmap?.close();
       this.cache.delete(key);
     }
+    if (this.crop) {
+      // Everything outside the crop, as one even-odd path: the screen rectangle minus the crop's.
+      const r = this.toScreen(this.crop);
+      ctx.save();
+      ctx.fillStyle = this.cropEditing ? 'rgba(43,38,34,.48)' : 'rgba(236,229,217,.9)';
+      ctx.beginPath();
+      ctx.rect(0, 0, w, h);
+      ctx.rect(r.x, r.y, r.width, r.height);
+      ctx.fill('evenodd');
+      if (!this.cropEditing) {
+        ctx.strokeStyle = '#3d353080';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([6, 5]);
+        ctx.strokeRect(r.x, r.y, r.width, r.height);
+      }
+      ctx.restore();
+    }
     if (this.focus) {
       ctx.strokeStyle = '#ca6146';
       ctx.lineWidth = 2;
@@ -340,5 +393,6 @@ export class TiledViewer {
         this.overlay && !level && unobserved ? t('ui.viewer.unobservedHint') : ''
       }${this.overlay && !level && provisionalSeen ? t('ui.viewer.provisionalHint') : ''}`,
     );
+    this.onDraw?.();
   }
 }

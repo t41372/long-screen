@@ -20,7 +20,7 @@ export interface Canvases {
   wire(): void;
 }
 
-export function createCanvases(state: AppState, viewer: TiledViewer): Canvases {
+export function createCanvases(state: AppState, viewer: TiledViewer, onSelect: () => void = () => {}): Canvases {
   let refreshing = false, lastRefresh = 0, selectionTouched = false;
 
   async function refreshCanvases(all = false): Promise<void> {
@@ -105,6 +105,7 @@ export function createCanvases(state: AppState, viewer: TiledViewer): Canvases {
     // syncControls is idempotent and covers export-png/export-sheets/copy-png (plus start/demo/regions, unaffected
     // by a canvas switch) from viewer.current, which viewer.setCanvas() above has already updated to `c`.
     syncControls(state, viewer);
+    onSelect();
   }
   function mergeCanvas(meta: CanvasMeta): void {
     const existing = state.canvases.find((c) => c.id === meta.id);
