@@ -8,6 +8,7 @@ import { DemoSource } from './media/demo.ts';
 import { CompatibilitySource, frameConverter, openDemuxer, openMedia, PreciseSource } from './media/source.ts';
 import { canvasConverter, directConverter, planarConverter, workerConverter } from './media/convert.ts';
 import { gpuConverter } from './media/gpu-convert.ts';
+import { releaseUnlessHeld } from './media/pool.ts';
 import { DEFAULT_SETTINGS } from './types.ts';
 import { buildScenario, SCENARIO_NAMES } from './synthetic/scenarios.ts';
 import { ScenarioSource } from './synthetic/source.ts';
@@ -48,6 +49,7 @@ const kit = {
   workerConverter,
   gpuConverter,
   frameConverter,
+  releaseUnlessHeld,
   PreciseSource,
   CompatibilitySource,
   DEFAULT_SETTINGS,

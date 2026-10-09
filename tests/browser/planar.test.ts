@@ -258,17 +258,69 @@ Deno.test({
         assert(v.opaque, `${name}: RGBA must be opaque`);
         assert(v.meanVsTruth <= 4, `${name}: mean channel distance from the rendered world ${v.meanVsTruth}`);
       }
-      // WebKit's GStreamer copyTo drops the padded stride of 320-wide frames (rows really 384 bytes apart): the check
-      // must catch it. GStreamer is Linux WebKit's media backend only, so that hard check is scoped to Linux; on
-      // macOS (AVFoundation/CoreMedia) the stride bug does not reproduce and both fixtures measure planar === true.
-      assertEquals(
-        [(r as any)['scroll.mp4'].planar, (r as any)['negative-cts.mov'].planar],
-        Deno.build.os === 'linux' ? [false, false] : [true, true],
-        Deno.build.os === 'linux' ? 'misplaced rows must be caught' : 'macOS WebKit must not exhibit the Linux GStreamer stride bug',
-      );
+      // Decoder/backend versions differ in whether the historical padded-stride defect occurs.
+      // Assert actual canvas/truth agreement above; the injected-layout test below independently
+      // requires rejection of misplaced planes instead of requiring a particular OS to have a bug.
       // At 384 wide there is no padding, so the core must take the run regardless of platform.
       assertEquals((r as any)['scroll-384.mp4'].planar, true, 'the unpadded frames must take the planar path');
       assert((r as any)['scroll-384.mp4'].padding <= 24, 'the black padding must stay black');
+      assertEquals(h.errors, []);
+    } finally {
+      await h.close();
+    }
+  },
+});
+
+Deno.test({
+  name: 'browser: WebKit rejects a misplaced native planar copy and keeps the exact canvas result',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const h = await harness({ browser: 'webkit' });
+    try {
+      await h.page.goto(h.base + '/harness.html');
+      await h.page.waitForFunction('!!window.longScreenKit');
+      const r = await h.page.evaluate(async () => {
+        const kit = (window as any).longScreenKit;
+        const file = new File([await (await fetch('/fixtures/scroll.mp4')).arrayBuffer()], 'scroll.mp4');
+        const canvas = kit.canvasConverter();
+        let current: VideoFrame, reference: Uint8ClampedArray, calls = 0;
+        const planar = kit.planarConverter(async (_: VideoFrame, info: unknown) => {
+          calls++;
+          const image = await canvas(current, info);
+          reference = image.data.slice();
+          return image;
+        });
+        const convert = Object.assign(async (frame: VideoFrame, info: unknown) => {
+          current = frame;
+          return await planar({
+            format: frame.format,
+            colorSpace: frame.colorSpace,
+            visibleRect: frame.visibleRect,
+            allocationSize: () => frame.allocationSize(),
+            async copyTo(bytes: Uint8Array) {
+              const layout = await frame.copyTo(bytes);
+              // Simulate a backend returning a valid layout for incorrectly placed plane bytes.
+              bytes.copyWithin(0, 64);
+              return layout;
+            },
+          }, info);
+        }, { dispose() {} });
+        const source = await kit.openMedia(file, convert);
+        let frames = 0, differences = 0;
+        for await (const frame of source.frames()) {
+          for (let i = 0; i < frame.image.data.length; i++) if (frame.image.data[i] !== reference![i]) differences++;
+          kit.releaseUnlessHeld(frame.image);
+          if (++frames === 3) break;
+        }
+        source.dispose();
+        return { frames, differences, calls, planar: planar.planar, check: planar.check };
+      });
+      assertEquals(r.frames, 3);
+      assertEquals(r.planar, false);
+      assertEquals(r.differences, 0);
+      assertEquals(r.calls, 3);
+      assert(r.check.meanDiff > 3 || r.check.farShare > .01);
       assertEquals(h.errors, []);
     } finally {
       await h.close();
