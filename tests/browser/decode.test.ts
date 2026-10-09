@@ -146,6 +146,15 @@ Deno.test({
           const second = await digest(await collect(source));
           const counts = { ...worker.counts };
           source.dispose();
+          // On the CPU, conversions spread over several workers (the same copyTo in each): frames must come back
+          // identical and in order, and buffers must go back to the worker that lent them.
+          const cpu = kit.workerConverter(new URL('./assets/convert-worker.js', location.href), undefined, 'cpu');
+          const cpuSource = await open(cpu);
+          const cpuFirst = await digest(await collect(cpuSource));
+          const cpuStopped = await digest(await collect(cpuSource, 3));
+          const cpuSecond = await digest(await collect(cpuSource));
+          const cpuCounts = { ...cpu.counts };
+          cpuSource.dispose();
           const broken = kit.workerConverter(new URL('./assets/missing-convert-worker.js', location.href));
           const fallbackSource = await open(broken);
           const fallback = await digest(await collect(fallbackSource));
@@ -159,6 +168,10 @@ Deno.test({
             counts,
             fallbackSame: JSON.stringify(fallback) === JSON.stringify(reference),
             fallbackCounts: { ...broken.counts },
+            cpuSame: [cpuFirst, cpuSecond].every((d) => JSON.stringify(d) === JSON.stringify(reference)) &&
+              JSON.stringify(cpuStopped) === JSON.stringify(reference.slice(0, 3)),
+            cpuCounts,
+            cores: navigator.hardwareConcurrency,
           };
         }
         return results;
@@ -175,6 +188,9 @@ Deno.test({
         assert(v.fallbackSame, `${name}: in-thread fallback frames differ`);
         assertEquals(v.fallbackCounts.worker, 0, name);
         assert(/conversion worker/.test(v.fallbackCounts.reason), `${name}: fallback reason ${v.fallbackCounts.reason}`);
+        assert(v.cpuSame, `${name}: frames converted across several CPU workers differ or come out of order`);
+        assertEquals([v.cpuCounts.inThread, v.cpuCounts.reason], [0, undefined], `${name}: ${JSON.stringify(v.cpuCounts)}`);
+        if (v.cores >= 8) assert(v.cpuCounts.workers >= 2, `${name}: one worker on ${v.cores} cores (${JSON.stringify(v.cpuCounts)})`);
       }
       assertEquals(h.errors, []);
     } finally {

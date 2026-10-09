@@ -6,8 +6,9 @@ import { agreement, agrees, matrixCode, type PlanarCheck } from './conversion-ch
 export { agreement, agrees, matrixCode, type PlanarCheck };
 /** Converts one decoded VideoFrame into plain RGBA (applying container rotation). Injected so the decoding pipeline is testable without a canvas. */
 export type FrameConverter = ((frame: VideoFrame, info: MediaInfo) => RGBA | Promise<RGBA>) & {
-  /** Conversions run off the calling thread, so the source may start the next decoded frame's early. */
-  prefetch?: boolean;
+  /** Conversions run off the calling thread, so the source may start the next decoded frames' early: `true` for the
+   *  source's default depth, or how many frames ahead. */
+  prefetch?: boolean | number;
   dispose?(): void;
   /** Which conversion this converter has settled on so far, for diagnostics. */
   describe?(): string;
@@ -165,8 +166,18 @@ export function planarConverter(
 export interface WorkerConversionCounts {
   worker: number;
   inThread: number;
+  /** Conversion workers started. More than one only once the first has settled on `copyTo(RGBA)`: the same browser
+   *  call in every worker, so the same pixels, with conversions that no longer queue behind each other. */
+  workers: number;
   reason?: string;
 }
+/** Conversion workers a CPU-converting run may use: Firefox's copyTo(RGBA) of a retina frame takes ~16 ms, so one
+ *  worker is what the light reveal passes wait for. Bounded by the cores, and by PREFETCH + 1 conversions in flight. */
+const maxWorkers = () =>
+  Math.max(
+    1,
+    Math.min(3, Math.floor(((globalThis as { navigator?: { hardwareConcurrency?: number } }).navigator?.hardwareConcurrency || 4) / 4)),
+  );
 /** `copyTo({ format: 'RGBA' })` in a dedicated worker (src/media/convert-worker.ts): the same browser conversion as
  *  `directConverter`, so the same pixels, but off the pipeline thread, which lets PreciseSource convert the next
  *  decoded frame while the pipeline works on the current one. Frames the worker cannot take (rotated containers, no
@@ -180,19 +191,22 @@ export function workerConverter(
   /** The acceleration setting: whether the worker may convert on the GPU (src/media/gpu-convert.ts). */
   compute: Settings['compute'] = 'auto',
 ): FrameConverter & { counts: WorkerConversionCounts } {
-  const counts: WorkerConversionCounts = { worker: 0, inThread: 0 };
+  const counts: WorkerConversionCounts = { worker: 0, inThread: 0, workers: 0 };
   const waiting = new Map<number, { resolve(buffer: ArrayBuffer): void; reject(error: Error): void }>();
   // In-thread fallback frames (the worker unavailable or not yet proven) get their own pool; the worker's own
   // reply buffers are pooled on ITS side (convert-worker.ts) and returned there by `release()` below — the two
   // never share a free list, so a buffer belonging to one side is never handed to the other's `postMessage`.
   const pool = new BufferPool();
-  let worker: Worker | undefined, retired = typeof Worker === 'undefined', succeeded = false, sequence = 0, method = 'copyTo(RGBA)';
+  // `workers[0]` decides the conversion; the others are started with the CPU setting only after it chose copyTo, so a
+  // run never mixes GPU and CPU frames. `inFlight` sends each frame to the least busy worker.
+  const workers: Worker[] = [], inFlight = new Map<Worker, number>();
+  let retired = typeof Worker === 'undefined', succeeded = false, cpu = false, sequence = 0, method = 'copyTo(RGBA)';
   if (retired) counts.reason = 'Worker unavailable';
   const retire = (reason: string) => {
     if (!retired) counts.reason = reason;
     retired = true;
-    worker?.terminate();
-    worker = undefined;
+    for (const w of workers.splice(0)) w.terminate();
+    inFlight.clear();
     for (const pending of waiting.values()) pending.reject(new Error(reason));
     waiting.clear();
   };
@@ -218,11 +232,14 @@ export function workerConverter(
   };
   const start = (): Worker | undefined => {
     try {
-      const w = new Worker(url, { type: 'module' });
+      const w = new Worker(url, { type: 'module' }), first = !workers.length;
       w.onmessage = ({ data }: MessageEvent<{ id: number; buffer?: ArrayBuffer; error?: string; describe?: string }>) => {
         const pending = waiting.get(data.id);
         waiting.delete(data.id);
-        if (data.describe) method = data.describe;
+        if (data.describe && first) {
+          method = data.describe;
+          cpu = !method.startsWith('WebGPU');
+        }
         if (data.buffer) pending?.resolve(data.buffer);
         else pending?.reject(new Error(data.error || 'no pixels'));
       };
@@ -231,15 +248,23 @@ export function workerConverter(
         retire(`conversion worker failed: ${event.message || 'script error'}`);
       };
       w.onmessageerror = () => retire('conversion worker reply could not be deserialized');
+      workers.push(w);
+      inFlight.set(w, 0);
+      counts.workers = workers.length;
       return w;
     } catch (error) {
       retire(`conversion worker unavailable: ${error instanceof Error ? error.message : String(error)}`);
       return undefined;
     }
   };
+  const pick = (): Worker | undefined => {
+    if (!workers.length) return start();
+    const idle = workers.reduce((a, b) => inFlight.get(a)! <= inFlight.get(b)! ? a : b);
+    return inFlight.get(idle)! > 0 && cpu && workers.length < maxWorkers() ? start() ?? idle : idle;
+  };
   const convert = async (frame: VideoFrame, info: MediaInfo): Promise<RGBA> => {
     if (!takes(frame, info)) return inThread(frame, info);
-    const target = worker ??= start();
+    const target = pick();
     if (!target) return inThread(frame, info);
     const width = info.codedWidth, height = info.codedHeight, id = sequence++;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -250,7 +275,10 @@ export function workerConverter(
     // The worker gets its own reference; `frame` stays open here so a failed attempt can still convert in-thread.
     const clone = frame.clone();
     try {
-      target.postMessage({ id, frame: clone, width, height, compute }, [clone as unknown as Transferable]);
+      // A worker after the first converts the way the first settled on: copyTo, never trying the GPU itself.
+      target.postMessage({ id, frame: clone, width, height, compute: target === workers[0] ? compute : 'cpu' }, [
+        clone as unknown as Transferable,
+      ]);
     } catch (error) {
       clearTimeout(timer);
       clone.close();
@@ -258,6 +286,7 @@ export function workerConverter(
       retire(`VideoFrame could not be transferred: ${error instanceof Error ? error.message : String(error)}`);
       return inThread(frame, info);
     }
+    inFlight.set(target, (inFlight.get(target) ?? 0) + 1);
     try {
       const buffer = await reply;
       if (buffer.byteLength !== width * height * 4) throw new Error(`conversion worker returned ${buffer.byteLength} bytes`);
@@ -282,12 +311,20 @@ export function workerConverter(
       return inThread(frame, info);
     } finally {
       clearTimeout(timer);
+      if (inFlight.has(target)) inFlight.set(target, inFlight.get(target)! - 1);
     }
   };
   const describe = () =>
-    counts.worker ? `${method} in a worker (${counts.worker} frames, ${counts.inThread} in-thread)` : fallback.describe?.() ?? 'fallback';
+    counts.worker
+      ? `${method} in ${
+        counts.workers > 1 ? `${counts.workers} workers` : 'a worker'
+      } (${counts.worker} frames, ${counts.inThread} in-thread)`
+      : fallback.describe?.() ?? 'fallback';
   // Planes only where this frame would convert in-thread through `fallback` (never once the worker has converted).
   const planes = async (frame: VideoFrame, info: MediaInfo) =>
     succeeded || takes(frame, info) ? undefined : await fallback.planes?.(frame, info);
-  return Object.assign(convert, { prefetch: true, counts, describe, planes, dispose: () => retire('disposed') });
+  return Object.defineProperties(Object.assign(convert, { counts, describe, planes, dispose: () => retire('disposed') }), {
+    // One frame ahead per worker a CPU run may use, so they all have work; the default depth otherwise.
+    prefetch: { get: () => cpu ? Math.max(2, maxWorkers()) : true },
+  }) as FrameConverter & { counts: WorkerConversionCounts };
 }

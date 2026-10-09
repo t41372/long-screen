@@ -176,6 +176,8 @@ export class PreciseSource implements FrameSource {
   }
   private async *decode(want?: (index: number) => boolean, planes = false): AsyncGenerator<FrameImage | SkippedFrame | PlanarFrame> {
     const { demux, info } = this, queue: VideoFrame[] = [], signal = new Signal();
+    /** How many decoded frames ahead the converter wants converting (`FrameConverter.prefetch`). */
+    const depth = () => this.convert.prefetch === true ? PREFETCH : this.convert.prefetch || 0;
     // Engine calls frames() multiple times (scan, solve, render) on the same PreciseSource; each pass reports its
     // own diagnostic counts. Without this, notices from earlier passes silently accumulate into later ones, and
     // since project.media is this exact object by reference, an exported manifest ends up N× over-reporting.
@@ -203,7 +205,10 @@ export class PreciseSource implements FrameSource {
     const producer = (async () => {
       try {
         for await (const packet of demux.packets()) {
-          while (!ended && !failure && (queue.length >= 2 || decoder.decodeQueueSize >= 2 || submitted - received >= 32)) {
+          // Decoded frames wait here for as many conversions as the converter runs ahead (at least two).
+          while (
+            !ended && !failure && (queue.length >= Math.max(2, depth()) || decoder.decodeQueueSize >= 2 || submitted - received >= 32)
+          ) {
             await signal.wait(100);
             if (!queue.length && performance.now() - lastOutput > this.stallTimeout) {
               throw new Error(
@@ -332,8 +337,8 @@ export class PreciseSource implements FrameSource {
           }
           const image = await (early ?? this.convert(frame, info));
           stats.convertMS += performance.now() - converting;
-          if (this.convert.prefetch && !this.cancelled) {
-            for (let k = 0; k < Math.min(queue.length, PREFETCH); k++) {
+          if (depth() && !this.cancelled) {
+            for (let k = 0; k < Math.min(queue.length, depth()); k++) {
               const next = queue[k];
               if (ahead.has(next) || (want && !want(index + 1 + k))) continue;
               const image = (async () => await this.convert(next, info))();

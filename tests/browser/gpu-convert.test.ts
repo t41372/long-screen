@@ -261,7 +261,11 @@ Deno.test({
       assert(/^WebGPU planes .* in a worker/.test(viaGPU.conversion), `worker webgpu: ${viaGPU.conversion}`);
       assert(viaGPU.mean <= 2 && viaGPU.far <= 0.01, `worker webgpu: ${viaGPU.mean} / ${viaGPU.far} from copyTo(RGBA)`);
       assertEquals([viaCopy.frames, viaCopy.error, viaCopy.max], [truth.frames, '', 0], `worker cpu: ${viaCopy.conversion}`);
-      assert(/^copyTo\(RGBA\)( \(WebGPU declined: CPU only\))? in a worker/.test(viaCopy.conversion), `worker cpu: ${viaCopy.conversion}`);
+      // On the CPU the converter may spread frames over several workers (src/media/convert.ts).
+      assert(
+        /^copyTo\(RGBA\)( \(WebGPU declined: CPU only\))? in (a worker|\d workers)/.test(viaCopy.conversion),
+        `worker cpu: ${viaCopy.conversion}`,
+      );
       for (const format of ['I420', 'NV12']) {
         for (const range of ['bt709 full=false', 'bt709 full=true', 'smpte170m full=false', 'smpte170m full=true']) {
           const key = `${format} ${range}`, v = r[key] as any;
