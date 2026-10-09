@@ -237,6 +237,25 @@ export interface FrameImage {
   duration: number;
   index: number;
 }
+/** A decoded frame in its own YUV layout, as `VideoFrame.copyTo` wrote it, with what converting it needs: the core's
+ *  format and matrix codes (rust/core/src/yuv.rs). `release()` returns the buffer to the source's pool. */
+export interface FramePlanes {
+  data: Uint8Array;
+  layout: { offset: number; stride: number }[];
+  format: number;
+  matrix: number;
+  width: number;
+  height: number;
+  release(): void;
+}
+/** A frame handed out as planes instead of RGBA (`FrameSource.sparseFrames` with `planes`). */
+export interface PlanarFrame {
+  planes: FramePlanes;
+  image?: undefined;
+  time: number;
+  duration: number;
+  index: number;
+}
 /** A decoded frame a caller declined (`FrameSource.sparseFrames`): decoded, because later frames depend on it, but
  *  never converted to RGBA. */
 export interface SkippedFrame {
@@ -261,9 +280,14 @@ export interface FrameSource {
   /** The latest decode's timing, replaced (not reset in place) when the next decode starts. */
   readonly stats?: SourceStats;
   frames(): AsyncGenerator<FrameImage>;
-  /** Like `frames()`, but frames `want` declines are yielded without pixels, which saves converting them. Optional:
-   *  a source without it is read with `frames()`. */
-  sparseFrames?(want: (index: number) => boolean): AsyncGenerator<FrameImage | SkippedFrame>;
+  /** Like `frames()`, but frames `want` declines are yielded without pixels, which saves converting them. With
+   *  `planes`, a frame the run converts on the CPU from its YUV planes comes as those planes, for a caller that converts
+   *  them straight into core memory (the same conversion, minus two copies of the RGBA); other frames still come as
+   *  RGBA. Optional: a source without it is read with `frames()`. */
+  sparseFrames?(
+    want: (index: number) => boolean,
+    options?: { planes?: boolean },
+  ): AsyncGenerator<FrameImage | SkippedFrame | PlanarFrame>;
   dispose(): void;
 }
 export interface TilePayload {

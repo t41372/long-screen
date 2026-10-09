@@ -1,4 +1,4 @@
-import type { MediaInfo, RGBA, Settings } from '../types.ts';
+import type { FramePlanes, MediaInfo, RGBA, Settings } from '../types.ts';
 import { core } from '../core/wasm.ts';
 import { copyFrameToRGBA, RGBA_COPY_OPTIONS } from './rgba-copy.ts';
 import { BufferPool, type PooledRGBA } from './pool.ts';
@@ -11,6 +11,10 @@ export type FrameConverter = ((frame: VideoFrame, info: MediaInfo) => RGBA | Pro
   dispose?(): void;
   /** Which conversion this converter has settled on so far, for diagnostics. */
   describe?(): string;
+  /** This frame's YUV planes, once the converter has settled on converting planes in the core (`planarConverter`):
+   *  a caller can then run that same core conversion straight into core memory. Undefined while undecided, on any
+   *  other conversion, and for a frame the planar path would not take. */
+  planes?(frame: VideoFrame, info: MediaInfo): Promise<FramePlanes | undefined>;
 };
 /** Worst case for one conversion before the worker is written off (the frame then converts in-thread). */
 const WORKER_CONVERSION_TIMEOUT = 10000;
@@ -69,6 +73,7 @@ export function directConverter(fallback: FrameConverter = planarConverter()): F
   };
   return Object.assign(convert, {
     describe: () => direct ? 'copyTo(RGBA)' : direct === false ? fallback.describe?.() ?? 'fallback' : 'undecided',
+    planes: async (frame: VideoFrame, info: MediaInfo) => direct === false ? await fallback.planes?.(frame, info) : undefined,
   });
 }
 /** Codes of rust/core/src/yuv.rs `Format::from_code`. */
@@ -133,7 +138,28 @@ export function planarConverter(
       : planar === false
       ? `${fallback.describe?.() ?? 'fallback'}${check ? ` (planar rejected: ${check.meanDiff.toFixed(1)} from canvas)` : ''}`
       : 'undecided';
-  return Object.defineProperties(Object.assign(convert, { describe }), { planar: { get: () => planar }, check: { get: () => check } });
+  // The planes `convert` would convert, for a caller that runs the same core conversion into core memory itself. A
+  // frame `convert` would refuse comes back undefined, so the caller's `convert` call reports it the same way.
+  const planesPool = new BufferPool();
+  const planes = async (frame: VideoFrame, info: MediaInfo): Promise<FramePlanes | undefined> => {
+    const format = frame.format ? FRAME_FORMATS[frame.format] : undefined, width = info.codedWidth, height = info.codedHeight;
+    const matrix = matrixCode(frame.colorSpace ?? undefined, frame.format ?? undefined, height);
+    const rect = frame.visibleRect;
+    if (planar !== true || info.rotation !== 0 || format === undefined || matrix === undefined) return undefined;
+    if (typeof frame.copyTo !== 'function' || (rect && (rect.width !== width || rect.height !== height))) return undefined;
+    const buffer = planesPool.takeBuffer(frame.allocationSize());
+    try {
+      const data = new Uint8Array(buffer), layout = await frame.copyTo(data);
+      return { data, layout, format, matrix, width, height, release: () => planesPool.releaseBuffer(buffer) };
+    } catch {
+      planesPool.releaseBuffer(buffer);
+      return undefined;
+    }
+  };
+  return Object.defineProperties(Object.assign(convert, { describe, planes }), {
+    planar: { get: () => planar },
+    check: { get: () => check },
+  });
 }
 /** Frames converted per path by a `workerConverter`, and why the worker path was abandoned, if it was. */
 export interface WorkerConversionCounts {
@@ -260,5 +286,8 @@ export function workerConverter(
   };
   const describe = () =>
     counts.worker ? `${method} in a worker (${counts.worker} frames, ${counts.inThread} in-thread)` : fallback.describe?.() ?? 'fallback';
-  return Object.assign(convert, { prefetch: true, counts, describe, dispose: () => retire('disposed') });
+  // Planes only where this frame would convert in-thread through `fallback` (never once the worker has converted).
+  const planes = async (frame: VideoFrame, info: MediaInfo) =>
+    succeeded || takes(frame, info) ? undefined : await fallback.planes?.(frame, info);
+  return Object.assign(convert, { prefetch: true, counts, describe, planes, dispose: () => retire('disposed') });
 }

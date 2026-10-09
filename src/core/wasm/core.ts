@@ -4,7 +4,7 @@
  *  `consistency.ts`, `compositor.ts`, `png.ts`, `layers.ts`, `voting.ts`, `framing.ts`, `pyramid.ts`,
  *  `regions.ts`, `temporal.ts`, `track.ts` (+ its `track-odometry`/`track-reacquire`/`track-keyframes` split),
  *  `pose-graph.ts`, `yuv.ts`). */
-import type { Feature, Gray, Match, Motion, MotionField, Point, Rect, Region, RGBA } from '../../types.ts';
+import type { Feature, FramePlanes, Gray, Match, Motion, MotionField, Point, Rect, Region, RGBA } from '../../types.ts';
 import { assertLayout, type CoreExports } from './exports.ts';
 import { allocOrThrow, Arena, type BytesInput, type FrameInput, FrameRing, Resident, ResidentFrame, ResidentGray } from './memory.ts';
 import { placeFrame as placeFrameImpl, writeRect as writeRectImpl } from './marshal.ts';
@@ -307,6 +307,10 @@ export class Core {
     dest?: Uint8ClampedArray,
   ): Uint8ClampedArray {
     return yuv.frameToRGBA(this, src, format, layout, width, height, matrix, dest);
+  }
+  /** `frameToRGBA` of a frame's planes straight into core memory at `out` (a resident frame slot). */
+  planesToCore(planes: FramePlanes, out: number): void {
+    yuv.frameToCore(this, planes.data, planes.format, planes.layout, planes.width, planes.height, planes.matrix, out);
   }
   extractFeatures(image: Gray, maxFeatures: number, roi?: Rect): Feature[] {
     return featuresDomain.extractFeatures(this, image, maxFeatures, roi);

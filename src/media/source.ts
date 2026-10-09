@@ -1,4 +1,4 @@
-import type { FrameImage, FrameSource, MediaInfo, MediaNotice, RGBA, Settings, SkippedFrame, SourceStats } from '../types.ts';
+import type { FrameImage, FrameSource, MediaInfo, MediaNotice, PlanarFrame, RGBA, Settings, SkippedFrame, SourceStats } from '../types.ts';
 import type { Demuxer } from './reader.ts';
 import { MediabunnyDemuxer } from './mediabunny-demux.ts';
 import { type FrameConverter, workerConverter } from './convert.ts';
@@ -168,10 +168,13 @@ export class PreciseSource implements FrameSource {
     yield* this.decode() as AsyncGenerator<FrameImage>;
   }
   /** Every frame is decoded (later frames depend on it); the ones `want` declines are closed unconverted. */
-  async *sparseFrames(want: (index: number) => boolean): AsyncGenerator<FrameImage | SkippedFrame> {
-    yield* this.decode(want);
+  async *sparseFrames(
+    want: (index: number) => boolean,
+    options: { planes?: boolean } = {},
+  ): AsyncGenerator<FrameImage | SkippedFrame | PlanarFrame> {
+    yield* this.decode(want, options.planes);
   }
-  private async *decode(want?: (index: number) => boolean): AsyncGenerator<FrameImage | SkippedFrame> {
+  private async *decode(want?: (index: number) => boolean, planes = false): AsyncGenerator<FrameImage | SkippedFrame | PlanarFrame> {
     const { demux, info } = this, queue: VideoFrame[] = [], signal = new Signal();
     // Engine calls frames() multiple times (scan, solve, render) on the same PreciseSource; each pass reports its
     // own diagnostic counts. Without this, notices from earlier passes silently accumulate into later ones, and
@@ -316,6 +319,17 @@ export class PreciseSource implements FrameSource {
             continue;
           }
           const converting = performance.now();
+          // The caller converts planes itself when the run converts on the CPU (`FrameConverter.planes`).
+          const own = planes && !early ? await this.convert.planes?.(frame, info) : undefined;
+          if (own) {
+            stats.convertMS += performance.now() - converting;
+            frame.close();
+            closed = true;
+            stats.frames++;
+            stats.converted++;
+            yield { planes: own, time, duration, index: index++ };
+            continue;
+          }
           const image = await (early ?? this.convert(frame, info));
           stats.convertMS += performance.now() - converting;
           if (this.convert.prefetch && !this.cancelled) {

@@ -167,7 +167,8 @@ async function sweep(
   let coreMS = 0, writeMS = 0, waitMS = 0, uploadMS = 0, converted = 0, waited = performance.now();
   const wanted = run.wanted(Array.from({ length: ctx.processed }, (_, i) => plans.get(i)?.decisions || []));
   const want = (index: number) => wanted[index] === 1;
-  const it = ctx.source.sparseFrames ? ctx.source.sparseFrames(want) : ctx.source.frames();
+  // Frames the run converts on the CPU come as planes and convert straight into the ring (src/media/convert.ts).
+  const it = ctx.source.sparseFrames ? ctx.source.sparseFrames(want, { planes: true }) : ctx.source.frames();
   let prev: ResidentFrame | undefined, prev2: ResidentFrame | undefined, last = -1;
   try {
     for await (const frame of it) {
@@ -177,7 +178,17 @@ async function sweep(
         break;
       }
       let mark = performance.now(), current: ResidentFrame | undefined;
-      if (frame.image && want(frame.index)) {
+      if ('planes' in frame) {
+        const planes = frame.planes;
+        try {
+          if (want(frame.index)) {
+            current = ring.fill(frame.index, planes.width, planes.height, (slot) => core().planesToCore(planes, slot.ptr));
+            converted++;
+          }
+        } finally {
+          planes.release();
+        }
+      } else if (frame.image && want(frame.index)) {
         current = ring.upload(frame.index, frame.image);
         converted++;
       }
