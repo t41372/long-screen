@@ -181,11 +181,16 @@ export class PoseGraph {
     );
     let iterations = 0;
     try {
+      const solved = core().poseGraphSolveCycle(handle);
+      if (solved) {
+        iterations = 1;
+        await checkpoint();
+      }
       // One core call per Gauss-Seidel sweep (not per iteration budget of 200, nor per node): `checkpoint()` has
       // no persisted side effect of its own (it only awaits a pause and may flip `stopRequested`), so calling it
       // once per sweep — rather than the original's "every 256 node updates" — changes only how finely a real
       // stop/pause is observed mid-relaxation, never what gets computed or (on a normal finish) persisted.
-      for (; iterations < 200; iterations++) {
+      for (; !solved && iterations < 200; iterations++) {
         const maxChange = core().poseGraphPass(handle, iterations % 2 === 1);
         await checkpoint();
         if (maxChange < .04) {

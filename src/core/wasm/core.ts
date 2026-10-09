@@ -39,6 +39,7 @@ import {
   poseGraphPass as poseGraphPassImpl,
   poseGraphRead as poseGraphReadImpl,
   poseGraphResidual as poseGraphResidualImpl,
+  poseGraphSolveCycle as poseGraphSolveCycleImpl,
 } from './pose-graph.ts';
 import {
   frameCoordinate as frameCoordinateImpl,
@@ -486,6 +487,9 @@ export class Core {
    *  sweep per `poseGraphPass`. */
   poseGraphNew(nodes: PoseGraphNodes, edges: PoseGraphEdges): number {
     return poseGraphNewImpl(this, this.exports, nodes, edges);
+  }
+  poseGraphSolveCycle(handle: number): boolean {
+    return poseGraphSolveCycleImpl(this, this.exports, handle);
   }
   poseGraphPass(handle: number, reverse: boolean): number {
     return poseGraphPassImpl(this.exports, handle, reverse);

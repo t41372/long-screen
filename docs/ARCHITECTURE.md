@@ -70,6 +70,8 @@ WebCodecs 支持查询在启动前完成。按展示顺序消费输出、处理 
 
 关键帧另存 24 块 32×32 的**原分辨率纹理片**（几 KB）。回访检索先用视觉词投票、再用分析尺度 audit 初筛，最后一律用这些纹理片在原像素上判定，因此重定位精度不受分析因子限制。检索到任何一个落在别处的合理解，就把这次回访标记为歧义而不使用。
 
+位置图先尝试单锚点简单环的解析解：每个节点恰有两条对称、正有限权重的邻边，整图连通，沿环的闭合误差按边权倒数分配。所有二维残差都不超过 Huber 阈值 6 时才采用结果；其他拓扑和超阈值结果交回原有 Gauss–Seidel 求解，不改动回环测量本身。只有一条回环时 Gauss–Seidel 会在弱边上提前停下，这一步就是为它补的。
+
 ### 薄重叠的高速跳转
 
 移动很快时只剩一小条重叠。在周期性排版里，相邻周期同样能解释这一小条像素，而且因为样本少，错误对齐的残差同样很低。这类步长被标记（`THIN_OVERLAP_STEP`），其里程计边在位置图中降权到 0.05；若随后的回访给出更强的原像素证据，整段轨迹被改正并记录 `TRAJECTORY_CORRECTED`，同时说明此前写入的像素保持原样、可能存在接缝。
@@ -292,7 +294,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `framing.rs` — 呈现画布布局/坐标映射、背景扩展统计、逐瓦片两趟绘制。Rust 算法核心。
 - `pyramid.rs` — 四子瓦片（含空洞）减半装配为父瓦片；减半本身复用 `raster::halve_rgba`。Rust 算法核心。
 - `png.rs` — 单 PNG 导出路径的扫描行 (un)filter；瓦片编解码走 `abi/png.rs` 的 `png` crate 端到端路径，不经过这里。Rust 算法核心。
-- `pose_graph.rs` — Gauss-Seidel 位置图松弛，纯数组/CSR 输入，不认识字符串 id。Rust 算法核心。
+- `pose_graph.rs` — 单锚点简单环的解析解与 Gauss-Seidel 位置图松弛，纯数组/CSR 输入，不认识字符串 id。Rust 算法核心。
 - `region.rs` — 泛型 `Region<M: AsRef<[u8]>>::contains`（矩形、排除区、可选原生裁剪、分析分辨率掩码查询，对掩码存储是拥有还是借用泛型化，供 `voting.rs`/`track.rs` 与 `regions::atlas` 共用同一份实现）与 `filter_features`（`ownFeaturesOf` 的区域成员过滤，R6-B 从 TS `regionContains` 移入）。Rust 算法核心。
 - `regions/mod.rs` + `{atlas,bands,band_fn,cells,construct,crops,merge,tests}.rs` — 一次性区域构建流水线（并查集分格、条带检测、区域装配、原生精度裁剪、小块合并、最终过滤）与原生像素打标；逐阶段从冻结的 TS oracle（`tests/support/reference/layers.ts`）移植。Rust 算法核心。
 - `layers.rs` — `LayerLearner` 逐帧累加证据（行/列分歧、split/evidence/activity），冻结为 `tests/support/reference/layers.ts` 的字节对照基准。Rust 算法核心。

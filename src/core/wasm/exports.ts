@@ -349,6 +349,7 @@ export interface CoreExports {
     weight: number,
     edgeCount: number,
   ): number;
+  ls_pose_graph_solve_cycle(handle: number): number;
   ls_pose_graph_pass(handle: number, reverse: number): number;
   ls_pose_graph_residual(handle: number): number;
   ls_pose_graph_read(handle: number, xsOut: number, ysOut: number): number;
