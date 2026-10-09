@@ -1,0 +1,782 @@
+{
+  "version": 2,
+  "scope": "Known recoverable real-recording regressions. Passing these local checks does not prove the whole image is free of ghosts or tearing. References are native video observations, never an older algorithm's output.",
+  "decoding": "Use original MOVs after the complete-output media fix, or the verified lossless fixtures in full-suite-lossless. Every original YUV frame hash and app-demux timestamp was checked. FFmpeg RGB conversion can differ slightly from Chrome, so non-flat comparisons have explicit tolerances. Original decoding now preserves the previously missing MOV B-frame; input backing must remain ArrayBuffer-to-File for the current browser protocol.",
+  "canvasId": "layer-0-part-0",
+  "cases": {
+    "f": [
+      {
+        "id": "button-fringe",
+        "worldRect": [
+          920,
+          1148,
+          50,
+          32
+        ],
+        "frame": 80,
+        "time": 1.4,
+        "pose": [
+          0,
+          854
+        ],
+        "check": "flat",
+        "value": 0,
+        "rationale": "Native frame80 is entirely black here; independently corroborated by many later observations. Initial branch had122 nonblack pixels, maximum35."
+      },
+      {
+        "id": "text-epoch-tear",
+        "worldRect": [
+          1536,
+          5904,
+          128,
+          64
+        ],
+        "frame": 163,
+        "time": 2.858333,
+        "pose": [
+          0,
+          5086
+        ],
+        "check": "white-glyph",
+        "referenceWhiteAbove": 210,
+        "outputDarkBelow": 100,
+        "maxDarkPixels": 25,
+        "maxMeanError": 3,
+        "rationale": "Clean native frames161–165 agree. Accepted prior reconstruction has22 dark pixels in857 strongly white reference pixels and mean error1.80; broken canonical model produced460 and16.99. This local threshold is not a universal quality metric."
+      },
+      {
+        "id": "blue-icon-left",
+        "worldRect": [
+          240,
+          13248,
+          16,
+          16
+        ],
+        "frame": 359,
+        "time": 6.316667,
+        "pose": [
+          0,
+          12458
+        ],
+        "check": "informational",
+        "maxChannelDelta": 30,
+        "maxAboveDelta": 0,
+        "maxMeanError": 3,
+        "rationale": "Historical bright native359 comparison only: a complete dimmer native epoch is legitimate. The whole-blue-icon-common-epoch gate below requires complete accepted-mask coverage and validates all1360 pixels against its actual selected epoch; these fixed-frame differences are not quality failures."
+      },
+      {
+        "id": "blue-icon-middle",
+        "worldRect": [
+          256,
+          13248,
+          16,
+          16
+        ],
+        "frame": 359,
+        "time": 6.316667,
+        "pose": [
+          0,
+          12458
+        ],
+        "check": "informational",
+        "maxChannelDelta": 30,
+        "maxAboveDelta": 0,
+        "maxMeanError": 3,
+        "rationale": "Historical bright native359 comparison only: a complete dimmer native epoch is legitimate. The whole-blue-icon-common-epoch gate below requires complete accepted-mask coverage and validates all1360 pixels against its actual selected epoch; these fixed-frame differences are not quality failures."
+      },
+      {
+        "id": "blue-icon-corner",
+        "worldRect": [
+          272,
+          13264,
+          16,
+          16
+        ],
+        "frame": 359,
+        "time": 6.316667,
+        "pose": [
+          0,
+          12458
+        ],
+        "check": "informational",
+        "maxChannelDelta": 30,
+        "maxAboveDelta": 0,
+        "maxMeanError": 3,
+        "rationale": "Historical bright native359 comparison only: a complete dimmer native epoch is legitimate. The whole-blue-icon-common-epoch gate below requires complete accepted-mask coverage and validates all1360 pixels against its actual selected epoch; these fixed-frame differences are not quality failures."
+      },
+      {
+        "id": "positive-route-glyph-259-3872",
+        "worldRect": [
+          259,
+          3872,
+          1,
+          1
+        ],
+        "frame": 129,
+        "time": 2.25,
+        "pose": [
+          0,
+          2956
+        ],
+        "check": "native-close",
+        "maxChannelDelta": 20,
+        "maxAboveDelta": 0,
+        "maxMeanError": 20,
+        "rationale": "Positive routing caused a new dark glyph defect outside certified blocks. Multiple native page poses show the intact glyph; this explicit point supplements, rather than replaces, whole-image and neighborhood inspection."
+      },
+      {
+        "id": "positive-route-glyph-260-3872",
+        "worldRect": [
+          260,
+          3872,
+          1,
+          1
+        ],
+        "frame": 129,
+        "time": 2.25,
+        "pose": [
+          0,
+          2956
+        ],
+        "check": "native-close",
+        "maxChannelDelta": 20,
+        "maxAboveDelta": 0,
+        "maxMeanError": 20,
+        "rationale": "Positive routing caused a new dark glyph defect outside certified blocks. Multiple native page poses show the intact glyph; this explicit point supplements, rather than replaces, whole-image and neighborhood inspection."
+      },
+      {
+        "id": "positive-route-glyph-851-8144",
+        "worldRect": [
+          851,
+          8144,
+          1,
+          1
+        ],
+        "frame": 251,
+        "time": 4.408333,
+        "pose": [
+          0,
+          7346
+        ],
+        "check": "native-close",
+        "maxChannelDelta": 20,
+        "maxAboveDelta": 0,
+        "maxMeanError": 20,
+        "rationale": "Positive routing caused a new dark glyph defect outside certified blocks. Multiple native page poses show the intact glyph; this explicit point supplements, rather than replaces, whole-image and neighborhood inspection."
+      },
+      {
+        "id": "positive-route-glyph-1460-8144",
+        "worldRect": [
+          1460,
+          8144,
+          1,
+          1
+        ],
+        "frame": 251,
+        "time": 4.408333,
+        "pose": [
+          0,
+          7346
+        ],
+        "check": "native-close",
+        "maxChannelDelta": 20,
+        "maxAboveDelta": 0,
+        "maxMeanError": 20,
+        "rationale": "Positive routing caused a new dark glyph defect outside certified blocks. Multiple native page poses show the intact glyph; this explicit point supplements, rather than replaces, whole-image and neighborhood inspection."
+      },
+      {
+        "id": "positive-route-glyph-400-8148",
+        "worldRect": [
+          400,
+          8148,
+          1,
+          1
+        ],
+        "frame": 251,
+        "time": 4.408333,
+        "pose": [
+          0,
+          7346
+        ],
+        "check": "native-close",
+        "maxChannelDelta": 20,
+        "maxAboveDelta": 0,
+        "maxMeanError": 20,
+        "rationale": "Positive routing caused a new dark glyph defect outside certified blocks. Multiple native page poses show the intact glyph; this explicit point supplements, rather than replaces, whole-image and neighborhood inspection."
+      },
+      {
+        "id": "positive-route-glyph-271-8154",
+        "worldRect": [
+          271,
+          8154,
+          1,
+          1
+        ],
+        "frame": 251,
+        "time": 4.408333,
+        "pose": [
+          0,
+          7346
+        ],
+        "check": "native-close",
+        "maxChannelDelta": 20,
+        "maxAboveDelta": 0,
+        "maxMeanError": 20,
+        "rationale": "Positive routing caused a new dark glyph defect outside certified blocks. Multiple native page poses show the intact glyph; this explicit point supplements, rather than replaces, whole-image and neighborhood inspection."
+      },
+      {
+        "id": "positive-route-glyph-750-8154",
+        "worldRect": [
+          750,
+          8154,
+          1,
+          1
+        ],
+        "frame": 251,
+        "time": 4.408333,
+        "pose": [
+          0,
+          7346
+        ],
+        "check": "native-close",
+        "maxChannelDelta": 20,
+        "maxAboveDelta": 0,
+        "maxMeanError": 20,
+        "rationale": "Positive routing caused a new dark glyph defect outside certified blocks. Multiple native page poses show the intact glyph; this explicit point supplements, rather than replaces, whole-image and neighborhood inspection."
+      },
+      {
+        "id": "positive-route-glyph-1264-8154",
+        "worldRect": [
+          1264,
+          8154,
+          1,
+          1
+        ],
+        "frame": 251,
+        "time": 4.408333,
+        "pose": [
+          0,
+          7346
+        ],
+        "check": "native-close",
+        "maxChannelDelta": 20,
+        "maxAboveDelta": 0,
+        "maxMeanError": 20,
+        "rationale": "Positive routing caused a new dark glyph defect outside certified blocks. Multiple native page poses show the intact glyph; this explicit point supplements, rather than replaces, whole-image and neighborhood inspection."
+      },
+      {
+        "id": "positive-route-glyph-384-8156",
+        "worldRect": [
+          384,
+          8156,
+          1,
+          1
+        ],
+        "frame": 251,
+        "time": 4.408333,
+        "pose": [
+          0,
+          7346
+        ],
+        "check": "native-close",
+        "maxChannelDelta": 20,
+        "maxAboveDelta": 0,
+        "maxMeanError": 20,
+        "rationale": "Positive routing caused a new dark glyph defect outside certified blocks. Multiple native page poses show the intact glyph; this explicit point supplements, rather than replaces, whole-image and neighborhood inspection."
+      },
+      {
+        "id": "positive-route-glyph-1488-13072",
+        "worldRect": [
+          1488,
+          13072,
+          1,
+          1
+        ],
+        "frame": 321,
+        "time": 5.65,
+        "pose": [
+          0,
+          12108
+        ],
+        "check": "native-close",
+        "maxChannelDelta": 20,
+        "maxAboveDelta": 0,
+        "maxMeanError": 20,
+        "rationale": "Positive routing caused a new dark glyph defect outside certified blocks. Multiple native page poses show the intact glyph; this explicit point supplements, rather than replaces, whole-image and neighborhood inspection."
+      },
+      {
+        "id": "positive-route-glyph-1658-13080",
+        "worldRect": [
+          1658,
+          13080,
+          1,
+          1
+        ],
+        "frame": 322,
+        "time": 5.666667,
+        "pose": [
+          0,
+          12130
+        ],
+        "check": "native-close",
+        "maxChannelDelta": 20,
+        "maxAboveDelta": 0,
+        "maxMeanError": 20,
+        "rationale": "Positive routing caused a new dark glyph defect outside certified blocks. Multiple native page poses show the intact glyph; this explicit point supplements, rather than replaces, whole-image and neighborhood inspection."
+      },
+      {
+        "id": "footer-gray-fragments",
+        "worldRect": [
+          200,
+          13577,
+          1536,
+          1
+        ],
+        "frame": 325,
+        "time": 5.716667,
+        "pose": [
+          0,
+          12330
+        ],
+        "check": "native-close",
+        "maxChannelDelta": 10,
+        "maxAboveDelta": 0,
+        "maxMeanError": 1,
+        "rationale": "All1536 native reference pixels are exact black. The retained same-run diagnostic establishes opacity demotion of the actual325 clean Background source outside the object bounds; gray fallback creates a recoverable row of fragments. This supplements the earlier fringe and full common-time checks, and does not certify the rest of the image."
+      },
+      {
+        "id": "weak-negative-glyph-507-5921",
+        "worldRect": [
+          507,
+          5921,
+          1,
+          1
+        ],
+        "frame": 163,
+        "time": 2.858333,
+        "pose": [
+          0,
+          5086
+        ],
+        "check": "white-glyph",
+        "referenceWhiteAbove": 190,
+        "outputDarkBelow": 100,
+        "maxDarkPixels": 0,
+        "maxMeanError": 60,
+        "rationale": "Native163 and additional interior native page poses show an intact light glyph. A rejected weak-photometric-negative prototype selected gray40/43 from an earlier Background hypothesis when it lost coherent counterevidence; these points catch that failure without requiring byte-identical antialiasing."
+      },
+      {
+        "id": "weak-negative-glyph-387-5924",
+        "worldRect": [
+          387,
+          5924,
+          1,
+          1
+        ],
+        "frame": 163,
+        "time": 2.858333,
+        "pose": [
+          0,
+          5086
+        ],
+        "check": "white-glyph",
+        "referenceWhiteAbove": 190,
+        "outputDarkBelow": 100,
+        "maxDarkPixels": 0,
+        "maxMeanError": 60,
+        "rationale": "Native163 and additional interior native page poses show an intact light glyph. A rejected weak-photometric-negative prototype selected gray40/43 from an earlier Background hypothesis when it lost coherent counterevidence; these points catch that failure without requiring byte-identical antialiasing."
+      },
+      {
+        "id": "weak-negative-glyph-387-5925",
+        "worldRect": [
+          387,
+          5925,
+          1,
+          1
+        ],
+        "frame": 163,
+        "time": 2.858333,
+        "pose": [
+          0,
+          5086
+        ],
+        "check": "white-glyph",
+        "referenceWhiteAbove": 190,
+        "outputDarkBelow": 100,
+        "maxDarkPixels": 0,
+        "maxMeanError": 60,
+        "rationale": "Native163 and additional interior native page poses show an intact light glyph. A rejected weak-photometric-negative prototype selected gray40/43 from an earlier Background hypothesis when it lost coherent counterevidence; these points catch that failure without requiring byte-identical antialiasing."
+      },
+      {
+        "id": "weak-negative-glyph-506-5929",
+        "worldRect": [
+          506,
+          5929,
+          1,
+          1
+        ],
+        "frame": 163,
+        "time": 2.858333,
+        "pose": [
+          0,
+          5086
+        ],
+        "check": "white-glyph",
+        "referenceWhiteAbove": 190,
+        "outputDarkBelow": 100,
+        "maxDarkPixels": 0,
+        "maxMeanError": 60,
+        "rationale": "Native163 and additional interior native page poses show an intact light glyph. A rejected weak-photometric-negative prototype selected gray40/43 from an earlier Background hypothesis when it lost coherent counterevidence; these points catch that failure without requiring byte-identical antialiasing."
+      },
+      {
+        "id": "whole-blue-icon-common-epoch",
+        "worldRect": [
+          242,
+          13243,
+          34,
+          40
+        ],
+        "frame": 359,
+        "time": 6.316667,
+        "pose": [
+          0,
+          12458
+        ],
+        "check": "accepted-epoch-native-close",
+        "maxChannelDelta": 10,
+        "maxAboveDelta": 0,
+        "maxMeanError": 2,
+        "rationale": "Require one accepted actual-frame plan covering all1360 physical-icon pixels, then compare the entire icon to that original observed epoch. Plans at different times cannot union their masks. Any complete legal epoch is allowed; fixed bright359 or dimmer334 is not required. Independent same-run candidate/provenance checks supplement this output gate.",
+        "conversionToleranceEvidence": {
+          "reference": "test-results/perf-investigation/main-common-time-f/independent-audit/plan-mask-review.json#completeBlueNative334",
+          "nativeChromeCandidateRGBA": "all1360 pixels exactly match actual334 payload; independently saved before this checker was added",
+          "ffmpegVsExactChromeObservedMaximumChannelError": 7,
+          "ffmpegVsExactChromeObservedMeanAbsoluteError": 1.1909313725490196,
+          "policy": "Tolerate measured YUV-to-RGB converter differences only. Entire1360-pixel coverage by one accepted actual epoch is required; no union of epochs and no permitted pixels above10."
+        }
+      }
+    ],
+    "c": [
+      {
+        "id": "scrollbar-primary",
+        "worldRect": [
+          3438,
+          2655,
+          14,
+          49
+        ],
+        "frame": 60,
+        "time": 1.183333,
+        "pose": [
+          0,
+          1918
+        ],
+        "check": "flat",
+        "value": 255,
+        "rationale": "686 native pixels are exact white; frames55/56 corroborate. Initial result had550 gray pixels."
+      },
+      {
+        "id": "scrollbar-tail-4800",
+        "worldRect": [
+          3445,
+          4800,
+          1,
+          1
+        ],
+        "frame": 110,
+        "time": 2.183333,
+        "pose": [
+          0,
+          2918
+        ],
+        "check": "flat",
+        "value": 255
+      },
+      {
+        "id": "scrollbar-tail-4900",
+        "worldRect": [
+          3445,
+          4900,
+          1,
+          1
+        ],
+        "frame": 110,
+        "time": 2.183333,
+        "pose": [
+          0,
+          2918
+        ],
+        "check": "flat",
+        "value": 255
+      },
+      {
+        "id": "scrollbar-tail-4920",
+        "worldRect": [
+          3445,
+          4920,
+          1,
+          1
+        ],
+        "frame": 110,
+        "time": 2.183333,
+        "pose": [
+          0,
+          2918
+        ],
+        "check": "flat",
+        "value": 255
+      },
+      {
+        "id": "scrollbar-tail-4950",
+        "worldRect": [
+          3445,
+          4950,
+          1,
+          1
+        ],
+        "frame": 110,
+        "time": 2.183333,
+        "pose": [
+          0,
+          2918
+        ],
+        "check": "flat",
+        "value": 255
+      },
+      {
+        "id": "viewport-corner-4839",
+        "worldRect": [
+          3450,
+          4839,
+          1,
+          1
+        ],
+        "frame": 110,
+        "time": 2.183333,
+        "pose": [
+          0,
+          2918
+        ],
+        "check": "flat",
+        "value": 255,
+        "rationale": "Recoverable isolated gray viewport-corner residue; Unknown baseline overrides the selected clean native observation."
+      },
+      {
+        "id": "viewport-corner-4952",
+        "worldRect": [
+          3441,
+          4952,
+          1,
+          1
+        ],
+        "frame": 108,
+        "time": 2.058333,
+        "pose": [
+          0,
+          2918
+        ],
+        "check": "flat",
+        "value": 255
+      }
+    ],
+    "0": [
+      {
+        "id": "loaded-thumbnail",
+        "worldRect": [
+          44,
+          10194,
+          380,
+          209
+        ],
+        "frame": 388,
+        "time": 8.8,
+        "pose": [
+          0,
+          9188
+        ],
+        "check": "informational",
+        "rationale": "Native388 contains the intact loaded image. Report native error and dark-reference-to-white output pixels; no universal pass threshold because a different coherent native epoch may be valid. Validate common-frame provenance with the component oracle; never force old-version pixel identity."
+      },
+      {
+        "id": "whole-loaded-thumbnail-common-epoch",
+        "worldRect": [
+          44,
+          10193,
+          380,
+          210
+        ],
+        "frame": 388,
+        "time": 8.8,
+        "pose": [
+          0,
+          9188
+        ],
+        "check": "accepted-epoch-native-close",
+        "maxChannelDelta": 10,
+        "maxAboveDelta": 0,
+        "maxMeanError": 2,
+        "rationale": "Require all79,800 physical thumbnail pixels to belong to one complete accepted epoch, then compare its actual native frame. Independent actual retained-candidate validation certifies frame373 and350blocks; the diagnostic frame388 is not a forced epoch. Unknown partial plans cannot be combined."
+      }
+    ],
+    "b": [
+      {
+        "id": "embedded-video-native135",
+        "worldRect": [
+          1511,
+          3556,
+          256,
+          256
+        ],
+        "frame": 135,
+        "time": 3.841667,
+        "pose": [
+          0,
+          2084
+        ],
+        "check": "informational",
+        "rationale": "Native135 and160 both show coherent smooth wooden panels. Different video epochs are legitimate, so single-frame RGB error is diagnostic only. Inspect 16px strips and the whole component's common actual-frame provenance."
+      },
+      {
+        "id": "embedded-video-native160",
+        "worldRect": [
+          1511,
+          3556,
+          256,
+          256
+        ],
+        "frame": 160,
+        "time": 4.283333,
+        "pose": [
+          0,
+          2650
+        ],
+        "check": "informational"
+      }
+    ],
+    "e": [
+      {
+        "id": "avatars",
+        "frame": 337,
+        "time": 7.483333,
+        "pose": [
+          2254,
+          1734
+        ],
+        "worldRect": [
+          3328,
+          2812,
+          256,
+          256
+        ],
+        "check": "informational",
+        "rationale": "Native337 confirms complete avatar surfaces; old block tears are repaired. RGB differences may include raster phase and compression; inspect glyph/edge continuity."
+      },
+      {
+        "id": "body-text",
+        "frame": 342,
+        "time": 7.566667,
+        "pose": [
+          2254,
+          2214
+        ],
+        "worldRect": [
+          3584,
+          3324,
+          256,
+          256
+        ],
+        "check": "informational",
+        "rationale": "Native342 has complete text strokes; diagnostic only rather than old-output parity."
+      },
+      {
+        "id": "star-button",
+        "frame": 683,
+        "time": 14.958333,
+        "pose": [
+          4494,
+          3346
+        ],
+        "worldRect": [
+          5888,
+          4348,
+          256,
+          256
+        ],
+        "check": "informational",
+        "rationale": "Native683 has a coherent Star button surface; old16px strips are repaired."
+      },
+      {
+        "id": "search-header-temporal",
+        "frame": 859,
+        "time": 18.608333,
+        "pose": [
+          3278,
+          -174
+        ],
+        "worldRect": [
+          6144,
+          252,
+          256,
+          256
+        ],
+        "check": "informational",
+        "rationale": "Search background varies over time: most observations are black, frames860–874 become gray. Current16px low-contrast mosaic requires common-epoch review; this single reference is not universal ground truth."
+      }
+    ],
+    "a": [
+      {
+        "id": "temporal-text-native730",
+        "frame": 730,
+        "time": 13.15,
+        "pose": [
+          -314,
+          -1387
+        ],
+        "worldRect": [
+          913,
+          -316,
+          512,
+          256
+        ],
+        "check": "informational",
+        "rationale": "Coherent native730 shows two text rows separated by a blank row; current output combines an older additional text row. Other complete epochs can be valid, so inspect temporal coherence rather than force this frame RGB."
+      }
+    ],
+    "d": [
+      {
+        "id": "navigation-ghost-native447",
+        "frame": 447,
+        "time": 8.258333,
+        "pose": [
+          -2,
+          4348
+        ],
+        "worldRect": [
+          1701,
+          5442,
+          512,
+          256
+        ],
+        "check": "informational",
+        "rationale": "Native447 and1017 independently show clean repository body text; legacy candidate adds Topics/Trending navigation text in blankspace,3576nativewhite pixels become dark."
+      },
+      {
+        "id": "navigation-ghost-native1017",
+        "frame": 1017,
+        "time": 18.983333,
+        "pose": [
+          313,
+          4317
+        ],
+        "worldRect": [
+          1701,
+          5442,
+          512,
+          256
+        ],
+        "check": "informational",
+        "rationale": "Second independent pose/time reference confirming the same recoverable navigation ghost."
+      }
+    ]
+  }
+}

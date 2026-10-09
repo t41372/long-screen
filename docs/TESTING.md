@@ -101,6 +101,20 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 头less 运行 + Playwr
 
 性能基准另外用了几段用户提供、同样不进仓库的录屏（放在仓库根目录旁，用绝对路径传给 `benchmark-pipeline.ts` / `scripts/e2e-recordings.sh`）：`e.mov`（3456×2234 H.264，935/936 帧）、`1.mov`（1418×1590 H.264，381/391 帧）、`d.mov`（1920×1240 HEVC/hvc1，1152 帧，VFR，用于 Safari/WebKit 崩溃排查，还有一份 ffmpeg 转的 H.264 等价物 `d264.mov` 用于计时）。这三段都以 `NEGATIVE_TIMESTAMP_SKIPPED` 结束为 `partial`（容器帧数 ≠ 可展示帧数），基准需要 `--allow-partial`。已测得的具体耗时、阶段分解与 Chrome/WebKit 对照见 [docs/history/2026-09-rust-migration-log.md](history/2026-09-rust-migration-log.md)——那些数字会随硬件和后续改动变化，不要当作当前基线，只把"跑得完、输出一致"当作已验证的事实。
 
+### 局部真值（recording oracles）
+
+真实录屏没有整图真值，但有一些位置能从原生帧里确知应该是什么：`docs/benchmarks/2026-10-03-recording-oracles.json` 按录屏列出这些世界矩形（f 22 处、c 7 处、0 两处，a、b、d、e 少量仅供参考），`scripts/check-recording-oracles.py` 把输出画布与 ffmpeg 独立解码的原生帧逐像素比较。检查分几种：纯色（例如 c 的滚动条轨道必须是白的）、与指定原生帧足够接近、白字不能变暗，以及「完整时刻」——整片区域必须完整来自同一帧，并且与那一帧足够接近。完整时刻只认揭示阶段的 `reveal/<canvas>` 来源行（docs/FORMAT.md）：整片覆盖的每一块都必须是同一帧的整块拷贝。
+
+```sh
+deno run --allow-all scripts/benchmark-pipeline.ts --input test_case/f.mov --export-canvases --no-profile --output test-results/oracles/f
+python3 scripts/check-recording-oracles.py --clip f --video test_case/f.mov --result test-results/oracles/f
+python3 scripts/check-recording-oracles.py --clip f --video test_case/f.mov --result test-results/oracles/f --reference browser --output test-results/oracles/f/browser-reference
+```
+
+ffmpeg 的 RGB 转换与浏览器在锐利色边上不一样（色度插值不同），f 的蓝色图标在完全正确的输出上也会差出约 8 级，所以这一项按 ffmpeg 参照会失败。`--reference browser` 让 ffmpeg 只解出 YUV 平面，再按应用自己的转换（YUV 矩阵，色度在像素中心双线性插值；Chrome 对硬件解码帧的 `copyTo(RGBA)` 与它逐像素差 ≤ 1）生成参照。两种参照的结果都报告，不拿后者替换前者。Safari/WebKit 在 CPU 上做平面转换（色度取最近采样点，与 ffmpeg 一致），情况正好相反：f 的蓝色图标按 ffmpeg 参照通过（平均差 1.66），按浏览器参照差约 8 级。清单里的位姿与时间是按主线的几何记录的；几何变了（哪怕一像素）检查会报错要求重新核对映射，而不是悄悄比较错位的内容。
+
+检查器本身的失败情形在 `python3 scripts/test_recording_oracles.py` 里：两帧拼成的、留着合成器像素（−1）或逐像素混合（−2）的块都不能认作完整时刻，负世界坐标与网格边界要算对，别的画布的来源行不算数，版本不对或块数与网格不符的行直接报错；停下、失败、部分完成或帧数对不上的运行不能拿来认证任何像素。
+
 ## 仍未验证
 
 - 实体 Safari / iPhone / iPad / Android 全流程。移动尺寸截图不能替代真机。

@@ -18,6 +18,12 @@ interface Options {
   analysisSize: number;
   verifyTiles: boolean;
   allowPartial: boolean;
+  /** Write each canvas as PNG and the evidence rows the recording oracles read (scripts/check-recording-oracles.py). */
+  exportCanvases: boolean;
+  /** Rebuild only the TS bundles, reusing the cores already in rust/target. */
+  skipCoreBuild: boolean;
+  /** Skip the Chrome CPU profile, whose sampling slows the run it records. */
+  noProfile: boolean;
   /** Tile keys matching this pattern also get their raw evidence arrays written (diagnosing a hash difference). */
   dumpEvidence?: string;
 }
@@ -124,6 +130,10 @@ Options:
                          (raw PNG byte differences are reported as info, not a failure — see contentSha256)
   --dump-evidence REGEX  with --verify-tiles, also write raw evidence arrays of matching tile keys
   --allow-partial        accept a partial run (a stream-copied prefix whose container count exceeds its frames)
+  --export-canvases      after timing, write every observed canvas as PNG and the canvas/observation/node/diagnostic/
+                         reveal rows as <label>-pass-N.evidence.json (what scripts/check-recording-oracles.py reads)
+  --skip-core-build      rebuild only the TS bundles, reusing the cores already in rust/target
+  --no-profile           do not record a Chrome CPU profile (its sampling slows the timed run)
   --output DIR           JSON/profile directory (default: test-results/benchmark-pipeline)
 `;
 
@@ -143,7 +153,10 @@ function parseArgs(args: string[]): Options {
     output = join(Deno.cwd(), 'test-results/benchmark-pipeline'),
     analysisSize = 640,
     verifyTiles = false,
-    allowPartial = false;
+    allowPartial = false,
+    exportCanvases = false,
+    skipCoreBuild = false,
+    noProfile = false;
   let dumpEvidence: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -165,6 +178,12 @@ function parseArgs(args: string[]): Options {
       dumpEvidence = valueAfter(args, i++, arg);
     } else if (arg === '--allow-partial') {
       allowPartial = true;
+    } else if (arg === '--export-canvases') {
+      exportCanvases = true;
+    } else if (arg === '--skip-core-build') {
+      skipCoreBuild = true;
+    } else if (arg === '--no-profile') {
+      noProfile = true;
     } else if (arg === '--help' || arg === '-h') {
       console.log(usage);
       Deno.exit(0);
@@ -178,12 +197,25 @@ function parseArgs(args: string[]): Options {
   if (!Deno.statSync(input).isFile) throw new Error(`Input is not a file: ${input}`);
   if (!Deno.statSync(root).isDirectory) throw new Error(`Repository root is not a directory: ${root}`);
   if (baselineRoot && !Deno.statSync(baselineRoot).isDirectory) throw new Error(`Baseline root is not a directory: ${baselineRoot}`);
-  return { input, root, baselineRoot, passes, output, analysisSize, verifyTiles, allowPartial, dumpEvidence };
+  return {
+    input,
+    root,
+    baselineRoot,
+    passes,
+    output,
+    analysisSize,
+    verifyTiles,
+    allowPartial,
+    exportCanvases,
+    skipCoreBuild,
+    noProfile,
+    dumpEvidence,
+  };
 }
 
-async function runBuild(root: string): Promise<void> {
+async function runBuild(root: string, skipCoreBuild: boolean): Promise<void> {
   const command = new Deno.Command(Deno.execPath(), {
-    args: ['task', 'build'],
+    args: ['task', 'build', ...(skipCoreBuild ? ['--skip-core'] : [])],
     cwd: root,
     stdout: 'inherit',
     stderr: 'inherit',
@@ -228,9 +260,11 @@ async function runPass(
   output: string,
   label: string,
   verifyTiles: boolean,
+  exportCanvases: boolean,
+  profile: boolean,
   dumpEvidence?: string,
 ): Promise<PassReport> {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true });
   const page = await context.newPage();
   const progressPath = join(output, `${label}-pass-${pass}.progress.jsonl`);
   await Deno.writeTextFile(progressPath, '');
@@ -260,140 +294,152 @@ async function runPass(
   let cpuProfile: unknown;
   let failed = false;
   const profilePath = join(output, `${label}-pass-${pass}.cpuprofile`);
-  try {
-    await cdp.send('Profiler.enable');
-    await cdp.send('Profiler.start');
-    profilerStarted = true;
-  } catch (error) {
-    console.warn(`CPU profiler unavailable for ${label} pass ${pass}: ${String(error)}`);
+  if (profile) {
+    try {
+      await cdp.send('Profiler.enable');
+      await cdp.send('Profiler.start');
+      profilerStarted = true;
+    } catch (error) {
+      console.warn(`CPU profiler unavailable for ${label} pass ${pass}: ${String(error)}`);
+    }
   }
   let report: PassReport;
   try {
-    report = await page.evaluate(async ([sourceURL, analysis, verify]: [string, number, boolean]) => {
-      const kit = (globalThis as any).longScreenKit;
-      const inputName = decodeURIComponent(sourceURL.split('/').pop() || 'recording');
-      const file = new File([await (await fetch(sourceURL)).blob()], inputName);
-      const db = await kit.Database.open();
-      const storage = { putManyCalls: 0, rows: 0, writeMS: 0 };
-      const originalPutMany = db.putMany.bind(db);
-      db.putMany = async (rows: Array<{ key: string; value: unknown }>) => {
+    report = await page.evaluate(
+      async ([sourceURL, analysis, verify]: [string, number, boolean]) => {
+        const kit = (globalThis as any).longScreenKit;
+        const inputName = decodeURIComponent(sourceURL.split('/').pop() || 'recording');
+        const file = new File([await (await fetch(sourceURL)).blob()], inputName);
+        const db = await kit.Database.open();
+        const storage = { putManyCalls: 0, rows: 0, writeMS: 0 };
+        const originalPutMany = db.putMany.bind(db);
+        db.putMany = async (rows: Array<{ key: string; value: unknown }>) => {
+          const started = performance.now();
+          storage.putManyCalls++;
+          storage.rows += rows.length;
+          try {
+            await originalPutMany(rows);
+          } finally {
+            storage.writeMS += performance.now() - started;
+          }
+        };
+        const source = await kit.openMedia(file);
+        const png = { encodes: 0, decodes: 0, encodedBytes: 0, decodedBytes: 0, encodeMS: 0, decodeMS: 0 };
+        const phases: Record<string, number> = {};
+        let phase = '', phaseStarted = performance.now(), lastProgressAt = 0;
+        const diagnostics: Record<string, number> = {};
+        const engine = new kit.Engine(db, source, { ...kit.DEFAULT_SETTINGS, analysisSize: analysis }, {
+          progress: (progress: { phase: string; frames: number }) => {
+            const now = performance.now();
+            const phaseChanged = progress.phase !== phase;
+            if (progress.phase !== phase) {
+              if (phase) phases[phase] = (phases[phase] || 0) + now - phaseStarted;
+              phase = progress.phase;
+              phaseStarted = now;
+            }
+            if (phaseChanged || now - lastProgressAt >= 10000) {
+              console.log(`BENCHMARK ${phase} (${progress.frames} frames)`);
+              lastProgressAt = now;
+            }
+          },
+          diagnostic: (diagnostic: { code: string }) => {
+            diagnostics[diagnostic.code] = (diagnostics[diagnostic.code] || 0) + 1;
+          },
+          project: () => {},
+        });
+        const originalCodec = engine.tiles.codec;
+        (engine.tiles as any).codec = {
+          encode: async (image: unknown) => {
+            const started = performance.now();
+            png.encodes++;
+            try {
+              const blob = await originalCodec.encode(image);
+              png.encodedBytes += blob.size;
+              return blob;
+            } finally {
+              png.encodeMS += performance.now() - started;
+            }
+          },
+          decode: async (blob: Blob, size: number) => {
+            const started = performance.now();
+            png.decodes++;
+            png.decodedBytes += blob.size;
+            try {
+              return await originalCodec.decode(blob, size);
+            } finally {
+              png.decodeMS += performance.now() - started;
+            }
+          },
+        };
         const started = performance.now();
-        storage.putManyCalls++;
-        storage.rows += rows.length;
-        try {
-          await originalPutMany(rows);
-        } finally {
-          storage.writeMS += performance.now() - started;
+        const project = await engine.run();
+        const seconds = (performance.now() - started) / 1000;
+        if (phase) phases[phase] = (phases[phase] || 0) + performance.now() - phaseStarted;
+        const performanceRow = await engine.store.get('performance');
+        const memory = await engine.store.get('memory-stats');
+        const canvases: Array<Record<string, unknown>> = [];
+        for await (const { value } of kit.iterate(engine.store, 'canvas/')) canvases.push(value);
+        const diagnosticsRows: Array<{ code: string }> = [];
+        for await (const { value } of kit.iterate(engine.store, 'diagnostic/')) diagnosticsRows.push(value);
+        const info = source.info;
+        source.dispose();
+        if (verify) {
+          (globalThis as any).benchmarkStore = engine.store;
+          (globalThis as any).benchmarkProject = project;
         }
-      };
-      const source = await kit.openMedia(file);
-      const png = { encodes: 0, decodes: 0, encodedBytes: 0, decodedBytes: 0, encodeMS: 0, decodeMS: 0 };
-      const phases: Record<string, number> = {};
-      let phase = '', phaseStarted = performance.now(), lastProgressAt = 0;
-      const diagnostics: Record<string, number> = {};
-      const engine = new kit.Engine(db, source, { ...kit.DEFAULT_SETTINGS, analysisSize: analysis }, {
-        progress: (progress: { phase: string; frames: number }) => {
-          const now = performance.now();
-          const phaseChanged = progress.phase !== phase;
-          if (progress.phase !== phase) {
-            if (phase) phases[phase] = (phases[phase] || 0) + now - phaseStarted;
-            phase = progress.phase;
-            phaseStarted = now;
-          }
-          if (phaseChanged || now - lastProgressAt >= 10000) {
-            console.log(`BENCHMARK ${phase} (${progress.frames} frames)`);
-            lastProgressAt = now;
-          }
-        },
-        diagnostic: (diagnostic: { code: string }) => {
-          diagnostics[diagnostic.code] = (diagnostics[diagnostic.code] || 0) + 1;
-        },
-        project: () => {},
-      });
-      const originalCodec = engine.tiles.codec;
-      (engine.tiles as any).codec = {
-        encode: async (image: unknown) => {
-          const started = performance.now();
-          png.encodes++;
-          try {
-            const blob = await originalCodec.encode(image);
-            png.encodedBytes += blob.size;
-            return blob;
-          } finally {
-            png.encodeMS += performance.now() - started;
-          }
-        },
-        decode: async (blob: Blob, size: number) => {
-          const started = performance.now();
-          png.decodes++;
-          png.decodedBytes += blob.size;
-          try {
-            return await originalCodec.decode(blob, size);
-          } finally {
-            png.decodeMS += performance.now() - started;
-          }
-        },
-      };
-      const started = performance.now();
-      const project = await engine.run();
-      const seconds = (performance.now() - started) / 1000;
-      if (phase) phases[phase] = (phases[phase] || 0) + performance.now() - phaseStarted;
-      const performanceRow = await engine.store.get('performance');
-      const memory = await engine.store.get('memory-stats');
-      const canvases: Array<Record<string, unknown>> = [];
-      for await (const { value } of kit.iterate(engine.store, 'canvas/')) canvases.push(value);
-      const diagnosticsRows: Array<{ code: string }> = [];
-      for await (const { value } of kit.iterate(engine.store, 'diagnostic/')) diagnosticsRows.push(value);
-      const info = source.info;
-      source.dispose();
-      if (verify) (globalThis as any).benchmarkStore = engine.store;
-      return {
-        pass: 0,
-        core: kit.corePlan ? { variant: kit.corePlan.variant, threads: kit.coreThreads(), reason: kit.corePlan.reason } : undefined,
-        crossOriginIsolated: (globalThis as any).crossOriginIsolated,
-        status: project.status,
-        error: project.error,
-        source: {
-          name: info.name,
-          width: info.width,
-          height: info.height,
-          duration: info.duration,
-          frames: info.frameCount,
-          codec: info.codec,
-          notices: info.notices,
-        },
-        pipeline: {
-          frames: project.frames,
-          renderedFrames: project.renderedFrames,
-          seconds,
-          phases,
-          persistedTimings: performanceRow,
-        },
-        consistency: {
-          exactDuplicateFrames: (performanceRow as any)?.exactDuplicateFrames,
-          skippedPaints: (performanceRow as any)?.skippedPaints,
-          votedLayers: (performanceRow as any)?.consistencyVotedLayers,
-          thinLayers: (performanceRow as any)?.consistencyThinLayers,
-          diagnostics: Object.fromEntries(
-            diagnosticsRows.reduce((counts, row) => counts.set(row.code, (counts.get(row.code) || 0) + 1), new Map<string, number>()),
-          ),
-        },
-        png,
-        storage,
-        memory: { stats: memory, native: {}, page: {} },
-        canvases: canvases.map((canvas) => ({
-          id: canvas.id as string,
-          kind: canvas.kind as string,
-          bounds: canvas.bounds,
-          tileCount: canvas.tileCount as number,
-          observedPixels: canvas.observedPixels as number,
-          conflictPixels: canvas.conflictPixels as number,
-        })),
-        browserErrors: [],
-        failedRequests: [],
-        externalRequests: [],
-      } satisfies PassReport;
-    }, [`${base}/recording/${encodeURIComponent(basename(input))}`, analysisSize, verifyTiles] as [string, number, boolean]);
+        return {
+          pass: 0,
+          core: kit.corePlan ? { variant: kit.corePlan.variant, threads: kit.coreThreads(), reason: kit.corePlan.reason } : undefined,
+          crossOriginIsolated: (globalThis as any).crossOriginIsolated,
+          status: project.status,
+          error: project.error,
+          source: {
+            name: info.name,
+            width: info.width,
+            height: info.height,
+            duration: info.duration,
+            frames: info.frameCount,
+            codec: info.codec,
+            notices: info.notices,
+          },
+          pipeline: {
+            frames: project.frames,
+            renderedFrames: project.renderedFrames,
+            seconds,
+            phases,
+            persistedTimings: performanceRow,
+          },
+          consistency: {
+            exactDuplicateFrames: (performanceRow as any)?.exactDuplicateFrames,
+            skippedPaints: (performanceRow as any)?.skippedPaints,
+            votedLayers: (performanceRow as any)?.consistencyVotedLayers,
+            thinLayers: (performanceRow as any)?.consistencyThinLayers,
+            diagnostics: Object.fromEntries(
+              diagnosticsRows.reduce((counts, row) => counts.set(row.code, (counts.get(row.code) || 0) + 1), new Map<string, number>()),
+            ),
+          },
+          png,
+          storage,
+          memory: { stats: memory, native: {}, page: {} },
+          canvases: canvases.map((canvas) => ({
+            id: canvas.id as string,
+            kind: canvas.kind as string,
+            bounds: canvas.bounds,
+            tileCount: canvas.tileCount as number,
+            observedPixels: canvas.observedPixels as number,
+            conflictPixels: canvas.conflictPixels as number,
+          })),
+          browserErrors: [],
+          failedRequests: [],
+          externalRequests: [],
+        } satisfies PassReport;
+      },
+      [`${base}/recording/${encodeURIComponent(basename(input))}`, analysisSize, verifyTiles || exportCanvases] as [
+        string,
+        number,
+        boolean,
+      ],
+    );
   } catch (error) {
     failed = true;
     await Deno.writeTextFile(
@@ -477,7 +523,6 @@ async function runPass(
           : undefined;
         tiles.push({ key, hashes: { ...hashes, pixels: await digest(image.data.slice().buffer) }, evidence });
       }
-      delete (globalThis as any).benchmarkStore;
       const evidenceFields = ['coverage', 'provisional', 'quality', 'conflicts', 'owner', 'score', 'frozen'];
       return {
         count: rows.length,
@@ -498,6 +543,45 @@ async function runPass(
     await Deno.writeTextFile(join(output, `${label}-pass-${pass}.tiles.json`), JSON.stringify(tiles));
     report.storedTiles = summary;
   }
+  if (exportCanvases) {
+    const evidence = await page.evaluate(async () => {
+      const kit = (globalThis as any).longScreenKit, store = (globalThis as any).benchmarkStore;
+      const rows: Record<string, unknown[]> = {};
+      for (const prefix of ['canvas/', 'observation/', 'node/', 'diagnostic/', 'reveal/']) {
+        rows[prefix] = [];
+        for await (const { key, value } of kit.iterate(store, prefix)) rows[prefix].push(prefix === 'reveal/' ? { key, ...value } : value);
+      }
+      const regions = (await store.get('regions')) || [];
+      return JSON.stringify(
+        { regions, rows },
+        (_, value) => ArrayBuffer.isView(value) ? Array.from(value as unknown as ArrayLike<number>) : value,
+      );
+    });
+    await Deno.writeTextFile(join(output, `${label}-pass-${pass}.evidence.json`), evidence);
+    for (const canvas of report.canvases.filter((c) => c.observedPixels > 0)) {
+      const url = await page.evaluate(async (id: string) => {
+        const kit = (globalThis as any).longScreenKit, store = (globalThis as any).benchmarkStore;
+        const meta = await store.get(`canvas/${id}`);
+        const result = await kit.exportCanvas(store, (globalThis as any).benchmarkProject, meta, () => {}, undefined, 'single');
+        const blob = result.blob ||
+          await (await navigator.storage.getDirectory()).getFileHandle(result.temporary).then((f: FileSystemFileHandle) => f.getFile());
+        return URL.createObjectURL(blob);
+      }, canvas.id);
+      const downloaded = page.waitForEvent('download');
+      await page.evaluate((url: string) => {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'canvas.png';
+        a.click();
+      }, url);
+      await (await downloaded).saveAs(join(output, `${label}-pass-${pass}-${canvas.id}.png`));
+      await page.evaluate((url: string) => URL.revokeObjectURL(url), url);
+    }
+  }
+  await page.evaluate(() => {
+    delete (globalThis as any).benchmarkStore;
+    delete (globalThis as any).benchmarkProject;
+  });
   await context.close();
   return report;
 }
@@ -529,7 +613,7 @@ function summarize(results: PassReport[]): BenchmarkReport['summary'] {
 }
 
 async function benchmarkRoot(options: Options, root: string, label: string): Promise<BenchmarkReport> {
-  await runBuild(root);
+  await runBuild(root, options.skipCoreBuild);
   const server = await startServer(root, options.input);
   const browserOptions: Parameters<typeof chromium.launch>[0] = { headless: true };
   const channel = Deno.env.get('LONGSCREEN_CHANNEL');
@@ -561,6 +645,8 @@ async function benchmarkRoot(options: Options, root: string, label: string): Pro
           options.output,
           label,
           options.verifyTiles,
+          options.exportCanvases,
+          !options.noProfile,
           options.dumpEvidence,
         );
       } catch (error) {
