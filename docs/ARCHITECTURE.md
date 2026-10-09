@@ -241,7 +241,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `layers.ts` — `LayerLearner`（累加器 handle 持有者）、`RegionAtlas`（原生分辨率标签平面持有者）、`stationaryBoundary`/`stickyOcclusions` 的转发；`regionContains` 的 TS 副本已删（R6-B，过滤逻辑移进 `rust/core/src/region.rs::filter_features`，见十二节 track 行），一次性构建仍留少量 TS 胶水（对象封送）。绑定转发层，兼少量编排。
 - `compositor.ts` — `Compositor`：瓦片缓存遍历、时间冲突分量/记录（内存索引，转发到 `rust/core/src/temporal.rs` 的 `temporalComponents`/`resolveTemporal`）、`add()`/`overwritePatch` 的 TS 侧编排，单瓦片像素合成已下沉到 `rust/core/src/compositor.rs`。TS 外壳：编排，绑定单瓦片内核。
 - `framing.ts` — `buildFramedCanvas`：瓦片缓存遍历、O(周长瓦片) 候选预检查、KV 读写；两趟逐瓦片像素工作转发到 `wasm/framing.ts`。TS 外壳：编排。
-- `keyframes.ts` — 关键帧原分辨率纹理片存取、回访检索；候选的 audit/精修/置信度/排序/最强候选/对手歧义判定全部在 Rust（一次 `core().keyframesEvaluateCandidates` 调用直接返回选中的候选），`evaluateCandidates` 现在只是把 `canonical` 映射解析、按目标画布 id 装箱成整数索引传进去，再把选中的候选装回 `Relocalization`，详见十二节 track 行。TS 外壳：编排，混合绑定转发。
+- `keyframes.ts` — 关键帧原分辨率纹理片存取、回访检索（关键帧存在 KV 的 `keyframe/` 下；视觉词倒排表只在 `solve()` 期间留在内存，不写成几万行小记录）；候选的 audit/精修/置信度/排序/最强候选/对手歧义判定全部在 Rust（一次 `core().keyframesEvaluateCandidates` 调用直接返回选中的候选），`evaluateCandidates` 现在只是把 `canonical` 映射解析、按目标画布 id 装箱成整数索引传进去，再把选中的候选装回 `Relocalization`，详见十二节 track 行。TS 外壳：编排，混合绑定转发。
 - `pose-graph.ts` — `PoseGraph`：节点/边的 KV I/O 与 `Map` 迭代顺序构建，`optimize()` 的停止检查点循环；单趟 Gauss-Seidel 松弛转发到 Rust。`correction()`（≈6 次浮点运算）保留纯 TS，见十二节。TS 外壳：编排 + I/O。
 - `compute.ts` — `AnalysisComputer`：WGSL compute shader 做灰度+整数降采样，首帧 CPU/GPU 位精确校准与自动回退；只加速 `gray()`。TS 外壳：浏览器 API（WebGPU）。
 - `wasm/*` 之外没有其它未列出的核心域模块。

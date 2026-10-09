@@ -76,6 +76,31 @@ Deno.test('MemoryKV/Namespace: deleteMany removes exactly the given keys, and de
   assertEquals((await ns.scan('row/', { limit: 1000 })).length, 0, 'deletePrefix must clear a prefix spanning more than one scan page');
   assertEquals(await ns.get('other/keep'), 'x', 'deletePrefix must not touch keys outside its own prefix');
 });
+Deno.test('deletePrefix: a store range delete and the paged fallback remove exactly the same keys', async () => {
+  const keys = ['row', 'row/', 'row/1', 'row/2/x', 'row0', 'rowx/1', 'ro', 'zz'];
+  const ranged = new MemoryKV();
+  // The same store with deletePrefix hidden, so the free function takes its scan + deleteMany path.
+  const paged = new MemoryKV();
+  const plain: KV = {
+    get: (k) => paged.get(k),
+    put: (k, v) => paged.put(k, v),
+    putMany: (r) => paged.putMany(r),
+    delete: (k) => paged.delete(k),
+    deleteMany: (k) => paged.deleteMany(k),
+    scan: (p, o) => paged.scan(p, o),
+  };
+  for (const key of keys) {
+    await ranged.put(key, key);
+    await paged.put(key, key);
+  }
+  await deletePrefix(ranged, 'row/');
+  await deletePrefix(plain, 'row/');
+  const left = ['ro', 'row', 'row0', 'rowx/1', 'zz'];
+  assertEquals((await ranged.scan('', { limit: 100 })).map((r) => r.key), left);
+  assertEquals((await paged.scan('', { limit: 100 })).map((r) => r.key), left);
+  await deletePrefix(ranged, 'nothing/');
+  assertEquals((await ranged.scan('', { limit: 100 })).length, left.length, 'an empty prefix match is a no-op');
+});
 Deno.test('tiles: LRU eviction persists dirty tiles, huge sparse coordinates round-trip losslessly through PNG', async () => {
   const db = new MemoryKV(), tiles = new TileStore(db, 256, 8);
   assertEquals(tiles.maxTiles, 8);

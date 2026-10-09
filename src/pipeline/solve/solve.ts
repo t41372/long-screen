@@ -381,11 +381,10 @@ class SolveRun {
       });
     }
     await ctx.store.put('graph-summary', { loops: this.graph.loops, ...result });
-    // scan-features/keyframe/word are scratch this pass alone consumed (relocalization postings and per-frame
-    // features); render() never reads them, so they are deleted here rather than carried to export or reopen.
+    // scan-features/ and keyframe/ are scratch this pass alone consumed (per-frame features and relocalization
+    // keyframes); render() never reads them, so they are deleted here rather than carried to export or reopen.
     await deletePrefix(ctx.store, 'scan-features/');
     await deletePrefix(ctx.store, 'keyframe/');
-    await deletePrefix(ctx.store, 'word/');
     await ctx.diagnostics.flush();
     await ctx.persist();
   }

@@ -218,7 +218,7 @@ export interface Project {
   error?: string;
   decodedBytes?: number;
   /** Storage layout version. 2: scan-time features live under scan-features/<frame> as compact typed arrays
-   * (not inline on ScanRecord), and keyframe/word/scan-features rows are deleted once solve() finishes with them. */
+   * (not inline on ScanRecord), and keyframe/ and scan-features/ rows are deleted once solve() finishes with them. */
   schema?: number;
 }
 export interface Progress {

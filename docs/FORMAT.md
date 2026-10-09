@@ -54,7 +54,7 @@ worldY = tileY * tileSize + inTileY
 
 ## consistency/&lt;frame&gt; ——内部暂存，不导出
 
-`consistency/<frame>` 是 `solve()`（`src/pipeline/solve/solve.ts`，投票环的求值在 `rust/core/src/voting.rs`）位移展开一致性投票（docs/ARCHITECTURE.md §七）的中间结果：每个存在的行是一个 `{ [regionId]: ConsistencyVote }` 记录，`ConsistencyVote` = box（`x0, y0, w, h`）+ 两张位图 `bits` 与 `clean`。两者都是分析分辨率（不是原生分辨率）下、以 `(x0,y0)` 为原点、`w×h` 的 row-major、低位先使用位图：`bits` 置位表示该分析格结算时判定为不一致，`clean` 置位表示判定为干净（比例阈值的镜像，且要求比较次数 ≥3），两者都不置位表示比较次数不足以下结论——这是三态，不是一份位图（详见 ARCHITECTURE §七）。只有该帧的某个移动区域至少有一格拿到结论（`bits` 或 `clean` 任一置位）时才会写这一行，多数帧完全不写。渲染阶段读取它（连同相邻两帧的同一份记录）、按分析因子放大到原生分辨率，驱动 `provisional` 位图（见上）——`consistency/<frame>` 本身只是过程数据，不代表最终瞬态状态，也不按世界坐标或画布坐标组织，只按屏幕/分析坐标。这些行是内部暂存：**保留，不在 `exportProject` 的 ZIP 里导出**（不同于 `scan-features/`、`keyframe/`、`word/`——那些在 `solve()` 结束时就被删除；`consistency/` 会在整个运行结束后继续留在本地存储里，供后续检查/调试用，只是不打包进离线结果）。
+`consistency/<frame>` 是 `solve()`（`src/pipeline/solve/solve.ts`，投票环的求值在 `rust/core/src/voting.rs`）位移展开一致性投票（docs/ARCHITECTURE.md §七）的中间结果：每个存在的行是一个 `{ [regionId]: ConsistencyVote }` 记录，`ConsistencyVote` = box（`x0, y0, w, h`）+ 两张位图 `bits` 与 `clean`。两者都是分析分辨率（不是原生分辨率）下、以 `(x0,y0)` 为原点、`w×h` 的 row-major、低位先使用位图：`bits` 置位表示该分析格结算时判定为不一致，`clean` 置位表示判定为干净（比例阈值的镜像，且要求比较次数 ≥3），两者都不置位表示比较次数不足以下结论——这是三态，不是一份位图（详见 ARCHITECTURE §七）。只有该帧的某个移动区域至少有一格拿到结论（`bits` 或 `clean` 任一置位）时才会写这一行，多数帧完全不写。渲染阶段读取它（连同相邻两帧的同一份记录）、按分析因子放大到原生分辨率，驱动 `provisional` 位图（见上）——`consistency/<frame>` 本身只是过程数据，不代表最终瞬态状态，也不按世界坐标或画布坐标组织，只按屏幕/分析坐标。这些行是内部暂存：**保留，不在 `exportProject` 的 ZIP 里导出**（不同于 `scan-features/`、`keyframe/`——那些在 `solve()` 结束时就被删除，重定位的视觉词倒排表只在 `solve()` 的内存里、不落盘；`consistency/` 会在整个运行结束后继续留在本地存储里，供后续检查/调试用，只是不打包进离线结果）。
 
 ## 帧记录
 
