@@ -161,15 +161,18 @@ export class Engine {
     let phaseStart = performance.now();
     await scan(ctx);
     ctx.timings.scanMS = performance.now() - phaseStart;
+    ctx.recordSource('scan');
     if (!ctx.project.frames) {
       throw new Error('No observations could be decoded. Nothing has been marked as reconstructed.');
     }
     phaseStart = performance.now();
     await solve(ctx);
     ctx.timings.solveMS = performance.now() - phaseStart;
+    ctx.recordSource('solve');
     phaseStart = performance.now();
     await render(ctx);
     ctx.timings.renderMS = performance.now() - phaseStart;
+    ctx.recordSource('render');
     await reveal(ctx);
     phaseStart = performance.now();
     await presentFraming(ctx);

@@ -245,8 +245,21 @@ export interface SkippedFrame {
   duration: number;
   index: number;
 }
+/** Where one decode of the source spent its time, as the consumer saw it (benchmark diagnostics). */
+export interface SourceStats {
+  /** Frames handed out, with or without pixels. */
+  frames: number;
+  /** Frames handed out with pixels. */
+  converted: number;
+  /** Waiting for the decoder to produce the next frame. */
+  decodeMS: number;
+  /** Waiting for a frame's conversion to RGBA (only the part not already overlapped by a prefetch). */
+  convertMS: number;
+}
 export interface FrameSource {
   info: MediaInfo;
+  /** The latest decode's timing, replaced (not reset in place) when the next decode starts. */
+  readonly stats?: SourceStats;
   frames(): AsyncGenerator<FrameImage>;
   /** Like `frames()`, but frames `want` declines are yielded without pixels, which saves converting them. Optional:
    *  a source without it is read with `frames()`. */

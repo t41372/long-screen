@@ -1,4 +1,4 @@
-import type { FrameImage, FrameSource, MediaInfo, MediaNotice, RGBA, Settings, SkippedFrame } from '../types.ts';
+import type { FrameImage, FrameSource, MediaInfo, MediaNotice, RGBA, Settings, SkippedFrame, SourceStats } from '../types.ts';
 import type { Demuxer } from './reader.ts';
 import { MediabunnyDemuxer } from './mediabunny-demux.ts';
 import { type FrameConverter, workerConverter } from './convert.ts';
@@ -71,6 +71,7 @@ export class Signal {
 export const DECODED_VIDEO_NOISE = 10;
 export class PreciseSource implements FrameSource {
   info: MediaInfo;
+  stats: SourceStats = { frames: 0, converted: 0, decodeMS: 0, convertMS: 0 };
   private cancelled = false;
   /** Milliseconds without decoder output before the run is declared stalled. Overridable for tests. */
   stallTimeout = 30000;
@@ -176,6 +177,7 @@ export class PreciseSource implements FrameSource {
     // own diagnostic counts. Without this, notices from earlier passes silently accumulate into later ones, and
     // since project.media is this exact object by reference, an exported manifest ends up N× over-reporting.
     info.notices = [];
+    const stats: SourceStats = this.stats = { frames: 0, converted: 0, decodeMS: 0, convertMS: 0 };
     let ended = false, producerDone = false, failure: unknown = null, submitted = 0, received = 0, lastOutput = performance.now();
     const decoder = new VideoDecoder({
       output: (frame) => {
@@ -277,7 +279,9 @@ export class PreciseSource implements FrameSource {
               } seconds. The committed prefix is retained.`,
             );
           }
+          const waiting = performance.now();
           await signal.wait();
+          stats.decodeMS += performance.now() - waiting;
           continue;
         }
         const frame = queue.shift()!;
@@ -307,10 +311,13 @@ export class PreciseSource implements FrameSource {
             await early?.then((image) => releaseUnlessHeld(image)).catch(() => {});
             frame.close();
             closed = true;
+            stats.frames++;
             yield { time, duration, index: index++ };
             continue;
           }
+          const converting = performance.now();
           const image = await (early ?? this.convert(frame, info));
+          stats.convertMS += performance.now() - converting;
           if (this.convert.prefetch && !this.cancelled) {
             for (let k = 0; k < Math.min(queue.length, PREFETCH); k++) {
               const next = queue[k];
@@ -322,6 +329,8 @@ export class PreciseSource implements FrameSource {
           }
           frame.close();
           closed = true;
+          stats.frames++;
+          stats.converted++;
           yield { image, time, duration, index: index++ };
         } finally {
           if (!closed) {

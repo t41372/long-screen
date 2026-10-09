@@ -219,6 +219,7 @@ async function sweep(
   ctx.timings[`reveal.${pass}.waitMS`] = waitMS;
   ctx.timings[`reveal.${pass}.uploadMS`] = uploadMS;
   ctx.timings[`reveal.${pass}.frames`] = converted;
+  ctx.recordSource(`reveal.${pass}`);
 }
 
 /** Copies each written block from the resident vote frame into its tile, one tile fetch per tile. */
