@@ -5,8 +5,9 @@ import { PoseGraph } from './core/pose-graph.ts';
 import { RegionAtlas } from './core/layers.ts';
 import { covered, markCovered, pngTileCodec, TileStore } from './storage/tiles.ts';
 import { DemoSource } from './media/demo.ts';
-import { CompatibilitySource, openDemuxer, openMedia, PreciseSource } from './media/source.ts';
+import { CompatibilitySource, frameConverter, openDemuxer, openMedia, PreciseSource } from './media/source.ts';
 import { canvasConverter, directConverter, planarConverter, workerConverter } from './media/convert.ts';
+import { gpuConverter } from './media/gpu-convert.ts';
 import { DEFAULT_SETTINGS } from './types.ts';
 import { buildScenario, SCENARIO_NAMES } from './synthetic/scenarios.ts';
 import { ScenarioSource } from './synthetic/source.ts';
@@ -45,6 +46,8 @@ const kit = {
   directConverter,
   planarConverter,
   workerConverter,
+  gpuConverter,
+  frameConverter,
   PreciseSource,
   CompatibilitySource,
   DEFAULT_SETTINGS,

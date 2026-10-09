@@ -81,7 +81,7 @@ export const pageSections: Catalog<typeof zh> = {
       computeWebgpu: 'WebGPU · CPU align',
       computeCpu: 'CPU only',
       computeHint:
-        'The GPU only speeds up the analysis thumbnails; matching and pixel compositing still run on the CPU. Auto mode measures transfer and readback and will not force the GPU when it is slower.',
+        'The GPU turns every decoded frame into pixels and shrinks the analysis thumbnails; matching and compositing still run on the CPU. Auto measures both ways first and only uses the GPU when it is faster.',
       decoderLabel: 'Decoding',
       decoderPrecise: 'Exact · WebCodecs',
       decoderCompatibility: 'Approximate · native seek',

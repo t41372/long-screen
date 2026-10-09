@@ -79,7 +79,7 @@ export const pageSections = {
       computeAuto: '自动 · 实测后选 WebGPU 或 CPU',
       computeWebgpu: 'WebGPU 分析 · CPU 配准',
       computeCpu: '仅 CPU',
-      computeHint: 'GPU 只加速分析缩图；匹配和像素合成仍用 CPU。自动模式包含传输与回读实测，较慢时不强行用 GPU。',
+      computeHint: 'GPU 负责把解码出的每一帧转成像素、缩出分析小图；匹配和拼接仍在 CPU 上。自动模式会先实测，GPU 不更快就不用它。',
       decoderLabel: '解码方式',
       decoderPrecise: '逐帧 · WebCodecs',
       decoderCompatibility: '近似 · 原生 seek',

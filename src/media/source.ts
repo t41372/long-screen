@@ -1,16 +1,22 @@
-import type { FrameImage, FrameSource, MediaInfo, MediaNotice, RGBA } from '../types.ts';
+import type { FrameImage, FrameSource, MediaInfo, MediaNotice, RGBA, Settings } from '../types.ts';
 import type { Demuxer } from './reader.ts';
 import { MediabunnyDemuxer } from './mediabunny-demux.ts';
 import { type FrameConverter, workerConverter } from './convert.ts';
 import { releaseUnlessHeld } from './pool.ts';
 import { t } from '../i18n/index.ts';
+/** Decoded frames an off-thread converter may be converting ahead of the one the pipeline is on; the decoder
+ *  buffers two (the producer's backpressure in `PreciseSource`). */
+const PREFETCH = 2;
 export async function openDemuxer(file: Blob): Promise<Demuxer> {
   return await new MediabunnyDemuxer(file).init();
 }
-export async function openMedia(
-  file: File,
-  convert: FrameConverter = workerConverter(new URL('./convert-worker.js', import.meta.url)),
-): Promise<FrameSource> {
+/** The shipped conversion chain: a worker converting with WebGPU when its first frame agrees with `copyTo(RGBA)` and
+ *  measures faster (or `compute` asks for it), otherwise with `copyTo(RGBA)`; frames the worker cannot take convert
+ *  in-thread (src/media/convert.ts). */
+export function frameConverter(compute: Settings['compute'] = 'auto'): FrameConverter {
+  return workerConverter(new URL('./convert-worker.js', import.meta.url), undefined, compute);
+}
+export async function openMedia(file: File, convert: FrameConverter = frameConverter()): Promise<FrameSource> {
   if (typeof VideoDecoder === 'undefined') {
     throw new Error(
       'WEBCODECS_UNAVAILABLE: This browser cannot provide frame-accurate decoding. Select the explicitly labelled compatibility mode, or use a browser with WebCodecs.',
@@ -243,10 +249,11 @@ export class PreciseSource implements FrameSource {
       }
     })();
     let index = 0, lastTimestamp = -Infinity;
-    // An off-thread converter is handed the next decoded frame while the pipeline works on the current one. This is
-    // speculative only: that frame's checks below still run, in order, when it is taken, and a frame they skip or
-    // reject just drops its early conversion.
-    let ahead: { frame: VideoFrame; image: Promise<RGBA> } | undefined;
+    // An off-thread converter is handed the next decoded frames (as many as the decoder has buffered, at most
+    // PREFETCH) while the pipeline works on the current one, so their round trips overlap. This is speculative only:
+    // each frame's checks below still run, in order, when it is taken, and a frame they skip or reject just drops
+    // its early conversion.
+    const ahead = new Map<VideoFrame, Promise<RGBA>>();
     try {
       while (!producerDone || queue.length) {
         if (failure) {
@@ -266,8 +273,8 @@ export class PreciseSource implements FrameSource {
           continue;
         }
         const frame = queue.shift()!;
-        const early = ahead?.frame === frame ? ahead.image : undefined;
-        ahead = undefined;
+        const early = ahead.get(frame);
+        ahead.delete(frame);
         signal.notify();
         let closed = false;
         try {
@@ -287,11 +294,16 @@ export class PreciseSource implements FrameSource {
             lastTimestamp = frame.timestamp;
           }
           this.checkFrameGeometry(frame, index);
-          const image = await (early ?? this.convert(frame, info)), time = frame.timestamp / 1e6, duration = (frame.duration || 0) / 1e6;
-          if (this.convert.prefetch && queue.length && !this.cancelled) {
-            const next = queue[0];
-            ahead = { frame: next, image: (async () => await this.convert(next, info))() };
-            ahead.image.catch(() => {});
+          const time = frame.timestamp / 1e6, duration = (frame.duration || 0) / 1e6;
+          const image = await (early ?? this.convert(frame, info));
+          if (this.convert.prefetch && !this.cancelled) {
+            for (let k = 0; k < Math.min(queue.length, PREFETCH); k++) {
+              const next = queue[k];
+              if (ahead.has(next)) continue;
+              const image = (async () => await this.convert(next, info))();
+              image.catch(() => {});
+              ahead.set(next, image);
+            }
           }
           frame.close();
           closed = true;
@@ -318,8 +330,8 @@ export class PreciseSource implements FrameSource {
       // Bounded by the converter's own timeout; a stopped pass leaves no conversion running into the next one. A
       // frame that did convert here was never yielded to any pass, so nothing else can be holding its pool
       // buffer — release it now or it (and the buffer behind it) is simply lost, not reused.
-      await ahead?.image.then((image) => releaseUnlessHeld(image)).catch(() => {});
-      ahead = undefined;
+      for (const image of ahead.values()) await image.then((image) => releaseUnlessHeld(image)).catch(() => {});
+      ahead.clear();
       await producer;
     }
   }

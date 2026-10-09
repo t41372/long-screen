@@ -63,6 +63,8 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 头less 运行 + Playwr
 
 `deno task test:browser` 在这台机器上有两个已知的 WebKit 失败，Chrome 侧没有：`browser webkit: LAN HTTP supports explicit native-seek reconstruction…`（`TimeoutError`，600000 ms 后超时——这一个测试会让整个套件跑超过 10 分钟）与 `browser (WebKit): without copyTo(RGBA) the core converts every frame…`（`EncodingError: Decoder failure`）。这两个是已知且预期的；出现在其他测试上的失败不是。
 
+`tests/browser/gpu-convert.test.ts` 覆盖 WebGPU 帧转换：真实解码帧和奇数尺寸的手工帧（I420/NV12、BT.709/BT.601、有限/全范围）与 Chrome 自己的 `copyTo(RGBA)` 的差距，BT.2020、旋转、没有 WebGPU、没有适配器、「仅 CPU」、首帧不一致、GPU 实测更慢时都不能走 GPU，选定 GPU 后设备丢失要让运行失败而不是换路，停在半路的一趟与下一趟逐字节相同，以及发货的 worker 转换链。Playwright 的 WebKit 没有 WebGPU，那一侧只验证干净地回退到平面转换。
+
 ### 编码差异如何处理
 
 同一份源像素，Chrome 的 H.264 路径解出来与源相差约每通道 1 级；VP9 路径则系统性偏暗（平均带符号差约 −19，最大 78）。这是解码器的色彩范围转换，不是重建错误。

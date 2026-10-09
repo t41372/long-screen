@@ -2,7 +2,7 @@ import { type CanvasMeta, DEFAULT_SETTINGS, type Diagnostic, type MediaInfo, typ
 import { Database } from './storage/db.ts';
 import { keepLatest, projectKey, runStore, sweepProjects } from './storage/projects.ts';
 import { Engine } from './pipeline/engine.ts';
-import { CompatibilitySource, openMedia, PreciseSource } from './media/source.ts';
+import { CompatibilitySource, frameConverter, openMedia, PreciseSource } from './media/source.ts';
 import { DemoSource } from './media/demo.ts';
 import { type CanvasLayout, exportCanvas, exportProject } from './export/project.ts';
 import { cleanupExport } from './export/target.ts';
@@ -145,7 +145,7 @@ const handlers: Handlers = {
         }
         source = new CompatibilitySource(payload.info as MediaInfo, settings.compatibilityFPS, requestFrame);
       } else {
-        source = await openMedia(payload.file as File);
+        source = await openMedia(payload.file as File, frameConverter(settings.compute));
       }
       for (const region of settings.regions) {
         const r = region.rect;
