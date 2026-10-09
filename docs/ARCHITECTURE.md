@@ -397,7 +397,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 
 ### scripts/ 工具
 
-- `build.ts` / `build-core.sh` — 应用构建（bundle + dist 静态资源 + THIRD_PARTY_NOTICES）与 Rust 核心三构建编译；后者是修改任何 `.rs` 后唯一允许的构建入口。
+- `build.ts` / `build-core.sh` — 应用构建（bundle + dist 静态资源 + THIRD_PARTY_NOTICES，并把构建所用的提交写进页脚：Cloudflare Pages 上取 `CF_PAGES_COMMIT_SHA`，本地取 git HEAD，工作区有改动时标 `-dirty`，两者都没有时页脚这一行保持隐藏，不让构建失败）与 Rust 核心三构建编译；后者是修改任何 `.rs` 后唯一允许的构建入口。
 - `fingerprint-scenarios.ts` / `compare-fingerprints.ts` — 24 个合成场景跑一遍并哈希每一条持久化记录；两份指纹逐行比较，任何差异退出码 1。
 - `compare-tiles.ts` — `benchmark-pipeline.ts --verify-tiles` 产出的逐瓦片指纹按字段比较，定位差异瓦片。
 - `benchmark-pipeline.ts` — 真实 Chrome（Playwright）下的端到端流水线基准，支持 `--baseline-root`/`--verify-tiles`；`--export-canvases` 另写出各画布 PNG 与局部真值检查要读的证据行，`--skip-core-build` 复用已构建的核心，`--no-profile` 不录 CPU profile。

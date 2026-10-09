@@ -161,6 +161,9 @@ try {
   if (production) {
     await Deno.remove(join(staging, 'harness.html')).catch(() => {});
   }
+  const commit = await buildCommit();
+  await Deno.writeTextFile(join(staging, 'index.html'), stampCommit(await Deno.readTextFile(join(staging, 'index.html')), commit));
+  console.log(`Footer build commit: ${commit?.label ?? 'unknown (no CF_PAGES_COMMIT_SHA, no git checkout), line left hidden'}`);
   const notices = await generateNotices(root, entries.map(([input]) => input));
   await Deno.writeTextFile(join(staging, 'THIRD_PARTY_NOTICES.txt'), notices);
   console.log(`THIRD_PARTY_NOTICES.txt → ${outName}/THIRD_PARTY_NOTICES.txt (${(notices.length / 1024).toFixed(1)} KB)`);
@@ -187,6 +190,39 @@ async function replaceable(dir: string): Promise<boolean> {
   const names = new Set<string>();
   for await (const entry of Deno.readDir(dir)) names.add(entry.name);
   return names.size === 0 || (names.has('index.html') && names.has('assets'));
+}
+/** The commit this build is made from, for the footer: Cloudflare Pages' `CF_PAGES_COMMIT_SHA` when building there,
+ *  otherwise git's HEAD, labelled `-dirty` when the working tree differs from it (modified, staged or untracked files,
+ *  the same test scripts/build-portable.ts names its zip by), so a local build of uncommitted changes never passes
+ *  for that commit. Never fails the build: without either source the footer line stays hidden. */
+async function buildCommit(): Promise<{ label: string; full: string } | undefined> {
+  const pages = Deno.env.get('CF_PAGES_COMMIT_SHA')?.trim();
+  if (pages && /^[0-9a-f]{7,40}$/i.test(pages)) return { label: pages.slice(0, 7), full: pages };
+  const git = async (...args: string[]): Promise<string | undefined> => {
+    try {
+      const result = await new Deno.Command('git', { args, cwd: root, stdout: 'piped', stderr: 'null' }).output();
+      return result.success ? new TextDecoder().decode(result.stdout).trim() : undefined;
+    } catch {
+      return undefined; // no git on PATH, or no permission to run it
+    }
+  };
+  const full = await git('rev-parse', 'HEAD'), short = await git('rev-parse', '--short', 'HEAD');
+  if (!full || !short) return undefined;
+  const status = await git('status', '--porcelain');
+  return { label: status ? `${short}-dirty` : short, full };
+}
+/** Shows static/index.html's footer build line with `commit`, linked to that commit on GitHub, or leaves it hidden. */
+function stampCommit(page: string, commit: { label: string; full: string } | undefined): string {
+  const line = '<p class="build-id" id="build-id" hidden>',
+    link = '<a id="build-commit" href="https://github.com/t41372/long-screen" target="_blank" rel="noopener"></a>';
+  if (page.split(line).length !== 2 || page.split(link).length !== 2) {
+    throw new Error('static/index.html: the footer build line (#build-id with an empty #build-commit link) is missing or duplicated.');
+  }
+  if (!commit) return page;
+  return page.replace(line, '<p class="build-id" id="build-id">').replace(
+    link,
+    `<a id="build-commit" href="https://github.com/t41372/long-screen/commit/${commit.full}" target="_blank" rel="noopener">${commit.label}</a>`,
+  );
 }
 /** Every `./<name>.js`/`./<name>.wasm` string literal inside each `new URL(...)` call in `text`, wherever it sits
  *  in the argument list (a bare second argument, or one arm of a ternary first argument). Scans balanced parens

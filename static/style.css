@@ -1319,6 +1319,16 @@ body.receipt-open {
   letter-spacing: 1px;
   color: var(--faint);
 }
+/* Which commit this page was built from (filled in by scripts/build.ts), so a report can name the version. */
+.app-footer .build-id {
+  margin-top: 10px;
+  letter-spacing: 0;
+}
+.build-id a {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: inherit;
+  text-underline-offset: 3px;
+}
 
 /* ---------- settings flap and notes sheet (Popover API) ---------- */
 /* Without popover support both are ordinary cards at the end of the page. */

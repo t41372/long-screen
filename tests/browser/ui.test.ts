@@ -18,6 +18,21 @@ Deno.test({
       await page.goto(h.base + '/');
       await page.waitForFunction('!!window.longScreen');
       await page.screenshot({ path: `${results}desktop-empty.png`, fullPage: true });
+      // The footer names the commit dist-test/ was built from (scripts/build.ts), linked to it on GitHub. That is a
+      // commit of this checkout, not necessarily HEAD: dist-test/ is only rebuilt when a build input changes.
+      const build = await page.evaluate(() => {
+        const line = document.querySelector<HTMLElement>('#build-id')!, link = document.querySelector<HTMLAnchorElement>('#build-commit')!;
+        return { hidden: line.hidden, label: link.textContent ?? '', href: link.href };
+      });
+      const full = build.href.match(/^https:\/\/github\.com\/t41372\/long-screen\/commit\/([0-9a-f]{40})$/)?.[1];
+      assert(
+        !build.hidden && full && /^[0-9a-f]{7,}(-dirty)?$/.test(build.label) && full.startsWith(build.label.replace('-dirty', '')),
+        JSON.stringify(build),
+      );
+      assert(
+        (await new Deno.Command('git', { args: ['cat-file', '-e', `${full}^{commit}`] }).output()).success,
+        `${full} is not a commit here`,
+      );
       await page.setInputFiles('#file-input', `${new URL('../fixtures/negative-cts-v0.mov', import.meta.url).pathname}`);
       await page.waitForFunction(() => document.querySelector('#file-subtitle')?.textContent?.includes('43 帧'), null, { timeout: 30000 });
       const subtitle = await page.textContent('#file-subtitle');
