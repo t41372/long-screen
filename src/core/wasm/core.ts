@@ -24,6 +24,7 @@ import * as composite from './compositor.ts';
 import type { CompositeObservation, PreparedObservation } from './compositor.ts';
 import { learner as learnerFactory, type LearnerHandle } from './layers.ts';
 import { type VotingRing, votingRing as votingRingFactory } from './voting.ts';
+import { type RevealRun, revealRun as revealRunFactory } from './reveal.ts';
 import {
   type FinishAccumulators,
   finishRegions as finishRegionsImpl,
@@ -121,6 +122,17 @@ export class Core {
   /** Current size of the core's linear memory (it only grows), for diagnostics. */
   get memoryBytes(): number {
     return this.exports.memory.buffer.byteLength;
+  }
+  /** Whether `bytes` can be allocated in the core right now (reusing freed space or growing linear memory), checked by
+   *  allocating them and freeing them again. A raw allocation that does not fit returns null instead of aborting the
+   *  core, so a large stage asks this first: linear memory only grows, and its size says nothing about the room left
+   *  under its ceiling (2 GiB for the threaded build, less where a phone reserved less). */
+  canAllocate(bytes: number): boolean {
+    if (!(bytes > 0) || bytes >= 2 ** 32) return bytes <= 0;
+    const ptr = this.exports.ls_alloc(bytes);
+    if (!ptr) return false;
+    this.exports.ls_free(ptr, bytes);
+    return true;
   }
   /** Threads computing inside kernels: the calling thread plus parked pool helpers. */
   get threads(): number {
@@ -234,6 +246,11 @@ export class Core {
     },
   ): VotingRing {
     return votingRingFactory(this, this.exports, regions, options);
+  }
+
+  /** Overlay-aware block selection over frames of `width × height` (rust/core/src/reveal/). */
+  revealRun(width: number, height: number, noise: number): RevealRun {
+    return revealRunFactory(this, this.exports, width, height, noise);
   }
 
   grayscale(rgba: Uint8ClampedArray, width: number, height: number): Gray {

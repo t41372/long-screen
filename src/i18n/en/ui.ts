@@ -8,6 +8,7 @@ export const uiSections: Catalog<typeof zh> = {
       solving: 'Global localization and native-pixel refinement',
       optimizing: 'Correcting loop closure and cumulative drift',
       rendering: 'Compositing the native-size sparse canvas',
+      revealing: 'Removing what floats over the page',
       framing: 'Keeping the frame and original aspect ratio',
       pyramid: 'Building a zoomable preview',
       complete: 'Complete · check diagnostics',

@@ -1,4 +1,4 @@
-import type { FrameImage, FrameSource, MediaInfo, MediaNotice, RGBA, Settings } from '../types.ts';
+import type { FrameImage, FrameSource, MediaInfo, MediaNotice, RGBA, Settings, SkippedFrame } from '../types.ts';
 import type { Demuxer } from './reader.ts';
 import { MediabunnyDemuxer } from './mediabunny-demux.ts';
 import { type FrameConverter, workerConverter } from './convert.ts';
@@ -164,6 +164,13 @@ export class PreciseSource implements FrameSource {
     }
   }
   async *frames(): AsyncGenerator<FrameImage> {
+    yield* this.decode() as AsyncGenerator<FrameImage>;
+  }
+  /** Every frame is decoded (later frames depend on it); the ones `want` declines are closed unconverted. */
+  async *sparseFrames(want: (index: number) => boolean): AsyncGenerator<FrameImage | SkippedFrame> {
+    yield* this.decode(want);
+  }
+  private async *decode(want?: (index: number) => boolean): AsyncGenerator<FrameImage | SkippedFrame> {
     const { demux, info } = this, queue: VideoFrame[] = [], signal = new Signal();
     // Engine calls frames() multiple times (scan, solve, render) on the same PreciseSource; each pass reports its
     // own diagnostic counts. Without this, notices from earlier passes silently accumulate into later ones, and
@@ -240,7 +247,8 @@ export class PreciseSource implements FrameSource {
           }
         }
       } catch (e) {
-        if (!ended) {
+        // A disposed source's demuxer throws on its next read; that is the cancellation, not a decode failure.
+        if (!ended && !this.cancelled) {
           failure = e;
         }
       } finally {
@@ -295,11 +303,18 @@ export class PreciseSource implements FrameSource {
           }
           this.checkFrameGeometry(frame, index);
           const time = frame.timestamp / 1e6, duration = (frame.duration || 0) / 1e6;
+          if (want && !want(index)) {
+            await early?.then((image) => releaseUnlessHeld(image)).catch(() => {});
+            frame.close();
+            closed = true;
+            yield { time, duration, index: index++ };
+            continue;
+          }
           const image = await (early ?? this.convert(frame, info));
           if (this.convert.prefetch && !this.cancelled) {
             for (let k = 0; k < Math.min(queue.length, PREFETCH); k++) {
               const next = queue[k];
-              if (ahead.has(next)) continue;
+              if (ahead.has(next) || (want && !want(index + 1 + k))) continue;
               const image = (async () => await this.convert(next, info))();
               image.catch(() => {});
               ahead.set(next, image);

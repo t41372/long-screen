@@ -244,6 +244,44 @@ export interface CoreExports {
   ls_voting_peek(handle: number, out: number): number;
   ls_voting_read(handle: number, which: number, bits: number, clean: number): number;
   ls_voting_pop(handle: number): number;
+  ls_reveal_new(width: number, height: number, noise: number): number;
+  ls_reveal_free(handle: number): void;
+  ls_reveal_layer(handle: number, x: number, y: number, width: number, height: number, code: number): number;
+  ls_reveal_canvas(handle: number, x: number, y: number, width: number, height: number): number;
+  ls_reveal_ingest(
+    handle: number,
+    canvas: number,
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    rgba: number,
+    coverage: number,
+  ): number;
+  ls_reveal_begin(handle: number, pass: number): number;
+  ls_reveal_canvas_bytes(width: number, height: number): number;
+  ls_reveal_layer_bytes(width: number, height: number): number;
+  ls_reveal_fallback_bytes(handle: number): number;
+  ls_reveal_fallbacks(handle: number, canvas: number, out: number, max: number): number;
+  ls_reveal_set_main(handle: number, canvas: number, gx: number, gy: number, rgba: number): number;
+  ls_reveal_frame(
+    handle: number,
+    index: number,
+    current: number,
+    prev: number,
+    prev2: number,
+    labels: number,
+    decisions: number,
+    count: number,
+  ): number;
+  ls_reveal_end(handle: number, last: number, before: number, labels: number): number;
+  ls_reveal_writes(handle: number, out: number, max: number): number;
+  ls_reveal_finish(handle: number, canvas: number): number;
+  ls_reveal_deferred(handle: number, k: number, out: number): number;
+  ls_reveal_summary(handle: number, out: number): number;
+  ls_reveal_provenance(handle: number, canvas: number, out: number, max: number): number;
+  ls_reveal_wanted(handle: number, frames: number, counts: number, decisions: number, out: number): number;
+  ls_reveal_admitted(handle: number, frames: number, counts: number, decisions: number, blind: number, out: number): number;
   ls_learner_new(width: number, height: number): number;
   ls_learner_free(handle: number): void;
   ls_learner_add(
@@ -485,6 +523,9 @@ export const EXTRACTED_PATCH_HEADER_BYTES = 24;
 export const KEYFRAME_BYTES = 64, CANDIDATE_RECORD_BYTES = 56;
 /** `ls_track_drift_correction`'s output record (`rust/core/src/abi/track_reacquire.rs::TRACK_DRIFT_CORRECTION_OUT_BYTES`). */
 export const TRACK_DRIFT_CORRECTION_OUT_BYTES = 40;
+/** Reveal-run decision descriptor, block-write record and deferred-block record (`rust/core/src/abi/reveal.rs`). */
+export const REVEAL_DECISION_BYTES = 24, REVEAL_WRITE_BYTES = 28, REVEAL_DEFERRED_BYTES = 16 + 16 * 16 * 4;
+export const REVEAL_PROVENANCE_HEADER_BYTES = 16;
 
 /** Selector → constant, in the order `rust/core/src/abi/mod.rs::ls_layout` matches them. */
 const LAYOUT = [
@@ -507,6 +548,10 @@ const LAYOUT = [
   KEYFRAME_BYTES,
   CANDIDATE_RECORD_BYTES,
   TRACK_DRIFT_CORRECTION_OUT_BYTES,
+  REVEAL_DECISION_BYTES,
+  REVEAL_WRITE_BYTES,
+  REVEAL_DEFERRED_BYTES,
+  REVEAL_PROVENANCE_HEADER_BYTES,
 ];
 
 /** Throws a clear error the moment a Rust/TS byte-layout constant has drifted, instead of a wrong answer or an

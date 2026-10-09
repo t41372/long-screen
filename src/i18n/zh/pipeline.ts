@@ -67,6 +67,11 @@ export const pipelineSections = {
       message: '{{pass}} 阶段只完成 {{actual}}/{{expected}} 帧；结果被标记为 partial。',
       action: '已保留成功提交的前缀；缺失的帧不会被静默当作已处理。',
     },
+    REVEAL_SKIPPED: {
+      message:
+        '这次拼出的画布太多或太大：清理浮层（光标、悬浮按钮、滚动条）还要大约 {{need}} MB 内存，已经不够了，所以这一步跳过了，直接用拼出来的像素。',
+      action: '其余结果不受影响。画布这么多，通常是录屏里有些段落没能和前后连上；把录屏剪短一些再拼，或换一台内存大的电脑。',
+    },
     COMPUTE_BACKEND: {
       message: '{{backend}} — {{reason}}。Rust 核心：{{variant}} 构建，{{threads}} 个计算线程（{{coreReason}}）。',
     },
@@ -171,6 +176,12 @@ export const pipelineSections = {
     runPartial: '已保存拼好的部分，结果标记为不完整。',
     runComplete: '拼好了。棋盘格是没拍到的地方，细节见日志。',
     render: '按原尺寸把拍到的画面拼起来，没拍到的地方留空。',
+    reveal: {
+      learn: '再看一遍录屏，找出一直浮在页面上的按钮、输入栏和滚动条。',
+      agree: '核对每一块页面在不同时刻是什么样子，没被挡住的那次说了算。',
+      relearn: '用核对过的页面，把浮在上面的东西再认一遍。',
+      write: '把被挡住或拼错的地方换成干净的那一帧。',
+    },
     framingStart: '还原窗口外框：只延伸背景，不拉伸侧栏文字，也不重复图标。',
     pyramidBuild: '正在生成预览，导出的原尺寸图不受影响。',
     scanFrame: '一帧一帧看录屏，找出哪些区域在动。',

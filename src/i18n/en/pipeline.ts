@@ -71,6 +71,12 @@ export const pipelineSections: Catalog<typeof zh> = {
       message: 'The {{pass}} stage only completed {{actual}}/{{expected}} frames; the result was marked partial.',
       action: 'The successfully committed prefix was kept; missing frames are never silently treated as processed.',
     },
+    REVEAL_SKIPPED: {
+      message:
+        'This print has too many or too large canvases: cleaning overlays (cursor, floating buttons, scrollbars) would need about {{need}} MB more memory than is left, so that step was skipped and the stitched pixels kept.',
+      action:
+        'The rest of the result is unaffected. So many canvases usually means parts of the recording could not be joined to what came before; a shorter recording, or a computer with more memory, helps.',
+    },
     COMPUTE_BACKEND: {
       message: '{{backend}} — {{reason}}. Rust core: {{variant}} build, compute threads: {{threads}} ({{coreReason}}).',
     },
@@ -205,6 +211,12 @@ export const pipelineSections: Catalog<typeof zh> = {
     runPartial: 'An explicitly marked partial reconstruction was saved.',
     runComplete: 'Reconstruction complete; check the diagnostics and unobserved areas.',
     render: 'Compositing native-size tiles from observed evidence; gaps stay transparent.',
+    reveal: {
+      learn: 'Watching the recording again to find buttons, input bars and scrollbars that float over the page.',
+      agree: 'Checking how each part of the page looked over time; an unobstructed view wins.',
+      relearn: 'Finding the floating elements again against the checked page.',
+      write: 'Replacing covered or mismatched areas with the clean frame.',
+    },
     framingStart: 'Preserving the original frame; only the background is extended, without stretching sidebar text or duplicating icons.',
     pyramidBuild: 'Building the on-disk preview pyramid; native-size tiles are unchanged.',
     scanFrame: 'Extracting geometric evidence frame by frame, learning independent motion regions.',

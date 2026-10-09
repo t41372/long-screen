@@ -44,7 +44,7 @@ worldY = tileY * tileSize + inTileY
 
 `blockSize=16`，数组 row-major。`quality` 范围 0…255，来自未校准的启发式评分，不是正确率。`conflicts` 表示曾出现明显像素不一致；解决后不清除历史冲突标记。`frozen` 表示 stable 策略已锁定的时间块。
 
-`ownerFrame`：0 为尚无来源；其他值等于零基源帧索引 + 1。它是整个块的代表来源，**不保证块中每个像素都来自这帧**（例如边界部分被之后观察补齐）。需要原视频与 observations、temporal 账本联合审计，不能把它解释成逐像素来源证书。
+`ownerFrame`：0 为尚无来源；其他值等于零基源帧索引 + 1。它是整个块的代表来源，**不保证块中每个像素都来自这帧**（例如边界部分被之后观察补齐）。需要原视频与 observations、temporal 账本联合审计，不能把它解释成逐像素来源证书。揭示阶段（docs/ARCHITECTURE.md §七）整块拷入的块，`ownerFrame` 改成拷贝来源那一帧；逐像素多数改写的块保持合成器原来的值。
 
 `observedPixels` 是覆盖数量。`conflictPixels` 是处理期间多次观察产生的累计差异计数，**不是最终图中互不重复的坏像素个数**。`uncertainPixels` 记录不确定观察首次补入的像素，后续质量改变并不使它成为严格最终错误统计。`provisionalPixels` 是当前仍未被修复的瞬态像素净数（世界一致性掩码找不到支持它的相邻帧、且至少有一个相邻帧与它矛盾——典型是屏幕坐标覆盖物：悬浮按钮、滚动条、鼠标指针、toast）；它会随后续观察涨落，不是单调递增的累计值，也不保证降到零（见 docs/ARCHITECTURE.md §七，以及 issue #2 记录的已知局限）。
 
@@ -55,6 +55,10 @@ worldY = tileY * tileSize + inTileY
 ## consistency/&lt;frame&gt; ——内部暂存，不导出
 
 `consistency/<frame>` 是 `solve()`（`src/pipeline/solve/solve.ts`，投票环的求值在 `rust/core/src/voting.rs`）位移展开一致性投票（docs/ARCHITECTURE.md §七）的中间结果：每个存在的行是一个 `{ [regionId]: ConsistencyVote }` 记录，`ConsistencyVote` = box（`x0, y0, w, h`）+ 两张位图 `bits` 与 `clean`。两者都是分析分辨率（不是原生分辨率）下、以 `(x0,y0)` 为原点、`w×h` 的 row-major、低位先使用位图：`bits` 置位表示该分析格结算时判定为不一致，`clean` 置位表示判定为干净（比例阈值的镜像，且要求比较次数 ≥3），两者都不置位表示比较次数不足以下结论——这是三态，不是一份位图（详见 ARCHITECTURE §七）。只有该帧的某个移动区域至少有一格拿到结论（`bits` 或 `clean` 任一置位）时才会写这一行，多数帧完全不写。渲染阶段读取它（连同相邻两帧的同一份记录）、按分析因子放大到原生分辨率，驱动 `provisional` 位图（见上）——`consistency/<frame>` 本身只是过程数据，不代表最终瞬态状态，也不按世界坐标或画布坐标组织，只按屏幕/分析坐标。这些行是内部暂存：**保留，不在 `exportProject` 的 ZIP 里导出**（不同于 `scan-features/`、`keyframe/`——那些在 `solve()` 结束时就被删除，重定位的视觉词倒排表只在 `solve()` 的内存里、不落盘；`consistency/` 会在整个运行结束后继续留在本地存储里，供后续检查/调试用，只是不打包进离线结果）。
+
+## reveal/&lt;canvas&gt; ——内部记录，不导出
+
+揭示阶段为每张移动画布写一行 `reveal/<canvasId>`：`{ version: 1, gx, gy, bw, bh, source }`。`(gx, gy)` 是 16px 世界块网格的原点（块坐标，世界坐标除以 16 向下取整），`bw × bh` 是网格大小，`source` 是 row-major 的 `Int32Array`，每块一个值：非负数是这一块**整块**拷自的零基源帧（块里每个像素都来自这一帧），`-1` 是揭示没有改写、保持合成器像素的块，`-2` 是逐像素多数改写、像素可能来自多帧的块。和 `ownerFrame` 不同，非负值是逐像素来源的证明，`scripts/check-recording-oracles.py` 的完整时刻检查只认它。这一行同一份 `reveal-summary`（物体数、动态分量数、各类块数、耗时）一样留在本地存储里，**不在 `exportProject` 的 ZIP 里导出**。
 
 ## 帧记录
 
@@ -80,6 +84,7 @@ worldY = tileY * tileSize + inTileY
 | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `MODEL_ASSUMPTIONS`                                                           | 声明本次重建采用的模型与其局限；`detail` 带 `noise`（本片源声明的每通道解码噪声，单位 RGB 级）、`lossless`、`source`、`codec`，记录世界一致性比较实际用的容差——无损片源为 0（逐像素精确），压缩视频为 10（H.264/VP9 振铃与色度重建余量），见 `MediaInfo.noise` |
 | `MEDIA_NOTICE`                                                                | 容器层面的提醒（HDR 等自由文本 demuxer 警告）。`NONSTANDARD_SIGNED_CTTS_V0`（见下）、`TRUNCATED_RECORDING`（文件在 mdat/moof 中途结束）是消息前缀而非诊断码，总以 `MEDIA_NOTICE`、`warning` 出现                                                               |
+| `REVEAL_SKIPPED`                                                              | 揭示阶段要的核心内存分配不下（画布太多或太大），这一步跳过，保留合成器的像素；`detail` 带 `stage`、`needMB`、`coreMB`                                                                                                                                          |
 | `ANALYSIS_PYRAMID`                                                            | 运动分析在缩图尺度进行，输出未跟随降采样                                                                                                                                                                                                                       |
 | `APPROXIMATE_DECODER`                                                         | 已明确启用原生 seek 兼容模式；不保证采到视频每一帧，短暂内容可能缺失                                                                                                                                                                                           |
 | `COMPUTE_BACKEND`                                                             | 首帧分析后台校准结果（CPU 或 WebGPU box-luma + CPU 配准）；`detail` 带 `calibration`（cpuMS/gpuMS/bitExact）时说明已经拿到过一个 GPU 设备                                                                                                                      |

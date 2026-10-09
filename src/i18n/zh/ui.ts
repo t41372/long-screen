@@ -6,6 +6,7 @@ export const uiSections = {
       solving: '给每一帧找位置',
       optimizing: '校正累积误差',
       rendering: '按原尺寸拼图',
+      revealing: '去掉浮在页面上的东西',
       framing: '还原窗口外框',
       pyramid: '生成预览',
       complete: '拼好了',

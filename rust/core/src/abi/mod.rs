@@ -35,6 +35,7 @@ mod pose_graph;
 mod pyramid;
 mod raster;
 mod regions;
+mod reveal;
 mod temporal;
 mod track;
 mod track_keyframes;
@@ -85,6 +86,10 @@ pub extern "C" fn ls_layout(which: u32) -> u32 {
         16 => KEYFRAME_BYTES,
         17 => CANDIDATE_RECORD_BYTES,
         18 => TRACK_DRIFT_CORRECTION_OUT_BYTES,
+        19 => reveal::REVEAL_DECISION_BYTES,
+        20 => reveal::REVEAL_WRITE_BYTES,
+        21 => reveal::REVEAL_DEFERRED_BYTES,
+        22 => reveal::REVEAL_PROVENANCE_HEADER_BYTES,
         _ => 0,
     }) as u32
 }

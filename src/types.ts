@@ -237,9 +237,20 @@ export interface FrameImage {
   duration: number;
   index: number;
 }
+/** A decoded frame a caller declined (`FrameSource.sparseFrames`): decoded, because later frames depend on it, but
+ *  never converted to RGBA. */
+export interface SkippedFrame {
+  image?: undefined;
+  time: number;
+  duration: number;
+  index: number;
+}
 export interface FrameSource {
   info: MediaInfo;
   frames(): AsyncGenerator<FrameImage>;
+  /** Like `frames()`, but frames `want` declines are yielded without pixels, which saves converting them. Optional:
+   *  a source without it is read with `frames()`. */
+  sparseFrames?(want: (index: number) => boolean): AsyncGenerator<FrameImage | SkippedFrame>;
   dispose(): void;
 }
 export interface TilePayload {

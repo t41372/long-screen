@@ -577,6 +577,8 @@ export function buildScenario(name: ScenarioName | string): Scenario {
       // off screen in every ring partner that clears Dmin, so no comparison is ever possible for it. That is
       // a property of where the recording stops, not of the detector. Only 2 of the 1,675 sit in analysis
       // cells the voting interior mask (`RegionSlot.interior`, rust/core/src/voting.rs) excludes from voting, so the mask is not what stands in the way.
+      // The reveal stage (docs/ARCHITECTURE.md §七) then replaces part of what is left: measured 2,766px total and
+      // 1,249px recoverable after it; maxContaminatedOverlay and maxContaminatedOverlayRecoverable are those +5%.
       return {
         name,
         description: '手机竖屏：状态栏、底部导航、悬浮按钮、滚动条、手抖。',
@@ -593,9 +595,9 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         frames: frames(path.length),
         expect: expect({
           fragments: { body: 0 },
-          maxContaminatedOverlay: 3352,
+          maxContaminatedOverlay: 2904,
           maxContaminatedOverlayUnobservable: 1517,
-          maxContaminatedOverlayRecoverable: 1759,
+          maxContaminatedOverlayRecoverable: 1311,
           maxProvisional: 1832,
           diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
@@ -796,6 +798,8 @@ export function buildScenario(name: ScenarioName | string): Scenario {
       // the leading edge one frame before the end is off screen in every ring partner that clears Dmin).
       // NONE of the 1,905 sit in analysis cells the voting interior mask (`RegionSlot.interior`, rust/core/src/voting.rs) excludes from voting.
       // maxProvisional is the net unhealed flag count at the end: measured 32,151px, +~5%.
+      // The reveal stage (docs/ARCHITECTURE.md §七) then replaces most of the recoverable residue: measured 1,966px total
+      // and 302px recoverable after it; maxContaminatedOverlay and maxContaminatedOverlayRecoverable are those +5%.
       return {
         name,
         description: '固定栏、悬浮按钮、toast、闪烁光标、实时计数器、播放中的视频同时存在。',
@@ -820,9 +824,9 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         frames: frames(path.length),
         expect: expect({
           fragments: { body: 0 },
-          maxContaminatedOverlay: 3748,
+          maxContaminatedOverlay: 2064,
           maxContaminatedOverlayUnobservable: 1664,
-          maxContaminatedOverlayRecoverable: 2001,
+          maxContaminatedOverlayRecoverable: 317,
           maxContaminatedDynamic: 60436,
           maxProvisional: 33759,
           diagnostics: { present: ['TEMPORAL_OR_ALIGNMENT_CONFLICT'], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
