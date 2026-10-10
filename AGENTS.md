@@ -16,8 +16,8 @@ deno task build:prod     # production dist/; build:portable makes the file:// si
 deno task check          # type check
 deno task test           # build:core + cargo test --lib + Deno unit and scenario tests
 deno task test:browser   # real Google Chrome + Playwright WebKit; builds and serves its own dist-test/
-deno task lint           # deno lint + cargo fmt --check + clippy (scalar and threads builds)
-deno task fmt            # deno fmt + cargo fmt (does not cover AGENTS.md)
+deno task lint           # deno fmt --check + deno lint + cargo fmt --check + clippy (scalar and threads builds)
+deno task fmt            # deno fmt + cargo fmt (deno.json's fmt.include leaves out AGENTS.md and the hand-written static/)
 deno task coverage       # tests plus per-file line-coverage floors in scripts/coverage.ts
 deno task fingerprint out.json   # hash every persisted row of every synthetic scenario
 ```
