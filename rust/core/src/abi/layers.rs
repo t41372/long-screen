@@ -117,7 +117,7 @@ pub extern "C" fn ls_learner_add(
 /// separate "counts" tuple (informative frames, native frames, native width, native height). Asserted against
 /// `src/core/wasm/layers.ts`'s `LEARNER_ARRAYS` via `ls_layout` selector 12, so an array added or removed on
 /// one side without the other is caught instead of silently misreading `which`.
-pub const LEARNER_ARRAY_COUNT: usize = 14;
+pub const LEARNER_ARRAY_COUNT: usize = 15;
 
 /// Accumulator selectors for `ls_learner_len`/`ls_learner_read`, in the adapter's field order; `LEARNER_ARRAY_COUNT`
 /// = counts (informative frames, native frames, native width, native height).
@@ -137,6 +137,7 @@ fn learner_array(l: &Learner, which: u32) -> Option<&[f64]> {
         11 => &l.native_row_change,
         12 => &l.native_col_change,
         13 => &l.native_col_mean,
+        14 => &l.col_moving,
         _ => return None,
     })
 }

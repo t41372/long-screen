@@ -515,7 +515,7 @@ export const REGIONS_FINISH_DESC_BYTES = 112, REGION_HEADER_BYTES = 88;
 export const LAYOUT_BYTES = 104;
 /** Named accumulator arrays `rust/core/src/abi/layers.rs::learner_array` recognises — must match
  *  `./learner.ts`'s `LEARNER_ARRAYS.length` (selector 14, "counts", is separate and not part of this count). */
-export const LEARNER_ARRAY_COUNT = 14;
+export const LEARNER_ARRAY_COUNT = 15;
 /** `ls_extract_patches`'/`ls_probe_scale`'s serialised `(x, y)` feature point: f64, f64. */
 export const POINT_BYTES = 16;
 /** One `ls_extract_patches` output patch header, immediately followed by its `size × size` data bytes. */

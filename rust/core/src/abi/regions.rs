@@ -96,6 +96,7 @@ unsafe fn run_finish(ptr: u32) -> Option<Vec<regions::RegionOut>> {
         Some((rw, rh, slice(reference_ptr, rw * rh * 4)?))
     };
     let factor = r.u32(104);
+    let col_moving = slice(r.u32(108), width * 8)?;
     let input = FinishInput {
         width,
         height,
@@ -104,6 +105,7 @@ unsafe fn run_finish(ptr: u32) -> Option<Vec<regions::RegionOut>> {
         native_frames: r.f64(24),
         row_change: as_f64_slice(row_change),
         col_change: as_f64_slice(col_change),
+        col_moving: as_f64_slice(col_moving),
         col_mean: as_f64_slice(col_mean),
         col_gain: as_f64_slice(col_gain),
         horizontal_gain: as_f64_slice(horizontal_gain),
