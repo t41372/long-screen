@@ -1,7 +1,18 @@
-import type { FrameImage, FrameSource, MediaInfo, MediaNotice, PlanarFrame, RGBA, Settings, SkippedFrame, SourceStats } from '../types.ts';
+import type {
+  FrameImage,
+  FramePlanes,
+  FrameSource,
+  MediaInfo,
+  MediaNotice,
+  PlanarFrame,
+  RGBA,
+  Settings,
+  SkippedFrame,
+  SourceStats,
+} from '../types.ts';
 import type { Demuxer } from './reader.ts';
 import { MediabunnyDemuxer } from './mediabunny-demux.ts';
-import { type FrameConverter, workerConverter } from './convert.ts';
+import { directConverter, type FrameConverter, planarConverter, workerConverter } from './convert.ts';
 import { releaseUnlessHeld } from './pool.ts';
 import { t } from '../i18n/index.ts';
 /** Decoded frames an off-thread converter may be converting ahead of the one the pipeline is on; the decoder
@@ -14,7 +25,8 @@ export async function openDemuxer(file: Blob): Promise<Demuxer> {
  *  measures faster (or `compute` asks for it), otherwise with `copyTo(RGBA)`; frames the worker cannot take convert
  *  in-thread (src/media/convert.ts). */
 export function frameConverter(compute: Settings['compute'] = 'auto'): FrameConverter {
-  return workerConverter(new URL('./convert-worker.js', import.meta.url), undefined, compute);
+  const planar = planarConverter();
+  return workerConverter(new URL('./convert-worker.js', import.meta.url), directConverter(planar), compute, planar);
 }
 export async function openMedia(file: File, convert: FrameConverter = frameConverter()): Promise<FrameSource> {
   if (typeof VideoDecoder === 'undefined') {
@@ -272,6 +284,10 @@ export class PreciseSource implements FrameSource {
     // each frame's checks below still run, in order, when it is taken, and a frame they skip or reject just drops
     // its early conversion.
     const ahead = new Map<VideoFrame, Promise<RGBA>>();
+    // The same for planes handed out to a caller that converts them itself (`planes`): a worker copies the next frames'
+    // planes while the caller works.
+    const aheadPlanes = new Map<VideoFrame, Promise<FramePlanes | undefined>>();
+    const dropPlanes = async (early?: Promise<FramePlanes | undefined>) => await early?.then((p) => p?.release()).catch(() => {});
     try {
       while (!producerDone || queue.length) {
         if (failure) {
@@ -293,8 +309,9 @@ export class PreciseSource implements FrameSource {
           continue;
         }
         const frame = queue.shift()!;
-        const early = ahead.get(frame);
+        const early = ahead.get(frame), earlyPlanes = aheadPlanes.get(frame);
         ahead.delete(frame);
+        aheadPlanes.delete(frame);
         signal.notify();
         let closed = false;
         try {
@@ -303,6 +320,7 @@ export class PreciseSource implements FrameSource {
             // frame is never yielded, so its already-started prefetch (`early`, if the source was one step ahead
             // of the decoder) would otherwise convert into an image nothing ever releases.
             await early?.then((image) => releaseUnlessHeld(image)).catch(() => {});
+            await dropPlanes(earlyPlanes);
             this.notice('NEGATIVE_TIMESTAMP_SKIPPED', t('media.NEGATIVE_TIMESTAMP_SKIPPED'));
             continue;
           }
@@ -317,6 +335,7 @@ export class PreciseSource implements FrameSource {
           const time = frame.timestamp / 1e6, duration = (frame.duration || 0) / 1e6;
           if (want && !want(index)) {
             await early?.then((image) => releaseUnlessHeld(image)).catch(() => {});
+            await dropPlanes(earlyPlanes);
             frame.close();
             closed = true;
             stats.frames++;
@@ -325,9 +344,18 @@ export class PreciseSource implements FrameSource {
           }
           const converting = performance.now();
           // The caller converts planes itself when the run converts on the CPU (`FrameConverter.planes`).
-          const own = planes && !early ? await this.convert.planes?.(frame, info) : undefined;
+          const own = planes && !early ? (await earlyPlanes) ?? await this.convert.planes?.(frame, info) : undefined;
           if (own) {
             stats.convertMS += performance.now() - converting;
+            if (depth() && !this.cancelled) {
+              for (let k = 0; k < Math.min(queue.length, depth()); k++) {
+                const next = queue[k];
+                if (aheadPlanes.has(next) || ahead.has(next) || (want && !want(index + 1 + k))) continue;
+                const copy = this.convert.planes!(next, info);
+                copy.catch(() => {});
+                aheadPlanes.set(next, copy);
+              }
+            }
             frame.close();
             closed = true;
             stats.frames++;
@@ -374,6 +402,8 @@ export class PreciseSource implements FrameSource {
       // frame that did convert here was never yielded to any pass, so nothing else can be holding its pool
       // buffer — release it now or it (and the buffer behind it) is simply lost, not reused.
       for (const image of ahead.values()) await image.then((image) => releaseUnlessHeld(image)).catch(() => {});
+      for (const copy of aheadPlanes.values()) await dropPlanes(copy);
+      aheadPlanes.clear();
       ahead.clear();
       await producer;
     }

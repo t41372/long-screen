@@ -20,11 +20,16 @@ interface ConvertRequest {
   width: number;
   height: number;
   compute?: Settings['compute'];
+  /** Copy the frame's own planes instead of converting it (the planar path; the core converts on the other side). */
+  planes?: boolean;
 }
 interface ReleaseMessage {
   release: ArrayBuffer;
+  planes?: boolean;
 }
 const pool = new BufferPool();
+/** Plane copies have their own size, so their own pool. */
+const planesPool = new BufferPool();
 /** copyTo(RGBA) into this worker's pool, the GPU converter's fallback. */
 const copyTo = Object.assign(async (frame: VideoFrame, info: MediaInfo): Promise<RGBA> => {
   const width = info.codedWidth, height = info.codedHeight, buffer = pool.takeBuffer(width * height * 4);
@@ -44,10 +49,24 @@ const scope = globalThis as unknown as {
 };
 scope.onmessage = async ({ data }) => {
   if ('release' in data) {
-    pool.releaseBuffer(data.release);
+    (data.planes ? planesPool : pool).releaseBuffer(data.release);
     return;
   }
   const { id, frame, width, height } = data;
+  if (data.planes) {
+    let buffer: ArrayBuffer | undefined;
+    try {
+      buffer = planesPool.takeBuffer(frame.allocationSize());
+      const layout = await frame.copyTo(new Uint8Array(buffer));
+      scope.postMessage({ id, buffer, layout }, [buffer]);
+    } catch (error) {
+      if (buffer) planesPool.releaseBuffer(buffer);
+      scope.postMessage({ id, error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      frame.close();
+    }
+    return;
+  }
   convert ??= gpuConverter(copyTo, data.compute, undefined, pool);
   try {
     // Every buffer here comes from `pool` (both conversions take from it), and the main thread transfers it back

@@ -86,9 +86,20 @@ const FRAME_FORMATS: Record<string, number> = { I420: 0, I422: 1, I444: 2, NV12:
  *  conversion. The first frame is also converted by `fallback` and the planar path is only taken for the run when
  *  the two agree (a browser's native-layout copyTo can misplace planes); the choice is made before any frame is
  *  returned and never changes afterwards, so a run never mixes two conversions. Rotated containers keep the canvas. */
+/** What converting a frame's planes in the core needs: the core's format and matrix codes and the frame size. */
+export type PlaneSpec = Pick<FramePlanes, 'format' | 'matrix' | 'width' | 'height'>;
+export type PlanarConverter = FrameConverter & {
+  readonly planar?: boolean;
+  readonly check?: PlanarCheck;
+  /** This frame's `PlaneSpec` once the run has settled on the planar path; undefined while undecided, after the
+   *  path was rejected, and for a frame `convert` would refuse. */
+  spec(frame: VideoFrame, info: MediaInfo): PlaneSpec | undefined;
+  /** RGBA of planes copied elsewhere (a worker), converted exactly as `convert` converts its own copy. */
+  fromPlanes(planes: FramePlanes): RGBA;
+};
 export function planarConverter(
   fallback: FrameConverter = canvasConverter(),
-): FrameConverter & { readonly planar?: boolean; readonly check?: PlanarCheck } {
+): PlanarConverter {
   // One reused buffer for the planes; a conversion that starts while another is still copying (a prefetched frame
   // the source then skipped) gets its own, so two copies never land in the same bytes.
   let scratch: ArrayBuffer | undefined, busy = false, planar: boolean | undefined, check: PlanarCheck | undefined;
@@ -139,28 +150,38 @@ export function planarConverter(
       : planar === false
       ? `${fallback.describe?.() ?? 'fallback'}${check ? ` (planar rejected: ${check.meanDiff.toFixed(1)} from canvas)` : ''}`
       : 'undecided';
-  // The planes `convert` would convert, for a caller that runs the same core conversion into core memory itself. A
-  // frame `convert` would refuse comes back undefined, so the caller's `convert` call reports it the same way.
-  const planesPool = new BufferPool();
-  const planes = async (frame: VideoFrame, info: MediaInfo): Promise<FramePlanes | undefined> => {
+  const spec = (frame: VideoFrame, info: MediaInfo): PlaneSpec | undefined => {
     const format = frame.format ? FRAME_FORMATS[frame.format] : undefined, width = info.codedWidth, height = info.codedHeight;
     const matrix = matrixCode(frame.colorSpace ?? undefined, frame.format ?? undefined, height);
     const rect = frame.visibleRect;
     if (planar !== true || info.rotation !== 0 || format === undefined || matrix === undefined) return undefined;
     if (typeof frame.copyTo !== 'function' || (rect && (rect.width !== width || rect.height !== height))) return undefined;
+    return { format, matrix, width, height };
+  };
+  const fromPlanes = (p: FramePlanes): RGBA => {
+    const image = pool.take(p.width, p.height);
+    core().frameToRGBA(p.data, p.format, p.layout, p.width, p.height, p.matrix, image.data);
+    return image;
+  };
+  // The planes `convert` would convert, for a caller that runs the same core conversion into core memory itself. A
+  // frame `convert` would refuse comes back undefined, so the caller's `convert` call reports it the same way.
+  const planesPool = new BufferPool();
+  const planes = async (frame: VideoFrame, info: MediaInfo): Promise<FramePlanes | undefined> => {
+    const own = spec(frame, info);
+    if (!own) return undefined;
     const buffer = planesPool.takeBuffer(frame.allocationSize());
     try {
       const data = new Uint8Array(buffer), layout = await frame.copyTo(data);
-      return { data, layout, format, matrix, width, height, release: () => planesPool.releaseBuffer(buffer) };
+      return { data, layout, ...own, release: () => planesPool.releaseBuffer(buffer) };
     } catch {
       planesPool.releaseBuffer(buffer);
       return undefined;
     }
   };
-  return Object.defineProperties(Object.assign(convert, { describe, planes }), {
+  return Object.defineProperties(Object.assign(convert, { describe, planes, spec, fromPlanes }), {
     planar: { get: () => planar },
     check: { get: () => check },
-  });
+  }) as PlanarConverter;
 }
 /** Frames converted per path by a `workerConverter`, and why the worker path was abandoned, if it was. */
 export interface WorkerConversionCounts {
@@ -169,6 +190,8 @@ export interface WorkerConversionCounts {
   /** Conversion workers started. More than one only once the first has settled on `copyTo(RGBA)`: the same browser
    *  call in every worker, so the same pixels, with conversions that no longer queue behind each other. */
   workers: number;
+  /** Frames whose planes a worker copied for the planar path (Safari). */
+  planes: number;
   reason?: string;
 }
 /** Conversion workers a CPU-converting run may use: Firefox's copyTo(RGBA) of a retina frame takes ~16 ms, so one
@@ -184,15 +207,22 @@ const maxWorkers = () =>
  *  RGBA copy, a size the run does not expect) and every worker failure (no Worker, a frame that cannot be
  *  transferred, a failed or timed-out conversion) convert in-thread instead, and a failure retires the worker for
  *  this source. Until the worker has produced a frame the in-thread path is `fallback` (which may choose the canvas);
- *  afterwards it is the plain in-thread `copyTo`, never the canvas, so one run never mixes two YUV→RGB conversions. */
+ *  afterwards it is the plain in-thread `copyTo`, never the canvas, so one run never mixes two YUV→RGB conversions.
+ *
+ *  In a browser whose copyTo cannot produce RGBA (Safari), `fallback` settles on `planar`; from then on the worker
+ *  copies each frame's own planes (a synchronous copy that otherwise blocks the pipeline thread) and `planar` converts
+ *  them here, exactly as it converts its own copy. */
 export function workerConverter(
   url: URL,
   fallback: FrameConverter = directConverter(),
   /** The acceleration setting: whether the worker may convert on the GPU (src/media/gpu-convert.ts). */
   compute: Settings['compute'] = 'auto',
+  /** The planar converter inside `fallback`, when there is one (`frameConverter`). */
+  planar?: PlanarConverter,
 ): FrameConverter & { counts: WorkerConversionCounts } {
-  const counts: WorkerConversionCounts = { worker: 0, inThread: 0, workers: 0 };
-  const waiting = new Map<number, { resolve(buffer: ArrayBuffer): void; reject(error: Error): void }>();
+  const counts: WorkerConversionCounts = { worker: 0, inThread: 0, workers: 0, planes: 0 };
+  type Reply = { buffer: ArrayBuffer; layout?: { offset: number; stride: number }[] };
+  const waiting = new Map<number, { resolve(reply: Reply): void; reject(error: Error): void }>();
   // In-thread fallback frames (the worker unavailable or not yet proven) get their own pool; the worker's own
   // reply buffers are pooled on ITS side (convert-worker.ts) and returned there by `release()` below — the two
   // never share a free list, so a buffer belonging to one side is never handed to the other's `postMessage`.
@@ -233,14 +263,14 @@ export function workerConverter(
   const start = (): Worker | undefined => {
     try {
       const w = new Worker(url, { type: 'module' }), first = !workers.length;
-      w.onmessage = ({ data }: MessageEvent<{ id: number; buffer?: ArrayBuffer; error?: string; describe?: string }>) => {
+      w.onmessage = ({ data }: MessageEvent<{ id: number; error?: string; describe?: string } & Partial<Reply>>) => {
         const pending = waiting.get(data.id);
         waiting.delete(data.id);
         if (data.describe && first) {
           method = data.describe;
           cpu = !method.startsWith('WebGPU');
         }
-        if (data.buffer) pending?.resolve(data.buffer);
+        if (data.buffer) pending?.resolve({ buffer: data.buffer, layout: data.layout });
         else pending?.reject(new Error(data.error || 'no pixels'));
       };
       w.onerror = (event: ErrorEvent) => {
@@ -262,13 +292,14 @@ export function workerConverter(
     const idle = workers.reduce((a, b) => inFlight.get(a)! <= inFlight.get(b)! ? a : b);
     return inFlight.get(idle)! > 0 && cpu && workers.length < maxWorkers() ? start() ?? idle : idle;
   };
-  const convert = async (frame: VideoFrame, info: MediaInfo): Promise<RGBA> => {
-    if (!takes(frame, info)) return inThread(frame, info);
+  /** Sends a clone of `frame` to a worker and waits for its reply: RGBA, or with `planes` the frame's own planes.
+   *  Throws on any failure; the caller retires the workers and converts in-thread. */
+  const request = async (frame: VideoFrame, info: MediaInfo, planes: boolean): Promise<Reply & { target: Worker }> => {
     const target = pick();
-    if (!target) return inThread(frame, info);
+    if (!target) throw new Error(counts.reason ?? 'conversion worker unavailable');
     const width = info.codedWidth, height = info.codedHeight, id = sequence++;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const reply = new Promise<ArrayBuffer>((resolve, reject) => {
+    const reply = new Promise<Reply>((resolve, reject) => {
       waiting.set(id, { resolve, reject });
       timer = setTimeout(() => retire('conversion worker timed out'), WORKER_CONVERSION_TIMEOUT);
     });
@@ -276,42 +307,71 @@ export function workerConverter(
     const clone = frame.clone();
     try {
       // A worker after the first converts the way the first settled on: copyTo, never trying the GPU itself.
-      target.postMessage({ id, frame: clone, width, height, compute: target === workers[0] ? compute : 'cpu' }, [
+      target.postMessage({ id, frame: clone, width, height, planes, compute: target === workers[0] ? compute : 'cpu' }, [
         clone as unknown as Transferable,
       ]);
     } catch (error) {
       clearTimeout(timer);
       clone.close();
       waiting.delete(id);
-      retire(`VideoFrame could not be transferred: ${error instanceof Error ? error.message : String(error)}`);
-      return inThread(frame, info);
+      throw new Error(`VideoFrame could not be transferred: ${error instanceof Error ? error.message : String(error)}`);
     }
     inFlight.set(target, (inFlight.get(target) ?? 0) + 1);
     try {
-      const buffer = await reply;
-      if (buffer.byteLength !== width * height * 4) throw new Error(`conversion worker returned ${buffer.byteLength} bytes`);
-      succeeded = true;
-      counts.worker++;
-      let released = false;
-      // Released back across the postMessage boundary (transferred, not copied) so the worker's own pool
-      // (convert-worker.ts) can reuse it for the next frame instead of allocating a fresh 30 MB buffer.
-      const release = () => {
-        if (released) return;
-        released = true;
-        try {
-          target.postMessage({ release: buffer }, [buffer]);
-        } catch {
-          // The worker was retired (terminated) between this frame converting and its release; nothing to give
-          // the buffer back to, and nothing to leak either — it is just GC'd like any other detached buffer.
-        }
-      };
-      return Object.assign({ width, height, data: new Uint8ClampedArray(buffer) }, { release });
-    } catch (error) {
-      retire(error instanceof Error ? error.message : String(error));
-      return inThread(frame, info);
+      return { ...await reply, target };
     } finally {
       clearTimeout(timer);
       if (inFlight.has(target)) inFlight.set(target, inFlight.get(target)! - 1);
+    }
+  };
+  /** Gives a reply buffer back to the worker that lent it (transferred, not copied), so its pool reuses it. */
+  const lender = (target: Worker, buffer: ArrayBuffer, planes: boolean) => {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      try {
+        target.postMessage({ release: buffer, planes }, [buffer]);
+      } catch {
+        // The worker was retired (terminated) between this frame converting and its release; nothing to give
+        // the buffer back to, and nothing to leak either — it is just GC'd like any other detached buffer.
+      }
+    };
+  };
+  /** This frame's planes copied in a worker, once `planar` has settled; undefined otherwise or when the worker fails. */
+  const workerPlanes = async (frame: VideoFrame, info: MediaInfo): Promise<FramePlanes | undefined> => {
+    const spec = retired || typeof frame.clone !== 'function' ? undefined : planar?.spec(frame, info);
+    if (!spec) return undefined;
+    try {
+      const { buffer, layout, target } = await request(frame, info, true);
+      if (!layout) throw new Error('conversion worker returned planes without their layout');
+      counts.planes++;
+      return { data: new Uint8Array(buffer), layout, ...spec, release: lender(target, buffer, true) };
+    } catch (error) {
+      retire(error instanceof Error ? error.message : String(error));
+      return undefined;
+    }
+  };
+  const convert = async (frame: VideoFrame, info: MediaInfo): Promise<RGBA> => {
+    if (!takes(frame, info)) {
+      const planes = await workerPlanes(frame, info);
+      if (!planes) return inThread(frame, info);
+      try {
+        return planar!.fromPlanes(planes);
+      } finally {
+        planes.release();
+      }
+    }
+    const width = info.codedWidth, height = info.codedHeight;
+    try {
+      const { buffer, target } = await request(frame, info, false);
+      if (buffer.byteLength !== width * height * 4) throw new Error(`conversion worker returned ${buffer.byteLength} bytes`);
+      succeeded = true;
+      counts.worker++;
+      return Object.assign({ width, height, data: new Uint8ClampedArray(buffer) }, { release: lender(target, buffer, false) });
+    } catch (error) {
+      retire(error instanceof Error ? error.message : String(error));
+      return inThread(frame, info);
     }
   };
   const describe = () =>
@@ -319,10 +379,10 @@ export function workerConverter(
       ? `${method} in ${
         counts.workers > 1 ? `${counts.workers} workers` : 'a worker'
       } (${counts.worker} frames, ${counts.inThread} in-thread)`
-      : fallback.describe?.() ?? 'fallback';
+      : `${fallback.describe?.() ?? 'fallback'}${counts.planes ? ` (planes copied in a worker: ${counts.planes} frames)` : ''}`;
   // Planes only where this frame would convert in-thread through `fallback` (never once the worker has converted).
   const planes = async (frame: VideoFrame, info: MediaInfo) =>
-    succeeded || takes(frame, info) ? undefined : await fallback.planes?.(frame, info);
+    succeeded || takes(frame, info) ? undefined : await workerPlanes(frame, info) ?? await fallback.planes?.(frame, info);
   return Object.defineProperties(Object.assign(convert, { counts, describe, planes, dispose: () => retire('disposed') }), {
     // One frame ahead per worker a CPU run may use, so they all have work; the default depth otherwise.
     prefetch: { get: () => cpu ? Math.max(2, maxWorkers()) : true },

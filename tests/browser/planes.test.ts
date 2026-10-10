@@ -86,3 +86,77 @@ for (const browser of ['chromium', 'webkit'] as const) {
     },
   });
 }
+
+// In WebKit (no RGBA copy) the shipped converter chain copies planes in the conversion worker and converts them on
+// the pipeline thread. Failure cases: worker-copied planes or the RGBA made from them differing from the in-thread
+// planar conversion; frames out of order once copies run ahead; the worker never actually used; a broken worker
+// changing the output instead of falling back in-thread; plane buffers given back to the wrong pool (a later frame
+// would come out corrupted).
+Deno.test({
+  name: 'browser (webkit): planes copied in the conversion worker give the same frames as the in-thread planar path',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const h = await harness({ browser: 'webkit' });
+    try {
+      await h.page.goto(h.base + '/harness.html');
+      await h.page.waitForFunction('!!window.longScreenKit');
+      const r = await h.page.evaluate(async () => {
+        const kit = (window as any).longScreenKit, core = kit.core();
+        const blob = await (await fetch('/fixtures/scroll.mp4')).blob();
+        const digest = async (bytes: Uint8Array | Uint8ClampedArray) =>
+          Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes.slice().buffer)).slice(0, 8)).join('.');
+        const run = async (make: () => any) => {
+          const convert = make(), source = await kit.openMedia(new File([blob], 'scroll.mp4'), convert);
+          const rgba: string[] = [], ring: string[] = [];
+          for await (const f of source.frames()) {
+            rgba.push(`${f.index}:${await digest(f.image.data)}`);
+            kit.releaseUnlessHeld(f.image);
+          }
+          const { width, height } = source.info, slots = core.frameRing(2, width, height);
+          for await (const f of source.sparseFrames(() => true, { planes: true })) {
+            if (f.planes) {
+              const slot = slots.fill(f.index, width, height, (s: any) => core.planesToCore(f.planes, s.ptr));
+              ring.push(`${f.index}:${await digest(slot.bytes())}`);
+              f.planes.release();
+            } else {
+              ring.push(`${f.index}:${await digest(f.image.data)}`);
+              kit.releaseUnlessHeld(f.image);
+            }
+          }
+          slots.free();
+          source.dispose();
+          return { rgba, ring, counts: convert.counts ? { ...convert.counts } : undefined, describe: convert.describe?.() };
+        };
+        const url = new URL('./assets/convert-worker.js', location.href);
+        const inThread = await run(() => kit.planarConverter());
+        const viaWorker = await run(() => {
+          const planar = kit.planarConverter();
+          return kit.workerConverter(url, kit.directConverter(planar), 'auto', planar);
+        });
+        const broken = await run(() => {
+          const planar = kit.planarConverter();
+          return kit.workerConverter(
+            new URL('./assets/missing-convert-worker.js', location.href),
+            kit.directConverter(planar),
+            'auto',
+            planar,
+          );
+        });
+        return { inThread, viaWorker, broken };
+      });
+      assert(r.inThread.rgba.length > 4, `${r.inThread.rgba.length} frames`);
+      assertEquals(r.viaWorker.rgba, r.inThread.rgba, 'RGBA from worker-copied planes');
+      assertEquals(r.viaWorker.ring, r.inThread.rgba, 'planes copied in the worker, converted into core memory');
+      assert(
+        r.viaWorker.counts.planes >= r.inThread.rgba.length,
+        `worker copied ${r.viaWorker.counts.planes} frames: ${r.viaWorker.describe}`,
+      );
+      assertEquals([r.broken.rgba, r.broken.ring], [r.inThread.rgba, r.inThread.rgba], 'a broken worker falls back in-thread');
+      assertEquals(r.broken.counts.planes, 0);
+      assert(/conversion worker/.test(r.broken.counts.reason), r.broken.counts.reason);
+    } finally {
+      await h.close();
+    }
+  },
+});

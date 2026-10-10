@@ -354,7 +354,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `isobmff-probe.ts` — 一次轻量 box 扫描，只检测 mediabunny 自己不拒绝的几种情形（多重/变速剪辑列表、sample-description 索引 ≠ 1）与 mediabunny 没有对应诊断的版本 0 `ctts` 有符号偏移，以及文件在 `mdat`/`moof` 中途结束（`TRUNCATED_RECORDING` 警告；mediabunny 会不声不响地读到最后一个完整样本为止）；顶层 box 的容错与 mediabunny 一致（解析不了或超出文件末尾的顶层 box 结束扫描而不报错），不比它更严；不重复 mediabunny 的解封装本身。TS 外壳：I/O（容器解析）。
 - `sniff.ts` — 按文件前 512 字节判断所选文件是什么：ISOBMFF（MP4/MOV）与 EBML（WebM/MKV）放行；文本、图片（含 HEIC/AVIF）、PDF、压缩包，以及 AVI/WMV/FLV/MPEG-TS/GIF 等本项目不读的视频格式，由 source-file.ts 直接拒绝并说明原因。认不出的字节只在文件名或类型表明是视频时放行，交给 demuxer 判断。TS 外壳：I/O。
 - `convert.ts` — `VideoFrame` → RGBA 转换的可注入形态（直转/worker 转换/平面转换）与显式释放缓冲池接入。TS 外壳：浏览器 API（WebCodecs）。
-- `convert-worker.ts` — 帧转换 worker：在转移进来的 `VideoFrame` 上首帧决定用 WebGPU 还是 `copyTo({format:'RGBA'})`，之后整段用同一种，转移 RGBA 缓冲回去；首个 worker 选定 `copyTo` 时，`workerConverter` 会再开最多两个只用 CPU 的 worker 分担（同一个浏览器调用，像素相同）；刻意保持零依赖（不引入 `src/core/wasm.ts`）。TS 外壳：浏览器 API（Worker）。
+- `convert-worker.ts` — 帧转换 worker：在转移进来的 `VideoFrame` 上首帧决定用 WebGPU 还是 `copyTo({format:'RGBA'})`，之后整段用同一种，转移 RGBA 缓冲回去；首个 worker 选定 `copyTo` 时，`workerConverter` 会再开最多两个只用 CPU 的 worker 分担（同一个浏览器调用，像素相同）；在 `copyTo` 给不出 RGBA 的浏览器（Safari）里，平面路径通过首帧检查后由 worker 拷出每帧的原生平面（Safari 上这一步同步阻塞调用线程），流水线线程再用同一个核心转换；刻意保持零依赖（不引入 `src/core/wasm.ts`）。TS 外壳：浏览器 API（Worker）。
 - `gpu-convert.ts` — WebGPU 帧转换：平面拷出、上传、只做 YUV 矩阵的计算着色器、映射回读；首帧与后备转换比对并计时（§四）。TS 外壳：浏览器 API（WebGPU）。
 - `conversion-check.ts` — 帧取哪个 YUV 矩阵、一种转换的首帧要多接近另一种才能接管整段；零依赖，供 worker 与主线程共用。TS 外壳：浏览器 API（WebCodecs）。
 - `rgba-copy.ts` — `copyTo(RGBA)` 选项与结果布局校验，供直转/worker 转换器与 convert-worker.ts 共用。TS 外壳：浏览器 API。
