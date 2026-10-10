@@ -306,8 +306,19 @@ export class Core {
     height: number,
     matrix: number,
     dest?: Uint8ClampedArray,
+    report?: yuv.ConversionReport,
   ): Uint8ClampedArray {
-    return yuv.frameToRGBA(this, src, format, layout, width, height, matrix, dest);
+    return yuv.frameToRGBA(this, src, format, layout, width, height, matrix, dest, report);
+  }
+  /** `yuv.hdrToRGBA`: an HDR frame's R'G'B', as a browser handed it back, to sRGB in place; pixels above white. */
+  hdrToRGBA(
+    pixels: Uint8Array | Uint8ClampedArray,
+    packing: keyof typeof yuv.PACKINGS,
+    width: number,
+    height: number,
+    transfer: keyof typeof yuv.TRANSFERS,
+  ): number {
+    return yuv.hdrToRGBA(this, pixels, packing, width, height, transfer);
   }
   /** `frameToRGBA` of a frame's planes straight into core memory at `out` (a resident frame slot). */
   planesToCore(planes: FramePlanes, out: number): void {

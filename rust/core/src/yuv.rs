@@ -2,9 +2,12 @@
 //! `VideoFrame.copyTo` cannot convert to RGB itself (Safari, through at least 27). The arithmetic is libyuv's C
 //! reference (`row_common.cc`: `YuvPixel`, x86 form) with its `YuvConstants`, which is what Chrome's own
 //! `copyTo({ format: 'RGBA' })` runs on a software-decoded frame; chroma is point-sampled like libyuv's
-//! `I4xxToARGBRow_C`. Rows are split across the pool; every output byte depends only on its own inputs.
+//! `I4xxToARGBRow_C`. Rows are split across the pool; every output byte depends only on its own inputs. Planes
+//! coding an HDR signal (PQ or HLG) go through `hdr` instead, which also undoes the transfer.
 
 use crate::pool::SyncPtr;
+
+pub mod hdr;
 
 /// libyuv `YuvConstants`: Y gain/bias and the chroma contributions (6-bit fixed point).
 #[derive(Clone, Copy)]
@@ -20,7 +23,7 @@ pub struct Coeffs {
 /// Indexed by the ABI's matrix code. libyuv caps UB at 128 in its limited-range tables (the int8 SIMD limit)
 /// unless built with LIBYUV_UNLIMITED_*; the capped values are the ones browsers ship. No BT.2020 entry: browsers
 /// also convert its wider gamut to sRGB, which a matrix alone cannot, so such frames are left to the canvas.
-pub const MATRICES: [Coeffs; 4] = [
+pub static MATRICES: [Coeffs; 4] = [
     // H709: BT.709 limited range
     Coeffs {
         yg: 18997,
@@ -58,6 +61,68 @@ pub const MATRICES: [Coeffs; 4] = [
         vr: 90,
     },
 ];
+
+/// What a frame's planes code, from the ABI's colour code `transfer × 8 + matrix × 2 + full` (transfer 0 SDR, 1 PQ,
+/// 2 HLG; matrix 0 BT.709, 1 BT.601, 2 BT.2020). The SDR codes 0–3 index `MATRICES`; SDR BT.2020 has no code.
+#[derive(Clone, Copy)]
+pub enum Signal {
+    Sdr(&'static Coeffs),
+    Hdr {
+        matrix: hdr::Matrix,
+        full: bool,
+        transfer: hdr::Transfer,
+    },
+}
+
+impl Signal {
+    pub fn from_code(code: u32) -> Option<Signal> {
+        let (full, matrix) = (code & 1 == 1, (code >> 1) & 3);
+        let transfer = match code >> 3 {
+            0 => return MATRICES.get(code as usize).map(Signal::Sdr),
+            1 => hdr::Transfer::Pq,
+            2 => hdr::Transfer::Hlg,
+            _ => return None,
+        };
+        let matrix = match matrix {
+            0 => hdr::Matrix::Bt709,
+            1 => hdr::Matrix::Bt601,
+            2 => hdr::Matrix::Bt2020,
+            _ => return None,
+        };
+        Some(Signal::Hdr {
+            matrix,
+            full,
+            transfer,
+        })
+    }
+}
+
+/// `to_rgba` or `hdr::planes_to_rgba`, as `signal` says; returns the HDR conversion's count of pixels above white
+/// (0 for SDR).
+#[allow(clippy::too_many_arguments)]
+pub fn convert(
+    src: &[u8],
+    format: Format,
+    planes: &[Plane],
+    width: usize,
+    height: usize,
+    signal: Signal,
+    out: &mut [u8],
+) -> usize {
+    match signal {
+        Signal::Sdr(coeffs) => {
+            to_rgba(src, format, planes, width, height, coeffs, out);
+            0
+        }
+        Signal::Hdr {
+            matrix,
+            full,
+            transfer,
+        } => hdr::planes_to_rgba(
+            src, format, planes, width, height, matrix, full, transfer, out,
+        ),
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Format {
@@ -392,6 +457,32 @@ mod tests {
         }
         let _ = cw;
         out
+    }
+
+    #[test]
+    fn colour_codes_keep_the_sdr_matrices_and_name_every_hdr_signal() {
+        for code in 0..4 {
+            assert!(
+                matches!(Signal::from_code(code), Some(Signal::Sdr(c)) if std::ptr::eq(c, &MATRICES[code as usize]))
+            );
+        }
+        // SDR BT.2020, a fourth matrix, a fourth transfer: no code.
+        for code in [4, 5, 6, 7, 14, 15, 22, 23, 24, 31] {
+            assert!(Signal::from_code(code).is_none(), "{code}");
+        }
+        let hdr = |code| match Signal::from_code(code) {
+            Some(Signal::Hdr {
+                matrix,
+                full,
+                transfer,
+            }) => (matrix, full, transfer),
+            _ => panic!("{code}"),
+        };
+        use hdr::{Matrix, Transfer};
+        assert_eq!(hdr(8), (Matrix::Bt709, false, Transfer::Pq));
+        assert_eq!(hdr(13), (Matrix::Bt2020, true, Transfer::Pq));
+        assert_eq!(hdr(19), (Matrix::Bt601, true, Transfer::Hlg));
+        assert_eq!(hdr(20), (Matrix::Bt2020, false, Transfer::Hlg));
     }
 
     #[test]

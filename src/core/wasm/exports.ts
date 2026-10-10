@@ -28,6 +28,7 @@ export interface CoreExports {
     matrix: number,
     dst: number,
   ): number;
+  ls_hdr_rgb_to_rgba(pixels: number, packing: number, width: number, height: number, transfer: number): number;
   __tls_size?: WebAssembly.Global;
   __tls_align?: WebAssembly.Global;
   ls_free(ptr: number, size: number): void;
