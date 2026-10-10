@@ -6,6 +6,7 @@ import { RegionAtlas } from './core/layers.ts';
 import { covered, markCovered, pngTileCodec, TileStore } from './storage/tiles.ts';
 import { DemoSource } from './media/demo.ts';
 import { CompatibilitySource, frameConverter, openDemuxer, openMedia, PreciseSource } from './media/source.ts';
+import { captureCodedFrame, captureFrame } from './media/capture.ts';
 import { canvasConverter, directConverter, planarConverter, workerConverter } from './media/convert.ts';
 import { gpuConverter } from './media/gpu-convert.ts';
 import { releaseUnlessHeld } from './media/pool.ts';
@@ -52,6 +53,8 @@ const kit = {
   releaseUnlessHeld,
   PreciseSource,
   CompatibilitySource,
+  captureFrame,
+  captureCodedFrame,
   DEFAULT_SETTINGS,
   buildScenario,
   SCENARIO_NAMES,

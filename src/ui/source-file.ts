@@ -3,6 +3,7 @@
  *  source-time evidence came from. `fileFingerprint`/`readStoredHash` are pure/read-only and exported standalone so
  *  diagnostics.ts can use them without importing this module's `addDiagnostic`-emitting half (which would cycle
  *  back here, since `chooseFile` itself reports PROBE_FAILED as a diagnostic). */
+import { conversionDiagnostics } from '../media/conversion-report.ts';
 import type { AppState } from './state.ts';
 import { $, humanBytes, timeText, toast } from './dom.ts';
 import { call } from './rpc.ts';
@@ -128,6 +129,7 @@ export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagn
       console.warn('decoderVideo did not become ready:', error);
     });
     const chosen = file;
+    let probeError: string | undefined;
     try {
       const probe = await call('probe', { file });
       if (state.selectedFile !== chosen) {
@@ -150,11 +152,16 @@ export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagn
       for (const warning of state.mediaInfo.warnings) {
         toast(warning);
       }
+      const conversion = probe.conversion && conversionDiagnostics(probe.conversion, state.mediaInfo);
+      for (const warning of conversion?.filter((d) => d.severity === 'warning') ?? []) {
+        toast(`${warning.message}${warning.action ? ` ${warning.action}` : ''}`);
+      }
       return;
     } catch (error) {
       if (state.selectedFile !== chosen) {
         return;
       }
+      probeError = error instanceof Error ? error.message : String(error);
       deps.addDiagnostic({
         code: 'PROBE_FAILED',
         severity: 'warning',
@@ -207,7 +214,8 @@ export function createSourceFile(state: AppState, deps: { addDiagnostic(d: Diagn
         return;
       }
       $('file-subtitle').textContent = t('ui.source.subtitleUnavailable', { size: humanBytes(file.size) });
-      toast(t('ui.source.unreadableToast', { reason: String(error) }), true);
+      // The frame-accurate decoder's reason (an undecodable codec, with advice) says more than the <video> element's.
+      toast(t('ui.source.unreadableToast', { reason: probeError ?? String(error) }), true);
     }
   }
 

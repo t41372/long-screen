@@ -1030,7 +1030,7 @@ Deno.test('source: compatibility source samples native seeks at the configured r
   const requested: number[] = [];
   const source = new CompatibilitySource(info, 10, (t) => {
     requested.push(t);
-    return Promise.resolve(bitmap(4, 2));
+    return Promise.resolve({ bitmap: bitmap(4, 2), coded: false });
   }, (b) => ({ width: b.width, height: b.height, data: new Uint8ClampedArray(b.width * b.height * 4) }));
   assert(info.mode.includes('10 Hz'));
   assertEquals(info.frameCount, 5, 'seek samples replace the original encoded packet count');
@@ -1042,9 +1042,14 @@ Deno.test('source: compatibility source samples native seeks at the configured r
   }
   assertEquals(count, 5);
   assertEquals(requested.length, 5);
-  const bad = new CompatibilitySource({ ...info, notices: undefined }, 10, () => Promise.resolve(bitmap(5, 2)), () => {
-    throw new Error('unreachable');
-  });
+  const bad = new CompatibilitySource(
+    { ...info, notices: undefined },
+    10,
+    () => Promise.resolve({ bitmap: bitmap(5, 2), coded: false }),
+    () => {
+      throw new Error('unreachable');
+    },
+  );
   await assertRejects(
     async () => {
       for await (const _ of bad.frames()) void _;
@@ -1055,7 +1060,7 @@ Deno.test('source: compatibility source samples native seeks at the configured r
   const stopped = new CompatibilitySource(
     info,
     10,
-    () => Promise.resolve(bitmap(4, 2)),
+    () => Promise.resolve({ bitmap: bitmap(4, 2), coded: false }),
     () => ({ width: 4, height: 2, data: new Uint8ClampedArray(32) }),
   );
   let n = 0;
@@ -1064,6 +1069,84 @@ Deno.test('source: compatibility source samples native seeks at the configured r
     stopped.dispose();
   }
   assertEquals(n, 1);
+});
+// Compatibility mode on an HDR recording. Failure cases: frames captured in the browser's colours (an iPhone
+// recording's white came out at 140 in Safari, 184 in Chrome, against 253–255 on the checked routes); a run that
+// cannot read the coded values staying silent about it; an SDR recording changing at all; and a run that mixes the
+// core's colours with the browser's when a later capture comes back converted.
+Deno.test('source: compatibility mode converts an HDR recording from its coded values, or says it could not', async () => {
+  const info = (colour?: VideoColorSpaceInit): MediaInfo => ({
+    name: 'x',
+    size: 1,
+    width: 2,
+    height: 1,
+    codedWidth: 2,
+    codedHeight: 1,
+    rotation: 0,
+    duration: .3,
+    codec: 'native',
+    mode: '',
+    warnings: [],
+    colour,
+  });
+  const pq = { primaries: 'bt2020', transfer: 'pq', matrix: 'bt2020-ncl', fullRange: false } as unknown as VideoColorSpaceInit;
+  const bitmap = () => ({ width: 2, height: 1, close() {} }) as unknown as ImageBitmap;
+  // 129 is SDR white's PQ code (100 nits) as WebGL reads an 8-bit capture; 0 is black.
+  const coded = () => new Uint8Array([129, 129, 129, 255, 0, 0, 0, 255]);
+  const browser = () => ({ width: 2, height: 1, data: new Uint8ClampedArray([184, 184, 184, 255, 0, 0, 0, 255]) });
+  const run = async (source: CompatibilitySource) => {
+    const images = [];
+    for await (const f of source.frames()) images.push(f.image);
+    return images;
+  };
+
+  const asked: boolean[] = [];
+  const hdr = new CompatibilitySource(
+    info(pq),
+    10,
+    (_t, wantCoded) => {
+      asked.push(wantCoded);
+      return Promise.resolve({ bitmap: bitmap(), coded: wantCoded });
+    },
+    browser,
+    coded,
+  );
+  const images = await run(hdr);
+  assertEquals(asked, [true, true, true], 'every frame of an HDR recording is asked for as coded values');
+  assert(images.every((image) => image.data[0] >= 250 && image.data[4] === 0), `white ${images[0].data[0]}, black ${images[0].data[4]}`);
+  assertEquals(hdr.conversionReport()?.hdr?.transfer, 'pq');
+  assertEquals(hdr.conversionReport()?.hdr?.verified, true);
+
+  const noWebGL = new CompatibilitySource(
+    info(pq),
+    10,
+    (_t, wantCoded) => Promise.resolve({ bitmap: bitmap(), coded: wantCoded }),
+    browser,
+    () => undefined,
+  );
+  assertEquals((await run(noWebGL))[0].data[0], 184, "without a coded read the browser's colours are kept");
+  assertEquals(noWebGL.conversionReport()?.hdr?.verified, false, 'and the run says so (HDR_UNCHECKED)');
+
+  const sdrAsked: boolean[] = [];
+  const sdr = new CompatibilitySource(
+    info({ primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false }),
+    10,
+    (_t, wantCoded) => {
+      sdrAsked.push(wantCoded);
+      return Promise.resolve({ bitmap: bitmap(), coded: false });
+    },
+    browser,
+    () => {
+      throw new Error('an SDR recording is never read as coded values');
+    },
+  );
+  assertEquals((await run(sdr))[0].data[0], 184);
+  assertEquals(sdrAsked, [false, false, false]);
+  assertEquals(sdr.conversionReport(), undefined, 'an SDR recording reports nothing new');
+
+  let n = 0;
+  const mixed = new CompatibilitySource(info(pq), 10, () => Promise.resolve({ bitmap: bitmap(), coded: n++ === 0 }), browser, coded);
+  await assertRejects(() => run(mixed), Error, 'HDR_CAPTURE_CHANGED');
 });
 Deno.test('source: canvas-backed converters require an OffscreenCanvas runtime', () => {
   const convert = canvasConverter();

@@ -1,8 +1,10 @@
 /** Frame conversion worker for `workerConverter` (src/media/convert.ts): converts a transferred frame and transfers
  *  the RGBA buffer back, so the pipeline thread works on the previous frame meanwhile. The conversion is WebGPU's
  *  (src/media/gpu-convert.ts) when its first frame agrees with `VideoFrame.copyTo({ format: 'RGBA' })` and is faster,
- *  otherwise that same copyTo the in-thread converter runs — decided here, on this thread, where it runs. Bundled on
- *  its own (scripts/build.ts's `entries`), so this must stay dependency-free — no src/core/wasm.ts.
+ *  otherwise that same copyTo the in-thread converter runs — decided here, on this thread, where it runs. Frames
+ *  that need their coded R'G'B' instead (HDR streams, frames without a copyable format) are read through the GPU
+ *  (src/media/texture-convert.ts); the core undoes an HDR transfer on the other side. Bundled on its own
+ *  (scripts/build.ts's `entries`), so this must stay dependency-free — no src/core/wasm.ts.
  *
  *  Buffer pool: the same explicit-release discipline as the main-thread pool (src/media/pool.ts), just split
  *  across the postMessage boundary. `workerConverter` transfers a released reply buffer back here (a `release`
@@ -14,6 +16,7 @@ import type { MediaInfo, RGBA, Settings } from '../types.ts';
 import { copyFrameToRGBA } from './rgba-copy.ts';
 import { BufferPool } from './pool.ts';
 import { gpuConverter } from './gpu-convert.ts';
+import { rawReader } from './texture-convert.ts';
 interface ConvertRequest {
   id: number;
   frame: VideoFrame;
@@ -22,6 +25,8 @@ interface ConvertRequest {
   compute?: Settings['compute'];
   /** Copy the frame's own planes instead of converting it (the planar path; the core converts on the other side). */
   planes?: boolean;
+  /** Read the frame's coded R'G'B' (`rawReader`); `hdr` asks for ten bits where the route allows. */
+  raw?: { hdr: boolean };
 }
 interface ReleaseMessage {
   release: ArrayBuffer;
@@ -43,6 +48,7 @@ const copyTo = Object.assign(async (frame: VideoFrame, info: MediaInfo): Promise
   }
 }, { describe: () => 'copyTo(RGBA)' });
 let convert: ReturnType<typeof gpuConverter> | undefined;
+let raw: ReturnType<typeof rawReader> | undefined;
 const scope = globalThis as unknown as {
   onmessage: ((e: MessageEvent<ConvertRequest | ReleaseMessage>) => void) | null;
   postMessage(message: unknown, transfer?: Transferable[]): void;
@@ -61,6 +67,20 @@ scope.onmessage = async ({ data }) => {
       scope.postMessage({ id, buffer, layout }, [buffer]);
     } catch (error) {
       if (buffer) planesPool.releaseBuffer(buffer);
+      scope.postMessage({ id, error: error instanceof Error ? error.message : String(error) });
+    } finally {
+      frame.close();
+    }
+    return;
+  }
+  if (data.raw) {
+    const buffer = pool.takeBuffer(width * height * 4);
+    try {
+      raw ??= rawReader(data.raw.hdr, data.compute);
+      const { packing } = await raw.read(frame, width, height, new Uint8Array(buffer));
+      scope.postMessage({ id, buffer, packing, choice: raw.choice() }, [buffer]);
+    } catch (error) {
+      pool.releaseBuffer(buffer);
       scope.postMessage({ id, error: error instanceof Error ? error.message : String(error) });
     } finally {
       frame.close();

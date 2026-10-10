@@ -1,4 +1,5 @@
 import type {
+  ConversionReport,
   FrameImage,
   FramePlanes,
   FrameSource,
@@ -14,6 +15,10 @@ import type { Demuxer } from './reader.ts';
 import { MediabunnyDemuxer } from './mediabunny-demux.ts';
 import { directConverter, type FrameConverter, planarConverter, workerConverter } from './convert.ts';
 import { releaseUnlessHeld } from './pool.ts';
+import type { Capture } from './capture.ts';
+import { hdrTransfer } from './conversion-check.ts';
+import { WebGLReader } from './texture-convert.ts';
+import { core } from '../core/wasm.ts';
 import { t } from '../i18n/index.ts';
 /** Decoded frames an off-thread converter may be converting ahead of the one the pipeline is on; the decoder
  *  buffers two (the producer's backpressure in `PreciseSource`). */
@@ -45,7 +50,7 @@ export async function openMedia(file: File, convert: FrameConverter = frameConve
   if (!support.supported) {
     demux.dispose();
     throw new Error(
-      `UNSUPPORTED_CODEC: ${demux.config.codec} is not decodable by this browser/device. No frames were silently skipped. Try compatibility mode or an H.264/VP9 recording.`,
+      t('media.UNSUPPORTED_CODEC', { codec: demux.config.codec, advice: t(`media.UNSUPPORTED_ADVICE.${codecFamily(demux.config.codec)}`) }),
     );
   }
   return new PreciseSource(file, demux, convert);
@@ -81,6 +86,22 @@ export class Signal {
  *  It is not a similarity threshold for "close enough looking" content — it is the floor below which a difference
  *  carries no information at all, so raising it to paper over a registration error would be the wrong fix. */
 export const DECODED_VIDEO_NOISE = 10;
+/** Which advice an undecodable codec string gets: HEVC (iPhone and Mac recordings), ProRes, the H.264 profiles only
+ *  Chrome decodes (High 10, High 4:2:2, High 4:4:4: profile_idc 110, 122, 244), AV1, or anything else. */
+function codecFamily(codec: string): 'hevc' | 'prores' | 'h264' | 'av1' | 'other' {
+  if (/^(hev1|hvc1)/.test(codec)) return 'hevc';
+  if (/^(apc[nhso]|ap4[hx])/.test(codec)) return 'prores';
+  if (/^avc[13]\.(6e|7a|f4)/i.test(codec)) return 'h264';
+  if (/^av01/.test(codec)) return 'av1';
+  return 'other';
+}
+/** The container's colour as a plain object (MediaInfo is persisted and posted between threads), when it says any. */
+function colourOf(c: VideoColorSpaceInit | undefined): { colour?: VideoColorSpaceInit } {
+  const colour = Object.fromEntries(
+    (['primaries', 'transfer', 'matrix', 'fullRange'] as const).flatMap((k) => c?.[k] === undefined || c?.[k] === null ? [] : [[k, c[k]]]),
+  ) as VideoColorSpaceInit;
+  return Object.keys(colour).length ? { colour } : {};
+}
 export class PreciseSource implements FrameSource {
   info: MediaInfo;
   stats: SourceStats = { frames: 0, converted: 0, decodeMS: 0, convertMS: 0 };
@@ -104,6 +125,7 @@ export class PreciseSource implements FrameSource {
       noise: DECODED_VIDEO_NOISE,
       warnings: demux.warnings,
       notices: [],
+      ...colourOf(demux.config.colorSpace),
     };
   }
   dispose(): void {
@@ -114,6 +136,10 @@ export class PreciseSource implements FrameSource {
   /** How decoded frames are being turned into RGBA, for diagnostics. */
   conversion(): string {
     return this.convert.describe?.() ?? 'custom converter';
+  }
+  /** The converter's first-frame report (src/media/conversion-report.ts turns it into diagnostics). */
+  conversionReport(): ConversionReport | undefined {
+    return this.convert.report?.() ?? (this.stats.converted ? { method: this.conversion() } : undefined);
   }
   private notice(code: string, message: string): void {
     const list = this.info.notices ??= [];
@@ -412,11 +438,18 @@ export class PreciseSource implements FrameSource {
 /** Explicitly approximate fallback. Main thread performs native video seeks; worker stays backpressured. */
 export class CompatibilitySource implements FrameSource {
   private cancelled = false;
+  /** An HDR recording's transfer (from the container's tag): its frames are captured as coded values and converted
+   *  in the core, as the checked routes of PreciseSource do. */
+  private readonly hdr: 'pq' | 'hlg' | undefined;
+  /** Set on the first frame of an HDR recording: whether its frames are read as coded values. */
+  private coded?: boolean;
+  private report?: ConversionReport;
   constructor(
     public info: MediaInfo,
     private fps: number,
-    private request: (time: number) => Promise<ImageBitmap>,
+    private request: (time: number, coded: boolean) => Promise<Capture>,
     private read: (bitmap: ImageBitmap) => RGBA = bitmapReader(),
+    private readCoded: (bitmap: ImageBitmap) => Uint8Array | undefined = codedReader(),
   ) {
     info.mode = `Approximate native seek (${fps} Hz)`;
     info.frameCount = Math.ceil(info.duration * fps);
@@ -424,14 +457,19 @@ export class CompatibilitySource implements FrameSource {
     // bitmap path), so it can only be noisier — never tighter.
     info.noise ??= DECODED_VIDEO_NOISE;
     info.notices ??= [];
+    this.hdr = hdrTransfer(info.colour);
   }
   dispose(): void {
     this.cancelled = true;
   }
+  /** For an HDR recording, once a frame has been read: how, and whether its colours are the core's or the browser's. */
+  conversionReport(): ConversionReport | undefined {
+    return this.report;
+  }
   async *frames(): AsyncGenerator<FrameImage> {
     for (let index = 0; index < this.info.frameCount! && !this.cancelled; index++) {
       const time = index / this.fps;
-      const bitmap = await this.request(time);
+      const { bitmap, coded } = await this.request(time, !!this.hdr && this.coded !== false);
       let image: RGBA;
       try {
         if (bitmap.width !== this.info.width || bitmap.height !== this.info.height) {
@@ -439,13 +477,43 @@ export class CompatibilitySource implements FrameSource {
             `FRAME_GEOMETRY_CHANGED: native seek returned ${bitmap.width}×${bitmap.height}, expected ${this.info.width}×${this.info.height}. The prefix is retained; no resizing was performed.`,
           );
         }
-        image = this.read(bitmap);
+        image = this.hdr ? this.readHdr(bitmap, coded, this.hdr, time) : this.read(bitmap);
       } finally {
         bitmap.close();
       }
       yield { image, time, duration: 1 / this.fps, index };
     }
   }
+  private readHdr(bitmap: ImageBitmap, coded: boolean, transfer: 'pq' | 'hlg', time: number): RGBA {
+    const { width, height } = bitmap, values = coded && this.coded !== false ? this.readCoded(bitmap) : undefined;
+    if (this.coded === undefined) {
+      this.coded = !!values;
+      this.report = {
+        method: values
+          ? `video snapshot's coded values (WebGL) + core ${transfer.toUpperCase()}→sRGB`
+          : "video snapshot in the browser's colours",
+        hdr: { transfer, verified: !!values },
+      };
+    } else if (this.coded !== !!values) {
+      // A run mixing the core's colours with the browser's would put two versions of every colour on one canvas.
+      throw new Error(
+        `HDR_CAPTURE_CHANGED: the frame at ${time.toFixed(3)} s could not be read the way the first one was. The prefix is retained.`,
+      );
+    }
+    if (!values) return this.read(bitmap);
+    const above = core().hdrToRGBA(values, 'rgba8', width, height, transfer);
+    if (this.report?.hdr && this.report.hdr.aboveShare === undefined) this.report.hdr.aboveShare = above / (width * height);
+    return { width, height, data: new Uint8ClampedArray(values.buffer, values.byteOffset, values.byteLength) };
+  }
+}
+/** Reads a captured bitmap's values back unchanged (WebGL, no colour conversion); undefined where there is no WebGL2,
+ *  which leaves the browser's colours. */
+export function codedReader(): (bitmap: ImageBitmap) => Uint8Array | undefined {
+  let reader: WebGLReader | null | undefined;
+  return (bitmap) => {
+    if (reader === undefined) reader = WebGLReader.create() ?? null;
+    return reader?.read(bitmap, bitmap.width, bitmap.height);
+  };
 }
 export function bitmapReader(): (bitmap: ImageBitmap) => RGBA {
   let canvas: OffscreenCanvas | undefined, ctx: OffscreenCanvasRenderingContext2D | null = null;

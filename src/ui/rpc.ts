@@ -3,6 +3,7 @@
  *  frozen (tests call `longScreen.rpc('tile'|'open'|'capabilities')` directly) — `call()` keeps that exact name. */
 import type { CommandName, Commands, LocaleMessage, WorkerEvent, WorkerEventName } from '../protocol.ts';
 import { locale } from '../i18n/page.ts';
+import type { Capture } from '../media/capture.ts';
 
 const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
 // First message on the channel, so it is handled before any command (page.ts has already detected the language).
@@ -37,10 +38,10 @@ function emit(m: WorkerEvent): void {
 
 /** Answers the worker's `frame-request` with a captured bitmap or an error, exactly once per request id. `handler`
  *  does the actual seek + capture (video.ts); this function only owns the postMessage/transfer contract. */
-export function onFrameRequest(handler: (time: number) => Promise<ImageBitmap>): void {
+export function onFrameRequest(handler: (time: number, coded: boolean) => Promise<Capture>): void {
   on('frame-request', (m) => {
-    void handler(m.time)
-      .then((bitmap) => worker.postMessage({ type: 'frame-response', id: m.id, bitmap }, [bitmap]))
+    void handler(m.time, !!m.coded)
+      .then(({ bitmap, coded }) => worker.postMessage({ type: 'frame-response', id: m.id, bitmap, coded }, [bitmap]))
       .catch((error) => worker.postMessage({ type: 'frame-response', id: m.id, error: String(error) }));
   });
 }

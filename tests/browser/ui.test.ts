@@ -332,3 +332,24 @@ Deno.test({
     }
   },
 });
+// Failure case: a recording neither the frame-accurate decoder nor the <video> element can play, refused at pick time
+// with the <video> element's opaque error while the reason that says what to do sits only in the log.
+Deno.test({
+  name: 'browser UI: a recording no decoder here can play is refused when picked, with the reason and what to do',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const h = await harness();
+    try {
+      const page = h.page;
+      await page.goto(h.base + '/');
+      await page.waitForFunction('!!window.longScreen');
+      await page.setInputFiles('#file-input', `${new URL('../fixtures/prores.mov', import.meta.url).pathname}`);
+      await page.waitForFunction(() => document.querySelector('#toast')?.textContent?.includes('ProRes'), null, { timeout: 30000 });
+      const toast = await page.textContent('#toast');
+      assert(toast?.includes('这个浏览器解不了这段录屏的编码') && toast.includes('请先导出成 H.264 或 HEVC'), toast ?? '');
+    } finally {
+      await h.close();
+    }
+  },
+});

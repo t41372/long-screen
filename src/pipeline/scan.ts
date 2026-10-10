@@ -5,6 +5,7 @@
 // render(), its one-frame lookahead, that a shared skeleton would obscure the ordering each one guarantees. prefixOnly()
 // (context.ts) already factors out the one piece that WAS identical across all three — the PREFIX_ONLY
 // diagnostic shape — so there is no further sharing left to do here.
+import { conversionDiagnostics } from '../media/conversion-report.ts';
 import type { Feature, Gray, MotionField, RGBA, ScanRecord } from '../types.ts';
 import { informativeField, LayerLearner, RegionAtlas } from '../core/layers.ts';
 import { estimateMotion } from '../core/motion.ts';
@@ -79,6 +80,11 @@ class ScanPass {
       }),
       detail: { ...this.ctx.computer.stats, core: coreBuild() },
     });
+    // How decoded frames became pixels (decoding sources only), with warnings for what the conversion could not do well.
+    const conversion = this.ctx.source.conversionReport?.();
+    if (conversion) {
+      for (const diagnostic of conversionDiagnostics(conversion, this.ctx.source.info)) await this.ctx.diagnostics.emit(diagnostic);
+    }
     if (this.ctx.project.settings.framing === 'context') {
       // Presentation-only: buildFramedCanvas already skips framing when this row is missing, so an
       // encode/storage failure here must not abort the run — just demote to a warning.

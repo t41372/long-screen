@@ -71,6 +71,24 @@ export const pipelineSections: Catalog<typeof zh> = {
       message: 'The {{pass}} stage only completed {{actual}}/{{expected}} frames; the result was marked partial.',
       action: 'The successfully committed prefix was kept; missing frames are never silently treated as processed.',
     },
+    FRAME_CONVERSION: {
+      message: 'Each decoded frame is turned into pixels by: {{method}}.',
+    },
+    HDR_UNCHECKED: {
+      message:
+        'This is an HDR recording ({{transfer}}), but this browser offers no way to check the colour conversion, so the print may come out dark or washed out.',
+      action: 'Run it again in an up-to-date Chrome or Safari.',
+    },
+    HDR_ABOVE_WHITE: {
+      message:
+        'In the first frame of this HDR recording, {{percent}}% of the pixels are brighter than ordinary white and were taken as white. If the print looks overexposed, the recorder most likely placed ordinary white at a higher brightness.',
+      action: 'Set the recorder’s SDR white back to 100 nits, or turn HDR recording off.',
+    },
+    SLOW_CONVERSION: {
+      message:
+        'This browser takes about {{ms}} ms to turn each frame of this recording into pixels, so converting alone will take about {{minutes}} min.',
+      action: 'An up-to-date Chrome or Safari is much faster; converting the recording to H.264 first also helps.',
+    },
     REVEAL_SKIPPED: {
       message:
         'This print has too many or too large canvases: cleaning overlays (cursor, floating buttons, scrollbars) would need about {{need}} MB more memory than is left, so that step was skipped and the stitched pixels kept.',
@@ -225,6 +243,17 @@ export const pipelineSections: Catalog<typeof zh> = {
     optimizing: 'Optimizing the on-disk pose graph, correcting loop-closure drift.',
   },
   media: {
+    UNSUPPORTED_CODEC: 'UNSUPPORTED_CODEC: this browser cannot decode this recording’s codec ({{codec}}). {{advice}}',
+    UNSUPPORTED_ADVICE: {
+      hevc:
+        'iPhone and Mac recordings are usually HEVC, which only some browsers decode: use Safari, or Chrome or Edge with hardware decoding.',
+      prores: 'No browser decodes ProRes; export the recording as H.264 or HEVC first.',
+      h264: 'Only Chrome decodes this kind of H.264 (4:4:4 or 10-bit): use Chrome, or export it as ordinary H.264.',
+      av1: 'AV1 needs a recent browser or hardware: use an up-to-date Chrome, or export the recording as H.264.',
+      other: 'Use an up-to-date Chrome or Safari, or convert the recording to H.264 first.',
+    },
+    PIXEL_ASPECT_RATIO:
+      'The recording declares a {{num}}:{{den}} pixel aspect ratio; stored pixels are kept unscaled, so the display aspect may differ.',
     CONTAINER_SIZE_MISMATCH:
       'The container declared {{codedWidth}}×{{codedHeight}}, but the bitstream is actually {{bitstreamWidth}}×{{bitstreamHeight}}; the bitstream size is authoritative.',
     NON_SQUARE_PIXELS:

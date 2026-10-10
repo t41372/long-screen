@@ -7,7 +7,8 @@ import { $, NO_COMPRESSION_STREAM, phaseName, setProgress, setReceiptOpen, toast
 import { call, on, onError, onFrameRequest, onMessageError } from './rpc.ts';
 import { TiledViewer } from './viewer.ts';
 import { createState, syncControls } from './state.ts';
-import { captureFrame, decoderVideo, seekOn, video } from './video.ts';
+import { decoderVideo, seekOn, video } from './video.ts';
+import { captureCodedFrame, captureFrame } from '../media/capture.ts';
 import { createCanvases } from './canvases.ts';
 import { createDiagnostics } from './diagnostics.ts';
 import { createSourceFile, forgetHashes } from './source-file.ts';
@@ -132,9 +133,11 @@ addEventListener('click', (e) => {
 });
 
 // Worker event routing.
-onFrameRequest((time) =>
+onFrameRequest((time, coded) =>
   // Exclusively on decoderVideo, never the dialog's source-video: the two must not share a seek target.
-  seekOn(decoderVideo, time).then(() => captureFrame(decoderVideo))
+  seekOn(decoderVideo, time).then(async () =>
+    coded ? captureCodedFrame(decoderVideo) : { bitmap: await captureFrame(decoderVideo), coded: false }
+  )
 );
 on('progress', (m) => {
   run.progress(m.data);

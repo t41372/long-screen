@@ -3,6 +3,7 @@ import { Database, iterate } from './storage/db.ts';
 import { keepLatest, projectKey, runStore, sweepProjects } from './storage/projects.ts';
 import { Engine } from './pipeline/engine.ts';
 import { CompatibilitySource, frameConverter, openMedia, PreciseSource } from './media/source.ts';
+import type { Capture } from './media/capture.ts';
 import { DemoSource } from './media/demo.ts';
 import { type CanvasLayout, exportCanvas, exportProject } from './export/project.ts';
 import { cleanupExport } from './export/target.ts';
@@ -19,7 +20,7 @@ const scope = globalThis as unknown as {
 const post = (message: unknown, transfer: Transferable[] = []) => scope.postMessage(message, transfer);
 let database: Promise<Database> | undefined, active: Engine | undefined, exporting = false, starting = false, probing = false, frameId = 0;
 const frames = new Map<number, {
-  resolve: (bitmap: ImageBitmap) => void;
+  resolve: (capture: Capture) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }>();
@@ -36,7 +37,7 @@ const ensureCore = () =>
         `CORE_UNAVAILABLE: the reconstruction core (core.wasm) failed to load: ${error instanceof Error ? error.message : String(error)}`,
       );
     });
-function requestFrame(time: number): Promise<ImageBitmap> {
+function requestFrame(time: number, coded: boolean): Promise<Capture> {
   return new Promise((resolve, reject) => {
     const id = ++frameId;
     const timer = setTimeout(() => {
@@ -44,7 +45,7 @@ function requestFrame(time: number): Promise<ImageBitmap> {
       reject(new Error('Native video seek did not finish within 30 seconds.'));
     }, 30000);
     frames.set(id, { resolve, reject, timer });
-    post({ event: 'frame-request', id, time });
+    post({ event: 'frame-request', id, time, coded });
   });
 }
 /** How long the browser keeps the last print: long enough to survive a reload, a closed tab or a run the browser
@@ -104,7 +105,7 @@ const handlers: Handlers = {
           const bitmap = await createImageBitmap(
             new ImageData(frame.image.data as Uint8ClampedArray<ArrayBuffer>, frame.image.width, frame.image.height),
           );
-          return { info: source.info, bitmap };
+          return { info: source.info, bitmap, conversion: source.conversionReport?.() };
         }
         throw new Error('The decoder produced no frames for this file.');
       } finally {
@@ -326,7 +327,7 @@ scope.onmessage = (event) => {
     if ('error' in m) {
       pending.reject(new Error(m.error));
     } else {
-      pending.resolve(m.bitmap);
+      pending.resolve({ bitmap: m.bitmap, coded: !!m.coded });
     }
     return;
   }

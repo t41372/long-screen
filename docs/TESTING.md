@@ -98,6 +98,29 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 头less 运行 + Playwr
 8. **薄重叠的高速跳转在周期性排版里错位一个周期**：这类步长现在被标记，回访证据更强时整体改正轨迹并记录 `TRAJECTORY_CORRECTED`，里程计边按证据量降权。
 9. **合成阶段逐像素调用遮罩函数**：改为一次性的原生分辨率归属图。
 
+## 录屏格式
+
+`tests/browser/formats.test.ts` 在 Chrome 和 WebKit 里用发货的转换链解码 `tests/fixtures/` 里几种非常规格式的固件，和编码前的合成帧逐像素比较（`scripts/make-fixtures.ts` 生成，真值仍是 `fixture` 场景）：`hdr-pq.mp4`（HEVC Main 10、BT.2020、PQ，普通白在 100 尼特，和 iPhone/Mac 的 HDR 录屏一样）、`hdr-hlg.mp4`、`hdr-pq.webm`（VP9 Profile 2）、`hevc-10bit.mp4`（10 位 SDR，Chrome 给的是无法拷贝的帧）。要求平均差 ≤5 级、差超过 24 级的通道值 ≤1%，HDR 的路线必须经 WebGL 编码值核对过，Chrome 不能落到 2D canvas。浏览器解不了的格式（`prores.mov`、WebKit 里的 `h264-444.mp4`）必须给出本地化的原因和建议。完整 10 位解码在这些固件上的理想值是 1.2–1.9 级。
+
+更大的格式矩阵（22 种编码：H.264 各种标签与范围、4:4:4、High 10、MKV、VideoToolbox 编出的 H.264/HEVC、HEVC 8/10 位 SDR、PQ、HLG、VP8、VP9 及其 PQ、AV1 及其 PQ、ProRes）在 2026-10-10 用四个浏览器各跑过一遍，平均差（级）如下，“不能解”的格式都给出本地化错误：
+
+| 格式                        | Chrome 154    | Safari 27     | Playwright WebKit 26                | Firefox 157 |
+| --------------------------- | ------------- | ------------- | ----------------------------------- | ----------- |
+| SDR H.264 / VP8 / VP9 / AV1 | 0.8–1.2       | 0.8–1.6       | 0.8–1.6（标 BT.709 的 H.264 为 12） | 1.0–1.4     |
+| H.264 4:4:4、High 10        | 0.8、1.6      | 不能解        | 不能解                              | 不能解      |
+| HEVC 8 位 / 10 位 SDR       | 0.9 / 2.9     | 1.4 / 1.1     | 1.4 / 1.1                           | 不能解      |
+| HEVC PQ / HLG               | 2.4–2.8 / 1.8 | 2.6–3.0 / 1.9 | 2.6–3.0 / 1.9                       | 不能解      |
+| VP9 PQ、AV1 PQ              | 3.9、4.1      | 3.1、3.4      | 2.5、3.2                            | 3.9、4.3    |
+| ProRes                      | 不能解        | 不能解        | 不能解                              | 不能解      |
+
+修复前 PQ 一行在各浏览器上都是 60–103 级。
+
+兼容模式（原生 seek 一个 `<video>` 再截图）对 HDR 录屏原先用浏览器自己的颜色：iPhone 录屏的白色在 Chrome 是 184、在 Safari 是 140（应为 253–255）。现在 worker 请求不做颜色转换的截图（`createImageBitmap(video, { colorSpaceConversion: 'none' })`，`src/media/capture.ts`），用 WebGL 关掉颜色转换读回，在 Chrome 与 Safari 27 上都和 WebCodecs 帧的 WebGL 读回逐级一致（差 0–0.26 级），再交给核心按 PQ/HLG 换算；读不到编码值时保留浏览器的颜色并报 `HDR_UNCHECKED`。`formats.test.ts` 在 Chrome 与 WebKit 上用这条路解 HDR 固件（平均差 1.8–3.2 级），`compatibility.test.ts` 经页面的取帧桥跑完整重建并断言没有 `HDR_UNCHECKED`；真实录屏 g、h 在 Chrome 与 Safari 27 上与精确路线平均差 0.07–1.19 级。
+
+Chrome 里 iPhone 录屏的白色是 253，不是 255，原因在 Chrome 内部，不在我们的换算：h 的白色是 10 位 Y=509、色度 512，准确值是 99.9 尼特、sRGB 255；Chrome 把 10 位 HDR 帧交给 WebGPU 外部纹理之前先量化成 8 位的 sRGB 编码值（这个像素在外部纹理里读到 188.5/255，准确值是 188.86/255），换回 PQ 是 98.3 尼特、sRGB 253。Chrome 的另外两条路也不更好：WebGL 读回同样是 8 位（129 → 253），2D canvas 自带色调映射且每帧约 350 ms。2 级在解码噪声（10 级）之内，测试不断言 255。
+
+Playwright 自带的 WebKit 26 会对标了 BT.709 传递函数的 SDR H.264 做颜色管理，中间调提亮约 12 级（未标注的不会）；Safari 27 不会，这一点测试不断言，记在这里免得被当成回归。
+
 ## 真实录屏
 
 `test_case/` 中的录屏不进仓库。存在时测试会自动使用，缺失时跳过。已实际跑通：`c.mov`（3456×2234，170 帧，H.264 Main）在 Chrome 中完整解码并重建，输出 3456×4594 的主画布，69 个原尺寸瓦片，位置图残差 0。这验证了解码与端到端管线，**不是对任意真实录屏的准确率结论**：真实录屏没有逐像素真值，只能检查解码完整性、帧计数、时间戳单调、状态完成与可视检查。
@@ -120,7 +143,7 @@ ffmpeg 的 RGB 转换与浏览器在锐利色边上不一样（色度插值不�
 
 ## 仍未验证
 
-- 实体 Safari / iPhone / iPad / Android 全流程。移动尺寸截图不能替代真机。
+- 实体 Safari / iPhone / iPad / Android 全流程。移动尺寸截图不能替代真机。手机上的转换路线（iOS Safari 的 HDR 平面、Android Chrome 是否也交出无法拷贝的帧）只靠首帧核对兜底，没有实测。
 - 300MB+ / 10 分钟以上真实录屏的完整三遍重建耗时与内存峰值。
 - 4GiB 以上导出、长期运行功耗。
 - 内存预算只约束自有瓦片缓存，不包括解码器、GPU 与浏览器缓存。

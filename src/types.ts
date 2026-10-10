@@ -112,6 +112,19 @@ export interface MediaInfo {
   noise?: number;
   /** Decoder-time anomalies (skipped or reordered observations). Collected during decoding and surfaced as diagnostics, never swallowed. */
   notices?: MediaNotice[];
+  /** The colour the container declares for the video track (its `colr`/Colour element), when it declares one. Decoded
+   *  frames carry their own tags, but WebKit tags an HDR frame as sRGB, so this is what says a recording is HDR. */
+  colour?: VideoColorSpaceInit;
+}
+/** How a source's frames are being turned into RGBA, as far as the converter knows after the first frame. */
+export interface ConversionReport {
+  /** `FrameConverter.describe()`. */
+  method: string;
+  /** Milliseconds per frame of the chosen conversion, measured on the first frame, where the converter measures it. */
+  ms?: number;
+  /** For an HDR recording: its transfer; whether the conversion was checked against the frame's coded values (false
+   *  means the browser's own colours were kept); and the share of the first frame's pixels above SDR white. */
+  hdr?: { transfer: 'pq' | 'hlg'; verified: boolean; aboveShare?: number };
 }
 export interface MediaNotice {
   code: string;
@@ -288,6 +301,8 @@ export interface FrameSource {
     want: (index: number) => boolean,
     options?: { planes?: boolean },
   ): AsyncGenerator<FrameImage | SkippedFrame | PlanarFrame>;
+  /** How decoded frames are being converted, once one has been (decoding sources only). */
+  conversionReport?(): ConversionReport | undefined;
   dispose(): void;
 }
 export interface TilePayload {

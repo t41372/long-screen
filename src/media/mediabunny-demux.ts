@@ -156,10 +156,7 @@ export class MediabunnyDemuxer implements Demuxer {
       this.rotation = await track.getRotation();
       const par = await track.getPixelAspectRatio();
       if (par.num !== par.den) {
-        this.warnings.push('Non-square pixel aspect ratio: stored sample pixels are preserved; display aspect may differ.');
-      }
-      if (await track.hasHighDynamicRange().catch(() => false)) {
-        this.warnings.push('HDR recording: browser canvas conversion produces 8-bit sRGB, not HDR-preserving output.');
+        this.warnings.push(t('media.PIXEL_ASPECT_RATIO', { num: par.num, den: par.den }));
       }
       this.sink = new EncodedPacketSink(track);
       const format = await input.getFormat();

@@ -67,6 +67,22 @@ export const pipelineSections = {
       message: '{{pass}} 阶段只完成 {{actual}}/{{expected}} 帧；结果被标记为 partial。',
       action: '已保留成功提交的前缀；缺失的帧不会被静默当作已处理。',
     },
+    FRAME_CONVERSION: {
+      message: '解码后的每一帧这样转成像素：{{method}}。',
+    },
+    HDR_UNCHECKED: {
+      message: '这是 {{transfer}} 格式的 HDR 录屏，但在这个浏览器里没法核对颜色换算，拼出来的图颜色可能偏暗或发灰。',
+      action: '用最新版的 Chrome 或 Safari 再拼一次。',
+    },
+    HDR_ABOVE_WHITE: {
+      message:
+        '这段 HDR 录屏的第一帧有 {{percent}}% 的像素比普通白色还亮，都按白色处理了。要是拼出来的图看着过曝，多半是录屏软件把普通内容的白色放在了更高的亮度。',
+      action: '在录屏软件里把 SDR 白色亮度调回 100 尼特，或者关掉 HDR 录制。',
+    },
+    SLOW_CONVERSION: {
+      message: '这个浏览器把这段录屏的每一帧转成像素要大约 {{ms}} 毫秒，整次拼图光是转换就要大约 {{minutes}} 分钟。',
+      action: '换用最新版的 Chrome 或 Safari 会快很多，也可以先把录屏转成 H.264。',
+    },
     REVEAL_SKIPPED: {
       message:
         '这次拼出的画布太多或太大：清理浮层（光标、悬浮按钮、滚动条）还要大约 {{need}} MB 内存，已经不够了，所以这一步跳过了，直接用拼出来的像素。',
@@ -190,6 +206,15 @@ export const pipelineSections = {
     optimizing: '回头校正整体位置，消除累积误差。',
   },
   media: {
+    UNSUPPORTED_CODEC: 'UNSUPPORTED_CODEC: 这个浏览器解不了这段录屏的编码（{{codec}}）。{{advice}}',
+    UNSUPPORTED_ADVICE: {
+      hevc: 'iPhone 和 Mac 的录屏多是 HEVC，只有部分浏览器能解：请改用 Safari，或者带硬件解码的 Chrome、Edge。',
+      prores: 'ProRes 没有浏览器能解，请先导出成 H.264 或 HEVC。',
+      h264: '这种 H.264（4:4:4 或 10 位）只有 Chrome 能解：请改用 Chrome，或者导出成普通的 H.264。',
+      av1: 'AV1 要较新的浏览器或硬件才能解：请改用最新版的 Chrome，或者导出成 H.264。',
+      other: '请改用最新版的 Chrome 或 Safari，或者先把录屏转成 H.264。',
+    },
+    PIXEL_ASPECT_RATIO: '该录屏声明像素长宽比为 {{num}}:{{den}}；保留原始存储像素，不做缩放，显示比例可能不同。',
     CONTAINER_SIZE_MISMATCH: '容器声明 {{codedWidth}}×{{codedHeight}}，码流实际为 {{bitstreamWidth}}×{{bitstreamHeight}}；以码流尺寸为准。',
     NON_SQUARE_PIXELS:
       '该录屏声明非方形像素长宽比（显示尺寸 {{displayWidth}}×{{displayHeight}}，存储尺寸 {{bitstreamWidth}}×{{bitstreamHeight}}）；保留原始存储像素，不做缩放。',
