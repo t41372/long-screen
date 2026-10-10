@@ -16,10 +16,13 @@ export interface OdometryEstimate {
   weakStep: boolean;
   stepError: number;
   contentChange?: { agreement: number; blocks: number };
+  /** On 'static'/'lost': a step the plain native error rejected but the core measured as unambiguous
+   *  (rust/core/src/track/odometry.rs `Rescue`), for a caller about to start a new fragment instead. */
+  rescue?: { delta: Point; confidence: number; ambiguous: boolean; weakStep: boolean; stepError: number };
 }
 const ODOMETRY_DECISION_TAGS: OdometryEstimate['decision'][] = ['tracked', 'static', 'lost'];
 /** `ls_track_odometry`'s `out` layout (`TRACK_ODOMETRY_OUT_BYTES` in `abi/track.rs`). */
-const TRACK_ODOMETRY_OUT_BYTES = 64;
+const TRACK_ODOMETRY_OUT_BYTES = 104;
 
 export interface OdometryInputs {
   f: number;
@@ -137,5 +140,16 @@ export function odometry(core: Core, exports: CoreExports, inputs: OdometryInput
     weakStep,
     stepError,
     ...(hasContentChange ? { contentChange: { agreement: view.getFloat64(48, true), blocks: view.getUint32(56, true) } } : {}),
+    ...(view.getUint32(96, true) === 1
+      ? {
+        rescue: {
+          delta: { x: view.getFloat64(64, true), y: view.getFloat64(72, true) },
+          confidence: view.getFloat64(80, true),
+          stepError: view.getFloat64(88, true),
+          ambiguous: (view.getUint32(100, true) & 1) !== 0,
+          weakStep: (view.getUint32(100, true) & 2) !== 0,
+        },
+      }
+      : {}),
   };
 }

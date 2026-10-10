@@ -10,10 +10,11 @@ use crate::abi::STATUS_BAD_ARGUMENT;
 use crate::motion::Gray;
 use crate::track;
 
-/// `ls_track_odometry`'s `out` layout (`TRACK_ODOMETRY_OUT_BYTES` in `src/core/wasm/track.ts`): f64 delta.x,
+/// `ls_track_odometry`'s `out` layout (`TRACK_ODOMETRY_OUT_BYTES` in `src/core/wasm/track-odometry.ts`): f64 delta.x,
 /// f64 delta.y, f64 confidence, u32 ambiguous, u32 weakStep, f64 stepError, u32 hasContentChange, u32 padding,
-/// f64 contentChange.agreement, u32 contentChange.blocks, u32 padding (64 bytes total).
-const TRACK_ODOMETRY_OUT_BYTES: usize = 64;
+/// f64 contentChange.agreement, u32 contentChange.blocks, u32 padding, then the rescue: f64 delta.x, f64 delta.y,
+/// f64 confidence, f64 stepError, u32 hasRescue, u32 flags (1 ambiguous, 2 weakStep) (104 bytes total).
+const TRACK_ODOMETRY_OUT_BYTES: usize = 104;
 
 /// `track.ts::odometry` fused into one call — `matchFeatures` + `translationHypotheses` + the audit
 /// filter/sort + up to 6 native refinements with the velocity prior + rival detection + confidence, falling
@@ -164,6 +165,18 @@ pub extern "C" fn ls_track_odometry(
             dst[60..64].fill(0);
         }
         None => dst[40..64].fill(0),
+    }
+    match &result.rescue {
+        Some(r) => {
+            dst[64..72].copy_from_slice(&r.delta.0.to_le_bytes());
+            dst[72..80].copy_from_slice(&r.delta.1.to_le_bytes());
+            dst[80..88].copy_from_slice(&r.confidence.to_le_bytes());
+            dst[88..96].copy_from_slice(&r.step_error.to_le_bytes());
+            dst[96..100].copy_from_slice(&1u32.to_le_bytes());
+            dst[100..104]
+                .copy_from_slice(&(r.ambiguous as u32 | (r.weak_step as u32) << 1).to_le_bytes());
+        }
+        None => dst[64..104].fill(0),
     }
     match result.decision {
         track::OdometryDecision::Tracked => 0,

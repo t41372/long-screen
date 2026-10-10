@@ -151,6 +151,9 @@ export interface OdometryEstimate {
   weakStep: boolean;
   stepError: number;
   contentChange?: { agreement: number; blocks: number };
+  /** On 'static'/'lost': a step the plain native error rejected but the core measured as unambiguous, for a caller
+   *  about to start a new fragment instead (rust/core/src/track/odometry.rs `Rescue`). */
+  rescue?: { delta: Point; confidence: number; ambiguous: boolean; weakStep: boolean; stepError: number };
 }
 /** Step 1: frame-to-frame odometry — analysis-scale hypotheses, block-aware audit, then a native-pixel decision
  * (fused: `matchFeatures` + `translationHypotheses` + the audit filter/sort + up to 6 native refinements +

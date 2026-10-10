@@ -639,6 +639,50 @@ pub struct NativeRefinement {
     pub error: f64,
     pub samples: u32,
     pub runner_up: f64,
+    /// The mean of the lowest [`TRIMMED_KEEP`] of the per-point errors at the chosen offset: the error without the
+    /// points a part of the region that does not scroll contributes (a sticky sidebar, a translucent tab bar). Only
+    /// odometry's rescue reads it (`track::odometry::rescuable`); infinite where it is not measured.
+    pub trimmed: f64,
+}
+
+/// Share of the per-point errors [`NativeRefinement::trimmed`] keeps. On real steps the plain mean rejected (a sidebar
+/// at 14.3, a tab bar at 14.9) 70, 75 and 80 % trims gave 2.5–5.7 at the true offset and at least 15.7 at offsets 3 or
+/// 10 px off or at zero; 75 % is the middle one.
+pub const TRIMMED_KEEP: f64 = 0.75;
+
+/// [`NativeRefinement::trimmed`]: per-point errors of `points` at offset (`dx`, `dy`), the same as the refinement's
+/// cost, of which the lowest [`TRIMMED_KEEP`] are averaged.
+#[allow(clippy::too_many_arguments)]
+fn trimmed_error(
+    a: &[u8],
+    b: &[u8],
+    w: i64,
+    h: i64,
+    dx: i64,
+    dy: i64,
+    inside: impl Fn(i64, i64) -> bool,
+    points: &[i64],
+) -> f64 {
+    let mut errors: Vec<f64> = Vec::with_capacity(points.len());
+    for &p in points {
+        let (x, y) = (p % w, p / w);
+        let (xx, yy) = (x + dx, y + dy);
+        if xx < 1 || yy < 1 || xx >= w - 1 || yy >= h - 1 || !inside(xx, yy) {
+            continue;
+        }
+        let i = (p * 4) as usize;
+        let j = ((yy * w + xx) * 4) as usize;
+        let d = (a[j] as i32 - b[i] as i32).abs()
+            + (a[j + 1] as i32 - b[i + 1] as i32).abs()
+            + (a[j + 2] as i32 - b[i + 2] as i32).abs();
+        errors.push((90.0f64).min(d as f64 / 3.0));
+    }
+    if errors.len() < 12 {
+        return f64::INFINITY;
+    }
+    errors.sort_by(|x, y| x.total_cmp(y));
+    let keep = ((errors.len() as f64) * TRIMMED_KEEP).ceil() as usize;
+    errors[..keep].iter().sum::<f64>() / keep as f64
 }
 
 /// Picks the native-refinement sample points for `b` inside `region`: a `step`×`step` cell grid, keeping one
@@ -901,6 +945,7 @@ pub fn refine_native_at(
             error: f64::INFINITY,
             samples: points.len() as u32,
             runner_up: f64::INFINITY,
+            trimmed: f64::INFINITY,
         };
     }
     let mut samples = 0u32;
@@ -947,12 +992,18 @@ pub fn refine_native_at(
         .filter(|c| (c.0 - px).abs().max((c.1 - py).abs()) > 2)
         .map(|c| c.2)
         .fold(f64::INFINITY, f64::min);
+    let trimmed = if best.is_finite() {
+        trimmed_error(a, b, w, h, px as i64, py as i64, inside, points)
+    } else {
+        f64::INFINITY
+    };
     NativeRefinement {
         x: px,
         y: py,
         error: best,
         samples,
         runner_up,
+        trimmed,
     }
 }
 
@@ -1012,6 +1063,7 @@ pub fn refine_patches(
             error: f64::INFINITY,
             samples: 0,
             runner_up: f64::INFINITY,
+            trimmed: f64::INFINITY,
         };
     }
     let mut samples = 0u32;
@@ -1072,6 +1124,7 @@ pub fn refine_patches(
         error: best,
         samples,
         runner_up,
+        trimmed: f64::INFINITY,
     }
 }
 
@@ -1238,6 +1291,92 @@ mod tests {
             }
         }
         data
+    }
+
+    // Failure cases for the trimmed error a step can be rescued by: a static band inside the region (a sticky sidebar,
+    // a translucent tab bar) pushing the plain mean past the tracking limit while the scrolling content matches
+    // exactly, and the trimmed mean not staying high at an offset that is wrong for the content too.
+    #[test]
+    fn the_trimmed_error_drops_a_static_band_but_not_a_wrong_offset() {
+        let (w, h, dy, band) = (240usize, 240usize, 7i64, 48usize);
+        // A page with detail at every scale (random 2 px cells), so any offset but the true one costs it.
+        let mut rng = Rng::new(11);
+        let cells: Vec<u8> = (0..(w / 2) * ((h + 64) / 2))
+            .map(|_| (rng.next_f64() * 256.0) as u8)
+            .collect();
+        let world: Vec<u8> = (0..w * (h + 64))
+            .map(|i| cells[(i / w / 2) * (w / 2) + (i % w) / 2])
+            .collect();
+        // The band (the bottom fifth) holds still: a 7 px checkerboard, so at the 7 px step every band point compares a
+        // black square with a white one — the most a static bar of icons can cost.
+        let frame = |scroll: usize| -> Vec<u8> {
+            let mut out = vec![255u8; w * h * 4];
+            for y in 0..h {
+                for x in 0..w {
+                    let v = if y >= h - band {
+                        if (x / 7 + y / 7) % 2 == 0 {
+                            0
+                        } else {
+                            255
+                        }
+                    } else {
+                        world[(y + scroll) * w + x]
+                    };
+                    out[(y * w + x) * 4..(y * w + x) * 4 + 3].copy_from_slice(&[v, v, v]);
+                }
+            }
+            out
+        };
+        let (a, b) = (frame(0), frame(dy as usize));
+        let region = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: w as f64,
+            height: h as f64,
+        };
+        let points = select_native_points(&b, w, h, region, None, None);
+        let right = refine_native_at(
+            &a,
+            &b,
+            w,
+            h,
+            Point {
+                x: 0.0,
+                y: dy as f64,
+            },
+            None,
+            3,
+            &points,
+        );
+        assert_eq!((right.x, right.y), (0, dy as i32));
+        assert!(
+            right.error >= 14.0,
+            "the band must push the plain mean past the limit: {}",
+            right.error
+        );
+        assert!(
+            right.trimmed < 8.0,
+            "trimmed {} at the true offset",
+            right.trimmed
+        );
+        let slipped = refine_native_at(
+            &a,
+            &b,
+            w,
+            h,
+            Point {
+                x: 0.0,
+                y: (dy + 10) as f64,
+            },
+            None,
+            3,
+            &points,
+        );
+        assert!(
+            slipped.trimmed >= 8.0,
+            "trimmed {} at a wrong offset",
+            slipped.trimmed
+        );
     }
 
     fn crop(world: &[u8], ww: usize, x: usize, y: usize, w: usize, h: usize) -> Vec<u8> {
