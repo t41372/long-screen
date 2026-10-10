@@ -91,15 +91,18 @@ export class TileStore {
     const available = Math.max(0, memoryMB * 1024 * 1024 - reservedBytes);
     this.maxTiles = Math.max(2, Math.floor(available * .8 / (this.size * this.size * 4.3)));
   }
-  /** Tiles one frame of `width`×`height` can touch at any integer pose (a partial tile on each side). */
+  /** Tiles a `width`×`height` area can touch at any integer pose (a partial tile on each side). */
   footprint(width: number, height: number): number {
     return (Math.ceil(width / this.size) + 1) * (Math.ceil(height / this.size) + 1);
   }
-  /** Raises the cache limit to at least one frame footprint. An LRU cache smaller than the set a frame touches
-   *  every pass turns each frame into a full miss cycle (measured: 13,800 decodes / 29,220 encodes over 935
-   *  frames at 3456×2234 with a 38-tile limit), so the budget yields here; returns the tiles added, 0 if none. */
-  ensureFootprint(width: number, height: number): number {
-    const needed = this.footprint(width, height) + 2;
+  /** Raises the cache limit to at least what one frame paints: the footprint of each of its `areas` (every region
+   *  it places, each on its own canvas). An LRU cache smaller than the set a frame touches turns each frame into a
+   *  full miss cycle (measured: 13,800 decodes / 29,220 encodes over 935 frames at 3456×2234 with a 38-tile limit;
+   *  7,733 decodes over the 170 frames of c.mov, which paint five regions, under a floor of 50 sized for one
+   *  frame-sized canvas, and 383 under the 91 its regions add up to), so the budget yields here; returns the tiles
+   *  added, 0 if none. */
+  ensureFootprint(areas: { width: number; height: number }[]): number {
+    const needed = areas.reduce((n, area) => n + this.footprint(area.width, area.height), 0) + 2;
     if (this.maxTiles >= needed) return 0;
     const added = needed - this.maxTiles;
     this.maxTiles = needed;

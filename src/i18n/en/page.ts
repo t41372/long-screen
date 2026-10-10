@@ -77,7 +77,7 @@ export const pageSections: Catalog<typeof zh> = {
       regionsAuto: 'Auto-detected ↗',
       advancedSummary: 'More knobs <span>＋</span>',
       analysisSizeLabel: 'Analysis long edge',
-      memoryLabel: 'Working cache budget',
+      memoryLabel: 'Tile cache limit',
       computeLabel: 'Acceleration',
       computeAuto: 'Auto · WebGPU / CPU',
       computeWebgpu: 'WebGPU · CPU align',
@@ -88,7 +88,7 @@ export const pageSections: Catalog<typeof zh> = {
       decoderPrecise: 'Exact · WebCodecs',
       decoderCompatibility: 'Approximate · native seek',
       decoderHint:
-        "Analysis thumbnails do not change the output pixels. The budget does not include the browser / decoder / GPU's extra memory. “Approximate · native seek” may miss brief content.",
+        'Analysis thumbnails do not change the output pixels. The tile cache only holds finished tiles and grows on its own when one frame paints more than fits, so it hardly changes the speed; memory the browser, decoder, GPU and core use is not counted in it. “Approximate · native seek” may miss brief content.',
       pauseBtn: 'Pause',
       stopBtn: 'Stop & save',
       footerNote: 'No upload · no cloud inference · no external models',

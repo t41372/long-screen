@@ -76,7 +76,7 @@ export const pageSections = {
       regionsAuto: '自动识别 ↗',
       advancedSummary: '更多旋钮 <span>＋</span>',
       analysisSizeLabel: '分析用的长边',
-      memoryLabel: '内存预算',
+      memoryLabel: '瓦片缓存上限',
       computeLabel: '分析加速',
       computeAuto: '自动 · 实测后选 WebGPU 或 CPU',
       computeWebgpu: 'WebGPU 分析 · CPU 配准',
@@ -85,7 +85,8 @@ export const pageSections = {
       decoderLabel: '解码方式',
       decoderPrecise: '逐帧 · WebCodecs',
       decoderCompatibility: '近似 · 原生 seek',
-      decoderHint: '分析缩图不改变输出像素。预算不包括浏览器 / 解码器 / GPU 的额外内存。兼容 seek 模式可能漏掉短暂内容。',
+      decoderHint:
+        '分析缩图不改变输出像素。瓦片缓存只放拼好的图块，放不下一帧要画的图块时会自己加大，所以几乎不影响速度；浏览器、解码器、GPU 和计算核心用的内存不算在里面。兼容 seek 模式可能漏掉短暂内容。',
       pauseBtn: '暂停',
       stopBtn: '停止并保存',
       footerNote: '不上传 · 无云端推理 · 无外部模型',
