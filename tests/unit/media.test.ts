@@ -5,9 +5,10 @@ import { MediabunnyDemuxer } from '../../src/media/mediabunny-demux.ts';
 import { probeIsobmff } from '../../src/media/isobmff-probe.ts';
 import { sniffSource, type SourceKind } from '../../src/media/sniff.ts';
 import { bitmapReader, CompatibilitySource, openDemuxer, openMedia, PreciseSource, Signal } from '../../src/media/source.ts';
-import { canvasConverter } from '../../src/media/convert.ts';
+import { canvasConverter, directConverter } from '../../src/media/convert.ts';
 import { BufferPool, releaseUnlessHeld } from '../../src/media/pool.ts';
 import type { MediaInfo, RGBA } from '../../src/types.ts';
+import { t } from '../../src/i18n/index.ts';
 const fixtures = new URL('../fixtures/', import.meta.url);
 const truth = JSON.parse(await Deno.readTextFile(new URL('truth.json', fixtures)));
 async function fixture(name: string): Promise<File> {
@@ -677,6 +678,7 @@ function installFakeDecoder(
 ) {
   const chunks: { timestamp: number; duration?: number; type: string }[] = [];
   const flags = { closeCalled: false };
+  const frames: FakeFrame[] = [];
   class FakeVideoDecoder {
     state = 'unconfigured';
     decodeQueueSize = 0;
@@ -719,6 +721,7 @@ function installFakeDecoder(
         if (options.visibleRect) {
           frame.visibleRect = { width: options.visibleRect[0], height: options.visibleRect[1] };
         }
+        frames.push(frame);
         this.init.output(frame);
       }
       this.ondequeue?.();
@@ -746,6 +749,7 @@ function installFakeDecoder(
   return {
     chunks,
     flags,
+    frames,
     restore: () => {
       g.VideoDecoder = previous.VideoDecoder;
       g.EncodedVideoChunk = previous.EncodedVideoChunk;
@@ -777,6 +781,73 @@ Deno.test('source: decoding pipeline yields every packet in presentation order w
     source.dispose();
   } finally {
     fake.restore();
+  }
+});
+// Reading only some frames (FrameSource.sparseFrames: the later passes skip most of a recording). Failure cases: a
+// declined frame converted anyway, on its own turn or by a prefetch started a frame earlier; a declined frame left
+// open (each holds a decoder surface); a run that converts planes itself handed RGBA instead; and a converter with
+// nothing to say about itself leaving the run without a FRAME_CONVERSION line.
+Deno.test('source: sparse reading converts only the frames a pass wants, as RGBA or as planes, and closes the rest', async () => {
+  // Runs of wanted frames with one declined between them: the prefetch runs ahead for the next wanted frames and has to
+  // skip the declined ones.
+  const want = (index: number) => index % 4 !== 3;
+  const fake = installFakeDecoder();
+  try {
+    const converted: number[] = [];
+    const rgba = Object.assign((frame: FakeFrame, info: MediaInfo) => {
+      converted.push(frame.timestamp);
+      return fakeConvert(frame, info);
+    }, { prefetch: 2 });
+    const source = await openMedia(await fixture('scroll.mp4'), rgba as never);
+    assertEquals(source.conversionReport?.(), undefined, 'nothing to report before a frame has converted');
+    const got: { index: number; image?: unknown }[] = [];
+    for await (const f of source.sparseFrames!(want)) got.push(f);
+    assertEquals(got.length, truth.frames);
+    assert(got.every((f) => (f.image !== undefined) === want(f.index)), 'pixels exactly for the wanted frames');
+    assertEquals(converted.length, got.filter((f) => want(f.index)).length, 'no declined frame converted, prefetch included');
+    assert(fake.frames.every((f) => f.closed), 'every decoded frame closed');
+    assertEquals(source.conversionReport?.(), { method: 'custom converter' });
+    source.dispose();
+  } finally {
+    fake.restore();
+  }
+  const planar = installFakeDecoder();
+  try {
+    const planed: number[] = [], released: number[] = [];
+    const planes = Object.assign(() => {
+      throw new Error('a run that converts planes itself is never handed RGBA');
+    }, {
+      prefetch: 2,
+      describe: () => 'fake planes',
+      planes: (frame: FakeFrame) => {
+        planed.push(frame.timestamp);
+        return Promise.resolve({
+          data: new Uint8Array(4),
+          layout: [],
+          format: 0,
+          matrix: 0,
+          width: 2,
+          height: 2,
+          release: () => void released.push(frame.timestamp),
+        });
+      },
+    });
+    const source = await openMedia(await fixture('scroll.mp4'), planes as never);
+    let wanted = 0;
+    for await (const f of source.sparseFrames!(want, { planes: true })) {
+      if (!want(f.index)) {
+        assertEquals((f as { planes?: unknown }).planes, undefined, 'no planes for a declined frame');
+        continue;
+      }
+      wanted++;
+      assert((f as { planes?: unknown }).planes, `frame ${f.index} came as planes`);
+    }
+    assertEquals(planed.length, wanted, 'planes copied for the wanted frames only, prefetch included');
+    assert(planar.frames.every((f) => f.closed), 'every decoded frame closed');
+    assertEquals(source.conversionReport?.(), { method: 'fake planes' });
+    source.dispose();
+  } finally {
+    planar.restore();
   }
 });
 Deno.test('source: negative timestamps are skipped with a notice; backwards timestamps continue with a notice', async () => {
@@ -1147,6 +1218,83 @@ Deno.test('source: compatibility mode converts an HDR recording from its coded v
   let n = 0;
   const mixed = new CompatibilitySource(info(pq), 10, () => Promise.resolve({ bitmap: bitmap(), coded: n++ === 0 }), browser, coded);
   await assertRejects(() => run(mixed), Error, 'HDR_CAPTURE_CHANGED');
+});
+// The direct RGBA copy (directConverter). Failure cases: an HDR frame or a rotated one taking the browser's RGBA copy
+// (Chrome's tone mapping, or an unrotated image) instead of the fallback; a browser that ignores the requested format
+// (allocationSize reports the native size) not falling back for good; and a copy that worked once and then fails
+// being silently swapped for another conversion mid-run, which would mix two conversions on one canvas.
+Deno.test('convert: the direct copy takes SDR frames and hands HDR, rotated and uncopyable ones to the fallback', async () => {
+  const info = (extra: Partial<MediaInfo> = {}): MediaInfo => ({
+    name: 'x',
+    size: 1,
+    width: 2,
+    height: 1,
+    codedWidth: 2,
+    codedHeight: 1,
+    rotation: 0,
+    duration: 1,
+    codec: 'avc1',
+    mode: '',
+    warnings: [],
+    ...extra,
+  });
+  const frame = (options: { size?: number; fail?: boolean } = {}) =>
+    ({
+      colorSpace: { primaries: 'bt709', transfer: 'bt709', matrix: 'bt709', fullRange: false },
+      allocationSize: () => options.size ?? 8,
+      copyTo: (dest: Uint8Array) => {
+        if (options.fail) return Promise.reject(new Error('copy failed'));
+        dest.fill(7);
+        return Promise.resolve([{ offset: 0, stride: 8 }]);
+      },
+    }) as unknown as VideoFrame;
+  const handed: string[] = [];
+  const fallback = Object.assign((_f: VideoFrame, i: MediaInfo): RGBA => {
+    handed.push(i.colour?.transfer ?? (i.rotation ? 'rotated' : 'sdr'));
+    return { width: 2, height: 1, data: new Uint8ClampedArray(8).fill(1) };
+  }, { describe: () => 'fallback planes', planes: () => Promise.resolve(undefined) });
+
+  const direct = directConverter(fallback as never);
+  assertEquals(direct.describe!(), 'undecided');
+  assertEquals((await direct(frame(), info())).data[0], 7, 'an SDR frame is copied directly');
+  assertEquals(direct.describe!(), 'copyTo(RGBA)');
+  assertEquals(direct.report!(), { method: 'copyTo(RGBA)' });
+  await assertRejects(() => Promise.resolve(direct(frame({ fail: true }), info())), Error, 'copy failed');
+
+  const hdr = directConverter(fallback as never), pq = { primaries: 'bt2020', transfer: 'pq', matrix: 'bt2020-ncl', fullRange: false };
+  assertEquals((await hdr(frame(), info({ colour: pq as VideoColorSpaceInit }))).data[0], 1, 'an HDR frame goes to the fallback');
+  assertEquals(hdr.describe!(), 'fallback planes', 'and the fallback names the run');
+  assertEquals((await directConverter(fallback as never)(frame(), info({ rotation: 90 }))).data[0], 1, 'a rotated frame too');
+
+  const ignoring = directConverter(fallback as never);
+  assertEquals((await ignoring(frame({ size: 6 }), info())).data[0], 1, 'a browser that ignores the format falls back');
+  assertEquals((await ignoring(frame(), info())).data[0], 1, 'for good');
+  assertEquals(ignoring.report!(), { method: 'fallback planes' });
+  assertEquals(handed, ['pq', 'rotated', 'sdr', 'sdr']);
+});
+// A recording the browser cannot decode is refused when it is picked, with advice for its codec family. Failure case:
+// the advice for one family given to another (telling an iPhone recording's owner that no browser decodes it).
+Deno.test('source: an undecodable recording names what to do for its codec family', async () => {
+  const unsupported = installFakeDecoder({ unsupported: true });
+  try {
+    for (
+      const [fixtureName, family] of [
+        ['hdr-pq.mp4', 'hevc'],
+        ['prores.mov', 'prores'],
+        ['h264-444.mp4', 'h264'],
+        ['hdr-pq.webm', 'other'],
+      ] as const
+    ) {
+      const error = await assertRejects(
+        async () => openMedia(await fixture(fixtureName), fakeConvert as never),
+        Error,
+        'UNSUPPORTED_CODEC',
+      );
+      assert(error.message.includes(t(`media.UNSUPPORTED_ADVICE.${family}`)), `${fixtureName}: ${error.message}`);
+    }
+  } finally {
+    unsupported.restore();
+  }
 });
 Deno.test('source: canvas-backed converters require an OffscreenCanvas runtime', () => {
   const convert = canvasConverter();

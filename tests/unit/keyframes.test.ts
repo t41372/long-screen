@@ -294,3 +294,76 @@ Deno.test('keyframes: canonical resolves a fragment-space rival to the same plac
   assert(differentPlace, 'expected a relocalization');
   assert(differentPlace!.ambiguous, 'a rival that canonicalizes to a genuinely different place must stay ambiguous');
 });
+// Failure case: a keyframe minted again for a frame the index already holds (the region's anchor re-posted on the same
+// frame) leaves the old row's id in the posting, so a later revisit relocalises onto the superseded keyframe.
+Deno.test('keyframes: a keyframe minted again for a frame already indexed replaces the old one in its postings', async () => {
+  const db = new MemoryKV(), index = new KeyframeIndex(db, async () => {});
+  const page = makeWorld(900, 1400, 77, 'article'), g = core().grayscale(page.data, 900, 1400);
+  const view = (y: number): Gray => {
+    const data = new Uint8Array(640 * 400);
+    for (let row = 0; row < 400; row++) data.set(g.data.subarray((y + row) * 900, (y + row) * 900 + 640), row * 640);
+    return { width: 640, height: 400, data };
+  };
+  const region = { x: 0, y: 0, width: 640, height: 400 }, gray = view(300), features = core().extractFeatures(gray, 480);
+  const keyframe = (id: string, canvasId: string) => ({
+    id,
+    node: `${canvasId}/10`,
+    canvasId,
+    layer: 'body',
+    frame: 10,
+    features,
+    gray,
+    x: 0,
+    y: 300,
+    scaleX: 1,
+    scaleY: 1,
+    patches: core().extractPatches(gray, region, features, 1),
+  });
+  await index.add(keyframe('body/10-first', 'body-part-0'));
+  await index.add(keyframe('body/10-again', 'body-part-1'));
+  const current = view(323), own = core().extractFeatures(current, 480);
+  const found = await index.find({
+    features: own,
+    gray: current,
+    native: current,
+    layer: 'body',
+    frame: 60,
+    roi: region,
+    region,
+    factor: 1,
+    radius: 3,
+  });
+  assertEquals(found?.keyframe.id, 'body/10-again');
+});
+// The search reads a long posting as its earliest and its latest keyframes (`find`), so a posting must stay in frame
+// order. Failure case: a keyframe for an earlier frame arriving after later ones (two layers' solve steps interleave,
+// or a region re-minted from an older frame) appended at the end, where it is taken for one of the latest.
+Deno.test('keyframes: postings stay in frame order whatever order keyframes arrive in', async () => {
+  const db = new MemoryKV(), index = new KeyframeIndex(db, async () => {});
+  const page = makeWorld(900, 1400, 77, 'article'), g = core().grayscale(page.data, 900, 1400);
+  const gray: Gray = { width: 640, height: 400, data: new Uint8Array(640 * 400) };
+  for (let row = 0; row < 400; row++) gray.data.set(g.data.subarray((300 + row) * 900, (300 + row) * 900 + 640), row * 640);
+  const features = core().extractFeatures(gray, 480), region = { x: 0, y: 0, width: 640, height: 400 };
+  for (const frame of [30, 10, 50, 20]) {
+    await index.add({
+      id: `body/${frame}`,
+      node: `body-part-0/${frame}`,
+      canvasId: 'body-part-0',
+      layer: 'body',
+      frame,
+      features,
+      gray,
+      x: 0,
+      y: 300,
+      scaleX: 1,
+      scaleY: 1,
+      patches: core().extractPatches(gray, region, features, 1),
+    });
+  }
+  const postings = (index as unknown as { postings: Map<string, Map<number, { frames: number[]; ids: string[] }>> }).postings.get('body')!;
+  assert(postings.size > 0);
+  for (const { frames, ids } of postings.values()) {
+    assertEquals(frames, [...frames].sort((a, b) => a - b));
+    assertEquals(ids, frames.map((f) => `body/${f}`));
+  }
+});
