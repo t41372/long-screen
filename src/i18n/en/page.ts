@@ -37,6 +37,7 @@ export const pageSections: Catalog<typeof zh> = {
     },
     press: {
       ariaLabel: 'The printer',
+      build: 'Build',
     },
     screen: {
       dropTitle: 'Drop a recording here',
@@ -197,7 +198,6 @@ export const pageSections: Catalog<typeof zh> = {
       stackMid: 'and compiled to',
       stackTail: 'to run right in your browser.',
       stackMore: 'Interface in TypeScript · built and tested with Deno',
-      build: 'Build',
       linksLabel: 'Project links',
       source: 'Source on GitHub',
       report: 'Report a bug',

@@ -52,6 +52,15 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
       void navigator.locks.request(PRINT_LOCK + id, () => held);
     }
   }
+  // Paused, the printer stops working on screen too: CSS stills its animations (`is-paused`); the print's "stitching"
+  // illustration is SMIL, which only these calls pause. Under reduced motion it stays the still main.ts set.
+  const showPaused = (value: boolean) => {
+    document.body.classList.toggle('is-paused', value);
+    const svg = document.querySelector<SVGSVGElement>('#empty-state svg');
+    if (!svg || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    if (value) svg.pauseAnimations();
+    else svg.unpauseAnimations();
+  };
   const showElapsed = () => {
     $('elapsed').textContent = timeText(((paused ? pausedAt : performance.now()) - startedAt - pausedFor) / 1000);
   };
@@ -70,6 +79,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
       void preview.play().catch(() => {});
     }
     document.body.classList.toggle('is-processing', value);
+    if (!value) showPaused(false);
     $('run-controls').hidden = !value;
     $('status-dot').classList.toggle('running', value);
     syncControls(state, viewer);
@@ -198,7 +208,8 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     partial: [1, 0],
   };
   function progress(p: WorkerProgress): void {
-    $('status-title').textContent = phaseName(p.phase);
+    // A step that was already under way when the run paused still reports in; the title keeps saying it is paused.
+    if (!paused) $('status-title').textContent = phaseName(p.phase);
     $('progress-count').textContent = `${t('ui.count.frames', { count: p.frames, frames: p.frames.toLocaleString() })} · ${
       timeText(p.time)
     }`;
@@ -222,6 +233,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
           }
         }
         paused = result.paused;
+        showPaused(paused);
         $('pause-btn').textContent = paused ? t('ui.run.resumeLabel') : t('ui.run.pauseLabel');
         $('status-title').textContent = paused ? t('ui.run.pausedStatus') : t('ui.run.resumedStatus');
       }).catch((e) => toast(String(e), true));
@@ -232,6 +244,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
         if (paused) {
           pausedFor += performance.now() - pausedAt;
           paused = false;
+          showPaused(false);
           $('pause-btn').textContent = t('ui.run.pauseLabel');
         }
         toast(t('ui.run.stopToast'));

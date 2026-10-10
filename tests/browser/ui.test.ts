@@ -18,8 +18,8 @@ Deno.test({
       await page.goto(h.base + '/');
       await page.waitForFunction('!!window.longScreen');
       await page.screenshot({ path: `${results}desktop-empty.png`, fullPage: true });
-      // The footer names the commit dist-test/ was built from (scripts/build.ts), linked to it on GitHub. That is a
-      // commit of this checkout, not necessarily HEAD: dist-test/ is only rebuilt when a build input changes.
+      // The printer's plate names the commit dist-test/ was built from (scripts/build.ts), linked to it on GitHub. That
+      // is a commit of this checkout, not necessarily HEAD: dist-test/ is only rebuilt when a build input changes.
       const build = await page.evaluate(() => {
         const line = document.querySelector<HTMLElement>('#build-id')!, link = document.querySelector<HTMLAnchorElement>('#build-commit')!;
         return { hidden: line.hidden, label: link.textContent ?? '', href: link.href };
@@ -329,6 +329,69 @@ Deno.test({
       } finally {
         await h.close();
       }
+    }
+  },
+});
+// Failure cases: a paused run whose printer keeps shaking, light blinking, scan line sweeping, gauge stripes moving,
+// paper feeding and stitching illustration playing, so nothing on screen says it stopped; the "paused" title overwritten by a progress report from the
+// step that was under way when the pause landed; the stopped animations not coming back on resume.
+Deno.test({
+  name: 'browser UI: pausing a run stills the printer and keeps saying it is paused until it resumes',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const h = await harness();
+    try {
+      const page = h.page;
+      await page.goto(h.base + '/');
+      await page.waitForFunction('!!window.longScreen');
+      await page.setInputFiles('#file-input', `${new URL('../fixtures/scroll.mp4', import.meta.url).pathname}`);
+      await page.waitForFunction(() => document.querySelector('#file-subtitle')?.textContent?.includes('avc1'), null, { timeout: 30000 });
+      await page.click('#start-btn');
+      // Clicked as the page sees it: Playwright's own click waits for the key to hold still, which a working printer
+      // never does (the shaking this test is about), and the short fixture run would be over by then.
+      await page.waitForFunction(() => {
+        if (!document.body.classList.contains('is-processing') || document.querySelector('#run-controls')!.hasAttribute('hidden')) {
+          return false;
+        }
+        document.querySelector<HTMLButtonElement>('#pause-btn')!.click();
+        return true;
+      });
+      await page.waitForFunction(() => document.body.classList.contains('is-paused'), null, { timeout: 30000 });
+      const motion = () =>
+        page.evaluate(() => {
+          const style = (selector: string, pseudo?: string) => getComputedStyle(document.querySelector(selector)!, pseudo);
+          return {
+            printer: style('.printer').animationName,
+            led: style('#status-dot').animationName,
+            scan: style('.screen', '::before').animationPlayState,
+            gauge: style('.gauge-fill').animationPlayState,
+            paper: style('.slot-out', '::after').animationPlayState,
+            illustration: document.querySelector<SVGSVGElement>('#empty-state svg')!.animationsPaused(),
+            title: document.querySelector('#status-title')!.textContent,
+          };
+        });
+      // A report from the step under way may still arrive after the pause; give it time to (not) overwrite the title.
+      await page.waitForTimeout(1500);
+      assertEquals(await motion(), {
+        printer: 'none',
+        led: 'none',
+        scan: 'paused',
+        gauge: 'paused',
+        paper: 'paused',
+        illustration: true,
+        title: '已暂停 · 可以继续',
+      });
+      await page.screenshot({ path: `${results}desktop-paused.png` });
+      await page.evaluate(() => document.querySelector<HTMLButtonElement>('#pause-btn')!.click());
+      await page.waitForFunction(() => !document.body.classList.contains('is-paused'), null, { timeout: 30000 });
+      const resumed = await motion();
+      assertEquals([resumed.printer, resumed.scan, resumed.gauge, resumed.illustration], ['hum', 'running', 'running', false]);
+      await page.waitForFunction('["complete","error","partial"].includes(longScreen.getProject()?.status)', null, { timeout: 180000 });
+      assertEquals(await page.evaluate(() => document.body.classList.contains('is-paused')), false);
+      assertEquals(h.errors, []);
+    } finally {
+      await h.close();
     }
   },
 });

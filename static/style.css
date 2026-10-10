@@ -2,8 +2,9 @@
  * faceted keys. The recording goes onto the printer's screen, the LCD and the progress gauge report the run, the keys and the
  * settings dial sit on the device, and the print comes out as an instant photo (the tile viewer).
  *
- * Body classes drive the states: `is-processing` (src/ui/run.ts, a run or an export is busy), `has-result`
- * (src/ui/canvases.ts, a canvas is on the print) and `receipt-open` (src/ui/main.ts, the print is spread over the page).
+ * Body classes drive the states: `is-processing` (src/ui/run.ts, a run or an export is busy), `is-paused` (src/ui/run.ts,
+ * the run is paused), `has-result` (src/ui/canvases.ts, a canvas is on the print) and `receipt-open` (src/ui/main.ts, the
+ * print is spread over the page).
  * Wide screens (≥ 1080px) put the printer and the print side by side; narrower ones stack them. */
 
 /* Baloo 2 (SIL OFL 1.1, static/fonts/OFL.txt), self-hosted: the page makes no network requests. Chinese text falls
@@ -519,6 +520,18 @@ button:disabled {
   letter-spacing: 1px;
   color: #ffffffaa;
 }
+/* The commit this page was built from (filled in by scripts/build.ts) is the printer's model number, so a report can
+   name the version. */
+.build-id a {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: inherit;
+  text-decoration: none;
+}
+.build-id a:hover,
+.build-id a:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
 .status-led {
   width: 11px;
   height: 11px;
@@ -535,6 +548,17 @@ button:disabled {
 /* Working hard: the whole printer shakes while it runs. */
 .is-processing .printer {
   animation: hum .42s ease-in-out infinite;
+}
+/* Paused: the printer stands still and its light stops blinking; the scan line, gauge stripes and paper hold where
+   they are. Both body classes, so these win over the working rules' `animation` shorthands wherever those sit. */
+.is-processing.is-paused .printer,
+.is-processing.is-paused .status-led.running {
+  animation: none;
+}
+.is-processing.is-paused .screen::before,
+.is-processing.is-paused .gauge-fill,
+.is-processing.is-paused .slot-out::after {
+  animation-play-state: paused;
 }
 @keyframes hum {
   25% {
@@ -1449,16 +1473,6 @@ body.receipt-open {
   font-weight: 600;
   letter-spacing: 1px;
   color: var(--faint);
-}
-/* Which commit this page was built from (filled in by scripts/build.ts), so a report can name the version. */
-.app-footer .build-id {
-  margin-top: 10px;
-  letter-spacing: 0;
-}
-.build-id a {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  color: inherit;
-  text-underline-offset: 3px;
 }
 
 /* ---------- settings flap and notes sheet (Popover API) ---------- */

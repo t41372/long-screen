@@ -36,6 +36,7 @@ export const pageSections = {
     },
     press: {
       ariaLabel: '打印机',
+      build: '版本',
     },
     screen: {
       dropTitle: '把录屏拖到这里',
@@ -190,7 +191,6 @@ export const pageSections = {
       stackMid: '写成，编译成',
       stackTail: '在你的浏览器里运行。',
       stackMore: '界面 TypeScript · 构建与测试 Deno',
-      build: '版本',
       linksLabel: '项目链接',
       source: 'GitHub 源码',
       report: '报告问题',
