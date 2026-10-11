@@ -6,8 +6,8 @@
 use crate::kernels::features::{match_features, Feature};
 use crate::kernels::geometry::{js_ceil, js_hypot, Rect};
 use crate::kernels::motion::{
-    audit_translation, refine_native_at, select_native_points, translation_hypotheses, Gray,
-    MatchPoints, NativeRefinement, Point,
+    audit_translation, refine_native_at, sampling_insensitive_error, select_native_points,
+    translation_hypotheses, Gray, MatchPoints, NativeRefinement, Point,
 };
 use crate::kernels::region::Region;
 
@@ -26,9 +26,9 @@ pub struct ContentChange {
     pub blocks: u32,
 }
 
-/// A step the plain native error rejected but `rescuable` measured as unambiguous: what `Tracked` would have
-/// carried. The caller takes it only where the frame would otherwise start a new fragment (after re-acquiring the
-/// anchor and relocalising have both failed), so every frame those already place stays as it was.
+/// A step the plain native error rejected but `rescuable` or `measured_between_pixels` measured as unambiguous: what
+/// `Tracked` would have carried. The caller takes it only where the frame would otherwise start a new fragment (after
+/// re-acquiring the anchor and relocalising have both failed), so every frame those already place stays as it was.
 pub struct Rescue {
     pub delta: (f64, f64),
     pub confidence: f64,
@@ -102,6 +102,19 @@ fn rescuable(n: &NativeRefinement) -> bool {
         && n.error.is_finite()
         && n.runner_up > RESCUE_SEPARATION * n.error
         && n.trimmed < RESCUE_SHARE * n.runner_up
+}
+
+/// Whether a step the plain mean rejected is still a measurement because its content moved by a fraction of a pixel:
+/// under the sampling-insensitive cost ([`sampling_insensitive_error`]) the chosen offset clears the tracked bar, and
+/// the offsets more than two pixels away miss it, by the same separation [`rescuable`] asks for. A recording
+/// downscaled by a non-integer factor moves by a fraction of a pixel on almost every step, and the native points sit
+/// on the strongest edges, so the plain mean at the correct offset grows with the phase: on a recording downscaled
+/// by 0.804, 303 of 393 steps cost 14.2–47.7, and 185 of them (27.1–47.7, runner-up 45–62) were not rescuable
+/// either. Their insensitive cost is 0–12.5 (median 0.17) at the plain mean's offset and 22.8–34.7 more than two
+/// pixels away; on the same recording at full size the plain mean tracks 392 of the 393 steps. The insensitive
+/// cost's bottom is flat within a pixel, so the plain mean still places the step.
+fn measured_between_pixels(error: f64, runner_up: f64) -> bool {
+    error < TRACKED_ERROR && runner_up >= TRACKED_ERROR && runner_up > RESCUE_SEPARATION * error
 }
 
 /// `track.ts::odometry`.
@@ -219,7 +232,22 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
     let mut rescue = None;
     if let Some(best_index) = (!refined.is_empty()).then_some(0usize) {
         let (best_m, best_audit, best_n, _) = &refined[best_index];
-        if best_n.error < TRACKED_ERROR || rescuable(best_n) {
+        let measured = best_n.error < TRACKED_ERROR
+            || rescuable(best_n)
+            || best_n.error.is_finite() && {
+                let (error, runner_up) = sampling_insensitive_error(
+                    previous,
+                    current,
+                    image_width as usize,
+                    image_height as usize,
+                    (best_n.x, best_n.y),
+                    mask,
+                    radius,
+                    &points,
+                );
+                measured_between_pixels(error, runner_up)
+            };
+        if measured {
             let delta = (best_n.x as f64, best_n.y as f64);
             let rival = refined.iter().enumerate().find(|(i, (_, _, n, _))| {
                 *i != best_index
@@ -317,8 +345,11 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
 
 #[cfg(test)]
 mod tests {
-    use super::rescuable;
-    use crate::kernels::motion::NativeRefinement;
+    use super::{measured_between_pixels, rescuable};
+    use crate::kernels::geometry::Rect;
+    use crate::kernels::motion::{
+        sampling_insensitive_error, select_native_points, NativeRefinement,
+    };
 
     fn n(error: f64, trimmed: f64, runner_up: f64) -> NativeRefinement {
         NativeRefinement {
@@ -355,105 +386,195 @@ mod tests {
         assert!(!rescuable(&n(f64::INFINITY, 2.8, f64::INFINITY)));
         assert!(!rescuable(&n(51.8, 39.1, 54.0)));
     }
+    const PAGE: (usize, usize) = (400, 900);
+
+    /// A sparse text page scrolled by `offset` native pixels under a fixed `toolbar`, as RGBA. A fractional offset
+    /// is the average of the two whole-pixel renderings around it: the half-pixel phase a non-integer downscale of
+    /// a recording gives every step.
+    fn page(offset: f64, toolbar: usize) -> Vec<u8> {
+        render(offset, |x, y, offset| {
+            let world_y = y + offset;
+            let (line, yy, word, xx) = (world_y / 140, world_y % 140, x / 60, x % 60);
+            if y < toolbar && x > 40 && x < 360 {
+                return if (x * 13 + y * 73 + x * y % 79) % 47 < 23 {
+                    20
+                } else {
+                    240
+                };
+            }
+            if (40..58).contains(&yy) && xx > 8 && xx < 38 {
+                let ink = ((line * 193 + word * 73 + xx / 3 * 19) >> ((yy - 40) / 3)) & 1;
+                if ink != 0 {
+                    return 45;
+                }
+            }
+            248
+        })
+    }
+
+    /// [`PAGE`]-sized RGBA of `value(x, y, offset)`, a fractional `offset` averaged from the whole pixels around it.
+    fn render(offset: f64, value: impl Fn(usize, usize, usize) -> u8) -> Vec<u8> {
+        let (width, height) = PAGE;
+        let (low, high) = (offset.floor() as usize, offset.ceil() as usize);
+        let mut data = vec![0; width * height * 4];
+        for y in 0..height {
+            for x in 0..width {
+                let v = (value(x, y, low) as u32 + value(x, y, high) as u32).div_ceil(2) as u8;
+                data[(y * width + x) * 4..(y * width + x) * 4 + 4].copy_from_slice(&[v, v, v, 255]);
+            }
+        }
+        data
+    }
+
+    /// Odometry from `previous` to `current` (both [`PAGE`]-sized RGBA) at analysis factor `f`, as the engine runs it.
+    fn measure(previous: &[u8], current: &[u8], f: usize) -> super::OdometryEstimate {
+        use super::{odometry, OdometryInputs};
+        use crate::kernels::features::extract_features;
+        use crate::kernels::motion::Gray;
+        use crate::kernels::raster::{downscale_gray, downscaled_size};
+        let (width, height) = PAGE;
+        let (w, h) = downscaled_size(width, height, f);
+        let mut a = vec![0; w * h];
+        let mut b = vec![0; w * h];
+        downscale_gray(previous, width, height, f, &mut a);
+        downscale_gray(current, width, height, f, &mut b);
+        let previous_features = extract_features(&a, w, h, 480, None);
+        let own_features = extract_features(&b, w, h, 480, None);
+        odometry(OdometryInputs {
+            f: f as f64,
+            radius: 3.max(f.div_ceil(2) as i32 + 1),
+            mask: None,
+            roi: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: w as f64,
+                height: h as f64,
+            },
+            rect: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: width as f64,
+                height: height as f64,
+            },
+            region: None,
+            image_width: width as f64,
+            image_height: height as f64,
+            previous,
+            current,
+            previous_gray: Gray {
+                width: w,
+                height: h,
+                data: &a,
+            },
+            g: Gray {
+                width: w,
+                height: h,
+                data: &b,
+            },
+            velocity: (0.0, 0.0),
+            previous_features: &previous_features,
+            own_features: &own_features,
+            confidence: 1.0,
+        })
+    }
+
+    /// The step odometry measured: tracked, or kept as a rescue for the caller.
+    fn measured_step(result: super::OdometryEstimate) -> Option<(f64, f64)> {
+        match result.decision {
+            super::OdometryDecision::Tracked => Some(result.delta),
+            _ => result.rescue.map(|r| r.delta),
+        }
+    }
+
     // The phase/fixed-toolbar regression lives here because the engine consumes Rescue in Rust;
     // the legacy standalone Wasm odometry call no longer exposes it.
     #[test]
     fn sparse_text_motion_survives_analysis_phase_and_fixed_chrome() {
-        use super::{odometry, OdometryDecision, OdometryInputs};
-        use crate::kernels::features::extract_features;
-        use crate::kernels::geometry::Rect;
-        use crate::kernels::motion::Gray;
-        use crate::kernels::raster::{downscale_gray, downscaled_size};
-        let (width, height) = (400, 900);
-        let page = |offset: usize, toolbar: usize| {
-            let mut data = vec![0; width * height * 4];
-            for y in 0..height {
-                for x in 0..width {
-                    let world_y = y + offset;
-                    let (line, yy, word, xx) = (world_y / 140, world_y % 140, x / 60, x % 60);
-                    let mut value = 248;
-                    if (40..58).contains(&yy) && xx > 8 && xx < 38 {
-                        let ink = ((line * 193 + word * 73 + xx / 3 * 19) >> ((yy - 40) / 3)) & 1;
-                        if ink != 0 {
-                            value = 45;
-                        }
-                    }
-                    if y < toolbar && x > 40 && x < 360 {
-                        value = if (x * 13 + y * 73 + x * y % 79) % 47 < 23 {
-                            20
-                        } else {
-                            240
-                        };
-                    }
-                    data[(y * width + x) * 4..(y * width + x) * 4 + 4]
-                        .copy_from_slice(&[value, value, value, 255]);
-                }
-            }
-            data
-        };
         for f in [2usize, 3, 4, 5] {
             for toolbar in [32, 96] {
-                let previous = page(0, toolbar);
-                let current = page(67, toolbar);
-                let (w, h) = downscaled_size(width, height, f);
-                let mut a = vec![0; w * h];
-                let mut b = vec![0; w * h];
-                downscale_gray(&previous, width, height, f, &mut a);
-                downscale_gray(&current, width, height, f, &mut b);
-                let previous_features = extract_features(&a, w, h, 480, None);
-                let own_features = extract_features(&b, w, h, 480, None);
-                let rect = Rect {
-                    x: 0.0,
-                    y: 0.0,
-                    width: width as f64,
-                    height: height as f64,
-                };
-                let result = odometry(OdometryInputs {
-                    f: f as f64,
-                    radius: 3.max(f.div_ceil(2) as i32 + 1),
-                    mask: None,
-                    roi: Rect {
-                        x: 0.0,
-                        y: 0.0,
-                        width: w as f64,
-                        height: h as f64,
-                    },
-                    rect,
-                    region: None,
-                    image_width: width as f64,
-                    image_height: height as f64,
-                    previous: &previous,
-                    current: &current,
-                    previous_gray: Gray {
-                        width: w,
-                        height: h,
-                        data: &a,
-                    },
-                    g: Gray {
-                        width: w,
-                        height: h,
-                        data: &b,
-                    },
-                    velocity: (0.0, 0.0),
-                    previous_features: &previous_features,
-                    own_features: &own_features,
-                    confidence: 1.0,
-                });
+                let result = measure(&page(0.0, toolbar), &page(67.0, toolbar), f);
                 assert_ne!(
                     result.decision,
-                    OdometryDecision::Static,
+                    super::OdometryDecision::Static,
                     "factor {f}, toolbar {toolbar}"
                 );
-                let delta = if result.decision == OdometryDecision::Tracked {
-                    result.delta
-                } else {
-                    result
-                        .rescue
-                        .expect("measured motion must remain rescuable")
-                        .delta
-                };
-                assert_eq!(delta, (0.0, 67.0), "factor {f}, toolbar {toolbar}");
+                assert_eq!(
+                    measured_step(result),
+                    Some((0.0, 67.0)),
+                    "factor {f}, toolbar {toolbar}"
+                );
             }
+        }
+    }
+
+    // A recording downscaled by a non-integer factor moves its content by fractional native pixels, so every edge the
+    // native refinement samples lands between two pixels and the correct whole-pixel offset costs as much as a wrong
+    // one under the plain mean. Such a step is still a measurement and must stay available to the caller, at either
+    // whole pixel next to it, or the region starts a new fragment wherever re-acquisition also misses.
+    #[test]
+    fn a_step_between_two_pixels_is_still_measured() {
+        for f in [2usize, 3, 4, 5] {
+            for toolbar in [0, 32] {
+                let result = measure(&page(0.0, toolbar), &page(67.5, toolbar), f);
+                assert_ne!(
+                    result.decision,
+                    super::OdometryDecision::Static,
+                    "factor {f}, toolbar {toolbar}"
+                );
+                let step = measured_step(result);
+                assert!(
+                    step == Some((0.0, 67.0)) || step == Some((0.0, 68.0)),
+                    "factor {f}, toolbar {toolbar}: {step:?}"
+                );
+            }
+        }
+    }
+
+    // Failure cases for the between-pixels rule: a half-pixel step left unmeasured although only its phase costs, a
+    // displacement of a few pixels forgiven as phase, and rows that repeat within the search radius accepted although
+    // no offset stands out from the others.
+    #[test]
+    fn only_a_fraction_of_a_pixel_is_forgiven() {
+        let (width, height) = PAGE;
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: width as f64,
+            height: height as f64,
+        };
+        let measured = |previous: &[u8], current: &[u8], dy: i32| {
+            let points = select_native_points(current, width, height, rect, None, None);
+            let (error, runner_up) = sampling_insensitive_error(
+                previous,
+                current,
+                width,
+                height,
+                (0, dy),
+                None,
+                3,
+                &points,
+            );
+            measured_between_pixels(error, runner_up)
+        };
+        let (previous, current) = (page(0.0, 0), page(67.5, 0));
+        for dy in [67, 68] {
+            assert!(measured(&previous, &current, dy), "{dy}");
+        }
+        for dy in [64, 65, 70, 71] {
+            assert!(!measured(&previous, &current, dy), "{dy}");
+        }
+        let rows = |offset| {
+            render(offset, |x, y, offset| {
+                if (x % 7 < 3) != ((y + offset) % 3 == 0) {
+                    45
+                } else {
+                    248
+                }
+            })
+        };
+        let (previous, current) = (rows(0.0), rows(67.5));
+        for dy in [67, 68] {
+            assert!(!measured(&previous, &current, dy), "repeated rows, {dy}");
         }
     }
 }

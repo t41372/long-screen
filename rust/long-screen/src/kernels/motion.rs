@@ -1039,6 +1039,75 @@ pub fn refine_native_at(
     }
 }
 
+/// [`refine_native_at`]'s cost of the points at `offset`, and its runner-up (the lowest cost at an offset more than two
+/// pixels from it, within `radius`), with each point compared by Birchfield and Tomasi's sampling-insensitive
+/// dissimilarity ("A Pixel Dissimilarity Measure That Is Insensitive to Image Sampling", 1998) instead of the plain
+/// difference. Each value is compared with the range the other image spans within half a pixel of the matching
+/// position (the halfway points to its four neighbours), and the smaller of the two directions counts, so content
+/// that moved by a fraction of a pixel costs what it would at whole-pixel motion. Displacements of a pixel or more
+/// still cost in full. Infinite where fewer than 12 points fall inside both frames, as in the plain cost.
+#[allow(clippy::too_many_arguments)]
+pub fn sampling_insensitive_error(
+    a: &[u8],
+    b: &[u8],
+    width: usize,
+    height: usize,
+    offset: (i32, i32),
+    mask: Option<(&[u8], u8)>,
+    radius: i32,
+    points: &[i64],
+) -> (f64, f64) {
+    let (w, h) = (width as i64, height as i64);
+    let inside =
+        |x: i64, y: i64| mask.is_none_or(|(labels, code)| labels[(y * w + x) as usize] == code);
+    let stride = width * 4;
+    // Twice the value at `k` and twice its halfway points to the four neighbours: the range it spans.
+    let span = |image: &[u8], k: usize| {
+        let v = image[k] as i32;
+        [k - 4, k + 4, k - stride, k + stride]
+            .iter()
+            .fold((2 * v, 2 * v), |(low, high), &n| {
+                (low.min(v + image[n] as i32), high.max(v + image[n] as i32))
+            })
+    };
+    let outside = |v: i32, (low, high): (i32, i32)| (v - high).max(low - v).max(0);
+    let cost = |dx: i64, dy: i64| -> f64 {
+        let (mut error, mut n) = (0f64, 0u32);
+        for &p in points {
+            let (x, y) = (p % w, p / w);
+            let (xx, yy) = (x + dx, y + dy);
+            if xx < 1 || yy < 1 || xx >= w - 1 || yy >= h - 1 || !inside(xx, yy) {
+                continue;
+            }
+            let i = (p * 4) as usize;
+            let j = ((yy * w + xx) * 4) as usize;
+            let d: i32 = (0..3)
+                .map(|c| {
+                    outside(2 * b[i + c] as i32, span(a, j + c))
+                        .min(outside(2 * a[j + c] as i32, span(b, i + c)))
+                })
+                .sum();
+            error += (90.0f64).min(d as f64 / 6.0);
+            n += 1;
+        }
+        if n >= 12 {
+            error / n as f64
+        } else {
+            f64::INFINITY
+        }
+    };
+    let (ox, oy) = offset;
+    let mut runner_up = f64::INFINITY;
+    for y in oy - radius..=oy + radius {
+        for x in ox - radius..=ox + radius {
+            if (x - ox).abs().max((y - oy).abs()) > 2 {
+                runner_up = runner_up.min(cost(x as i64, y as i64));
+            }
+        }
+    }
+    (cost(ox as i64, oy as i64), runner_up)
+}
+
 /// Native-pixel refinement on textured luma edges of `b` inside `region`, matching against `a` at
 /// integer offsets. `labels`/`code` (region atlas membership) restrict both frames when given. Composes
 /// [`select_native_points`] and [`refine_native_at`]; a caller evaluating several candidates over the same
