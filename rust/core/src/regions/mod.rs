@@ -129,7 +129,7 @@ fn stat_at(stats: &[f64], index: i64) -> f64 {
 /// region branch of `finish()` (`LayerLearner.finish`'s `manual` parameter) is NOT ported here: it is cheap TS
 /// object construction over data the caller already holds (spreading the input `Region`s, no per-pixel work
 /// except the one native-pixel coverage scan, which IS in Rust — `ls_regions_manual_uncovered`,
-/// abi/regions.rs). Porting it would mean Rust re-deriving id/name/exclusions only for TS to reconstruct the
+/// rust/wasm/src/regions.rs). Porting it would mean Rust re-deriving id/name/exclusions only for TS to reconstruct the
 /// same values back; this function therefore only ever builds the algorithmic-path regions.
 pub fn finish(
     input: &FinishInput<'_>,

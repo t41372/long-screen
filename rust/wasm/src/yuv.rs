@@ -1,10 +1,10 @@
 //! Decoded-video-frame-to-RGBA conversion (mirrors `src/core/wasm/yuv.ts`).
 
-use crate::abi::memory::{slice, slice_mut};
-use crate::abi::wire::Reader;
-use crate::abi::STATUS_BAD_ARGUMENT;
-use crate::yuv::hdr::{self, Packing, Transfer};
-use crate::yuv::{Format as FrameFormat, Plane, Signal};
+use crate::memory::{slice, slice_mut};
+use crate::wire::Reader;
+use crate::STATUS_BAD_ARGUMENT;
+use long_screen_core::yuv::hdr::{self, Packing, Transfer};
+use long_screen_core::yuv::{Format as FrameFormat, Plane, Signal};
 
 /// Converts one decoded frame as laid out by `VideoFrame.copyTo` (`src`, `src_len` bytes; `planes` points at
 /// four `(offset, stride)` u32 pairs, unused ones ignored) to `width × height` RGBA at `dst`. `format` and
@@ -58,7 +58,8 @@ pub extern "C" fn ls_frame_to_rgba(
         }
         layout[i] = plane;
     }
-    crate::yuv::convert(src, format, &layout, w, h, signal, out).min(i32::MAX as usize) as i32
+    long_screen_core::yuv::convert(src, format, &layout, w, h, signal, out).min(i32::MAX as usize)
+        as i32
 }
 
 /// Converts `width × height` R'G'B' at `pixels` (4 bytes per pixel, `packing` 0 RGBA8 or 1 RGB10A2; an HDR signal

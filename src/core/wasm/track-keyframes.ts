@@ -53,7 +53,7 @@ export interface EvaluateCandidatesResult {
   confidence: number;
 }
 /** `ls_keyframes_evaluate_candidates`'s per-keyframe descriptor (this module's own wire format — see
- *  `rust/core/src/abi/track_keyframes.rs::KEYFRAME_BYTES`, asserted against the live module by `assertLayout`):
+ *  `rust/wasm/src/track_keyframes.rs::KEYFRAME_BYTES`, asserted against the live module by `assertLayout`):
  *  u32 featuresPtr, featureCount, patchesPtr, patchCount, grayPtr, grayWidth, grayHeight, canonicalIdx, f64 x,
  *  y, dx, dy. */
 const CANDIDATE_HEADER_BYTES = 8;

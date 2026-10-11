@@ -1,10 +1,10 @@
 //! Layer-learner handles: accumulates per-frame motion-discontinuity evidence across a whole recording
 //! (`src/core/layers.ts`), read back once at `finish()`.
 
-use crate::abi::memory::HandleTable;
-use crate::abi::wire::{Reader, LEARNER_FIELD_BYTES, LEARNER_MOTION_BYTES};
-use crate::abi::STATUS_BAD_ARGUMENT;
-use crate::layers::{Field as LearnerField, FieldMotion, Learner};
+use crate::memory::HandleTable;
+use crate::wire::{Reader, LEARNER_FIELD_BYTES, LEARNER_MOTION_BYTES};
+use crate::STATUS_BAD_ARGUMENT;
+use long_screen_core::layers::{Field as LearnerField, FieldMotion, Learner};
 
 use super::memory::{slice, slice_mut};
 
@@ -183,5 +183,5 @@ pub extern "C" fn ls_learner_read(handle: u32, which: u32, out: u32) -> i32 {
     for (v, d) in values.iter().zip(dst.chunks_exact_mut(8)) {
         d.copy_from_slice(&v.to_le_bytes());
     }
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }

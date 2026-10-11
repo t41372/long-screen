@@ -2,9 +2,9 @@
 //! to end: `Compression::Fast` with the crate's default Adaptive filter measured ~5.5× faster than the
 //! previous Sub-filter + `CompressionStream` + JS CRC32 path, for +8.6% bytes — the owner chose this setting).
 
-use crate::abi::memory::{slice, slice_mut, HandleTable};
-use crate::abi::{STATUS_BAD_ARGUMENT, STATUS_BAD_FILTER, STATUS_OK};
-use crate::png::{expand_to_rgba, filter_sub_rgba};
+use crate::memory::{slice, slice_mut, HandleTable};
+use crate::{STATUS_BAD_ARGUMENT, STATUS_BAD_FILTER, STATUS_OK};
+use long_screen_core::png::{expand_to_rgba, filter_sub_rgba};
 use std::io::Cursor;
 
 /// Sub-filters RGBA rows for PNG encoding; `out` receives `height × (width×4 + 1)` bytes.
@@ -21,7 +21,7 @@ pub extern "C" fn ls_png_filter_sub(rgba: u32, width: u32, height: u32, out: u32
         return STATUS_BAD_ARGUMENT;
     };
     filter_sub_rgba(src, w, h, dst);
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 // --- Tile codec: encode RGBA -> PNG bytes, decode PNG bytes -> RGBA, on the `png` crate. ---

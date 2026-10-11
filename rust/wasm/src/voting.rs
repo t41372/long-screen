@@ -1,11 +1,11 @@
 //! Voting-ring handles: per-region motion voting across a rolling frame window, finalised records drained by
 //! the adapter.
 
-use crate::abi::memory::{slice, slice_mut, HandleTable};
-use crate::abi::wire::{read_optional_rect, read_rects, Reader, VOTING_REGION_BYTES};
-use crate::abi::STATUS_BAD_ARGUMENT;
-use crate::region::{Mask as RegionMask, Region as RegionDef};
-use crate::voting::{Finalized, Ring};
+use crate::memory::{slice, slice_mut, HandleTable};
+use crate::wire::{read_optional_rect, read_rects, Reader, VOTING_REGION_BYTES};
+use crate::STATUS_BAD_ARGUMENT;
+use long_screen_core::region::{Mask as RegionMask, Region as RegionDef};
+use long_screen_core::voting::{Finalized, Ring};
 
 /// Finalised voting records waiting to be read by the adapter, oldest first.
 struct VotingHandle {
@@ -34,7 +34,7 @@ pub(crate) unsafe fn read_voting_regions(ptr: u32, count: u32) -> Option<Vec<Reg
     let mut out = Vec::with_capacity(count as usize);
     for c in bytes.chunks_exact(VOTING_REGION_BYTES) {
         let r = Reader(c);
-        let rect = crate::abi::wire::read_rect(c);
+        let rect = crate::wire::read_rect(c);
         let exclusions = read_rects(slice(r.u32(32), r.u32(36) as usize * 32)?);
         let crop = read_optional_rect(r.u32(40)).ok()?;
         let mask = if r.u32(48) == 0 {
@@ -119,7 +119,7 @@ pub extern "C" fn ls_voting_box(handle: u32, slot: u32, out: u32) -> i32 {
     dst[4..8].copy_from_slice(&b.y0.to_le_bytes());
     dst[8..12].copy_from_slice(&b.w.to_le_bytes());
     dst[12..16].copy_from_slice(&b.h.to_le_bytes());
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 /// Interior-cell mask of region `slot` (w×h bytes) — exposed for parity tests.
@@ -136,7 +136,7 @@ pub extern "C" fn ls_voting_interior(handle: u32, slot: u32, out: u32) -> i32 {
         return STATUS_BAD_ARGUMENT;
     };
     dst.copy_from_slice(&region.interior);
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 /// Votes region `slot` of the frame under construction, with its final pose on `canvas`, against the ring.
@@ -162,7 +162,7 @@ pub extern "C" fn ls_voting_observe(
         return STATUS_BAD_ARGUMENT;
     };
     v.ring.observe(slot as usize, canvas, pose_x, pose_y, gray);
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 /// Commits frame `index`; returns the number of finalised records now pending (or a negative status).
@@ -230,7 +230,7 @@ pub extern "C" fn ls_voting_read(handle: u32, which: u32, bits: u32, clean: u32)
     };
     b.copy_from_slice(&verdict.bits);
     c.copy_from_slice(&verdict.clean);
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 /// Discards the oldest pending record after it has been read.

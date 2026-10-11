@@ -1,8 +1,8 @@
 //! ABI surface for pyramid parent-tile assembly (mirrors `src/core/wasm/pyramid.ts`).
 
-use crate::abi::memory::{slice, slice_mut};
-use crate::abi::STATUS_BAD_ARGUMENT;
-use crate::pyramid::assemble_parent;
+use crate::memory::{slice, slice_mut};
+use crate::STATUS_BAD_ARGUMENT;
+use long_screen_core::pyramid::assemble_parent;
 
 /// Assembles one `size × size` parent tile from up to four `size × size` RGBA children. `present` is a bitmask,
 /// bit `i` set means `child[i]` points at a valid buffer (quadrant `i`: `dx = i & 1`, `dy = i >> 1`); a clear bit
@@ -38,5 +38,5 @@ pub extern "C" fn ls_assemble_pyramid_parent(
         return STATUS_BAD_ARGUMENT;
     };
     assemble_parent(children, size, out);
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }

@@ -1,12 +1,12 @@
-//! Reveal-run handles (`crate::reveal::run`): overlay-aware block selection after the compositor. The adapter
+//! Reveal-run handles (`long_screen_core::reveal::run`): overlay-aware block selection after the compositor. The adapter
 //! feeds decoded frames (resident) and per-frame moving-layer decisions, drains block copies, and writes the
 //! deferred blocks at the end.
 
-use crate::abi::memory::{slice, slice_mut, HandleTable};
-use crate::abi::{STATUS_BAD_ARGUMENT, STATUS_OK};
-use crate::reveal::blocks::Deferred;
-use crate::reveal::run::{canvas_bytes, layer_bytes, Decision, Pass, Reveal};
-use crate::reveal::CanvasView;
+use crate::memory::{slice, slice_mut, HandleTable};
+use crate::{STATUS_BAD_ARGUMENT, STATUS_OK};
+use long_screen_core::reveal::blocks::Deferred;
+use long_screen_core::reveal::run::{canvas_bytes, layer_bytes, Decision, Pass, Reveal};
+use long_screen_core::reveal::CanvasView;
 
 /// Decision descriptor: layer u32, canvas u32, x i32, y i32, occlusion count u32, occlusion pointer u32
 /// (each occlusion: x, y, width, height as i32).
@@ -403,7 +403,7 @@ pub extern "C" fn ls_reveal_summary(handle: u32, out: u32) -> i32 {
     STATUS_OK
 }
 
-/// Where each block of `canvas` now takes its pixels from (`crate::reveal::blocks::Output::sources`), for the blocks
+/// Where each block of `canvas` now takes its pixels from (`long_screen_core::reveal::blocks::Output::sources`), for the blocks
 /// the last [`ls_reveal_finish`] of that canvas returned: the header then one i32 per block, row-major. Returns the
 /// block count; with `out` 0 only the count. 0 when the canvas has no output.
 #[no_mangle]
@@ -479,7 +479,7 @@ fn read_plans(
     Some(plans)
 }
 
-/// Which of `frames` decoded frames the current pass reads pixels of (`crate::reveal::run::Reveal::wanted`), one byte
+/// Which of `frames` decoded frames the current pass reads pixels of (`long_screen_core::reveal::run::Reveal::wanted`), one byte
 /// (0/1) per frame into `out`. `counts` and `decisions` as in [`read_plans`].
 #[no_mangle]
 pub extern "C" fn ls_reveal_wanted(
@@ -505,7 +505,7 @@ pub extern "C" fn ls_reveal_wanted(
     STATUS_OK
 }
 
-/// Which decisions the passes use (`crate::reveal::run::admitted`): `blind` holds one byte (0/1) per decision, in the
+/// Which decisions the passes use (`long_screen_core::reveal::run::admitted`): `blind` holds one byte (0/1) per decision, in the
 /// order of `decisions`, and `out` receives one byte (0/1) per decision. `counts` and `decisions` as in
 /// [`read_plans`].
 #[no_mangle]
@@ -539,10 +539,11 @@ pub extern "C" fn ls_reveal_admitted(
                 .collect()
         })
         .collect();
-    for (o, a) in out
-        .iter_mut()
-        .zip(crate::reveal::run::admitted(&plans).into_iter().flatten())
-    {
+    for (o, a) in out.iter_mut().zip(
+        long_screen_core::reveal::run::admitted(&plans)
+            .into_iter()
+            .flatten(),
+    ) {
         *o = a as u8;
     }
     STATUS_OK

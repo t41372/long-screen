@@ -1,5 +1,5 @@
 /** Persistent-chrome detection: stationary boundaries and sticky occlusion bands (mirrors
- *  `rust/core/src/abi/chrome.rs`). */
+ *  `rust/wasm/src/chrome.rs`). */
 import type { Point, Rect } from '../../types.ts';
 import type { Core } from './core.ts';
 import { type FrameInput, ResidentFrame } from './memory.ts';

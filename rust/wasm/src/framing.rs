@@ -1,14 +1,14 @@
 //! Presentation-canvas synthesis: layout/coordinate mapping, background statistics, and the two per-tile
 //! passes `buildFramedCanvas` drives (`src/core/wasm/framing.ts` mirrors this file).
 
-use crate::abi::memory::{in_bounds, slice, slice_mut};
-use crate::abi::wire::{read_rect, Reader, VOTING_REGION_BYTES};
-use crate::abi::STATUS_BAD_ARGUMENT;
-use crate::framing::{
+use crate::memory::{in_bounds, slice, slice_mut};
+use crate::wire::{read_rect, Reader, VOTING_REGION_BYTES};
+use crate::STATUS_BAD_ARGUMENT;
+use long_screen_core::framing::{
     backgrounds, fold_evidence, frame_coordinate, frame_layout, paint_tile, Coordinate, Layout,
     OutputTile, SourceTile,
 };
-use crate::region::{Mask as RegionMask, Region};
+use long_screen_core::region::{Mask as RegionMask, Region};
 
 /// Bytes of one serialised `Layout` (`ls_frame_layout`'s `out`): pane rect (32), content rect (32), dx f64 (8),
 /// dy f64 (8), seam_x f64 (8), width f64 (8), height f64 (8).
@@ -68,7 +68,7 @@ pub extern "C" fn ls_frame_layout(
         bounds_height,
     );
     write_layout(out, &layout);
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 /// Computes `frameCoordinate` for test/diagnostic use (not on the per-tile hot path, which classifies pixels
@@ -122,7 +122,7 @@ pub extern "C" fn ls_frame_backgrounds(
     for (d, v) in columns_out.chunks_exact_mut(4).zip(columns) {
         d.copy_from_slice(&v.to_le_bytes());
     }
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 /// Reads `count` little-endian u32s out of a bounds-checked byte slice (background rows/columns: small,
@@ -143,8 +143,8 @@ unsafe fn read_regions(ptr: u32, count: u32) -> Option<Vec<Region>> {
     for c in bytes.chunks_exact(VOTING_REGION_BYTES) {
         let r = Reader(c);
         let rect = read_rect(&c[0..32]);
-        let exclusions = crate::abi::wire::read_rects(slice(r.u32(32), r.u32(36) as usize * 32)?);
-        let crop = crate::abi::wire::read_optional_rect(r.u32(40)).ok()?;
+        let exclusions = crate::wire::read_rects(slice(r.u32(32), r.u32(36) as usize * 32)?);
+        let crop = crate::wire::read_optional_rect(r.u32(40)).ok()?;
         let mask = if r.u32(48) == 0 {
             None
         } else {
@@ -241,7 +241,7 @@ pub extern "C" fn ls_frame_paint_tile(desc: u32) -> i32 {
         &bg_columns,
         &ignore,
     );
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 /// Pass 2 of `buildFramedCanvas` for one output tile: folds up to four overlapping resident source tiles'
@@ -372,5 +372,5 @@ pub extern "C" fn ls_frame_fold_evidence(desc: u32) -> i32 {
         bounds,
         &sources,
     );
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }

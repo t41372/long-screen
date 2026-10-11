@@ -1,9 +1,9 @@
 //! Simple per-pixel raster kernels: grayscale, downscale, halving, fixed-region change tracking, mean
 //! difference. Decoded-video-frame-to-RGBA conversion lives in `abi/yuv.rs`.
 
-use crate::abi::memory::{slice, slice_mut};
-use crate::abi::STATUS_BAD_ARGUMENT;
-use crate::raster::{
+use crate::memory::{slice, slice_mut};
+use crate::STATUS_BAD_ARGUMENT;
+use long_screen_core::raster::{
     downscale_gray, downscaled_size, fixed_update, grayscale, halve_rgba, mean_difference,
 };
 
@@ -16,7 +16,7 @@ pub extern "C" fn ls_grayscale(rgba: u32, width: u32, height: u32, out: u32) -> 
         return STATUS_BAD_ARGUMENT;
     };
     grayscale(src, dst);
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 #[no_mangle]
@@ -39,7 +39,7 @@ pub extern "C" fn ls_downscale_gray(
         return STATUS_BAD_ARGUMENT;
     };
     downscale_gray(src, w, h, f, dst);
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 #[no_mangle]
@@ -56,7 +56,7 @@ pub extern "C" fn ls_halve_rgba(rgba: u32, width: u32, height: u32, out: u32) ->
         return STATUS_BAD_ARGUMENT;
     };
     halve_rgba(src, w, h, dst);
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 #[no_mangle]

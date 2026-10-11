@@ -1,4 +1,4 @@
-/** Pixel-format conversion and simple per-pixel raster kernels (mirrors `rust/core/src/abi/raster.rs`). */
+/** Pixel-format conversion and simple per-pixel raster kernels (mirrors `rust/wasm/src/raster.rs`). */
 import type { Gray, RGBA } from '../../types.ts';
 import type { Core } from './core.ts';
 import { type FrameInput, ResidentFrame, type ResidentGray } from './memory.ts';

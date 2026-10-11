@@ -1,4 +1,4 @@
-/** Decoded-video-frame-to-RGBA conversion (mirrors `rust/core/src/abi/yuv.rs`). */
+/** Decoded-video-frame-to-RGBA conversion (mirrors `rust/wasm/src/yuv.rs`). */
 import type { Core } from './core.ts';
 
 /** What a conversion saw: pixels brighter than SDR white (HDR signals only; rust/core/src/yuv/hdr.rs `ABOVE_WHITE`). */

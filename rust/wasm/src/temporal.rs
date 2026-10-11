@@ -1,10 +1,10 @@
 //! ABI surface for temporal-conflict block components, the temporal index and resolveTemporal's decision
 //! (mirrors `src/core/wasm/temporal.ts`).
 
-use crate::abi::memory::{in_bounds, slice, slice_mut, HandleTable};
-use crate::abi::wire::read_rects;
-use crate::abi::{STATUS_BAD_ARGUMENT, STATUS_OK};
-use crate::temporal::{
+use crate::memory::{in_bounds, slice, slice_mut, HandleTable};
+use crate::wire::read_rects;
+use crate::{STATUS_BAD_ARGUMENT, STATUS_OK};
+use long_screen_core::temporal::{
     components, mask_complete, overwrite_tile, OverwriteTile, TemporalIndex, TemporalRecord,
     QUALITY_BLOCK,
 };

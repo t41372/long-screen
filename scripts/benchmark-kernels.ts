@@ -8,8 +8,8 @@ import { Core } from '../src/core/wasm.ts';
 import type { Region, RGBA } from '../src/types.ts';
 
 const args = Deno.args.length ? Deno.args : [
-  'scalar=rust/target/scalar/wasm32-unknown-unknown/release/long_screen_core.wasm',
-  'simd=rust/target/simd/wasm32-unknown-unknown/release/long_screen_core.wasm',
+  'scalar=rust/target/scalar/wasm32-unknown-unknown/release/long_screen_wasm.wasm',
+  'simd=rust/target/simd/wasm32-unknown-unknown/release/long_screen_wasm.wasm',
 ];
 const cores: [string, Core][] = [];
 for (const arg of args) {

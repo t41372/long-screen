@@ -149,7 +149,7 @@ export async function decodePNG(bytes: Uint8Array): Promise<RGBA> {
   } catch (e) {
     // The one failure the container walk above cannot see — the scanline filter-type byte lives inside the
     // deflate stream — keeps its own distinct message via core.check()'s STATUS_BAD_FILTER convention (see
-    // rust/core/src/abi/png.rs::classify). Anything else here means the declared IHDR dimensions do not match
+    // rust/wasm/src/png.rs::classify). Anything else here means the declared IHDR dimensions do not match
     // the actual (inflated) scanline data length, the same condition the old inflate-in-TS path caught by
     // comparing byte counts directly.
     if (e instanceof Error && e.message.startsWith('Invalid PNG filter')) throw e;

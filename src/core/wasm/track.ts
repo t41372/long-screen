@@ -1,4 +1,4 @@
-/** Per-region, per-frame tracking verdicts plus keyframe candidate scoring, mirroring `rust/core/src/abi/
+/** Per-region, per-frame tracking verdicts plus keyframe candidate scoring, mirroring `rust/wasm/src/
  *  track.rs`. Every export here is a single call over plain scalars/buffers — no handles, no state carried
  *  across calls (a stateful per-region tracker was measured and not built: no gain over these per-call
  *  fusions). `has*`/`*EqCanvas` booleans are `0`/`1`; multi-way verdicts come back as small tags decoded into
@@ -260,7 +260,7 @@ export function writePatches(core: Core, listPtr: number, dataPtrs: number[], pa
   });
 }
 /** Resolves `reacquire`/`driftCorrection`/`evaluateCandidates`'s "native luma source" the same way
- *  `rust/core/src/abi/track.rs`'s `resolve_native` expects: mode 1 (resident) when `current` is a
+ *  `rust/wasm/src/track.rs`'s `resolve_native` expects: mode 1 (resident) when `current` is a
  *  `ResidentFrame` and `nativePlane` exists — the fused call fills it lazily, core-side, if `nativeFilled` says
  *  it hasn't been this frame; mode 0 (ready buffer, freshly copied into scratch) otherwise — the rare
  *  geometry-mismatch fallback, where `native()` (the historical thunk, still doing the JS-side `grayscale()`

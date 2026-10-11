@@ -1,4 +1,4 @@
-/** PNG scanline sub-filtering for encode, and the tile codec (mirrors `rust/core/src/abi/png.rs`). */
+/** PNG scanline sub-filtering for encode, and the tile codec (mirrors `rust/wasm/src/png.rs`). */
 import type { Core } from './core.ts';
 
 export function pngFilterSub(core: Core, rgba: Uint8Array, width: number, height: number): Uint8Array<ArrayBuffer> {
@@ -26,7 +26,7 @@ export function pngEncode(core: Core, rgba: Uint8Array, width: number, height: n
 }
 
 /** Tile codec: decodes a complete PNG file into RGBA. `width`/`height` are the caller's own IHDR read (see
- *  `abi/png.rs::ls_png_decode`'s doc comment for why the container is still validated in TS). One copy in, one
+ *  `rust/wasm/src/png.rs::ls_png_decode`'s doc comment for why the container is still validated in TS). One copy in, one
  *  copy out, no async streams. */
 export function pngDecode(core: Core, bytes: Uint8Array, width: number, height: number): Uint8ClampedArray {
   const cap = width * height * 4;

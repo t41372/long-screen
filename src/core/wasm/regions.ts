@@ -1,5 +1,5 @@
 /** Region construction and pixel labelling (`src/core/layers.ts::LayerLearner.finish`, `RegionAtlas`), mirroring
- *  `rust/core/src/abi/regions.rs`. Three coarse-grained calls, no per-region or per-pixel round trip:
+ *  `rust/wasm/src/regions.rs`. Three coarse-grained calls, no per-region or per-pixel round trip:
  *  `finishRegions` builds every algorithmic-path region in one call; `manualUncovered` is the one expensive step
  *  of `finish()`'s manual-region branch (the rest is cheap object marshalling `LayerLearner.finish()` keeps
  *  in TS, over data the caller already holds); `labelAtlasResident` builds `RegionAtlas`'s label plane directly

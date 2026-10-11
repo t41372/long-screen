@@ -499,7 +499,7 @@ fn pyramid_parent(bencher: divan::Bencher, case: &str) {
 fn png_encode_tile(bencher: divan::Bencher, case: &str) {
     let p = prepared(case);
     let tile = p.tile_crop(0, 0);
-    // The settings of `ls_png_encode` (rust/core/src/abi/png.rs).
+    // The settings of `ls_png_encode` (rust/wasm/src/png.rs).
     bencher.bench_local(|| {
         let mut out = Vec::new();
         let mut enc = png::Encoder::new(&mut out, TILE as u32, TILE as u32);

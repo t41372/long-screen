@@ -1,11 +1,11 @@
 //! World-consistency masking: compares a region against its neighbours' and the voting ring's opinion of the
 //! same pixels.
 
-use crate::abi::memory::{slice, slice_mut};
-use crate::abi::wire::{read_rects, Reader};
-use crate::abi::STATUS_BAD_ARGUMENT;
-use crate::consistency::{consistency_mask, MaskInput, Neighbour, Vote};
-use crate::geometry::Rect;
+use crate::memory::{slice, slice_mut};
+use crate::wire::{read_rects, Reader};
+use crate::STATUS_BAD_ARGUMENT;
+use long_screen_core::consistency::{consistency_mask, MaskInput, Neighbour, Vote};
+use long_screen_core::geometry::Rect;
 
 /// Vote descriptor: 4 × i32 (x0, y0, w, h) followed by two u32 pointers (bits, clean).
 /// # Safety
@@ -149,5 +149,5 @@ pub extern "C" fn ls_consistency_mask(
         noise,
     };
     consistency_mask(&input, out);
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }

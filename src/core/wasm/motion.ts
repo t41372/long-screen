@@ -1,5 +1,5 @@
 /** Translation/scale hypotheses, verification, refinement, and motion-field estimation (mirrors
- *  `rust/core/src/abi/motion.rs`). */
+ *  `rust/wasm/src/motion.rs`). */
 import type { Feature, Gray, Match, Motion, MotionField, Point, Rect } from '../../types.ts';
 import type { Core, LabelMask, NativePointGuide, PatchInput, RefinementResult } from './core.ts';
 import { type FrameInput, Resident, ResidentFrame, ResidentGray } from './memory.ts';

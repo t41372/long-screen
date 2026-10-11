@@ -10,7 +10,7 @@ Deno 2.x and rustup are required; `rust/rust-toolchain.toml` pins Rust, and rust
 
 ```sh
 deno task start          # serve dist/ on http://localhost:4173 (builds first if dist/ is missing)
-deno task build:core     # Rust core → rust/target/{scalar,simd,threads}; the only supported way to build the .rs sources
+deno task build:core     # Rust core → rust/target/{scalar,simd,threads}/…/long_screen_wasm.wasm; the only supported way to build the .rs sources
 deno task build          # core + TS bundles into dist/ (dev: test harness, source maps)
 deno task build:prod     # production dist/; build:portable makes the file:// single-file build in dist-portable/
 deno task check          # type check
@@ -27,7 +27,7 @@ deno task bench          # core kernel benchmarks on the public test recordings 
 - One Rust test: `cd rust && cargo test --lib <name>`. A bare `cargo build` uses the scalar flags from `rust/.cargo/config.toml` and does not produce the three builds the app loads.
 - One browser file: `deno test --allow-all tests/browser/ui.test.ts`. The full browser suite takes a few minutes; `docs/TESTING.md` lists the tests known to fail.
 - A/B against another checkout: `deno run -A scripts/fingerprint-scenarios.ts b.json --root ../other`, then `deno run -A scripts/compare-fingerprints.ts a.json b.json`.
-- Benchmarks: `rust/bench` is a native workspace member outside `default-members`, so plain `cargo` commands in `rust/` still mean the core; name it with `-p long-screen-bench` and use the `bench-native` profile. `LONGSCREEN_CASES=<dir>` reads the public recordings from a local directory instead of downloading them. These benches run the core's scalar code natively, so browser-side timing still comes from `scripts/benchmark-pipeline.ts`.
+- Benchmarks: `rust/bench` is a native workspace member outside `default-members`, so plain `cargo` commands in `rust/` still mean the crates that build for wasm32 (core, wasm); name it with `-p long-screen-bench` and use the `bench-native` profile. `LONGSCREEN_CASES=<dir>` reads the public recordings from a local directory instead of downloading them. These benches run the core's scalar code natively, so browser-side timing still comes from `scripts/benchmark-pipeline.ts`.
 
 ## Architecture
 
@@ -40,7 +40,7 @@ File/Blob → mediabunny demux (MP4/MOV/WebM) → WebCodecs → RGBA
 ```
 
 - Decoding is the only step that depends on browser APIs. Everything after it runs in the Wasm core, and Deno tests load the same core the browser does, so algorithm behaviour verified in Deno is what ships.
-- Each core domain has three matching files: `rust/core/src/<d>.rs` (algorithm, no FFI) ↔ `rust/core/src/abi/<d>.rs` (`extern "C"` exports) ↔ `src/core/wasm/<d>.ts` (marshalling). `src/core/wasm/loader.ts::planCore` picks the scalar, SIMD or threads build; threads need a cross-origin-isolated page.
+- Each core domain has three matching files: `rust/core/src/<d>.rs` (algorithm, no FFI) ↔ `rust/wasm/src/<d>.rs` (`extern "C"` exports, in the `long-screen-wasm` crate the three builds come from) ↔ `src/core/wasm/<d>.ts` (marshalling). `src/core/wasm/loader.ts::planCore` picks the scalar, SIMD or threads build; threads need a cross-origin-isolated page.
 - `src/pipeline/` orders the passes, holds run state and does KV I/O; the per-pixel and tracking work happens in core calls. The page talks to `src/worker.ts` through the typed commands in `src/protocol.ts`.
 - `docs/` is written in Chinese and README.md in English. Read these when the task touches their area, not before every edit:
   - `docs/ARCHITECTURE.md` §十 before changing compositing, consistency, motion, layers or i18n. Each invariant there records a measured failure.

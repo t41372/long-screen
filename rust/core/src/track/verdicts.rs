@@ -137,7 +137,7 @@ pub fn thin_overlap_correction(
     }
 }
 
-/// `track.ts::LoopVerdict`, in the ABI tag order (0..3) `abi/track.rs` returns.
+/// `track.ts::LoopVerdict`, in the ABI tag order (0..3) `rust/wasm/src/track.rs` returns.
 #[derive(PartialEq, Eq, Debug)]
 pub enum LoopVerdict {
     Closure,

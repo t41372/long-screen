@@ -1,14 +1,14 @@
-//! `ls_track_odometry`: `extern "C"` surface for `crate::track::odometry` — split out of the former
+//! `ls_track_odometry`: `extern "C"` surface for `long_screen_core::track::odometry` — split out of the former
 //! monolithic `abi/track.rs`. See `abi/track.rs`'s module doc comment
 //! for the split.
 
-use crate::abi::features::read_features;
-use crate::abi::memory::{slice, slice_mut};
-use crate::abi::voting::read_voting_regions;
-use crate::abi::wire::{read_rect, FEATURE_BYTES};
-use crate::abi::STATUS_BAD_ARGUMENT;
-use crate::motion::Gray;
-use crate::track;
+use crate::features::read_features;
+use crate::memory::{slice, slice_mut};
+use crate::voting::read_voting_regions;
+use crate::wire::{read_rect, FEATURE_BYTES};
+use crate::STATUS_BAD_ARGUMENT;
+use long_screen_core::motion::Gray;
+use long_screen_core::track;
 
 /// `ls_track_odometry`'s `out` layout (`TRACK_ODOMETRY_OUT_BYTES` in `src/core/wasm/track-odometry.ts`): f64 delta.x,
 /// f64 delta.y, f64 confidence, u32 ambiguous, u32 weakStep, f64 stepError, u32 hasContentChange, u32 padding,

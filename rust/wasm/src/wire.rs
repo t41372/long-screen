@@ -2,9 +2,9 @@
 //! rect (de)serialisation. `Reader` is the one little-endian reader every ABI function shares, instead of each
 //! one redefining its own `u = |i| u32::from_le_bytes(..)` closure.
 
-use crate::abi::STATUS_BAD_ARGUMENT;
-use crate::features::DESCRIPTOR_WORDS;
-use crate::geometry::Rect;
+use crate::STATUS_BAD_ARGUMENT;
+use long_screen_core::features::DESCRIPTOR_WORDS;
+use long_screen_core::geometry::Rect;
 
 /// Bytes per serialised feature: i32 x, i32 y, f32 score, 8 × u32 descriptor.
 pub const FEATURE_BYTES: usize = 4 + 4 + 4 + DESCRIPTOR_WORDS * 4;
@@ -80,7 +80,7 @@ pub(crate) unsafe fn read_optional_rect(ptr: u32) -> Result<Option<Rect>, i32> {
     if ptr == 0 {
         return Ok(None);
     }
-    crate::abi::memory::slice(ptr, 32)
+    crate::memory::slice(ptr, 32)
         .map(|b| Some(read_rect(b)))
         .ok_or(STATUS_BAD_ARGUMENT)
 }

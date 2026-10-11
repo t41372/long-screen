@@ -1,4 +1,4 @@
-/** Pyramid parent-tile assembly (mirrors `rust/core/src/abi/pyramid.rs`): halves up to four `size × size` RGBA
+/** Pyramid parent-tile assembly (mirrors `rust/wasm/src/pyramid.rs`): halves up to four `size × size` RGBA
  *  child tiles and packs them into one parent tile in a single core call, instead of `TileStore.buildPyramid`
  *  (src/storage/tiles.ts) running its own per-quadrant halve+copy loop in TS. */
 import type { RGBA } from '../../types.ts';

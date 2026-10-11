@@ -1,9 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["core", "decode", "bench"]
-# Plain `cargo` commands (the wasm builds in scripts/build-core.sh, `cargo test --lib`, the wasm clippy runs) stay on
-# the core; native-only crates (decode, bench) are built by name with `-p`.
-default-members = ["core"]
+members = ["core", "wasm", "decode", "bench"]
+# Plain `cargo` commands (`cargo test --lib`, the wasm clippy runs in `deno task lint`) cover the crates that build for
+# wasm32: the core and the wasm exports. scripts/build-core.sh names the wasm crate with `-p`; native-only
+# crates (decode, bench) are built by name with `-p` too.
+default-members = ["core", "wasm"]
 
 [profile.release]
 opt-level = 3
@@ -12,9 +13,7 @@ codegen-units = 1
 panic = "abort"
 debug = false
 
-# Native benchmarks (rust/bench): the release settings, but unwinding as bench targets must. Under the `bench` profile
-# the core's cdylib would be built twice in one run (abort for libraries, unwind for the bench) into the same file
-# names, since cdylib outputs carry no hash.
+# Native benchmarks (rust/bench): the release settings, but unwinding as bench targets must (release aborts).
 [profile.bench-native]
 inherits = "release"
 panic = "unwind"

@@ -1,9 +1,9 @@
 //! Tile compositing: merges one observation into a resident tile's pixels, coverage and quality bookkeeping.
 
-use crate::abi::memory::{in_bounds, slice, slice_mut};
-use crate::abi::wire::{read_rect, read_rects, Reader, COMPOSITE_HEADER_BYTES};
-use crate::abi::STATUS_BAD_ARGUMENT;
-use crate::compositor::{composite_tile, Observation, TileBuffers, QUALITY_BLOCK};
+use crate::memory::{in_bounds, slice, slice_mut};
+use crate::wire::{read_rect, read_rects, Reader, COMPOSITE_HEADER_BYTES};
+use crate::STATUS_BAD_ARGUMENT;
+use long_screen_core::compositor::{composite_tile, Observation, TileBuffers, QUALITY_BLOCK};
 
 /// Tile descriptor (40 bytes): u32 pixels, coverage, provisional, quality, conflicts, owner, score, frozen
 /// pointers, u32 size, u32 padding. Observation descriptor (64 bytes): u32 rgba, u32 width, u32 height,
@@ -149,5 +149,5 @@ pub extern "C" fn ls_composite_tile(
         dst[at..at + 4].copy_from_slice(&bx.to_le_bytes());
         dst[at + 4..at + 8].copy_from_slice(&by.to_le_bytes());
     }
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }

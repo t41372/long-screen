@@ -160,7 +160,7 @@ cargo install cargo-codspeed --locked --version 5.0.2
 cd rust && cargo codspeed build -p long-screen-bench --profile bench-native && cargo codspeed run -p long-screen-bench
 ```
 
-`LONGSCREEN_CASES` 指向已有录屏的目录（只读，不下载），`LONGSCREEN_FIXTURES` 改 fixture 目录，`LONGSCREEN_CASES_URL`（含 `{file}`）从别的地址下载。基准用 `bench-native` 配置（release 的优化设置加 unwind；在默认的 `bench` 配置下核心的 cdylib 会在同一次构建里以两种 panic 策略写到同一个文件名）。本地没有 CodSpeed 的模拟器时，`cargo codspeed run` 只把每项跑一遍检查能否运行。
+`LONGSCREEN_CASES` 指向已有录屏的目录（只读，不下载），`LONGSCREEN_FIXTURES` 改 fixture 目录，`LONGSCREEN_CASES_URL`（含 `{file}`）从别的地址下载。基准用 `bench-native` 配置（release 的优化设置加 bench 目标需要的 unwind）。本地没有 CodSpeed 的模拟器时，`cargo codspeed run` 只把每项跑一遍检查能否运行。
 
 **CI 里怎么测。** CodSpeed 的 CPU 模拟（simulation）模式在模拟 CPU 上把每项只跑一次，结果不受共享 runner 负载影响，系统调用不计入；公开仓库上传结果不需要 token，fork 来的 PR 也能上传（[文档](https://codspeed.io/docs/integrations/ci/github-actions)）。墙钟（walltime）模式需要 CodSpeed 的专用机器（免费计划每月 600 分钟），目前没有用。
 

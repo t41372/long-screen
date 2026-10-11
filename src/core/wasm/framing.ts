@@ -1,4 +1,4 @@
-/** Presentation-canvas synthesis (`src/core/framing.ts::buildFramedCanvas`, mirrors `rust/core/src/abi/framing.rs`):
+/** Presentation-canvas synthesis (`src/core/framing.ts::buildFramedCanvas`, mirrors `rust/wasm/src/framing.rs`):
  *  layout/coordinate mapping, background-extension statistics, and the two per-tile passes the shell drives once
  *  per output tile — `paintTile` (native chrome + background bands) and `foldEvidence` (up to four overlapping
  *  source tiles' pixels/coverage/provisional bits/block evidence). Tile-cache traversal, the O(perimeter)

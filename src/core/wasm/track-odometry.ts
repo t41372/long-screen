@@ -21,7 +21,7 @@ export interface OdometryEstimate {
   rescue?: { delta: Point; confidence: number; ambiguous: boolean; weakStep: boolean; stepError: number };
 }
 const ODOMETRY_DECISION_TAGS: OdometryEstimate['decision'][] = ['tracked', 'static', 'lost'];
-/** `ls_track_odometry`'s `out` layout (`TRACK_ODOMETRY_OUT_BYTES` in `abi/track.rs`). */
+/** `ls_track_odometry`'s `out` layout (`TRACK_ODOMETRY_OUT_BYTES` in `rust/wasm/src/track.rs`). */
 const TRACK_ODOMETRY_OUT_BYTES = 104;
 
 export interface OdometryInputs {

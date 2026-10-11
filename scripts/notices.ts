@@ -61,7 +61,11 @@ interface AboutJson {
   licenses: { id: string; name: string; text: string; used_by: { crate: { name: string; version: string } }[] }[];
 }
 
-/** Third-party (non-workspace) Rust crates compiled into rust/core, via cargo-about when installed. */
+/** The crate the page's .wasm files are built from (scripts/build-core.sh): only its dependency closure ships in the
+ *  page. Other workspace crates (the engine, decoder, CLI) carry dependencies that never reach the browser. */
+const SHIPPED_CRATE = 'long-screen-wasm';
+
+/** Third-party (non-workspace) Rust crates compiled into the page's .wasm, via cargo-about when installed. */
 async function rustNoticesViaCargoAbout(root: string): Promise<NoticeEntry[] | undefined> {
   if (!await commandExists('cargo-about')) {
     return undefined;
@@ -72,14 +76,13 @@ async function rustNoticesViaCargoAbout(root: string): Promise<NoticeEntry[] | u
     'generate',
     '--format',
     'json',
-    '--workspace',
     '--manifest-path',
-    join(root, 'rust/Cargo.toml'),
+    join(root, 'rust/wasm/Cargo.toml'),
     '-c',
     configPath,
   ], rustCwd(root));
   if (!result.ok) {
-    throw new Error(`cargo about generate failed (rust/core dependency licenses):\n${result.stderr}`);
+    throw new Error(`cargo about generate failed (${SHIPPED_CRATE} dependency licenses):\n${result.stderr}`);
   }
   const parsed: AboutJson = JSON.parse(result.stdout);
   const textFor = new Map<string, { id: string; text: string }>();
@@ -91,7 +94,7 @@ async function rustNoticesViaCargoAbout(root: string): Promise<NoticeEntry[] | u
   const entries: NoticeEntry[] = [];
   for (const crate of parsed.crates) {
     if (crate.package.source === null) {
-      continue; // workspace-local crate (long-screen-core itself), not a third-party dependency
+      continue; // workspace-local crate (long-screen-wasm, long-screen-core), not a third-party dependency
     }
     const found = textFor.get(`${crate.package.name}@${crate.package.version}`);
     if (!found) {
@@ -116,12 +119,21 @@ async function rustNoticesViaCargoAbout(root: string): Promise<NoticeEntry[] | u
  *  the crate's own vendored license file(s) in the local cargo registry source cache (already downloaded — cargo
  *  can't have built the core without it) as the license text. */
 async function rustNoticesViaCargoMetadata(root: string): Promise<NoticeEntry[]> {
-  const result = await run('cargo', ['metadata', '--format-version', '1', '--manifest-path', join(root, 'rust/Cargo.toml')], rustCwd(root));
+  const result = await run('cargo', [
+    'metadata',
+    '--format-version',
+    '1',
+    '--filter-platform',
+    'wasm32-unknown-unknown',
+    '--manifest-path',
+    join(root, 'rust/Cargo.toml'),
+  ], rustCwd(root));
   if (!result.ok) {
-    throw new Error(`cargo metadata failed (rust/core dependency licenses):\n${result.stderr}`);
+    throw new Error(`cargo metadata failed (${SHIPPED_CRATE} dependency licenses):\n${result.stderr}`);
   }
   const meta: {
     packages: {
+      id: string;
       name: string;
       version: string;
       source: string | null;
@@ -133,15 +145,29 @@ async function rustNoticesViaCargoMetadata(root: string): Promise<NoticeEntry[]>
     workspace_members: string[];
     resolve: { nodes: { id: string; deps: { pkg: string }[] }[]; root: string | null } | null;
   } = JSON.parse(result.stdout);
+  // Only what the shipped crate actually links (its wasm32 dependency closure), not every workspace member's deps.
+  const shipped = meta.packages.find((p) => p.name === SHIPPED_CRATE && p.source === null);
+  if (!shipped || !meta.resolve) {
+    throw new Error(`cargo metadata did not resolve ${SHIPPED_CRATE}'s dependencies`);
+  }
+  const deps = new Map(meta.resolve.nodes.map((node) => [node.id, node.deps.map((d) => d.pkg)]));
+  const linked = new Set<string>();
+  const queue = [shipped.id];
+  while (queue.length) {
+    const id = queue.pop()!;
+    if (linked.has(id)) continue;
+    linked.add(id);
+    queue.push(...(deps.get(id) ?? []));
+  }
   const cargoHome = Deno.env.get('CARGO_HOME') || join(Deno.env.get('HOME') || '', '.cargo');
   const entries: NoticeEntry[] = [];
   for (const pkg of meta.packages) {
-    if (pkg.source === null) {
-      continue; // workspace-local
+    if (pkg.source === null || !linked.has(pkg.id)) {
+      continue; // workspace-local, or a dependency of a crate the page does not ship
     }
     if (!pkg.license) {
       throw new Error(
-        `${pkg.name} ${pkg.version} (a rust/core dependency) has no 'license' field in its Cargo.toml. Install cargo-about ` +
+        `${pkg.name} ${pkg.version} (a ${SHIPPED_CRATE} dependency) has no 'license' field in its Cargo.toml. Install cargo-about ` +
           `(cargo install --locked cargo-about --features cli) for a more thorough license search, or resolve this by hand.`,
       );
     }
@@ -411,12 +437,12 @@ export async function generateNotices(root: string, jsEntries: readonly string[]
     'Long Screen — Third-Party Notices',
     '',
     'This file is generated at build time (scripts/notices.ts, called from scripts/build.ts) from the actual',
-    "dependency graph — `cargo metadata`/`cargo-about` for rust/core and `deno info`'s module graph for the",
+    "dependency graph — `cargo metadata`/`cargo-about` for the page's Rust crate (rust/wasm) and `deno info`'s module graph for the",
     'bundled JS assets — not hand-maintained. Regenerate it by rebuilding (`deno task build` / `deno task build:prod`).',
     '',
     renderSection(
       'Rust crates compiled into the WebAssembly core',
-      'rust/core has no third-party crate dependencies (verified via cargo-about/cargo metadata at build time).',
+      'rust/wasm has no third-party crate dependencies (verified via cargo-about/cargo metadata at build time).',
       rust,
     ),
     renderSection(

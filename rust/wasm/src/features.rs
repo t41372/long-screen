@@ -1,9 +1,11 @@
 //! Feature extraction, matching, and visual-word hashing.
 
-use crate::abi::memory::{slice, slice_mut};
-use crate::abi::wire::{read_rects, FEATURE_BYTES, MATCH_BYTES};
-use crate::abi::STATUS_BAD_ARGUMENT;
-use crate::features::{extract_features, feature_words, match_features, Feature, DESCRIPTOR_WORDS};
+use crate::memory::{slice, slice_mut};
+use crate::wire::{read_rects, FEATURE_BYTES, MATCH_BYTES};
+use crate::STATUS_BAD_ARGUMENT;
+use long_screen_core::features::{
+    extract_features, feature_words, match_features, Feature, DESCRIPTOR_WORDS,
+};
 
 #[no_mangle]
 pub extern "C" fn ls_feature_bytes() -> u32 {

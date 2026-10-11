@@ -1,4 +1,4 @@
-//! Pose-graph relaxation (`src/core/pose-graph.ts::PoseGraph.optimize`), backed by `crate::pose_graph`. One
+//! Pose-graph relaxation (`src/core/pose-graph.ts::PoseGraph.optimize`), backed by `long_screen_core::pose_graph`. One
 //! stateful handle per `optimize()` call: `ls_pose_graph_new` copies the node/edge arrays the adapter built from
 //! its `Map` iteration order into a Rust-owned `Graph`, `ls_pose_graph_pass` runs one Gauss-Seidel sweep (so the
 //! adapter can `await` its stop-checkpoint between sweeps — see pose-graph.ts's `optimize()`), and
@@ -8,9 +8,9 @@
 //! `pinned` (u8 × node_count, 0/1), `offsets` (u32 × (node_count + 1), CSR row starts into the edge arrays) and
 //! `other`/`dx`/`dy`/`weight` (i32/f64/f64/f64 × edge_count, `other` a node index or −1 for "not found").
 
-use crate::abi::memory::{slice, slice_mut, HandleTable};
-use crate::abi::STATUS_BAD_ARGUMENT;
-use crate::pose_graph::{Edge, Graph, Node};
+use crate::memory::{slice, slice_mut, HandleTable};
+use crate::STATUS_BAD_ARGUMENT;
+use long_screen_core::pose_graph::{Edge, Graph, Node};
 
 static mut HANDLES: HandleTable<Graph> = HandleTable::new();
 
@@ -111,7 +111,7 @@ pub extern "C" fn ls_pose_graph_solve_cycle(handle: u32) -> i32 {
     }
 }
 
-/// One Gauss-Seidel sweep (`crate::pose_graph::Graph::pass`); returns the largest single-node displacement, or a
+/// One Gauss-Seidel sweep (`long_screen_core::pose_graph::Graph::pass`); returns the largest single-node displacement, or a
 /// negative sentinel (`f64::MIN`, never a real displacement) on a bad handle.
 #[no_mangle]
 pub extern "C" fn ls_pose_graph_pass(handle: u32, reverse: u32) -> f64 {
@@ -121,7 +121,7 @@ pub extern "C" fn ls_pose_graph_pass(handle: u32, reverse: u32) -> f64 {
     }
 }
 
-/// Largest edge residual over the current positions (`crate::pose_graph::Graph::residual`); `f64::MIN` on a bad
+/// Largest edge residual over the current positions (`long_screen_core::pose_graph::Graph::residual`); `f64::MIN` on a bad
 /// handle.
 #[no_mangle]
 pub extern "C" fn ls_pose_graph_residual(handle: u32) -> f64 {
@@ -149,7 +149,7 @@ pub extern "C" fn ls_pose_graph_read(handle: u32, xs_out: u32, ys_out: u32) -> i
         xs[i * 8..i * 8 + 8].copy_from_slice(&node.x.to_le_bytes());
         ys[i * 8..i * 8 + 8].copy_from_slice(&node.y.to_le_bytes());
     }
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 #[no_mangle]

@@ -1,4 +1,4 @@
-/** The `extern "C"` surface `rust/core/src/abi/*.rs` exports, the byte layouts shared with it, and the status
+/** The `extern "C"` surface `rust/wasm/src/*.rs` exports, the byte layouts shared with it, and the status
  *  convention every kernel call is checked against. */
 
 export interface CoreExports {
@@ -499,7 +499,7 @@ export interface CoreExports {
   ls_frame_fold_evidence(desc: number): number;
 }
 
-/** Byte layouts shared with `rust/core/src/abi/wire.rs`. Asserted against the live module's `ls_layout` once
+/** Byte layouts shared with `rust/wasm/src/wire.rs`. Asserted against the live module's `ls_layout` once
  *  when `Core` is constructed (see `assertLayout`), so the two sides can no longer drift silently — historically
  *  only the feature/match sizes (`ls_feature_bytes`/`ls_match_bytes`) were checked at runtime. */
 export const MATCH_POINT_BYTES = 40,
@@ -509,11 +509,11 @@ export const MATCH_POINT_BYTES = 40,
   PATCH_BYTES = 16,
   MOTION_CELL = 24;
 export const COMPOSITE_HEADER = 24, VOTING_REGION_BYTES = 64, LEARNER_MOTION_BYTES = 32, LEARNER_FIELD_BYTES = 40;
-/** `ls_regions_finish` request descriptor, and one output region header (`rust/core/src/abi/regions.rs`). */
+/** `ls_regions_finish` request descriptor, and one output region header (`rust/wasm/src/regions.rs`). */
 export const REGIONS_FINISH_DESC_BYTES = 112, REGION_HEADER_BYTES = 88;
-/** One serialised `framing::Layout` (`rust/core/src/abi/framing.rs`). */
+/** One serialised `framing::Layout` (`rust/wasm/src/framing.rs`). */
 export const LAYOUT_BYTES = 104;
-/** Named accumulator arrays `rust/core/src/abi/layers.rs::learner_array` recognises — must match
+/** Named accumulator arrays `rust/wasm/src/layers.rs::learner_array` recognises — must match
  *  `./learner.ts`'s `LEARNER_ARRAYS.length` (selector 14, "counts", is separate and not part of this count). */
 export const LEARNER_ARRAY_COUNT = 15;
 /** `ls_extract_patches`'/`ls_probe_scale`'s serialised `(x, y)` feature point: f64, f64. */
@@ -521,15 +521,15 @@ export const POINT_BYTES = 16;
 /** One `ls_extract_patches` output patch header, immediately followed by its `size × size` data bytes. */
 export const EXTRACTED_PATCH_HEADER_BYTES = 24;
 /** `ls_keyframes_evaluate_candidates`'s per-keyframe descriptor and its single chosen-candidate output record
- *  (`rust/core/src/abi/track_keyframes.rs::KEYFRAME_BYTES`/`CANDIDATE_RECORD_BYTES`). */
+ *  (`rust/wasm/src/track_keyframes.rs::KEYFRAME_BYTES`/`CANDIDATE_RECORD_BYTES`). */
 export const KEYFRAME_BYTES = 64, CANDIDATE_RECORD_BYTES = 56;
-/** `ls_track_drift_correction`'s output record (`rust/core/src/abi/track_reacquire.rs::TRACK_DRIFT_CORRECTION_OUT_BYTES`). */
+/** `ls_track_drift_correction`'s output record (`rust/wasm/src/track_reacquire.rs::TRACK_DRIFT_CORRECTION_OUT_BYTES`). */
 export const TRACK_DRIFT_CORRECTION_OUT_BYTES = 40;
-/** Reveal-run decision descriptor, block-write record and deferred-block record (`rust/core/src/abi/reveal.rs`). */
+/** Reveal-run decision descriptor, block-write record and deferred-block record (`rust/wasm/src/reveal.rs`). */
 export const REVEAL_DECISION_BYTES = 24, REVEAL_WRITE_BYTES = 28, REVEAL_DEFERRED_BYTES = 16 + 16 * 16 * 4;
 export const REVEAL_PROVENANCE_HEADER_BYTES = 16;
 
-/** Selector → constant, in the order `rust/core/src/abi/mod.rs::ls_layout` matches them. */
+/** Selector → constant, in the order `rust/wasm/src/lib.rs::ls_layout` matches them. */
 const LAYOUT = [
   MATCH_POINT_BYTES,
   MOTION_BYTES,

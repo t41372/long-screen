@@ -1,0 +1,22 @@
+[package]
+name = "long-screen-wasm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "The WebAssembly exports the Long Screen web page calls (scalar, SIMD128 and threads builds)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+long-screen-core = { path = "../core" }
+# Tile PNG codec (replaces the hand-rolled Sub filter + browser CompressionStream + JS CRC32 table — see
+# src/png.rs). Pinned exact: a `png` point release can change its Adaptive-filter heuristic or its error Display
+# text, either of which this crate depends on byte-for-byte (fingerprints) or string-for-string (`classify` in
+# src/png.rs). Brings in fdeflate/flate2/miniz_oxide/crc32fast transitively.
+png = "=0.18.1"
+# Already a transitive dependency of png (chunk CRCs); used directly for `ls_crc32` (src/png.rs), which
+# src/codec/crc.ts calls instead of carrying its own hand-rolled JS CRC32 table (src/export/zip.ts does not use
+# this module — it streams through client-zip, which computes its own CRC32 in JS).
+crc32fast = "=1.5.2"

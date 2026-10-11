@@ -873,7 +873,7 @@ Deno.test("compositor: dispose() before the trailing flush() (render.ts's actual
 Deno.test(
   'temporal ABI: ls_temporal_flush_take rejects a wrong count before draining the index',
   async () => {
-    // Regression for rust/core/src/abi/temporal.rs::ls_temporal_flush_take, which must check the caller's counts
+    // Regression for rust/wasm/src/temporal.rs::ls_temporal_flush_take, which must check the caller's counts
     // against the index BEFORE calling TemporalIndex::flush_take() (which drains `dirty`/`deleted`): checking
     // after would let a bad count silently lose every dirty/deleted row instead of returning an error with the
     // index unchanged. Reaches Compositor's private per-canvas handle the way this suite already reaches other
@@ -913,10 +913,10 @@ Deno.test(
   'temporal ABI: ls_overwrite_tile returns a status (not a wasm trap) for a block whose pixel footprint falls ' +
     'outside the source frame, tile buffers unchanged',
   () => {
-    // Regression for rust/core/src/abi/temporal.rs::ls_overwrite_tile / rust/core/src/temporal.rs::overwrite_tile,
+    // Regression for rust/wasm/src/temporal.rs::ls_overwrite_tile / rust/core/src/temporal.rs::overwrite_tile,
     // which indexed `blocks` into `rgba`/`tile.pixels`/`tile.owner` unchecked -- a bad block made the exported
     // function itself trap (Rust panics on an out-of-bounds slice index; the wasm build aborts on panic), not
-    // return `STATUS_BAD_ARGUMENT` as abi/mod.rs's memory contract promises ("an invalid request returns a
+    // return `STATUS_BAD_ARGUMENT` as rust/wasm/src/lib.rs's memory contract promises ("an invalid request returns a
     // negative status instead of trapping"). Calling `ls_overwrite_tile` through raw exports (bypassing
     // `core().overwriteTile()`'s `core.check()`, which would turn EITHER a trap or a clean bad status into a
     // caught exception and hide which one actually happened) makes a regression to a trap fail this test with

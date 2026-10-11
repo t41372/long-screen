@@ -1,5 +1,5 @@
 /** Temporal-conflict block components, the per-tile write step of `overwritePatch`, and the in-memory temporal
- *  index + resolveTemporal's decision (mirrors `rust/core/src/abi/temporal.rs`): the 8-connected-components
+ *  index + resolveTemporal's decision (mirrors `rust/wasm/src/temporal.rs`): the 8-connected-components
  *  step of `Compositor.components`, the pixel write in `Compositor.overwritePatch`, and `Compositor`'s
  *  `TemporalIndex`/`resolveTemporal` (src/core/compositor.ts). */
 import type { Rect, RGBA } from '../../types.ts';
@@ -165,10 +165,10 @@ export function overwriteTile(
 }
 
 // --- Temporal index: the in-memory record store + resolveTemporal's decision (rust/core/src/temporal.rs via
-// rust/core/src/abi/temporal.rs). One `TemporalIndexHandle` per canvas, created lazily by `Compositor`. ---
+// rust/wasm/src/temporal.rs). One `TemporalIndexHandle` per canvas, created lazily by `Compositor`. ---
 
 /** Bytes per serialised temporal record header (mirrors `TEMPORAL_RECORD_HEADER_BYTES` in
- *  rust/core/src/abi/temporal.rs). */
+ *  rust/wasm/src/temporal.rs). */
 const RECORD_HEADER_BYTES = 66;
 
 /** One temporal record as `Compositor` sees it (mirrors `TemporalRegion` minus `canvasId`, src/core/compositor.ts

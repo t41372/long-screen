@@ -1,4 +1,4 @@
-/** Byte-exact parity between the Rust tracking verdicts (rust/core/src/track.rs + abi/track.rs) and the frozen
+/** Byte-exact parity between the Rust tracking verdicts (rust/core/src/track.rs + rust/wasm/src/track.rs) and the frozen
  *  TS oracle they replace (tests/support/reference/track.ts). Runs on whichever build `LONGSCREEN_CORE` selects
  *  (scalar/simd/threads — see tests/support/core.ts). Covers the stateless verdicts and the fused odometry,
  *  reacquire and driftCorrection calls. */

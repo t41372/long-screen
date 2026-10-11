@@ -1,5 +1,5 @@
 /** Stateful displacement-spread consistency voting ring living in core memory (mirrors
- *  `rust/core/src/abi/voting.rs`). */
+ *  `rust/wasm/src/voting.rs`). */
 import type { Gray, Point, Region } from '../../types.ts';
 import type { Core } from './core.ts';
 import type { CoreExports } from './exports.ts';

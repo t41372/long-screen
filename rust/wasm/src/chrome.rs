@@ -1,9 +1,9 @@
 //! Persistent-chrome detection: stationary boundaries and sticky occlusion bands.
 
-use crate::abi::memory::{slice, slice_mut};
-use crate::abi::wire::{read_rect, read_rects};
-use crate::abi::STATUS_BAD_ARGUMENT;
-use crate::chrome::{stationary_boundary, sticky_occlusions, Axis, Choose};
+use crate::memory::{slice, slice_mut};
+use crate::wire::{read_rect, read_rects};
+use crate::STATUS_BAD_ARGUMENT;
+use long_screen_core::chrome::{stationary_boundary, sticky_occlusions, Axis, Choose};
 
 /// Persistent appearance edge in `rgba` (width×height) along `axis` (0 = x, 1 = y) between `from` and `to`,
 /// sampling cross coordinates `cross_from..cross_to`; `choose` 0 = first, 1 = last. Returns the coordinate

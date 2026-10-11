@@ -8,7 +8,7 @@ import { type Core, core, coreLoaded, loadCore, simdSupported } from '../../src/
 const root = fromFileUrl(new URL('../../', import.meta.url));
 const requested = Deno.env.get('LONGSCREEN_CORE');
 const variant = requested === 'scalar' || !simdSupported() ? 'scalar' : requested === 'threads' ? 'threads' : 'simd';
-export const CORE_WASM = `${root}rust/target/${variant}/wasm32-unknown-unknown/release/long_screen_core.wasm`;
+export const CORE_WASM = `${root}rust/target/${variant}/wasm32-unknown-unknown/release/long_screen_wasm.wasm`;
 
 export async function ensureCore(): Promise<Core> {
   if (coreLoaded()) return core();

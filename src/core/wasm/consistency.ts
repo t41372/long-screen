@@ -1,4 +1,4 @@
-/** World-consistency masking (mirrors `rust/core/src/abi/consistency.rs`). */
+/** World-consistency masking (mirrors `rust/wasm/src/consistency.rs`). */
 import type { Rect } from '../../types.ts';
 import type { Core } from './core.ts';
 import { type BytesInput, type FrameInput, Resident, ResidentFrame } from './memory.ts';

@@ -136,7 +136,7 @@ export class RegionAtlas {
   private cachedLabels?: Uint8Array;
   constructor(readonly regions: Region[], readonly width: number, readonly height: number) {
     // Throws this exact message regardless of whether the Rust core rejects the count itself or this early
-    // check catches it first (rust/core/src/abi/regions.rs::ls_regions_label_atlas): one message, two paths.
+    // check catches it first (rust/wasm/src/regions.rs::ls_regions_label_atlas): one message, two paths.
     if (regions.length > 254) {
       throw new Error('Too many regions for the pixel atlas.');
     }

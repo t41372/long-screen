@@ -1,4 +1,4 @@
-/** Feature extraction, matching, and visual-word hashing (mirrors `rust/core/src/abi/features.rs`). */
+/** Feature extraction, matching, and visual-word hashing (mirrors `rust/wasm/src/features.rs`). */
 import type { Feature, Gray, Match, Rect } from '../../types.ts';
 import type { Core } from './core.ts';
 

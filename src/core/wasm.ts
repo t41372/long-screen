@@ -6,7 +6,7 @@
  *  in Rust; it is never freed mid-run, only replaced (grown) when a call needs more than it currently holds.
  *  Kernels return negative status codes rather than trapping; those are surfaced as thrown errors.
  *
- *  Split by domain under `src/core/wasm/`, mirroring `rust/core/src/abi/*.rs`; this file is a barrel that
+ *  Split by domain under `src/core/wasm/`, mirroring `rust/wasm/src/*.rs`; this file is a barrel that
  *  re-exports every name callers already import from `src/core/wasm.ts` (24 importers, including
  *  `tests/support/core.ts`, which needs `loadCore`/`simdSupported`). */
 export type { AuditResult, CoreThreads, LabelMask, PatchInput, RefinementResult } from './wasm/core.ts';

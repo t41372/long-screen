@@ -1,6 +1,6 @@
 //! PNG scanline reconstruction (unfilter) and filtering, used by the streaming single-PNG export path
 //! (`src/codec/png.ts::encodePNG`/`decodePNG`'s legacy row helpers). The tile codec itself
-//! (`abi/png.rs::ls_png_encode`/`ls_png_decode`) uses the `png` crate end to end instead.
+//! (`rust/wasm/src/png.rs::ls_png_encode`/`ls_png_decode`) uses the `png` crate end to end instead.
 
 #[inline]
 fn paeth(a: u8, b: u8, c: u8) -> u8 {

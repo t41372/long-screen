@@ -1,14 +1,14 @@
 //! Translation/scale hypotheses, verification, refinement (native and patch-based) and motion-field
 //! estimation.
 
-use crate::abi::features::read_features;
-use crate::abi::memory::{slice, slice_mut};
-use crate::abi::wire::{
+use crate::features::read_features;
+use crate::memory::{slice, slice_mut};
+use crate::wire::{
     read_optional_rect, read_rect, EXTRACTED_PATCH_HEADER_BYTES, MATCH_POINT_BYTES, MOTION_BYTES,
     MOTION_FIELD_HEADER_BYTES, PATCH_BYTES, POINT_BYTES, REFINEMENT_BYTES,
 };
-use crate::abi::STATUS_BAD_ARGUMENT;
-use crate::motion::{
+use crate::STATUS_BAD_ARGUMENT;
+use long_screen_core::motion::{
     audit_translation, detect_scale, estimate_motion, extract_patches, probe_scale,
     refine_native_at, refine_patches, refine_translation, resample_gray, select_native_points,
     translation_hypotheses, verify_translation, Gray, MatchPoints, Motion, NativeRefinement, Patch,
@@ -152,7 +152,7 @@ pub extern "C" fn ls_audit_translation(
     {
         dst[i * 8..i * 8 + 8].copy_from_slice(&v.to_le_bytes());
     }
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 /// Integer refinement; `out` receives 2 × i32.
@@ -183,7 +183,7 @@ pub extern "C" fn ls_refine_translation(
     let (x, y) = refine_translation(a, b, Point { x: px, y: py }, roi, radius as i32);
     dst[0..4].copy_from_slice(&x.to_le_bytes());
     dst[4..8].copy_from_slice(&y.to_le_bytes());
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 /// Motion field of `b` (current) against `a` (previous), both `width × height`. `out` layout:
@@ -230,7 +230,7 @@ pub extern "C" fn ls_estimate_motion(
     dst[base..base + n].copy_from_slice(&field.labels);
     dst[base + n..base + 2 * n].copy_from_slice(&field.confidence);
     dst[base + 2 * n..base + 3 * n].copy_from_slice(&field.dynamic);
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 fn write_refinement(r: &NativeRefinement, dst: &mut [u8]) {
@@ -307,7 +307,7 @@ pub extern "C" fn ls_refine_native(
         &points,
     );
     write_refinement(&r, dst);
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 /// Patch refinement in native luma; `patches` points at `count` PATCH_BYTES descriptors.
@@ -357,7 +357,7 @@ pub extern "C" fn ls_refine_patches(
         radius as i32,
     );
     write_refinement(&r, dst);
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 /// Bilinear probe resample; `out` must hold `max(2, round(w×scale)) × max(2, round(h×scale))` bytes.
@@ -382,7 +382,7 @@ pub extern "C" fn ls_resample_gray(
         return STATUS_BAD_ARGUMENT;
     };
     dst.copy_from_slice(&data);
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 /// Reads `count` serialised `(f64 x, f64 y)` points (`POINT_BYTES` each).
@@ -489,7 +489,7 @@ pub extern "C" fn ls_probe_scale(
         unsafe {
             slice(
                 current_features,
-                feature_count as usize * crate::abi::wire::FEATURE_BYTES,
+                feature_count as usize * crate::wire::FEATURE_BYTES,
             )
         },
         unsafe { read_optional_rect(roi) },

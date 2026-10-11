@@ -1,5 +1,5 @@
 /** Overlay-aware block selection after the compositor, living in core memory (mirrors
- *  `rust/core/src/abi/reveal.rs`; the algorithm is `rust/core/src/reveal/`). */
+ *  `rust/wasm/src/reveal.rs`; the algorithm is `rust/core/src/reveal/`). */
 import type { Rect } from '../../types.ts';
 import type { Core } from './core.ts';
 import type { CoreExports } from './exports.ts';

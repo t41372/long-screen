@@ -52,9 +52,9 @@ if (!await replaceable(join(root, outName))) {
   Deno.exit(1);
 }
 const CORE_WASM: [string, string][] = [
-  ['rust/target/scalar/wasm32-unknown-unknown/release/long_screen_core.wasm', 'assets/core.wasm'],
-  ['rust/target/simd/wasm32-unknown-unknown/release/long_screen_core.wasm', 'assets/core.simd.wasm'],
-  ['rust/target/threads/wasm32-unknown-unknown/release/long_screen_core.wasm', 'assets/core.threads.wasm'],
+  ['rust/target/scalar/wasm32-unknown-unknown/release/long_screen_wasm.wasm', 'assets/core.wasm'],
+  ['rust/target/simd/wasm32-unknown-unknown/release/long_screen_wasm.wasm', 'assets/core.simd.wasm'],
+  ['rust/target/threads/wasm32-unknown-unknown/release/long_screen_wasm.wasm', 'assets/core.threads.wasm'],
 ];
 const outDir = join(root, outName), staging = `${outDir}.build`;
 await Deno.remove(staging, { recursive: true }).catch(() => {});

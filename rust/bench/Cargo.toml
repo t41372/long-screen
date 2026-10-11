@@ -7,7 +7,7 @@ description = "Benchmarks of the Long Screen core on the public test recordings,
 
 [dependencies]
 long-screen-core = { path = "../core" }
-# The same encoder and settings as the core's tile export (rust/core/src/abi/png.rs), which this crate cannot call
+# The same encoder and settings as the core's tile export (rust/wasm/src/png.rs), which this crate cannot call
 # through its wasm-pointer ABI.
 png = "=0.18.1"
 serde = { version = "=1.0.229", features = ["derive"] }

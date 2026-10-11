@@ -1,5 +1,5 @@
 //! Region construction and pixel labelling (`src/core/layers.ts::LayerLearner.finish`, `RegionAtlas`), backed by
-//! `crate::regions`. Three coarse-grained entry points, no per-region or per-pixel FFI:
+//! `long_screen_core::regions`. Three coarse-grained entry points, no per-region or per-pixel FFI:
 //!   - `ls_regions_finish` builds every algorithmic-path region in one call, into a handle the adapter drains with
 //!     `ls_regions_count`/`_cells_total`/`_read_headers`/`_read_masks`/`_read_cells`/`_free`. The manual-region
 //!     branch of `finish()` is cheap TS marshalling over data the caller already holds; only its one expensive
@@ -16,16 +16,14 @@
 //!   own `width`/`height` — so they are not repeated per region), concatenated in region order; cells are u32
 //!   analysis-cell indices, concatenated in region order, each region's span given by its header's `cells_count`.
 
-use crate::abi::features::{read_features, write_features};
-use crate::abi::memory::{slice, slice_mut, HandleTable};
-use crate::abi::voting::read_voting_regions;
-use crate::abi::wire::{
-    read_optional_rect, read_rects, Reader, FEATURE_BYTES, VOTING_REGION_BYTES,
-};
-use crate::abi::STATUS_BAD_ARGUMENT;
-use crate::geometry::Rect;
-use crate::region;
-use crate::regions::{self, AtlasMask, AtlasRegion, FinishInput, Rgba};
+use crate::features::{read_features, write_features};
+use crate::memory::{slice, slice_mut, HandleTable};
+use crate::voting::read_voting_regions;
+use crate::wire::{read_optional_rect, read_rects, Reader, FEATURE_BYTES, VOTING_REGION_BYTES};
+use crate::STATUS_BAD_ARGUMENT;
+use long_screen_core::geometry::Rect;
+use long_screen_core::region;
+use long_screen_core::regions::{self, AtlasMask, AtlasRegion, FinishInput, Rgba};
 
 /// `ls_layout` selector 10: bytes of one `ls_regions_finish` request descriptor (`run_finish`).
 pub(crate) const REGIONS_FINISH_DESC_BYTES: usize = 112;
@@ -196,7 +194,7 @@ pub extern "C" fn ls_regions_read_headers(handle: u32, out: u32) -> i32 {
         write_rect(&mut row[52..84], r.crop.unwrap_or(r.rect));
         row[84..88].copy_from_slice(&(r.solid as u32).to_le_bytes());
     }
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 fn write_rect(dst: &mut [u8], r: Rect) {
@@ -228,7 +226,7 @@ pub extern "C" fn ls_regions_read_masks(handle: u32, out: u32) -> i32 {
             at += mask.len();
         }
     }
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 /// Writes every region's cell-index list (u32 little-endian), concatenated in region order; a region's span is
@@ -255,7 +253,7 @@ pub extern "C" fn ls_regions_read_cells(handle: u32, out: u32) -> i32 {
             }
         }
     }
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 /// The expensive step of `finish()`'s manual-region branch: is every native pixel covered by at least one of
@@ -299,7 +297,7 @@ unsafe fn read_atlas_regions<'a>(ptr: u32, count: u32) -> Option<Vec<AtlasRegion
     let mut out = Vec::with_capacity(count as usize);
     for c in bytes.chunks_exact(VOTING_REGION_BYTES) {
         let r = Reader(c);
-        let rect = crate::abi::wire::read_rect(c);
+        let rect = crate::wire::read_rect(c);
         let exclusions = read_rects(slice(r.u32(32), r.u32(36) as usize * 32)?);
         let crop = read_optional_rect(r.u32(40)).ok()?;
         let mask = if r.u32(48) == 0 {
@@ -368,11 +366,11 @@ pub extern "C" fn ls_regions_label_atlas(
     for (c, d) in counts.iter().zip(counts_dst.chunks_exact_mut(4)) {
         d.copy_from_slice(&c.to_le_bytes());
     }
-    crate::abi::STATUS_OK
+    crate::STATUS_OK
 }
 
 /// `src/pipeline/solve/track.ts::ownFeaturesOf`'s region-membership feature filter
-/// (`crate::region::filter_features`). `features` is `count ×
+/// (`long_screen_core::region::filter_features`). `features` is `count ×
 /// wire::FEATURE_BYTES` (this adapter's feature wire format); `region` is one `wire::VOTING_REGION_BYTES`
 /// descriptor (the same layout `ls_voting_new`/`ls_track_odometry`'s `region` argument use). `out` must have room
 /// for `count × FEATURE_BYTES` (an upper bound — filtering only ever removes features). Returns the number kept,

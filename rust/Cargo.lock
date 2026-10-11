@@ -389,10 +389,6 @@ dependencies = [
 [[package]]
 name = "long-screen-core"
 version = "0.1.0"
-dependencies = [
- "crc32fast",
- "png",
-]
 
 [[package]]
 name = "long-screen-decode"
@@ -407,6 +403,15 @@ dependencies = [
  "serde",
  "serde_json",
  "windows",
+]
+
+[[package]]
+name = "long-screen-wasm"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "long-screen-core",
+ "png",
 ]
 
 [[package]]

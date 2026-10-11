@@ -1,4 +1,4 @@
-/** Pose-graph relaxation (`src/core/pose-graph.ts::PoseGraph.optimize`), mirroring `rust/core/src/abi/pose_graph.rs`.
+/** Pose-graph relaxation (`src/core/pose-graph.ts::PoseGraph.optimize`), mirroring `rust/wasm/src/pose_graph.rs`.
  *  One handle per `optimize()` call: `poseGraphNew` copies the node/edge arrays the caller built from its `Map`
  *  iteration order into a Rust-owned graph; `poseGraphPass` runs one Gauss-Seidel sweep (so the caller can await
  *  its stop-checkpoint between sweeps — the loop itself stays in pose-graph.ts, not here); `poseGraphResidual`/
