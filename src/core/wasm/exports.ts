@@ -293,6 +293,27 @@ export interface CoreExports {
   ): number;
   ls_learner_len(handle: number, which: number): number;
   ls_learner_read(handle: number, which: number, out: number): number;
+  ls_learner_finish(handle: number, nativeWidth: number, nativeHeight: number, factor: number, manual: number, manualCount: number): number;
+  ls_learner_take(handle: number, out: number, length: number): number;
+  ls_scan_new(width: number, height: number, factor: number): number;
+  ls_scan_free(handle: number): void;
+  ls_scan_frame(handle: number): number;
+  ls_scan_is_duplicate(handle: number): number;
+  ls_scan_push(handle: number, index: number, time: number, duration: number, gray: number, grayLength: number): number;
+  ls_scan_finish(handle: number, manual: number, manualCount: number): number;
+  ls_scan_take(handle: number, out: number, length: number): number;
+  ls_scan_estimate_motion(
+    a: number,
+    b: number,
+    width: number,
+    height: number,
+    aFeatures: number,
+    aCount: number,
+    bFeatures: number,
+    bCount: number,
+    flags: number,
+    out: number,
+  ): number;
   ls_stationary_boundary(
     rgba: number,
     width: number,
@@ -323,7 +344,6 @@ export interface CoreExports {
   ls_regions_read_headers(handle: number, out: number): number;
   ls_regions_read_masks(handle: number, out: number): number;
   ls_regions_read_cells(handle: number, out: number): number;
-  ls_regions_manual_uncovered(rects: number, count: number, nativeWidth: number, nativeHeight: number): number;
   ls_regions_label_atlas(regions: number, count: number, width: number, height: number, labelsOut: number, countsOut: number): number;
   ls_region_filter_features(
     features: number,
@@ -510,6 +530,8 @@ export const MATCH_POINT_BYTES = 40,
 export const COMPOSITE_HEADER = 24, VOTING_REGION_BYTES = 64, LEARNER_MOTION_BYTES = 32, LEARNER_FIELD_BYTES = 40;
 /** `ls_regions_finish` request descriptor, and one output region header (`rust/wasm/src/regions.rs`). */
 export const REGIONS_FINISH_DESC_BYTES = 112, REGION_HEADER_BYTES = 88;
+/** One hand-placed region descriptor (`rust/wasm/src/regions.rs::MANUAL_REGION_BYTES`): rect, u32 kind, padding. */
+export const MANUAL_REGION_BYTES = 40;
 /** One serialised `framing::Layout` (`rust/wasm/src/framing.rs`). */
 export const LAYOUT_BYTES = 104;
 /** Named accumulator arrays `rust/wasm/src/layers.rs::learner_array` recognises — must match

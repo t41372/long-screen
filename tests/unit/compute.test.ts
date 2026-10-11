@@ -1,8 +1,9 @@
 import '../support/core.ts';
 import { assert, assertEquals, assertRejects } from '@std/assert';
 import { AnalysisComputer, BOX_LUMA_WGSL, type GPUProvider } from '../../src/core/compute.ts';
-import { downscaleGray, equalRGBA } from '../../src/core/raster.ts';
+import { downscaleGray } from '../../src/core/raster.ts';
 import type { RGBA } from '../../src/types.ts';
+import { core } from '../../src/core/wasm.ts';
 const image = (): RGBA => ({
   width: 16,
   height: 12,
@@ -49,16 +50,6 @@ Deno.test('compute: invalid factors reject explicitly and disposal makes later r
   assert(BOX_LUMA_WGSL.includes('@compute'));
   assert(BOX_LUMA_WGSL.includes('77u'));
   assert(BOX_LUMA_WGSL.includes('150u'));
-});
-Deno.test('compute: duplicate detection is exact native RGBA, including alpha and one-pixel updates', () => {
-  const a = image(), b = image();
-  assert(equalRGBA(a, b));
-  b.data[b.data.length - 1] ^= 1;
-  assert(!equalRGBA(a, b));
-  b.data[b.data.length - 1] ^= 1;
-  b.data[0] ^= 1;
-  assert(!equalRGBA(a, b));
-  assert(!equalRGBA(a, { ...b, width: b.width + 1 }));
 });
 // A deterministic in-process WebGPU stand-in: writeBuffer stores raw bytes, submit() runs an exact JS box-luma over
 // the stored input using the stored Params (so parity with the CPU path is genuinely exercised, not assumed), and
@@ -198,4 +189,27 @@ Deno.test('compute: auto mode stays on CPU when a bit-exact fake GPU measures sl
   assertEquals(c.stats.gpuFrames, 0);
   assertEquals(c.stats.cpuFrames, 1);
   c.dispose();
+});
+// hostGray() is the scan pass's question "does the host compute this gray, or does the scan session?": failure
+// modes are a CPU-path frame left uncounted, a GPU-path frame handed back to the session as `undefined` (it would
+// then be downscaled twice), an invalid factor accepted, and a core-resident frame uploaded differently from a JS one.
+Deno.test('compute: hostGray leaves CPU frames to the caller and returns GPU frames, counting both', async () => {
+  const src = image();
+  const cpu = new AnalysisComputer('cpu', null);
+  assertEquals(await cpu.hostGray(src, 2), undefined);
+  assertEquals(cpu.stats.cpuFrames, 1);
+  await assertRejects(() => cpu.hostGray(src, 0), Error, 'factor');
+  cpu.dispose();
+  const gpu = new AnalysisComputer('webgpu', fakeGPU());
+  assertEquals(await gpu.hostGray(src, 1), undefined, 'factor 1 never runs on the GPU');
+  assertEquals(await gpu.hostGray(src, 2), downscaleGray(src, 2));
+  const resident = core().frame(src.width, src.height);
+  try {
+    resident.write(src.data);
+    assertEquals(await gpu.hostGray(resident, 2), downscaleGray(src, 2));
+  } finally {
+    resident.free();
+  }
+  assertEquals([gpu.stats.cpuFrames, gpu.stats.gpuFrames], [1, 2]);
+  gpu.dispose();
 });

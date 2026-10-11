@@ -250,8 +250,8 @@ export class Engine {
     const ctx = this.ctx;
     ctx.voting?.free();
     ctx.voting = undefined;
-    ctx.learner?.dispose();
-    ctx.learner = undefined;
+    ctx.scan?.free();
+    ctx.scan = undefined;
     // The atlas's label plane is read (never re-uploaded) by solve()/render()/Compositor, so it is released
     // here exactly once, not per-pass — freeing it earlier would be a use-after-free the moment any later
     // pass touched `atlas.resident`.

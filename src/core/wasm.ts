@@ -20,6 +20,8 @@ export { VotingRing } from './wasm/voting.ts';
 export type { FinishAccumulators } from './wasm/regions.ts';
 export type { PoseEdge, PoseGraphState, PoseNode, PoseWrite } from './wasm/pose-graph.ts';
 export type { KeyframeIndexState } from './wasm/keyframes.ts';
+export type { ScanSession, ScanStep } from './wasm/scan.ts';
+export type { EngineDiagnostic } from './wasm/diagnostic.ts';
 export type {
   EvaluateCandidatesKeyframe,
   EvaluateCandidatesQuery,

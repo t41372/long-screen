@@ -1,6 +1,8 @@
-/** Layer-learner handles: accumulates per-frame motion-discontinuity evidence across a whole recording
- *  (mirrors `rust/wasm/src/layers.rs`). */
-import type { Gray, MotionField } from '../../types.ts';
+/** Layer-learner handles: accumulates per-frame motion-discontinuity evidence across a whole recording and builds
+ *  the regions from it (mirrors `rust/wasm/src/layers.rs`, over `rust/engine/src/layers.rs`). */
+import type { Gray, MotionField, Region } from '../../types.ts';
+import { readFinished, writeManual } from './regions.ts';
+import { takeResult } from './bytes.ts';
 import type { Core } from './core.ts';
 import { type FrameInput, FreeGuard, ResidentFrame } from './memory.ts';
 import type { CoreExports } from './exports.ts';
@@ -50,8 +52,9 @@ if (LEARNER_ARRAYS.length !== LEARNER_ARRAY_COUNT) {
   throw new Error(`CORE_LAYOUT_MISMATCH: LEARNER_ARRAYS has ${LEARNER_ARRAYS.length} entries, expected ${LEARNER_ARRAY_COUNT}.`);
 }
 
-/** Core-resident layer-learning accumulators (rust/core/src/layers.rs): one `add()` per informative motion field
- *  during the scan pass, `read()` once for `finish()`, `free()` always. */
+/** Core-resident layer learner (rust/engine/src/layers.rs over rust/core/src/layers.rs): `add()` per motion field,
+ *  `read()` for the accumulators, `finish()` for the regions, `free()` always. The scan pass owns its own learner
+ *  inside its session; this handle serves the layer-learning tests. */
 export class LearnerHandle {
   private readonly freeGuard = new FreeGuard();
   constructor(
@@ -132,6 +135,17 @@ export class LearnerHandle {
     });
     const counts = array(LEARNER_ARRAY_COUNT);
     return { ...out, informativeFrames: counts[0], nativeFrames: counts[1] } as unknown as LearnerAccumulators;
+  }
+  /** The regions for a `nativeWidth × nativeHeight` recording analysed at `factor`: the automatic layout, or the
+   *  hand-placed `manual` one (rust/engine/src/layers.rs `RegionLearner::finish`). */
+  finish(nativeWidth: number, nativeHeight: number, manual: Region[], factor: number): Region[] {
+    const manualPtr = writeManual(this.core, this.exports, manual);
+    const length = this.core.check(
+      this.exports.ls_learner_finish(this.handle, nativeWidth, nativeHeight, factor, manualPtr, manual.length),
+      'learner finish',
+    );
+    const r = takeResult(this.core, length, (out, n) => this.exports.ls_learner_take(this.handle, out, n), 'learner finish result');
+    return readFinished(this.core, this.exports, r, this.width, this.height, factor, manual);
   }
   free(): void {
     this.freeGuard.once(() => {

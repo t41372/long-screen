@@ -69,4 +69,24 @@ impl Out {
         self.u32(v.len() as u32);
         self.0.extend_from_slice(v.as_bytes());
     }
+
+    /// Raw bytes, no length prefix (the reader knows how many follow).
+    pub(crate) fn bytes(&mut self, v: &[u8]) {
+        self.0.extend_from_slice(v);
+    }
+}
+
+/// A `_take` export's body: copies the result a handle holds (`len` bytes, the length its producing call returned)
+/// into the adapter's `out` and clears it. Returns a status.
+pub(crate) fn take(pending: &mut Vec<u8>, out: u32, len: u32) -> i32 {
+    if pending.len() != len as usize {
+        return crate::STATUS_BAD_ARGUMENT;
+    }
+    // SAFETY: adapter-owned output of the length it was told.
+    let Some(dst) = (unsafe { crate::memory::slice_mut(out, len as usize) }) else {
+        return crate::STATUS_BAD_ARGUMENT;
+    };
+    dst.copy_from_slice(pending);
+    *pending = Vec::new();
+    crate::STATUS_OK
 }

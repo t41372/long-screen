@@ -149,6 +149,14 @@ export interface Diagnostic {
    * explicit per-event count is never clobbered by the running total. */
   occurrences?: number;
 }
+/** A frame's Feature[] as stored under scan-features/<frame>: three flat typed arrays instead of n small objects
+ * each carrying an 8-element descriptor. Analysis-resolution coordinates fit an Int16Array; only solve() reads this,
+ * and the run deletes it once solve() has consumed it. Built by the scan session (rust/engine/src/scan.rs). */
+export interface CompactFeatures {
+  xy: Int16Array;
+  score: Float32Array;
+  descriptors: Uint32Array;
+}
 export interface ScanRecord {
   index: number;
   time: number;

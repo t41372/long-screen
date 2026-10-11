@@ -200,6 +200,17 @@ export class AnalysisComputer {
       return downscaleGray(image, factor);
     }
   }
+  /** For a caller that can downscale on the CPU itself (the scan session does, in the core): the gray when this
+   *  computer would run WebGPU for it (or fell back while trying), and `undefined` when the CPU path applies.
+   *  Counted in `stats` either way, like `gray()`. */
+  async hostGray(image: RGBA | ResidentFrame, factor: number): Promise<Gray | undefined> {
+    if (!Number.isInteger(factor) || factor < 1) throw new Error(`Invalid analysis factor ${factor}.`);
+    if (this.mode === 'cpu' || this.disabled || factor === 1 || factor > 128) {
+      this.stats.cpuFrames++;
+      return undefined;
+    }
+    return await this.gray(image, factor);
+  }
   private async dispatch(frame: RGBA | ResidentFrame, factor: number): Promise<Gray> {
     const device = this.device!;
     // Same dimensions as the CPU path (raster.ts): a dimension smaller than `factor` still yields one output pixel.

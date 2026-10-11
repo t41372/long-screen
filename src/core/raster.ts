@@ -24,11 +24,3 @@ export function downscaleGray(image: RGBA | ResidentFrame, factor: number): Gray
   }
   return core().downscaleGray(image, factor);
 }
-/** Exact observation equality. Small or single-frame content updates must never be discarded by a similarity threshold. */
-export function equalRGBA(a: RGBA, b: RGBA): boolean {
-  if (a.width !== b.width || a.height !== b.height) return false;
-  const x = new Uint32Array(a.data.buffer, a.data.byteOffset, a.data.length / 4);
-  const y = new Uint32Array(b.data.buffer, b.data.byteOffset, b.data.length / 4);
-  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return false;
-  return true;
-}

@@ -86,4 +86,18 @@ export class ByteReader {
     this.at += n;
     return v;
   }
+  /** A copy of the next `n` bytes, in a buffer of its own (so typed-array views over it are aligned). */
+  take(n: number): Uint8Array<ArrayBuffer> {
+    const v = this.bytes.slice(this.at, this.at + n) as Uint8Array<ArrayBuffer>;
+    this.at += n;
+    return v;
+  }
+}
+
+/** Fetches the result a handle holds after an export returned its `length` (error convention 6): plans `length`
+ *  bytes of scratch, calls the domain's `_take` export into it, and reads it. */
+export function takeResult(core: Core, length: number, take: (out: number, length: number) => number, what: string): ByteReader {
+  const [out] = core.scratch([length]);
+  core.check(take(out, length), what);
+  return new ByteReader(core.readBytes(out, length));
 }

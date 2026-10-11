@@ -1,23 +1,33 @@
-//! Layer-learner handles: accumulates per-frame motion-discontinuity evidence across a whole recording
-//! (`src/core/layers.ts`), read back once at `finish()`.
+//! Layer-learner handles (`long_screen_engine::layers::RegionLearner`, which the scan session also owns):
+//! accumulates per-frame motion-discontinuity evidence across a whole recording (`src/core/layers.ts`), keeps the
+//! last informative native frame, and builds the regions at `finish()`.
 
+use crate::bytes::{take, Out};
 use crate::memory::HandleTable;
+use crate::regions::{read_manual, write_finished};
 use crate::wire::{Reader, LEARNER_FIELD_BYTES, LEARNER_MOTION_BYTES};
 use crate::STATUS_BAD_ARGUMENT;
 use long_screen_core::layers::{Field as LearnerField, FieldMotion, Learner};
+use long_screen_engine::layers::RegionLearner;
 
 use super::memory::{slice, slice_mut};
 
-static mut LEARNERS: HandleTable<Learner> = HandleTable::new();
+/// A learner and its last `finish` result, waiting for `ls_learner_take`.
+struct Session {
+    learner: RegionLearner,
+    out: Vec<u8>,
+}
 
-fn learner_handles() -> &'static mut HandleTable<Learner> {
+static mut LEARNERS: HandleTable<Session> = HandleTable::new();
+
+fn learner_handles() -> &'static mut HandleTable<Session> {
     // SAFETY: only the main instance touches LEARNERS, and only through these exported entry points — no
     // pool helper thread reaches this module.
     unsafe { &mut *std::ptr::addr_of_mut!(LEARNERS) }
 }
 
-fn learner(handle: u32) -> Option<&'static mut Learner> {
-    learner_handles().get(handle)
+fn learner(handle: u32) -> Option<&'static mut RegionLearner> {
+    learner_handles().get(handle).map(|s| &mut s.learner)
 }
 
 /// Creates a layer learner over an `width × height` analysis grid. Returns a handle (> 0).
@@ -26,7 +36,10 @@ pub extern "C" fn ls_learner_new(width: u32, height: u32) -> i32 {
     if width == 0 || height == 0 {
         return STATUS_BAD_ARGUMENT;
     }
-    learner_handles().insert(Learner::new(width as usize, height as usize))
+    learner_handles().insert(Session {
+        learner: RegionLearner::new(width as usize, height as usize),
+        out: Vec::new(),
+    })
 }
 
 #[no_mangle]
@@ -35,8 +48,9 @@ pub extern "C" fn ls_learner_free(handle: u32) {
 }
 
 /// Accumulates one field. `prev`/`current` are analysis grays; `prev_native`/`current_native` are RGBA frames
-/// of `native_width × native_height` (zero pointers skip the native statistics). Returns 1 when the field was
-/// informative and accumulated, 0 when ignored, negative on a bad argument.
+/// of `native_width × native_height` (zero pointers skip the native statistics; an accumulated field makes
+/// `current_native` the appearance reference `finish` samples). Returns 1 when the field was informative and
+/// accumulated, 0 when ignored, negative on a bad argument.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub extern "C" fn ls_learner_add(
@@ -49,9 +63,10 @@ pub extern "C" fn ls_learner_add(
     native_width: u32,
     native_height: u32,
 ) -> i32 {
-    let Some(l) = learner(handle) else {
+    let Some(region_learner) = learner(handle) else {
         return STATUS_BAD_ARGUMENT;
     };
+    let l = region_learner.accumulators();
     let pixels = l.width * l.height;
     // SAFETY: adapter-owned buffers, bounds checked.
     let (Some(d), Some(prev), Some(current)) = (
@@ -110,7 +125,46 @@ pub extern "C" fn ls_learner_add(
         difference: r.f64(32),
         unknown: r.u32(28) != 0,
     };
-    l.add(&field, prev, current, native) as i32
+    region_learner.add(&field, prev, current, native) as i32
+}
+
+/// Builds the regions from the accumulated evidence, or from the `manual_count` hand-placed regions at `manual`
+/// (`regions::MANUAL_REGION_BYTES` each). Returns the length of the result (`regions::write_finished`), which waits
+/// in the handle for `ls_learner_take` (error convention 6), or a negative status.
+#[no_mangle]
+pub extern "C" fn ls_learner_finish(
+    handle: u32,
+    native_width: f64,
+    native_height: f64,
+    factor: u32,
+    manual: u32,
+    manual_count: u32,
+) -> i32 {
+    let Some(session) = learner_handles().get(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    // SAFETY: adapter-owned descriptors, bounds checked.
+    let Some(manual) = (unsafe { read_manual(manual, manual_count) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let mut w = Out::default();
+    write_finished(
+        &mut w,
+        session
+            .learner
+            .finish(native_width, native_height, &manual, factor),
+    );
+    session.out = w.0;
+    session.out.len() as i32
+}
+
+/// Copies the last `ls_learner_finish` result (`len` bytes, the length it returned) into `out`.
+#[no_mangle]
+pub extern "C" fn ls_learner_take(handle: u32, out: u32, len: u32) -> i32 {
+    match learner_handles().get(handle) {
+        Some(s) => take(&mut s.out, out, len),
+        None => STATUS_BAD_ARGUMENT,
+    }
 }
 
 /// Number of named accumulator arrays `learner_array` recognises (selectors 0..=13); selector 14 is the
@@ -145,7 +199,7 @@ fn learner_array(l: &Learner, which: u32) -> Option<&[f64]> {
 /// Length in f64 of accumulator `which`.
 #[no_mangle]
 pub extern "C" fn ls_learner_len(handle: u32, which: u32) -> i32 {
-    let Some(l) = learner(handle) else {
+    let Some(l) = learner(handle).map(|l| l.accumulators()) else {
         return STATUS_BAD_ARGUMENT;
     };
     if which == LEARNER_ARRAY_COUNT as u32 {
@@ -160,7 +214,7 @@ pub extern "C" fn ls_learner_len(handle: u32, which: u32) -> i32 {
 /// Copies accumulator `which` (f64 little-endian) into `out`, sized from `ls_learner_len`.
 #[no_mangle]
 pub extern "C" fn ls_learner_read(handle: u32, which: u32, out: u32) -> i32 {
-    let Some(l) = learner(handle) else {
+    let Some(l) = learner(handle).map(|l| l.accumulators()) else {
         return STATUS_BAD_ARGUMENT;
     };
     let values: Vec<f64> = if which == LEARNER_ARRAY_COUNT as u32 {

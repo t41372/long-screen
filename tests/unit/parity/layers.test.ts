@@ -118,36 +118,35 @@ Deno.test('core parity: LayerLearner accumulators and regions match the frozen T
       `the gate must reject some frames and accept others (${acc.informativeFrames})`,
     );
     ring.free();
-    // finish() is unchanged TS, but it now runs on read-back accumulators: the regions must be identical to those a
-    // learner with the frozen accumulation (and the same reference frame) would build.
-    const frozen = new LayerLearner(aw, ah) as unknown as { snapshot: unknown; reference: RGBA; handle?: { free(): void } };
-    frozen.handle?.free();
-    frozen.handle = undefined;
-    frozen.snapshot = {
-      split: expected.split,
-      evidence: expected.evidence,
-      activity: expected.activity,
-      observations: expected.observations,
-      rowFixed: expected.rowFixed,
-      rowMoving: expected.rowMoving,
-      rowChange: expected.rowChange,
-      colChange: expected.colChange,
-      colMoving: expected.colMoving,
-      colMean: expected.colMean,
-      colGain: expected.colGain,
-      horizontalGain: expected.horizontalGain,
-      nativeRowChange: expected.nativeRowChange,
-      nativeColChange: expected.nativeColChange,
-      nativeColMean: expected.nativeColMean,
-      informativeFrames: expected.informativeFrames,
-      nativeFrames: expected.nativeFrames,
-    };
-    frozen.reference = expected.reference!;
+    // finish() runs on the learner's own accumulators and reference frame (rust/engine/src/layers.rs): the regions
+    // must be identical to those the region builder makes from the frozen accumulation and the same reference frame.
     const strip = (regions: Region[]) => regions.map((r) => ({ ...r, mask: r.mask && [...r.mask] }));
-    assertEquals(
-      strip(actual.finish(nativeW, nativeH, [], factor)),
-      strip((frozen as unknown as LayerLearner).finish(nativeW, nativeH, [], factor)),
-      `${nativeW}×${nativeH} f${factor} regions`,
+    const frozen = core.finishRegions(
+      aw,
+      ah,
+      24,
+      {
+        split: expected.split,
+        evidence: expected.evidence,
+        activity: expected.activity,
+        observations: expected.observations,
+        rowChange: expected.rowChange,
+        colChange: expected.colChange,
+        colMoving: expected.colMoving,
+        colMean: expected.colMean,
+        colGain: expected.colGain,
+        horizontalGain: expected.horizontalGain,
+        nativeRowChange: expected.nativeRowChange,
+        nativeColChange: expected.nativeColChange,
+        informativeFrames: expected.informativeFrames,
+        nativeFrames: expected.nativeFrames,
+      },
+      nativeW,
+      nativeH,
+      factor,
+      expected.reference,
     );
+    assertEquals(strip(actual.finish(nativeW, nativeH, [], factor)), strip(frozen), `${nativeW}×${nativeH} f${factor} regions`);
+    actual.dispose();
   }
 });

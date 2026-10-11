@@ -406,6 +406,7 @@ pub fn detect_scale(matches: &[MatchPoints]) -> f64 {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct MotionField {
     pub motions: Vec<Motion>,
     pub labels: Vec<u8>,

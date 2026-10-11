@@ -8,8 +8,9 @@
 import type { Rect, Region } from '../../types.ts';
 import type { Core } from './core.ts';
 import type { CoreExports } from './exports.ts';
-import { REGION_HEADER_BYTES, REGIONS_FINISH_DESC_BYTES, VOTING_REGION_BYTES } from './exports.ts';
+import { MANUAL_REGION_BYTES, REGION_HEADER_BYTES, REGIONS_FINISH_DESC_BYTES, VOTING_REGION_BYTES } from './exports.ts';
 import { writeRegionDescriptor } from './marshal.ts';
+import type { ByteReader } from './bytes.ts';
 import { type FrameInput, type Resident, ResidentFrame } from './memory.ts';
 
 export interface FinishAccumulators {
@@ -114,7 +115,13 @@ export function finishRegions(
   view.setFloat64(96, nativeHeight, true);
   view.setUint32(104, factor, true);
   view.setUint32(108, colMovingPtr, true);
-  const handle = core.check(exports.ls_regions_finish(desc), 'regions finish');
+  return readRegions(core, exports, core.check(exports.ls_regions_finish(desc), 'regions finish'), width, height, factor);
+}
+
+/** Drains (and frees) a regions handle holding automatically built regions (`ls_regions_finish`, or the regions a
+ *  scan session or learner finished with), as `Region` objects in the persisted row's shape. `width`/`height` are
+ *  the analysis size the masks were built at. */
+function readRegions(core: Core, exports: CoreExports, handle: number, width: number, height: number, factor: number): Region[] {
   try {
     const count = core.check(exports.ls_regions_count(handle), 'regions count');
     const cellsTotal = core.check(exports.ls_regions_cells_total(handle), 'regions cells total');
@@ -199,13 +206,82 @@ export function finishRegions(
   }
 }
 
-/** The expensive step of `finish()`'s manual-region branch: is every native pixel covered by at least one of
- *  `manual`'s rects? */
-export function manualUncovered(core: Core, exports: CoreExports, manual: Rect[], nativeWidth: number, nativeHeight: number): boolean {
-  if (!manual.length) return true;
-  const [ptr] = core.scratch([manual.length * 32]);
-  manual.forEach((r, i) => core.writeRect(ptr + i * 32, r));
-  return core.check(exports.ls_regions_manual_uncovered(ptr, manual.length, nativeWidth, nativeHeight), 'regions manual uncovered') === 1;
+/** Name of the region that owns the native pixels a hand-placed layout leaves uncovered
+ *  (`rust/engine/src/layers.rs::UNASSIGNED_NAME`); region names are a fixed zh vocabulary. */
+const UNASSIGNED_NAME = '未指定区域 · 屏幕坐标观察';
+
+/** Decodes a finished region set (`rust/wasm/src/regions.rs::write_finished`) at `r`'s position. An automatic
+ *  layout is read from its regions handle; a hand-placed one keeps the caller's own `manual` region objects (their
+ *  keys are the settings' own) and adds what the engine decided: ids, exclusions and the unassigned region. */
+export function readFinished(
+  core: Core,
+  exports: CoreExports,
+  r: ByteReader,
+  width: number,
+  height: number,
+  factor: number,
+  manual: Region[],
+): Region[] {
+  const count = r.u32(), decided: { unassigned: boolean; exclusions: Rect[] }[] = [];
+  for (let i = 0; i < count; i++) {
+    r.u32();
+    const unassigned = r.u32() === 1, exclusions: Rect[] = [];
+    for (let n = r.u32(), k = 0; k < n; k++) exclusions.push({ x: r.f64(), y: r.f64(), width: r.f64(), height: r.f64() });
+    decided.push({ unassigned, exclusions });
+  }
+  const handle = r.u32();
+  if (!manual.length) return readRegions(core, exports, handle, width, height, factor);
+  try {
+    const [headersPtr] = core.scratch([count * REGION_HEADER_BYTES]);
+    core.check(exports.ls_regions_read_headers(handle, headersPtr), 'regions read headers');
+    const headers = new DataView(core.readBytes(headersPtr, count * REGION_HEADER_BYTES).buffer);
+    const out: Region[] = manual.map((region, i) => ({
+      ...region,
+      id: `layer-${i}`,
+      manual: true,
+      maskWidth: width,
+      maskHeight: height,
+      factor,
+      exclusions: decided[i].exclusions,
+    }));
+    for (let i = manual.length; i < count; i++) {
+      const at = i * REGION_HEADER_BYTES + 20;
+      out.push({
+        id: `layer-${i}`,
+        name: UNASSIGNED_NAME,
+        kind: 'fixed',
+        rect: {
+          x: headers.getFloat64(at, true),
+          y: headers.getFloat64(at + 8, true),
+          width: headers.getFloat64(at + 16, true),
+          height: headers.getFloat64(at + 24, true),
+        },
+        manual: true,
+        unassigned: decided[i].unassigned,
+        maskWidth: width,
+        maskHeight: height,
+        factor,
+        exclusions: decided[i].exclusions,
+      });
+    }
+    return out;
+  } finally {
+    exports.ls_regions_free(handle);
+  }
+}
+
+/** Hand-placed regions as `ls_scan_finish`/`ls_learner_finish` read them (`MANUAL_REGION_BYTES` each); returns
+ *  the pointer (0 for none). Plans its own scratch, so call it right before the export that reads it. */
+export function writeManual(core: Core, exports: CoreExports, manual: Region[]): number {
+  if (!manual.length) return 0;
+  const [ptr] = core.scratch([manual.length * MANUAL_REGION_BYTES]);
+  const view = new DataView(exports.memory.buffer, ptr, manual.length * MANUAL_REGION_BYTES);
+  manual.forEach((region, i) => {
+    core.writeRect(ptr + i * MANUAL_REGION_BYTES, region.rect);
+    view.setUint32(i * MANUAL_REGION_BYTES + 32, region.kind === 'moving' ? 0 : region.kind === 'fixed' ? 1 : 2, true);
+    view.setUint32(i * MANUAL_REGION_BYTES + 36, 0, true);
+  });
+  return ptr;
 }
 
 const STATUS_TOO_MANY_REGIONS = -2;

@@ -42,7 +42,7 @@ File/Blob → mediabunny demux (MP4/MOV/WebM) → WebCodecs → RGBA
 ```
 
 - Decoding is the only step that depends on browser APIs. Everything after it runs in the Wasm core, and Deno tests load the same core the browser does, so algorithm behaviour verified in Deno is what ships.
-- Each core domain has three matching files: `rust/core/src/<d>.rs` (algorithm, no FFI) ↔ `rust/wasm/src/<d>.rs` (`extern "C"` exports, in the `long-screen-wasm` crate the three builds come from) ↔ `src/core/wasm/<d>.ts` (marshalling). `src/core/wasm/loader.ts::planCore` picks the scalar, SIMD or threads build; threads need a cross-origin-isolated page.
+- Each core domain has three matching files: `rust/core/src/<d>.rs` (algorithm, no FFI; a run's state and pass orchestration live in `rust/engine/src/<d>.rs` instead) ↔ `rust/wasm/src/<d>.rs` (`extern "C"` exports, in the `long-screen-wasm` crate the three builds come from) ↔ `src/core/wasm/<d>.ts` (marshalling). `src/core/wasm/loader.ts::planCore` picks the scalar, SIMD or threads build; threads need a cross-origin-isolated page.
 - `src/pipeline/` orders the passes, holds run state and does KV I/O; the per-pixel and tracking work happens in core calls. `rust/engine` is where those passes move, one at a time (docs/ARCHITECTURE.md §十三): it does no I/O, and a host drives it step by step. The page talks to `src/worker.ts` through the typed commands in `src/protocol.ts`.
 - `docs/` is written in Chinese and README.md in English. Read these when the task touches their area, not before every edit:
   - `docs/ARCHITECTURE.md` §十 before changing compositing, consistency, motion, layers or i18n. Each invariant there records a measured failure.

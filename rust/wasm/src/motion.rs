@@ -34,7 +34,7 @@ pub(crate) unsafe fn read_match_points(ptr: u32, count: u32) -> Option<Vec<Match
     )
 }
 
-fn write_motions(motions: &[Motion], out: &mut [u8]) {
+pub(crate) fn write_motions(motions: &[Motion], out: &mut [u8]) {
     for (m, d) in motions.iter().zip(out.chunks_exact_mut(MOTION_BYTES)) {
         d[0..8].copy_from_slice(&m.x.to_le_bytes());
         d[8..16].copy_from_slice(&m.y.to_le_bytes());

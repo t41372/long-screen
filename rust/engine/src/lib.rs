@@ -10,10 +10,14 @@
 //! Diagnostics carry a code and parameters, never text. [`catalog`] turns them into the same zh or en sentence the
 //! web page shows, from the catalogues exported out of `src/i18n`.
 
+#[cfg(feature = "catalog")]
 pub mod catalog;
 pub mod compositor;
+pub mod diagnostic;
 pub mod keyframes;
+pub mod layers;
 pub mod pose_graph;
+pub mod scan;
 pub mod tiles;
 
 #[cfg(test)]

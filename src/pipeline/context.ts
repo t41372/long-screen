@@ -9,9 +9,9 @@ import { Namespace } from '../storage/db.ts';
 import { Diagnostics } from '../storage/diagnostics.ts';
 import { TileStore } from '../storage/tiles.ts';
 import { projectKey } from '../storage/projects.ts';
-import type { LayerLearner, RegionAtlas } from '../core/layers.ts';
+import type { RegionAtlas } from '../core/layers.ts';
 import { analysisFactor } from '../core/raster.ts';
-import type { FrameRing, Resident, ResidentFrame, ResidentGray, VotingRing } from '../core/wasm.ts';
+import type { FrameRing, Resident, ResidentFrame, ResidentGray, ScanSession, VotingRing } from '../core/wasm.ts';
 import { AnalysisComputer } from '../core/compute.ts';
 import { DECODED_VIDEO_NOISE } from '../media/source.ts';
 import { t } from '../i18n/index.ts';
@@ -89,8 +89,8 @@ export class RunContext {
    *  itself and released once with it (see `atlas` below), not per-pass. */
   frames?: FrameRing;
   residentMask?: Resident;
-  /** Core-resident layer-learning accumulators of the scan pass; finish() releases them, run()'s finally otherwise. */
-  learner?: LayerLearner;
+  /** Core-resident scan session (frames, layer learning) of the scan pass; released by the pass, or run()'s finally. */
+  scan?: ScanSession;
   /** Core-resident full-resolution luma plane of the solve pass. */
   nativePlane?: ResidentGray;
   /** Core-resident last-seen pixels of each fixed region during rendering (duplicate-paint detection). */
@@ -196,12 +196,16 @@ export class RunContext {
       await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
   }
-  async gray(image: RGBA | ResidentFrame): Promise<Gray> {
+  /** Throws FRAME_GEOMETRY_CHANGED when a decoded observation's size is not the run's. */
+  checkGeometry(image: { width: number; height: number }): void {
     if (image.width !== this.source.info.width || image.height !== this.source.info.height) {
       throw new Error(
         `FRAME_GEOMETRY_CHANGED: observation is ${image.width}×${image.height}; the run is ${this.source.info.width}×${this.source.info.height}.`,
       );
     }
+  }
+  async gray(image: RGBA | ResidentFrame): Promise<Gray> {
+    this.checkGeometry(image);
     return this.computer.gray(image, this.factor);
   }
   async persist(): Promise<void> {

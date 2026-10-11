@@ -1,9 +1,9 @@
 //! Region construction and pixel labelling (`src/core/layers.ts::LayerLearner.finish`, `RegionAtlas`), backed by
-//! `long_screen_core::regions`. Three coarse-grained entry points, no per-region or per-pixel FFI:
+//! `long_screen_core::regions`. Coarse-grained entry points, no per-region or per-pixel FFI:
 //!   - `ls_regions_finish` builds every algorithmic-path region in one call, into a handle the adapter drains with
-//!     `ls_regions_count`/`_cells_total`/`_read_headers`/`_read_masks`/`_read_cells`/`_free`. The manual-region
-//!     branch of `finish()` is cheap TS marshalling over data the caller already holds; only its one expensive
-//!     per-pixel step (is every native pixel covered?) is `ls_regions_manual_uncovered`.
+//!     `ls_regions_count`/`_cells_total`/`_read_headers`/`_read_masks`/`_read_cells`/`_free`. The scan session and
+//!     the learner handle (`ls_scan_finish`, `ls_learner_finish`) hand their finished regions over the same way,
+//!     manual layouts included (`write_finished`).
 //!   - `ls_regions_label_atlas` builds `RegionAtlas.labels` for a whole region set in one call, reusing the
 //!     64-byte per-region wire format `ls_voting_new` already defines (`wire::VOTING_REGION_BYTES`).
 //!
@@ -16,6 +16,7 @@
 //!   own `width`/`height` — so they are not repeated per region), concatenated in region order; cells are u32
 //!   analysis-cell indices, concatenated in region order, each region's span given by its header's `cells_count`.
 
+use crate::bytes::Out;
 use crate::features::{read_features, write_features};
 use crate::memory::{slice, slice_mut, HandleTable};
 use crate::voting::read_voting_regions;
@@ -24,6 +25,7 @@ use crate::STATUS_BAD_ARGUMENT;
 use long_screen_core::geometry::Rect;
 use long_screen_core::region;
 use long_screen_core::regions::{self, AtlasMask, AtlasRegion, FinishInput, Rgba};
+use long_screen_engine::layers::ManualRegion;
 
 /// `ls_layout` selector 10: bytes of one `ls_regions_finish` request descriptor (`run_finish`).
 pub(crate) const REGIONS_FINISH_DESC_BYTES: usize = 112;
@@ -256,35 +258,6 @@ pub extern "C" fn ls_regions_read_cells(handle: u32, out: u32) -> i32 {
     crate::STATUS_OK
 }
 
-/// The expensive step of `finish()`'s manual-region branch: is every native pixel covered by at least one of
-/// `count` manual rects? Everything else in that branch is cheap TS marshalling over data the caller already
-/// holds (see the module doc comment). Returns 1 (uncovered), 0 (fully covered), or a negative status.
-#[no_mangle]
-pub extern "C" fn ls_regions_manual_uncovered(
-    rects: u32,
-    count: u32,
-    native_width: f64,
-    native_height: f64,
-) -> i32 {
-    if native_width <= 0.0 || native_height <= 0.0 {
-        return STATUS_BAD_ARGUMENT;
-    }
-    // SAFETY: adapter-owned rect array, bounds checked.
-    let Some(bytes) = (unsafe { slice(rects, count as usize * 32) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let manual = read_rects(bytes);
-    let (nw, nh) = (native_width as i64, native_height as i64);
-    for y in 0..nh {
-        for x in 0..nw {
-            if !manual.iter().any(|r| r.contains(x as f64, y as f64)) {
-                return 1;
-            }
-        }
-    }
-    0
-}
-
 /// Borrows every region's mask straight from adapter memory (no `.to_vec()` copy): `AtlasRegion`/`AtlasMask` only
 /// need to live for the one `label_atlas` call below, unlike `voting.rs`'s `read_voting_regions`, which builds a
 /// long-lived `Ring` and must own its masks.
@@ -407,4 +380,51 @@ pub extern "C" fn ls_region_filter_features(
     };
     write_features(&kept, dst);
     kept.len() as i32
+}
+
+/// Bytes of one hand-placed region descriptor (`read_manual`): 32-byte rect, u32 kind (0 moving, 1 fixed,
+/// 2 ignore), u32 padding.
+pub(crate) const MANUAL_REGION_BYTES: usize = 40;
+
+/// Reads `count` hand-placed region descriptors. Their names stay with the adapter, which keeps the settings
+/// objects they came from.
+///
+/// # Safety
+/// `ptr` is zero with `count` zero, or points at `count × MANUAL_REGION_BYTES` readable bytes.
+pub(crate) unsafe fn read_manual(ptr: u32, count: u32) -> Option<Vec<ManualRegion>> {
+    let bytes = slice(ptr, count as usize * MANUAL_REGION_BYTES)?;
+    bytes
+        .chunks_exact(MANUAL_REGION_BYTES)
+        .map(|c| {
+            let kind = match Reader(c).u32(32) {
+                0 => regions::Kind::Moving,
+                1 => regions::Kind::Fixed,
+                2 => regions::Kind::Ignore,
+                _ => return None,
+            };
+            Some(ManualRegion {
+                name: String::new(),
+                kind,
+                rect: crate::wire::read_rect(c),
+            })
+        })
+        .collect()
+}
+
+/// Writes a finished region set for the adapter: u32 count, then per region u32 manual, u32 unassigned, u32
+/// exclusion count and the exclusion rects; then u32 a regions handle (`ls_regions_read_*`, `ls_regions_free`)
+/// holding the regions themselves.
+pub(crate) fn write_finished(w: &mut Out, regions: Vec<regions::RegionOut>) {
+    w.u32(regions.len() as u32);
+    for r in &regions {
+        w.u32(r.manual as u32);
+        w.u32(r.unassigned as u32);
+        w.u32(r.exclusions.len() as u32);
+        for e in &r.exclusions {
+            for v in [e.x, e.y, e.width, e.height] {
+                w.f64(v);
+            }
+        }
+    }
+    w.u32(handles().insert(regions) as u32);
 }

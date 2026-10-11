@@ -1,122 +1,39 @@
 import type { Gray, MotionField, Rect, Region, RGBA } from '../types.ts';
-import { core, type LearnerAccumulators, type LearnerHandle, type Resident, ResidentFrame } from './wasm.ts';
-/** A field carries real evidence only once some model moved more than analysis jitter and is reasonably well matched;
- * shared by per-frame and long-baseline (frame t−k vs t) evidence so both are held to the same bar. `x*x + y*y > 1`
- * (not `norm(m) > 1`, i.e. not `Math.hypot(m.x, m.y) > 1`): squaring and comparing is equivalent for this gate (both
- * sides are non-negative) and uses only basic IEEE add/multiply, which every engine computes identically, unlike
- * `Math.hypot`'s over/underflow-avoiding algorithm, whose implementation is not standardised bit-for-bit. */
-export function informativeField(field: MotionField): boolean {
-  return !field.unknown && field.difference >= .2 &&
-    field.motions.some((m) => m.x * m.x + m.y * m.y > 1 && m.confidence > .3);
-}
-/** Learns screen-space motion discontinuities across the WHOLE recording. Per-frame accumulation runs in the
- *  Rust core (rust/core/src/layers.rs) through a `LearnerHandle`; `finish()` reads the accumulators back once and
- *  builds the regions in the Rust core too (rust/core/src/regions/), this class keeping only the marshalling.
- *  The last native frame is kept for appearance checks in `finish()`. */
+import { core, type LearnerAccumulators, type LearnerHandle, type Resident, type ResidentFrame } from './wasm.ts';
+/** Learns screen-space motion discontinuities across a whole recording and builds the regions from them. The
+ *  learner, its appearance reference and both region layouts (automatic, hand-placed) are the engine's
+ *  (rust/engine/src/layers.rs `RegionLearner`); this class only holds the handle. The scan pass keeps its own learner
+ *  inside its session (rust/engine/src/scan.rs); this one serves the layer-learning tests. */
 export class LayerLearner {
   readonly cols: number;
   readonly rows: number;
   readonly cell = 24;
   private handle?: LearnerHandle;
-  private snapshot?: LearnerAccumulators;
-  private reference?: RGBA;
-  /** Core-resident copy of the latest reference frame when the scan pass keeps frames in the core. */
-  private residentReference?: ResidentFrame;
   constructor(readonly width: number, readonly height: number) {
     this.cols = Math.ceil(width / this.cell);
     this.rows = Math.ceil(height / this.cell);
     this.handle = core().learner(width, height);
   }
-  /** Accumulators as of the last `add()`; reading them ends accumulation (the snapshot is cached). */
-  private get acc(): LearnerAccumulators {
-    if (!this.snapshot) {
-      if (!this.handle) throw new Error('LayerLearner was disposed before finish().');
-      this.snapshot = this.handle.read();
-      this.handle.free();
-      this.handle = undefined;
-    }
-    return this.snapshot;
+  private get live(): LearnerHandle {
+    if (!this.handle) throw new Error('LayerLearner was disposed.');
+    return this.handle;
   }
-  /** `prevNative`/`currentNative` may be frames already resident in the core (the scan pass keeps a ring). */
+  /** The accumulators as of the last `add()`. */
+  get acc(): LearnerAccumulators {
+    return this.live.read();
+  }
+  /** `prevNative`/`currentNative` may be frames already resident in the core. */
   add(field: MotionField, prev: Gray, current: Gray, prevNative?: RGBA | ResidentFrame, currentNative?: RGBA | ResidentFrame): void {
-    if (!this.handle) throw new Error('LayerLearner cannot accumulate after finish().');
-    const informative = this.handle.add(field, prev, current, prevNative, currentNative);
-    if (
-      informative && prevNative && currentNative && prevNative.width === currentNative.width && prevNative.height === currentNative.height
-    ) {
-      // finish() samples the last informative native frame for appearance evidence. A resident frame is copied
-      // inside core memory (its ring slot will be reused) and read out once, by finish().
-      if (currentNative instanceof ResidentFrame) {
-        if (
-          this.residentReference &&
-          (this.residentReference.width !== currentNative.width || this.residentReference.height !== currentNative.height)
-        ) {
-          this.residentReference.free();
-          this.residentReference = undefined;
-        }
-        this.residentReference ??= core().frame(currentNative.width, currentNative.height);
-        this.residentReference.copyFrom(currentNative);
-        this.reference = undefined;
-      } else {
-        this.residentReference?.free();
-        this.residentReference = undefined;
-        this.reference = currentNative;
-      }
-    }
+    this.live.add(field, prev, current, prevNative, currentNative);
   }
-  /** Releases the core-resident accumulators without finishing (a run that stops before regions are built). */
+  /** Releases the core-resident learner. */
   dispose(): void {
     this.handle?.free();
     this.handle = undefined;
-    this.residentReference?.free();
-    this.residentReference = undefined;
   }
-  /** Builds this run's regions: band detection through sticky-header cleanup runs in the Rust core
-   *  (`rust/core/src/regions.rs`) in one call; this method only marshals the accumulators in and, for a
-   *  hand-placed layout (`manual`), does the cheap object construction over data already in hand — the one
-   *  expensive per-pixel step there (is every native pixel covered?) is also the Rust core's. */
+  /** This recording's regions: the hand-placed `manual` layout when given, else the automatic one. */
   finish(nativeWidth: number, nativeHeight: number, manual: Region[] = [], factor = 1): Region[] {
-    if (this.residentReference) {
-      const frame = this.residentReference;
-      this.reference = { width: frame.width, height: frame.height, data: new Uint8ClampedArray(frame.bytes().buffer) };
-      frame.free();
-      this.residentReference = undefined;
-    }
-    if (manual.length) {
-      const regions = manual.map((r, i) => ({
-        ...r,
-        id: `layer-${i}`,
-        manual: true,
-        maskWidth: this.width,
-        maskHeight: this.height,
-        factor,
-        exclusions: [...manual.slice(i + 1).map((v) => v.rect), ...manual.filter((v) => v.kind === 'ignore').map((v) => v.rect)],
-      }));
-      if (core().regionsManualUncovered(manual.map((r) => r.rect), nativeWidth, nativeHeight)) {
-        regions.push(
-          {
-            id: `layer-${regions.length}`,
-            name: '未指定区域 · 屏幕坐标观察',
-            kind: 'fixed',
-            rect: { x: 0, y: 0, width: nativeWidth, height: nativeHeight },
-            manual: true,
-            unassigned: true,
-            maskWidth: this.width,
-            maskHeight: this.height,
-            factor,
-            exclusions: manual.map((r) => r.rect),
-          } as Region & {
-            exclusions: Rect[];
-            maskWidth: number;
-            maskHeight: number;
-            factor: number;
-            manual: boolean;
-          },
-        );
-      }
-      return regions;
-    }
-    return core().finishRegions(this.width, this.height, this.cell, this.acc, nativeWidth, nativeHeight, factor, this.reference);
+    return this.live.finish(nativeWidth, nativeHeight, manual, factor);
   }
 }
 /** Native-resolution pixel ownership computed once per run: compositing loops index a byte instead of testing

@@ -6,7 +6,13 @@ publish = false
 license = "MIT"
 description = "Long Screen's run state machine: the scan, solve, render and presentation passes, driven step by step by a host"
 
+[features]
+# The embedded zh/en message catalogue and its formatter (`catalog`). Native hosts format diagnostics with it; the web
+# page formats them with its own i18n catalogue, so rust/wasm turns this off and serde_json stays out of the .wasm.
+default = ["catalog"]
+catalog = ["dep:serde_json"]
+
 [dependencies]
 long-screen-core = { path = "../core" }
 # Parses the embedded zh/en message catalogues (catalog/*.json, exported from src/i18n by scripts/export-catalog.ts).
-serde_json = "=1.0.152"
+serde_json = { version = "=1.0.152", optional = true }

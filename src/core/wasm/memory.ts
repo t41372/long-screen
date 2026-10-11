@@ -64,13 +64,6 @@ export class Resident {
   view(): Uint8Array {
     return new Uint8Array(this.exports.memory.buffer, this.ptr, this.length);
   }
-  /** Copies another resident buffer of the same length into this one without leaving core memory. */
-  copyFrom(source: Resident): void {
-    if (source.length !== this.length) {
-      throw new Error(`CORE_BAD_ARGUMENT: resident buffer holds ${this.length} bytes, not ${source.length}.`);
-    }
-    new Uint8Array(this.exports.memory.buffer).copyWithin(this.ptr, source.ptr, source.ptr + source.length);
-  }
   write(bytes: ArrayBufferView): void {
     if (bytes.byteLength !== this.length) {
       throw new Error(`CORE_BAD_ARGUMENT: resident buffer holds ${this.length} bytes, not ${bytes.byteLength}.`);

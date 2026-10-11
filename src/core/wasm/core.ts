@@ -25,12 +25,8 @@ import type { TileCacheHandle } from './tiles.ts';
 import { learner as learnerFactory, type LearnerHandle } from './layers.ts';
 import { type VotingRing, votingRing as votingRingFactory } from './voting.ts';
 import { type RevealRun, revealRun as revealRunFactory } from './reveal.ts';
-import {
-  type FinishAccumulators,
-  finishRegions as finishRegionsImpl,
-  labelAtlasResident as labelAtlasResidentImpl,
-  manualUncovered,
-} from './regions.ts';
+import { type FinishAccumulators, finishRegions as finishRegionsImpl, labelAtlasResident as labelAtlasResidentImpl } from './regions.ts';
+import { estimateMotion as scanEstimateMotion, type ScanSession, scanSession as scanSessionFactory } from './scan.ts';
 import { poseGraph as poseGraphFactory, type PoseGraphState } from './pose-graph.ts';
 import { keyframeIndex as keyframeIndexFactory, type KeyframeIndexState } from './keyframes.ts';
 import {
@@ -349,6 +345,15 @@ export class Core {
   learner(width: number, height: number): LearnerHandle {
     return learnerFactory(this, this.exports, width, height);
   }
+  /** The scan pass of one run over `width × height` frames at the integer analysis `factor`; the caller frees it. */
+  scanSession(width: number, height: number, factor: number): ScanSession {
+    return scanSessionFactory(this, this.exports, width, height, factor);
+  }
+  /** Motion from analysis frame `a` to `b` over the given features (extracted when absent); a paused pair skips
+   *  matching. */
+  estimateMotionBetween(a: Gray, b: Gray, af?: Feature[], bf?: Feature[]): MotionField {
+    return scanEstimateMotion(this, this.exports, a, b, af, bf);
+  }
   stationaryBoundary(
     image: FrameInput,
     axis: 'x' | 'y',
@@ -458,10 +463,6 @@ export class Core {
     reference?: FrameInput,
   ): Region[] {
     return finishRegionsImpl(this, this.exports, width, height, cell, acc, nativeWidth, nativeHeight, factor, reference);
-  }
-  /** The expensive step of `finish()`'s manual-region branch: is every native pixel left uncovered by `manual`? */
-  regionsManualUncovered(manual: Rect[], nativeWidth: number, nativeHeight: number): boolean {
-    return manualUncovered(this, this.exports, manual, nativeWidth, nativeHeight);
   }
   /** `RegionAtlas`'s pixel labelling for `regions` in one call, written directly into a new core-resident label
    *  plane (never copied out and back), plus the per-code pixel counts. Caller owns the returned `resident`. */
