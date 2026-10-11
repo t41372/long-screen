@@ -3,13 +3,13 @@
 //! what it hands back.
 
 use crate::context::{t, Ctx};
+use crate::engine::catalog::Param;
+use crate::engine::reveal::{
+    ObservedDecision, Outcome, Pass, RevealCanvas, RevealLayer, RevealSession, Step, PASSES,
+};
 use crate::solve::kind_str;
 use crate::source::FrameSource;
 use crate::value::{detail, read_rect, Js, Obj, Typed};
-use long_screen_engine::catalog::Param;
-use long_screen_engine::reveal::{
-    ObservedDecision, Outcome, Pass, RevealCanvas, RevealLayer, RevealSession, Step, PASSES,
-};
 use std::time::Instant;
 
 fn pass_name(pass: Pass) -> &'static str {

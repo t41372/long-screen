@@ -1,4 +1,4 @@
-/** Structured diagnostics from the engine (`rust/engine/src/diagnostic.rs`), decoded from their `bytes.ts` records
+/** Structured diagnostics from the engine (`rust/long-screen/src/engine/diagnostic.rs`), decoded from their `bytes.ts` records
  *  (`rust/wasm/src/diagnostic.rs`). They carry a code and numbers, never text: the pipeline formats them with the
  *  page's catalogue. */
 import type { Rect, Severity } from '../../types.ts';

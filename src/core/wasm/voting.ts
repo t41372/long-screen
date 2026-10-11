@@ -24,7 +24,7 @@ export interface VotingRecord {
   thinLayers: number;
 }
 
-/** Stateful displacement-spread consistency voting ring living in core memory (rust/core/src/voting.rs). One
+/** Stateful displacement-spread consistency voting ring living in core memory (rust/long-screen/src/kernels/voting.rs). One
  *  per solve pass: `observe()` each moving region's final pose, `pushFrame()` once per frame, read whatever
  *  finalised records come out, `drain()` at the end, `free()` always. */
 export class VotingRing {

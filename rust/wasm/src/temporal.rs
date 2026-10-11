@@ -1,10 +1,12 @@
 //! ABI surface for the per-tile write of a resolved temporal patch (`ls_overwrite_tile`, a kernel the compositor
 //! tests call directly) and the temporal record wire format the engine compositor's exports share
-//! (`compositor.rs`). The temporal index itself lives in the engine compositor (`long_screen_engine::compositor`).
+//! (`compositor.rs`). The temporal index itself lives in the engine compositor (`long_screen::engine::compositor`).
 
 use crate::memory::{in_bounds, slice, slice_mut};
 use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::temporal::{overwrite_tile, OverwriteTile, TemporalRecord, QUALITY_BLOCK};
+use long_screen::kernels::temporal::{
+    overwrite_tile, OverwriteTile, TemporalRecord, QUALITY_BLOCK,
+};
 
 /// Bytes per tile descriptor for `ls_overwrite_tile`: u32 pixels, coverage, provisional, quality, conflicts,
 /// owner, frozen pointers, u32 tile size.
@@ -97,7 +99,7 @@ pub extern "C" fn ls_overwrite_tile(
             })
             .collect::<Vec<_>>()
     };
-    // `overwrite_tile` (rust/core/src/temporal.rs) indexes `tile.pixels`/`tile.owner` from each block unchecked
+    // `overwrite_tile` (rust/long-screen/src/kernels/temporal.rs) indexes `tile.pixels`/`tile.owner` from each block unchecked
     // — by contract (abi/mod.rs's memory contract: "an invalid request returns a negative status instead of
     // trapping") every pointer this ABI hands a kernel must already be proven in-bounds, so a bad `blocks`
     // entry has to be rejected here, not in the kernel. Unreachable in practice: the caller only ever passes

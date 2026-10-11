@@ -487,13 +487,19 @@ name = "long-screen"
 version = "0.1.0"
 dependencies = [
  "clap",
- "long-screen-core",
- "long-screen-decode",
- "long-screen-engine",
+ "libm",
+ "objc2",
+ "objc2-av-foundation",
+ "objc2-core-foundation",
+ "objc2-core-media",
+ "objc2-core-video",
+ "objc2-foundation",
  "png",
  "rayon",
+ "serde",
  "serde_json",
  "sha2",
+ "windows",
 ]
 
 [[package]]
@@ -502,7 +508,6 @@ version = "0.0.0"
 dependencies = [
  "codspeed-divan-compat",
  "long-screen",
- "long-screen-core",
  "png",
  "serde",
  "serde_json",
@@ -510,42 +515,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "long-screen-core"
-version = "0.1.0"
-dependencies = [
- "libm",
- "rayon",
-]
-
-[[package]]
-name = "long-screen-decode"
-version = "0.1.0"
-dependencies = [
- "objc2",
- "objc2-av-foundation",
- "objc2-core-foundation",
- "objc2-core-media",
- "objc2-core-video",
- "objc2-foundation",
- "serde",
- "serde_json",
- "windows",
-]
-
-[[package]]
-name = "long-screen-engine"
-version = "0.1.0"
-dependencies = [
- "long-screen-core",
- "serde_json",
-]
-
-[[package]]
 name = "long-screen-py"
 version = "0.1.0"
 dependencies = [
  "long-screen",
- "long-screen-decode",
  "pyo3",
  "serde_json",
 ]
@@ -555,8 +528,7 @@ name = "long-screen-wasm"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
- "long-screen-core",
- "long-screen-engine",
+ "long-screen",
  "png",
 ]
 

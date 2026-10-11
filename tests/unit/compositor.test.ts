@@ -874,7 +874,7 @@ Deno.test(
   'temporal ABI: ls_overwrite_tile returns a status (not a wasm trap) for a block whose pixel footprint falls ' +
     'outside the source frame, tile buffers unchanged',
   () => {
-    // Regression for rust/wasm/src/temporal.rs::ls_overwrite_tile / rust/core/src/temporal.rs::overwrite_tile,
+    // Regression for rust/wasm/src/temporal.rs::ls_overwrite_tile / rust/long-screen/src/kernels/temporal.rs::overwrite_tile,
     // which indexed `blocks` into `rgba`/`tile.pixels`/`tile.owner` unchecked -- a bad block made the exported
     // function itself trap (Rust panics on an out-of-bounds slice index; the wasm build aborts on panic), not
     // return `STATUS_BAD_ARGUMENT` as rust/wasm/src/lib.rs's memory contract promises ("an invalid request returns a

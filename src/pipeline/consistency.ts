@@ -1,4 +1,4 @@
-// consistencyMask() itself already dispatches to the Rust core (rust/core/src/consistency.rs); the TypeScript
+// consistencyMask() itself already dispatches to the Rust core (rust/long-screen/src/kernels/consistency.rs); the TypeScript
 // here is the canvas-identity gate around it (a neighbour only counts when its placement resolved to the same
 // canvas) plus the shell that picks the resident-vs-plain-array input form and the types both sides share. It
 // is not algorithmic TS awaiting a port — there is no algorithm left here to port.
@@ -104,7 +104,7 @@ export function consistencyMask(
   canvasId: string,
   options: ConsistencyOptions,
 ): Uint8Array {
-  // The mask itself is computed by the Rust core (rust/core/src/consistency.rs); this keeps the
+  // The mask itself is computed by the Rust core (rust/long-screen/src/kernels/consistency.rs); this keeps the
   // canvas-identity gate (a neighbour only counts when its placement resolved to the same canvas) here.
   const neighbour = (n: ConsistencyNeighbour | undefined) =>
     n && n.canvasId === canvasId ? { image: n.image, x: n.x, y: n.y, occlusions: n.occlusions, voting: n.voting } : undefined;

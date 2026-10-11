@@ -1,4 +1,4 @@
-//! `extern "C"` surface of `long-screen-core` (and later `long-screen-engine`) consumed by the TypeScript adapter
+//! `extern "C"` surface of the `long-screen` crate's kernels and engine consumed by the TypeScript adapter
 //! (`src/core/wasm.ts`). This crate is the only place with FFI: the algorithms it calls carry none. One file per
 //! domain mirrors `src/core/wasm/*.ts`; `memory.rs` and `wire.rs` hold the plumbing every domain shares.
 //!
@@ -71,7 +71,7 @@ pub const STATUS_BAD_FILTER: i32 = -256;
 pub extern "C" fn ls_layout(which: u32) -> u32 {
     use framing::LAYOUT_BYTES;
     use layers::LEARNER_ARRAY_COUNT;
-    use long_screen_core::motion::MOTION_CELL;
+    use long_screen::kernels::motion::MOTION_CELL;
     use regions::{REGIONS_FINISH_DESC_BYTES, REGION_HEADER_BYTES};
     use track_keyframes::{CANDIDATE_RECORD_BYTES, KEYFRAME_BYTES};
     use track_reacquire::TRACK_DRIFT_CORRECTION_OUT_BYTES;
@@ -107,11 +107,11 @@ pub extern "C" fn ls_layout(which: u32) -> u32 {
 /// Parks the calling helper instance in the shared-memory pool; only valid in the threaded build.
 #[no_mangle]
 pub extern "C" fn ls_pool_worker() {
-    long_screen_core::pool::worker_loop()
+    long_screen::kernels::pool::worker_loop()
 }
 
 /// Helper threads currently parked in the pool.
 #[no_mangle]
 pub extern "C" fn ls_pool_helpers() -> u32 {
-    long_screen_core::pool::helpers() as u32
+    long_screen::kernels::pool::helpers() as u32
 }

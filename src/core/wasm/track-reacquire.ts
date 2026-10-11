@@ -73,7 +73,7 @@ export function reacquire(
   const filledNative = view.getUint32(36, true) === 1;
   if (tag === 0) return { result: undefined, filledNative };
   const ambiguous = view.getUint32(8, true) === 1, error = view.getFloat64(24, true);
-  // `confidence` off the wire is fully computed in Rust (rust/core/src/track/reacquire.rs's `reacquire_refine`)
+  // `confidence` off the wire is fully computed in Rust (rust/long-screen/src/kernels/track/reacquire.rs's `reacquire_refine`)
   // with `f64::exp`, identical on every engine — see `track-odometry.ts`'s comment at the same call shape.
   return {
     result: {

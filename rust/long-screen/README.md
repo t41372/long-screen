@@ -15,13 +15,11 @@ long-screen recording.mov -o print.png
 
 ```toml
 [dependencies]
-long-screen = { version = "0.1", default-features = false } # without the command line's clap
-long-screen-decode = "0.1" # for VideoSource's decoder options
+long-screen = { version = "0.1", default-features = false, features = ["driver", "decode", "rayon"] } # without the command line's clap
 ```
 
 ```rust,no_run
-use long_screen::{run, Control, Options, VideoSource};
-use long_screen_decode::Options as DecodeOptions;
+use long_screen::{run, Control, DecodeOptions, Options, VideoSource};
 
 let mut source = VideoSource::open("recording.mov".as_ref(), DecodeOptions::default())?;
 let control = Control::new(); // clone it to another thread to pause or stop the run
@@ -39,21 +37,31 @@ for d in result.diagnostics() {
 
 Frames you already have go in through the `FrameSource` trait instead of `VideoSource`.
 
-Decoding uses AVFoundation on macOS and Media Foundation on Windows; Linux, and files the system decoder cannot open, need a user-installed `ffmpeg` and `ffprobe` on `PATH` (see [`long-screen-decode`](https://crates.io/crates/long-screen-decode)).
+Decoding uses AVFoundation on macOS and Media Foundation on Windows; Linux, and files the system decoder cannot open, need a user-installed `ffmpeg` and `ffprobe` on `PATH`. ffmpeg is never linked or bundled; when it is missing, the error says how to install it.
+
+## Layers
+
+The crate root is the driver. The layers under it are public modules, because the web page's WebAssembly, the benchmarks and the Python package are built from them, but they are implementation layers whose API may change in minor versions:
+
+- `long_screen::kernels`: the reconstruction algorithms (motion, regions and layers, tracking, the pose graph, compositing, reveal, framing, the preview pyramid, YUV→RGBA), with no I/O.
+- `long_screen::engine`: one run as a step-by-step state machine over the kernels, for hosts that store rows themselves.
+- `long_screen::decode`: native video decoding, for when you only need the frames.
+
+`kernels` and `engine` compile for `wasm32-unknown-unknown` with `default-features = false`; that is how the web page builds them.
 
 ## Same numbers as the web page
 
-The core computes its exponentials, powers, logarithms and hypotenuses with the [`libm`](https://crates.io/crates/libm) crate, the musl code the web page's WebAssembly links, instead of the system's math library, so a run gives the web page's results row for row.
+The kernels and the engine compute their exponentials, powers, logarithms and hypotenuses with the [`libm`](https://crates.io/crates/libm) crate, the musl code the web page's WebAssembly links, instead of the system's math library, so a run gives the web page's results row for row.
 
 ## Features
 
-- `cli` (default): the `long-screen` command line and its argument parser (`clap`). Libraries can turn it off.
+All are on by default.
 
-## Related crates
-
-- [`long-screen-engine`](https://crates.io/crates/long-screen-engine): the run as a step-by-step state machine, for hosts that store rows themselves.
-- [`long-screen-core`](https://crates.io/crates/long-screen-core): the algorithms.
-- [`long-screen-decode`](https://crates.io/crates/long-screen-decode): native video decoding.
+- `cli`: the `long-screen` command line and its argument parser (`clap`). Implies `driver` and `decode`. Libraries can turn it off.
+- `driver`: the driver API at the crate root (`run`, `Options`, `RunResult`, the sources, the in-memory row store). Implies `catalog`.
+- `decode`: the `decode` module and `VideoSource`, with its options re-exported as `DecodeOptions` and `DecodeBackend`.
+- `rayon`: the kernels run on rayon's thread pool. Results do not depend on the thread count; without it they run on the calling thread.
+- `catalog`: the embedded zh/en diagnostic and progress catalogue (`engine::catalog`), which words diagnostics exactly as the web page does.
 
 ## License
 

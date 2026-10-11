@@ -3,15 +3,15 @@
 //! presentation only: a failure downgrades to a warning and never changes the run's status.
 
 use crate::context::{error_text, t, Ctx};
-use crate::solve::{kind_str, shape};
-use crate::tiles::{decode_png, encode_png};
-use crate::value::{read_rect, rect, Js, Obj};
-use long_screen_engine::framing::{
+use crate::engine::framing::{
     intersect, FramingSession, Outcome, Reference, SaveTile, SourceCanvas, Step as FramingStep,
     DEFAULT_MAX_TILES,
 };
-use long_screen_engine::pyramid::{PyramidSession, Step as PyramidStep};
-use long_screen_engine::tiles::TileKey;
+use crate::engine::pyramid::{PyramidSession, Step as PyramidStep};
+use crate::engine::tiles::TileKey;
+use crate::solve::{kind_str, shape};
+use crate::tiles::{decode_png, encode_png};
+use crate::value::{read_rect, rect, Js, Obj};
 use std::time::Instant;
 
 fn canvas_rows(ctx: &Ctx) -> Vec<(String, Obj)> {
@@ -121,7 +121,7 @@ fn build_framed(ctx: &mut Ctx, source: &Obj, started: Instant) -> Result<Option<
                     .map_or(0.0, |(_, v)| *v);
                 let message = format!(
                     "Framed canvas exceeded the {} tile limit; skipped before allocating output tiles.",
-                    long_screen_engine::catalog::js_number(max)
+                    crate::engine::catalog::js_number(max)
                 );
                 ctx.emit(&|l| {
                     Obj::new()

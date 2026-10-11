@@ -2,7 +2,7 @@
 
 use crate::memory::{slice, slice_mut};
 use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::pyramid::assemble_parent;
+use long_screen::kernels::pyramid::assemble_parent;
 
 /// Assembles one `size × size` parent tile from up to four `size × size` RGBA children. `present` is a bitmask,
 /// bit `i` set means `child[i]` points at a valid buffer (quadrant `i`: `dx = i & 1`, `dy = i >> 1`); a clear bit
@@ -41,7 +41,7 @@ pub extern "C" fn ls_assemble_pyramid_parent(
     crate::STATUS_OK
 }
 
-// --- The engine's pyramid session (`long_screen_engine::pyramid::PyramidSession`), one handle per canvas being
+// --- The engine's pyramid session (`long_screen::engine::pyramid::PyramidSession`), one handle per canvas being
 // built by `TileStore.buildPyramid` (src/storage/tiles.ts, through src/core/wasm/pyramid.ts). ---
 //
 // `ls_pyramid_step` returns its result's length (error convention 6) and leaves it in the handle for
@@ -56,7 +56,7 @@ use crate::bytes::Out;
 use crate::memory::HandleTable;
 use crate::tiles::read_str;
 use crate::STATUS_OK;
-use long_screen_engine::pyramid::{PyramidSession, Step};
+use long_screen::engine::pyramid::{PyramidSession, Step};
 
 struct Session {
     session: PyramidSession,

@@ -1,4 +1,4 @@
-/** Byte-exact parity between the Rust core (`rust/core/src/framing.rs`) and the frozen TS oracle it replaces
+/** Byte-exact parity between the Rust core (`rust/long-screen/src/kernels/framing.rs`) and the frozen TS oracle it replaces
  *  (`tests/support/reference/framing.ts`). Production calls the core only (`src/core/framing.ts`). */
 import { assertEquals } from '@std/assert';
 import '../../support/core.ts';

@@ -14,7 +14,7 @@ import {
   writeRowHeader,
 } from './temporal.ts';
 
-// --- The engine's compositor (`long_screen_engine::compositor` via `rust/wasm/src/compositor.rs`): one placement
+// --- The engine's compositor (`long_screen::engine::compositor` via `rust/wasm/src/compositor.rs`): one placement
 // as a resumable job over the tile cache, the per-canvas temporal indexes, and the diagnostics they raise. ---
 
 /** Layouts in `rust/wasm/src/compositor.rs`. */

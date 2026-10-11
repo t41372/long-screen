@@ -72,7 +72,7 @@ export interface LabelMask {
   code: number;
 }
 /** Coarse-to-fine guide for `refineNative`: `b`'s own analysis-scale gray at integer downscale `factor` (see
- *  `select_native_points`'s doc comment in rust/core/src/motion.rs). Omitted, refinement falls back to a
+ *  `select_native_points`'s doc comment in rust/long-screen/src/kernels/motion.rs). Omitted, refinement falls back to a
  *  full-resolution native scan. */
 export interface NativePointGuide {
   g: Gray;
@@ -98,7 +98,7 @@ export class Core {
   private readonly frameArena: Arena;
   readonly featureBytes: number;
   readonly matchBytes: number;
-  /** Pool helper workers sharing this instance's memory (threaded build only); see rust/core/src/pool.rs. */
+  /** Pool helper workers sharing this instance's memory (threaded build only); see rust/long-screen/src/kernels/pool.rs. */
   private helpers: Worker[] = [];
   private constructor(readonly exports: CoreExports) {
     assertLayout(exports);
@@ -236,7 +236,7 @@ export class Core {
     return votingRingFactory(this, this.exports, regions, options);
   }
 
-  /** The engine's reveal session (`long_screen_engine::reveal`) that `src/pipeline/reveal.ts` drives; the caller frees it. */
+  /** The engine's reveal session (`long_screen::engine::reveal`) that `src/pipeline/reveal.ts` drives; the caller frees it. */
   revealSession(input: RevealInput): RevealSessionHandle {
     return revealSessionFactory(this, this.exports, input);
   }
@@ -273,7 +273,7 @@ export class Core {
   compositor(latest: boolean, atlasWidth: number, atlasHeight: number): CompositorHandle {
     return composite.newCompositor(this, this.exports, latest, atlasWidth, atlasHeight);
   }
-  /** RGBA of a decoded frame given in its `VideoFrame.copyTo` layout (see rust/core/src/yuv.rs for the codes).
+  /** RGBA of a decoded frame given in its `VideoFrame.copyTo` layout (see rust/long-screen/src/kernels/yuv.rs for the codes).
    *  `dest`, when given and the right length, is filled in place instead of allocating a fresh output buffer. */
   frameToRGBA(
     src: Uint8Array,
@@ -454,21 +454,21 @@ export class Core {
   labelAtlasResident(regions: Region[], width: number, height: number): { resident: Resident; counts: Uint32Array } {
     return labelAtlasResidentImpl(this, this.exports, regions, width, height);
   }
-  /** The pose graph state object (`long_screen_engine::pose_graph`): one per `src/core/pose-graph.ts` instance. */
+  /** The pose graph state object (`long_screen::engine::pose_graph`): one per `src/core/pose-graph.ts` instance. */
   poseGraph(): PoseGraphState {
     return poseGraphFactory(this, this.exports);
   }
-  /** The keyframe index state object (`long_screen_engine::keyframes`): one per `src/core/keyframes.ts` instance. */
+  /** The keyframe index state object (`long_screen::engine::keyframes`): one per `src/core/keyframes.ts` instance. */
   keyframeIndex(): KeyframeIndexState {
     return keyframeIndexFactory(this, this.exports);
   }
-  /** The solve pass's session (`long_screen_engine::solve::SolveSession`); the pass frees it when it ends. */
+  /** The solve pass's session (`long_screen::engine::solve::SolveSession`); the pass frees it when it ends. */
   solveSession(
     options: { width: number; height: number; factor: number; radius: number; noise: number; regions: SolveRegionInput[] },
   ): SolveSessionState {
     return solveSessionFactory(this, this.exports, options);
   }
-  /** The render pass of one run (`long_screen_engine::render::RenderSession`); the pass frees it at its end. */
+  /** The render pass of one run (`long_screen::engine::render::RenderSession`); the pass frees it at its end. */
   renderSession(config: RenderSessionConfig): RenderSessionHandle {
     return renderSessionFactory(this, this.exports, config);
   }

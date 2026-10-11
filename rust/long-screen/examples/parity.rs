@@ -7,10 +7,10 @@
 //!   cargo run -p long-screen --release --example parity -- recording <video> <out.json>
 //!     Decodes with ffmpeg exactly as `scripts/native-parity.ts recording` does.
 
+use long_screen::kernels::yuv::hdr::{rgb_to_rgba, Packing, Transfer};
 use long_screen::source::{Frame, FrameSource, Frames, MediaInfo, RawFrame, SourceError};
 use long_screen::value::{Js, Obj};
 use long_screen::{run, Control, Framing, Options, RawSource, Settings, TemporalPolicy};
-use long_screen_core::yuv::hdr::{rgb_to_rgba, Packing, Transfer};
 use serde_json::Value;
 use std::io::Read;
 use std::path::{Path, PathBuf};

@@ -4,7 +4,7 @@ import { conversionDiagnostics } from '../../src/media/conversion-report.ts';
 import type { MediaInfo } from '../../src/types.ts';
 
 // Failure cases: a recording judged SDR because WebKit tags its PQ frames as sRGB (the container must win); an HDR
-// frame without container tags missed; colour codes that disagree with rust/core/src/yuv.rs `Signal::from_code`;
+// frame without container tags missed; colour codes that disagree with rust/long-screen/src/kernels/yuv.rs `Signal::from_code`;
 // WebKit's full-range NV12 of BT.2020 Y'CbCr tried with its wrong BT.709 tag first, or the frame's correct range
 // ignored; a warning raised for an HDR recording that was converted and checked, or missing for one that was not;
 // highlights in an iPhone recording (0.3 % of pixels) taken for a white set too high; a fast conversion called slow,

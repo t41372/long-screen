@@ -134,7 +134,7 @@ Deno.test('pose graph: optimize() skips a node with no adjacency and an edge poi
   assertEquals((await graph.get('lonely'))!.x, 3, 'a node with no adjacency at all must never move');
   assertEquals((await graph.get('a'))!.x, 0, 'an edge to a missing node must be skipped, not crash optimize()');
 });
-// The checkpoint is called once per Gauss-Seidel sweep (rust/core/src/pose_graph.rs::Graph::pass), not per node —
+// The checkpoint is called once per Gauss-Seidel sweep (rust/long-screen/src/kernels/pose_graph.rs::Graph::pass), not per node —
 // checkpoint() has no persisted side effect (it only awaits a pause and may flip stopRequested), so this changed
 // from the pre-port "every 256 node updates" cadence without changing what optimize() computes or persists.
 Deno.test('pose graph: optimize() calls the checkpoint at least once during a real multi-node relaxation', async () => {

@@ -2,8 +2,8 @@ import type { Gray, MotionField, Rect, Region, RGBA } from '../types.ts';
 import { core, type LearnerAccumulators, type LearnerHandle, type Resident, type ResidentFrame } from './wasm.ts';
 /** Learns screen-space motion discontinuities across a whole recording and builds the regions from them. The
  *  learner, its appearance reference and both region layouts (automatic, hand-placed) are the engine's
- *  (rust/engine/src/layers.rs `RegionLearner`); this class only holds the handle. The scan pass keeps its own learner
- *  inside its session (rust/engine/src/scan.rs); this one serves the layer-learning tests. */
+ *  (rust/long-screen/src/engine/layers.rs `RegionLearner`); this class only holds the handle. The scan pass keeps its own learner
+ *  inside its session (rust/long-screen/src/engine/scan.rs); this one serves the layer-learning tests. */
 export class LayerLearner {
   readonly cols: number;
   readonly rows: number;
@@ -37,7 +37,7 @@ export class LayerLearner {
   }
 }
 /** Native-resolution pixel ownership computed once per run: compositing loops index a byte instead of testing
- *  region membership per pixel (`rust/core/src/region.rs::Region::contains`, via `filter_features` and the
+ *  region membership per pixel (`rust/long-screen/src/kernels/region.rs::Region::contains`, via `filter_features` and the
  *  atlas label plane below). `resident` is the label plane's ONLY copy in core memory — solve/render/compositor
  *  read it directly (`atlas.resident`) instead of re-uploading `atlas.labels`, so the plane crosses the JS/Wasm
  *  boundary exactly once, at construction. `resident` lives for the whole run; call `dispose()` exactly once
@@ -88,7 +88,7 @@ export class RegionAtlas {
   }
 }
 
-/** Strong persistent appearance boundary within a stationary run (Rust core, rust/core/src/chrome.rs). Never infer a
+/** Strong persistent appearance boundary within a stationary run (Rust core, rust/long-screen/src/kernels/chrome.rs). Never infer a
  * pane edge from its first glyph. Returns the boundary coordinate in native pixels, or undefined if the image offers no
  * boundary evidence. */
 export function stationaryBoundary(

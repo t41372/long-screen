@@ -19,7 +19,7 @@ export interface EvaluateCandidatesKeyframe {
   y: number;
   /** The caller's `canonical` map, already resolved and interned for this keyframe: a keyframe with no
    *  attachment carries its own interned canvas index and `dx = dy = 0` — see `keyframes.ts::evaluateCandidates`
-   *  and `rust/core/src/track/keyframes.rs`'s `CandidateKeyframe` doc comment. */
+   *  and `rust/long-screen/src/kernels/track/keyframes.rs`'s `CandidateKeyframe` doc comment. */
   canonicalIdx: number;
   dx: number;
   dy: number;

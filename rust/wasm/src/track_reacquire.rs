@@ -1,4 +1,4 @@
-//! `ls_track_reacquire`/`ls_track_drift_correction`: `extern "C"` surface for `long_screen_core::track::reacquire_hypotheses`
+//! `ls_track_reacquire`/`ls_track_drift_correction`: `extern "C"` surface for `long_screen::kernels::track::reacquire_hypotheses`
 //! / `reacquire_refine` / `drift_correction` — split out of the former monolithic `abi/track.rs`. See
 //! `abi/track.rs`'s module doc comment for the split; `read_patches`
 //! and `resolve_native` stay there (shared with `track_keyframes`).
@@ -8,15 +8,15 @@ use crate::memory::{slice, slice_mut};
 use crate::track::{read_patches, resolve_native};
 use crate::wire::{read_rect, FEATURE_BYTES};
 use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::track;
+use long_screen::kernels::track;
 
 /// `ls_track_reacquire`'s `out` layout (40 bytes): i32 x, i32 y, u32 ambiguous, u32 padding, f64 confidence,
 /// f64 error, u32 filledNative, u32 padding.
 const TRACK_REACQUIRE_OUT_BYTES: usize = 40;
 
 /// `track.ts::reacquire` — `matchFeatures` + `translationHypotheses` (no native luma needed; see
-/// `long_screen_core::track::reacquire_hypotheses`), then, only when that found a candidate, the native-plane lazy fill
-/// (see `resolve_native`) and up to 4 patch refinements + rival rejection (`long_screen_core::track::reacquire_refine`).
+/// `long_screen::kernels::track::reacquire_hypotheses`), then, only when that found a candidate, the native-plane lazy fill
+/// (see `resolve_native`) and up to 4 patch refinements + rival rejection (`long_screen::kernels::track::reacquire_refine`).
 /// Returns `1` (found), `0` (no candidate, or a rival rejected the top one), or `STATUS_BAD_ARGUMENT`.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]

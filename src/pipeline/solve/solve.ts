@@ -1,6 +1,6 @@
 // Host of the solve pass. The pass itself — per-region tracking, keyframes and revisits, fragment attachment, the
 // pose graph's nodes and edges, consistency voting and each frame's placements — is the engine's solve session
-// (rust/engine/src/solve/). This file drives it frame by frame: the decode loop, the scan record and stored features
+// (rust/long-screen/src/engine/solve/). This file drives it frame by frame: the decode loop, the scan record and stored features
 // each frame needs, the keyframe rows a revisit search asks for, storing the rows the session hands back (plan and
 // consistency rows in batches of 24), the diagnostics' text, progress, pause and stop, the prefix-only failure
 // classification, the frame-count check, relaxing the pose graph and deleting the pass's scratch rows.

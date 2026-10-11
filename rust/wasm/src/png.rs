@@ -4,7 +4,7 @@
 
 use crate::memory::{slice, slice_mut, HandleTable};
 use crate::{STATUS_BAD_ARGUMENT, STATUS_BAD_FILTER, STATUS_OK};
-use long_screen_core::png::{expand_to_rgba, filter_sub_rgba};
+use long_screen::kernels::png::{expand_to_rgba, filter_sub_rgba};
 use std::io::Cursor;
 
 /// Sub-filters RGBA rows for PNG encoding; `out` receives `height × (width×4 + 1)` bytes.

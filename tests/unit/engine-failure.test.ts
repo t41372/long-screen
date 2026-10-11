@@ -605,9 +605,9 @@ Deno.test('engine: PROCESSING_ERROR is journaled (survives into diagnostic/ rows
   assert(codes.has('PROCESSING_ERROR'), [...codes].join(','));
 });
 // The solve pass's pose recovery (NONFINITE_POSE, a rejected attachment or thin-overlap correction) runs inside the
-// engine's solve session; rust/engine/src/solve/tests.rs drives it through test seams that replace the core's
+// engine's solve session; rust/long-screen/src/engine/solve/tests.rs drives it through test seams that replace the core's
 // decisions.
-// The render session's own pose guard (rust/engine/src/render.rs, `is_valid_pose`), over a plan/ row read back from storage rather than one this same run's
+// The render session's own pose guard (rust/long-screen/src/engine/render.rs, `is_valid_pose`), over a plan/ row read back from storage rather than one this same run's
 // solve pass just wrote in-process (a foreign writer, bit rot, a future engine version — or simply a row solve.ts
 // validated correctly at write time that is then read back unvalidated, which is exactly what happened here: at
 // a136135, poisoning a plan/ row's x to Infinity this same way — confirmed manually with

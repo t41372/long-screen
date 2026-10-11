@@ -1,8 +1,8 @@
 // Shell: the framing (bordered/context canvas) and pyramid (preview levels) stages run() drives after
 // scan/solve/render. Both are presentation-only — a failure here must never turn a finished level-0
 // reconstruction into partial/error, so each gets its own try/catch and only ever downgrades to a warning
-// diagnostic. No algorithm lives here: the engine's framing and pyramid sessions (rust/engine/src/framing.rs,
-// rust/engine/src/pyramid.rs) do the work, hosted by buildFramedCanvas (core/framing.ts) and TileStore.buildPyramid.
+// diagnostic. No algorithm lives here: the engine's framing and pyramid sessions (rust/long-screen/src/engine/framing.rs,
+// rust/long-screen/src/engine/pyramid.rs) do the work, hosted by buildFramedCanvas (core/framing.ts) and TileStore.buildPyramid.
 import type { CanvasMeta } from '../types.ts';
 import { iterate } from '../storage/db.ts';
 import { buildFramedCanvas } from '../core/framing.ts';

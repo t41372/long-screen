@@ -1,7 +1,7 @@
 /** FROZEN TypeScript oracles for the layer-learning port. The first half (`ReferenceLayerLearner`, `add`/
- *  `addNative`) is the parity oracle for rust/core/src/layers.rs (tests/unit/parity/). The second half
+ *  `addNative`) is the parity oracle for rust/long-screen/src/kernels/layers.rs (tests/unit/parity/). The second half
  *  (`referenceFinish`, `referenceRegionContains`, `referenceLabelAtlas`, below) is the parity oracle for
- *  rust/core/src/regions.rs (tests/unit/regions-parity.test.ts, stage 2). Production still runs `finish()` and
+ *  rust/long-screen/src/kernels/regions.rs (tests/unit/regions-parity.test.ts, stage 2). Production still runs `finish()` and
  *  `RegionAtlas` in TS until stage 2 switches them to the Rust core. Not used by production code. Do not "fix"
  *  this. */
 import type { Gray, MotionField, Rect, Region, RGBA } from '../../../src/types.ts';
@@ -202,10 +202,10 @@ export class ReferenceLayerLearner {
 }
 
 /** FROZEN TypeScript `LayerLearner.finish()` and `RegionAtlas` pixel-labelling construction (src/core/layers.ts),
- *  lifted verbatim as the parity oracle for rust/core/src/regions.rs (tests/unit/regions-parity.test.ts, stage 2).
+ *  lifted verbatim as the parity oracle for rust/long-screen/src/kernels/regions.rs (tests/unit/regions-parity.test.ts, stage 2).
  *  `referenceFinish` takes the accumulator arrays as `LearnerHandle.read()` returns them (not the live class), the
  *  sizes, manual regions, factor and the retained native frame, so a parity test can drive it without the wasm
- *  learner. `stationaryBoundary` is imported from `./chrome.ts` (its own frozen oracle, rust/core/src/chrome.rs)
+ *  learner. `stationaryBoundary` is imported from `./chrome.ts` (its own frozen oracle, rust/long-screen/src/kernels/chrome.rs)
  *  rather than re-frozen here. Not used by production code. Do not "fix" this. */
 export interface FinishAccumulators {
   width: number;
@@ -381,7 +381,7 @@ export function referenceFinish(
   let exactLeft: number | undefined, exactRight: number | undefined;
   if (informativeFrames >= 2) {
     // How often a column moved, not its mean change: a few frames of the whole window bouncing must not outweigh
-    // many of a sidebar standing still (rust/core/src/regions/bands.rs, STATIONARY_COLUMN_SHARE).
+    // many of a sidebar standing still (rust/long-screen/src/kernels/regions/bands.rs, STATIONARY_COLUMN_SHARE).
     while (left < width * .45 && acc.colMoving[left] / informativeFrames < .25) {
       left++;
     }

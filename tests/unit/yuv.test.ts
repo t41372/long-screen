@@ -2,7 +2,7 @@ import '../support/core.ts';
 import { assertEquals } from '@std/assert';
 import { core } from '../../src/core/wasm.ts';
 
-// The core's YUV→RGBA conversion (rust/core/src/yuv.rs) against libyuv's per-pixel arithmetic written out here, on
+// The core's YUV→RGBA conversion (rust/long-screen/src/kernels/yuv.rs) against libyuv's per-pixel arithmetic written out here, on
 // every build (LONGSCREEN_CORE=scalar|simd|threads): the SIMD build converts several pixels per instruction and must
 // produce the same bytes. Failure cases: any layout (I420, I422, I444, NV12) or matrix; widths that leave a tail
 // after whole vectors, down to one pixel; an odd last column with its own chroma sample; row strides wider than the
@@ -80,7 +80,7 @@ Deno.test('yuv: every layout, matrix, width tail, stride and clamp converts to t
   }
 });
 
-// The HDR conversion (rust/core/src/yuv/hdr.rs) through both entry points, on this build: PQ SDR white (100 nits) and
+// The HDR conversion (rust/long-screen/src/kernels/yuv/hdr.rs) through both entry points, on this build: PQ SDR white (100 nits) and
 // HLG reference white (75 %) land on 255, black on 0, and pixels above white are counted once whichever thread converts
 // them; planes and RGB give the same bytes for the same coded value. Codes: transfer × 8 + matrix × 2 + full range.
 Deno.test('yuv: HDR planes and coded R′G′B′ convert to sRGB with white at 255 and highlights counted, on this build', () => {

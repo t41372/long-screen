@@ -60,7 +60,7 @@ Trade-offs: a `file://` page can't be cross-origin isolated, so the Rust core on
 
 ## Use it outside the browser
 
-The same reconstruction comes in four other forms. Each runs the engine the web app runs (`rust/engine`, over the core in `rust/core`), with native decoders or the browser's WebCodecs in front of it. None of them is published to a package registry yet: build them from this repository as described below.
+The same reconstruction comes in four other forms. Each runs the engine the web app runs (the `long-screen` crate in `rust/long-screen`), with native decoders or the browser's WebCodecs in front of it. None of them is published to a package registry yet: build them from this repository as described below.
 
 ### Command line
 
@@ -77,19 +77,17 @@ On macOS and Windows it decodes with the system decoder (AVFoundation, Media Fou
 
 ### Rust library
 
-The command line is a thin layer over the `long-screen` crate (`rust/long-screen`), which a desktop app or another binding can drive the same way. It depends on `long-screen-engine` (the run's state machine, `rust/engine`), `long-screen-core` (the algorithms, `rust/core`) and `long-screen-decode` (native decoding, `rust/decode`). Use them as git or path dependencies; `default-features = false` leaves out the command line's argument parser:
+The command line is a thin layer over the `long-screen` crate (`rust/long-screen`), which a desktop app or another binding can drive the same way. It is one crate: the algorithms (`long_screen::kernels`), the run's state machine (`long_screen::engine`) and native decoding (`long_screen::decode`) are modules inside it, and the web app's WebAssembly is built from the same crate without its native features. Use it as a git or path dependency; leaving out the `cli` feature drops the command line's argument parser:
 
 ```toml
 [dependencies]
-long-screen = { git = "https://github.com/t41372/long-screen", default-features = false }
-long-screen-decode = { git = "https://github.com/t41372/long-screen" }
+long-screen = { git = "https://github.com/t41372/long-screen", default-features = false, features = ["driver", "decode", "rayon"] }
 ```
 
 Then, inside a function that returns a `Result`:
 
 ```rust
-use long_screen::{run, Control, Options, VideoSource};
-use long_screen_decode::Options as DecodeOptions;
+use long_screen::{run, Control, DecodeOptions, Options, VideoSource};
 
 let mut source = VideoSource::open("recording.mov".as_ref(), DecodeOptions::default())?;
 let control = Control::new(); // clone it to another thread to pause or stop the run
@@ -142,16 +140,16 @@ File / Blob (chunked random-access reads via the npm package mediabunny)
   → IndexedDB native-size tiles / coverage bitmap / diagnostics
 ```
 
-Decoding is the only step that depends on browser APIs: `FrameSource` produces `RGBA`, not a canvas, for the passes that follow. Registration, layering, the pose graph, compositing, tile encode/decode, and other algorithms all live in the Wasm core compiled from `rust/core`; TypeScript is a thin shell around it (UI, Worker RPC, I/O, orchestration). Deno tests and the browser load the same core, so algorithm behavior verified in Deno is the same behavior you get in the browser. Outside the browser, `rust/long-screen` drives the same engine with native decoders in place of WebCodecs and an in-memory store in place of IndexedDB. See the [architecture doc](docs/ARCHITECTURE.md) (in Chinese) for details (sections 11 and 12 are the current module-by-module ownership list and what's deliberately kept in TS); the history of the migration is recorded in [docs/history/2026-09-rust-migration-log.md](docs/history/2026-09-rust-migration-log.md) (finished, doesn't reflect current state).
+Decoding is the only step that depends on browser APIs: `FrameSource` produces `RGBA`, not a canvas, for the passes that follow. Registration, layering, the pose graph, compositing, tile encode/decode, and other algorithms all live in the Wasm core compiled from `rust/long-screen` (its `kernels` and `engine` modules); TypeScript is a thin shell around it (UI, Worker RPC, I/O, orchestration). Deno tests and the browser load the same core, so algorithm behavior verified in Deno is the same behavior you get in the browser. Outside the browser, `rust/long-screen` drives the same engine with native decoders in place of WebCodecs and an in-memory store in place of IndexedDB. See the [architecture doc](docs/ARCHITECTURE.md) (in Chinese) for details (sections 11 and 12 are the current module-by-module ownership list and what's deliberately kept in TS); the history of the migration is recorded in [docs/history/2026-09-rust-migration-log.md](docs/history/2026-09-rust-migration-log.md) (finished, doesn't reflect current state).
 
 ### Directory layout
 
 ```text
-rust/core         The algorithms (motion, layers, tracking, compositing, presentation kernels), with no FFI
-rust/engine       The run's state machine (scan, solve, render, presentation), driven step by step by a host
-rust/wasm         The core's extern "C" exports; compiles into the three builds core.wasm / core.simd.wasm / core.threads.wasm
-rust/decode       Native video decoding: AVFoundation, Media Foundation, or a user-installed ffmpeg
-rust/long-screen  Native driver library and the `long-screen` command line
+rust/long-screen  The one published crate: the native driver library and the `long-screen` command line, with its layers as modules:
+  src/kernels     The algorithms (motion, layers, tracking, compositing, presentation kernels), with no FFI
+  src/engine      The run's state machine (scan, solve, render, presentation), driven step by step by a host
+  src/decode      Native video decoding: AVFoundation, Media Foundation, or a user-installed ffmpeg
+rust/wasm         The kernels' and engine's extern "C" exports; compiles into the three builds core.wasm / core.simd.wasm / core.threads.wasm
 rust/python       The Python package (PyO3 + maturin) over rust/long-screen
 rust/bench        Native benchmarks of the core kernels on the public test recordings
 src/core          TS shell around the core: registration, layering, pose graph, keyframes, compositing, rasterization, loading the core and picking its build (src/core/wasm/**)

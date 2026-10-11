@@ -1,4 +1,4 @@
-/** The keyframe index state object (`long_screen_engine::keyframes`), mirroring `rust/wasm/src/keyframes.rs`. */
+/** The keyframe index state object (`long_screen::engine::keyframes`), mirroring `rust/wasm/src/keyframes.rs`. */
 import type { Feature } from '../../types.ts';
 import type { Core } from './core.ts';
 import type { CoreExports } from './exports.ts';
@@ -6,7 +6,7 @@ import { ByteReader, ByteWriter } from './bytes.ts';
 import { writeFeatures } from './features.ts';
 import { FreeGuard } from './memory.ts';
 
-/** One `long_screen_engine::keyframes::KeyframeIndex` in core memory. `free()` releases it (the solve pass does at
+/** One `long_screen::engine::keyframes::KeyframeIndex` in core memory. `free()` releases it (the solve pass does at
  *  its end); one nobody frees is released when it is garbage collected. */
 export class KeyframeIndexState {
   private static readonly registry = new FinalizationRegistry<{ exports: CoreExports; handle: number }>(({ exports, handle }) =>

@@ -1,5 +1,5 @@
 /** Layer-learner handles: accumulates per-frame motion-discontinuity evidence across a whole recording and builds
- *  the regions from it (mirrors `rust/wasm/src/layers.rs`, over `rust/engine/src/layers.rs`). */
+ *  the regions from it (mirrors `rust/wasm/src/layers.rs`, over `rust/long-screen/src/engine/layers.rs`). */
 import type { Gray, MotionField, Region } from '../../types.ts';
 import { readFinished, writeManual } from './regions.ts';
 import { takeResult } from './bytes.ts';
@@ -52,7 +52,7 @@ if (LEARNER_ARRAYS.length !== LEARNER_ARRAY_COUNT) {
   throw new Error(`CORE_LAYOUT_MISMATCH: LEARNER_ARRAYS has ${LEARNER_ARRAYS.length} entries, expected ${LEARNER_ARRAY_COUNT}.`);
 }
 
-/** Core-resident layer learner (rust/engine/src/layers.rs over rust/core/src/layers.rs): `add()` per motion field,
+/** Core-resident layer learner (rust/long-screen/src/engine/layers.rs over rust/long-screen/src/kernels/layers.rs): `add()` per motion field,
  *  `read()` for the accumulators, `finish()` for the regions, `free()` always. The scan pass owns its own learner
  *  inside its session; this handle serves the layer-learning tests. */
 export class LearnerHandle {
@@ -137,7 +137,7 @@ export class LearnerHandle {
     return { ...out, informativeFrames: counts[0], nativeFrames: counts[1] } as unknown as LearnerAccumulators;
   }
   /** The regions for a `nativeWidth × nativeHeight` recording analysed at `factor`: the automatic layout, or the
-   *  hand-placed `manual` one (rust/engine/src/layers.rs `RegionLearner::finish`). */
+   *  hand-placed `manual` one (rust/long-screen/src/engine/layers.rs `RegionLearner::finish`). */
   finish(nativeWidth: number, nativeHeight: number, manual: Region[], factor: number): Region[] {
     const manualPtr = writeManual(this.core, this.exports, manual);
     const length = this.core.check(

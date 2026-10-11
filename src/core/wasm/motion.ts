@@ -265,7 +265,7 @@ export function resampleGray(core: Core, g: Gray, scale: number): Gray {
   return { width, height, data: core.readBytes(output, width * height) };
 }
 /** Non-overlapping `size×size` native texture samples around `features` (analysis-resolution points scaled by
- *  `factor`), clamped to `region`, first `count` accepted in feature order — `rust/core/src/motion.rs::extract_patches`.
+ *  `factor`), clamped to `region`, first `count` accepted in feature order — `rust/long-screen/src/kernels/motion.rs::extract_patches`.
  *  `native` may be the resident luma plane a solve pass already holds in core memory (its pointer is used
  *  directly) or a plain `Gray` (copied into scratch first). */
 export function extractPatches(
@@ -312,7 +312,7 @@ export function extractPatches(
   return out;
 }
 /** When translation fails, asks explicitly whether `previous` (resampled at each candidate scale) explains
- *  `current` — `rust/core/src/motion.rs::probe_scale`, fusing the whole per-scale resample/extract/match/
+ *  `current` — `rust/long-screen/src/kernels/motion.rs::probe_scale`, fusing the whole per-scale resample/extract/match/
  *  hypothesis/audit loop into one call. */
 export function probeScale(
   core: Core,

@@ -3,8 +3,8 @@
 use crate::memory::{slice, slice_mut};
 use crate::wire::Reader;
 use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::yuv::hdr::{self, Packing, Transfer};
-use long_screen_core::yuv::{Format as FrameFormat, Plane, Signal};
+use long_screen::kernels::yuv::hdr::{self, Packing, Transfer};
+use long_screen::kernels::yuv::{Format as FrameFormat, Plane, Signal};
 
 /// Converts one decoded frame as laid out by `VideoFrame.copyTo` (`src`, `src_len` bytes; `planes` points at
 /// four `(offset, stride)` u32 pairs, unused ones ignored) to `width × height` RGBA at `dst`. `format` and
@@ -58,8 +58,8 @@ pub extern "C" fn ls_frame_to_rgba(
         }
         layout[i] = plane;
     }
-    long_screen_core::yuv::convert(src, format, &layout, w, h, signal, out).min(i32::MAX as usize)
-        as i32
+    long_screen::kernels::yuv::convert(src, format, &layout, w, h, signal, out)
+        .min(i32::MAX as usize) as i32
 }
 
 /// Converts `width × height` R'G'B' at `pixels` (4 bytes per pixel, `packing` 0 RGBA8 or 1 RGB10A2; an HDR signal

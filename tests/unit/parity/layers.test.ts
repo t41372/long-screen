@@ -118,7 +118,7 @@ Deno.test('core parity: LayerLearner accumulators and regions match the frozen T
       `the gate must reject some frames and accept others (${acc.informativeFrames})`,
     );
     ring.free();
-    // finish() runs on the learner's own accumulators and reference frame (rust/engine/src/layers.rs): the regions
+    // finish() runs on the learner's own accumulators and reference frame (rust/long-screen/src/engine/layers.rs): the regions
     // must be identical to those the region builder makes from the frozen accumulation and the same reference frame.
     const strip = (regions: Region[]) => regions.map((r) => ({ ...r, mask: r.mask && [...r.mask] }));
     const frozen = core.finishRegions(

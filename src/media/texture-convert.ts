@@ -3,7 +3,7 @@
  *  `copyTo` at all; the 2D canvas then costs ~350 ms for a 3024 × 2018 frame, measured in Chrome 154 on Apple
  *  silicon), and HDR frames, which every browser's own RGB conversion either tone-maps (Chrome's canvas and
  *  `copyTo`) or leaves coded. What comes back is the coded signal; for an HDR stream the core then undoes its
- *  transfer (rust/core/src/yuv/hdr.rs).
+ *  transfer (rust/long-screen/src/kernels/yuv/hdr.rs).
  *
  *  WebGL2 with `UNPACK_COLORSPACE_CONVERSION_WEBGL = NONE` returned the coded values in Chrome 154, Safari 27 and
  *  Firefox 157 for SDR, PQ and HLG frames alike (within 2 levels of the encoder's input on the format matrix), so it

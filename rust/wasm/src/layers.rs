@@ -1,4 +1,4 @@
-//! Layer-learner handles (`long_screen_engine::layers::RegionLearner`, which the scan session also owns):
+//! Layer-learner handles (`long_screen::engine::layers::RegionLearner`, which the scan session also owns):
 //! accumulates per-frame motion-discontinuity evidence across a whole recording (`src/core/layers.ts`), keeps the
 //! last informative native frame, and builds the regions at `finish()`.
 
@@ -7,8 +7,8 @@ use crate::memory::HandleTable;
 use crate::regions::{read_manual, write_finished};
 use crate::wire::{Reader, LEARNER_FIELD_BYTES, LEARNER_MOTION_BYTES};
 use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::layers::{Field as LearnerField, FieldMotion, Learner};
-use long_screen_engine::layers::RegionLearner;
+use long_screen::engine::layers::RegionLearner;
+use long_screen::kernels::layers::{Field as LearnerField, FieldMotion, Learner};
 
 use super::memory::{slice, slice_mut};
 

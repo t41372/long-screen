@@ -6,12 +6,13 @@ rust-version = "1.94"
 license = "MIT"
 repository = "https://github.com/t41372/long-screen"
 homepage = "https://long-screen.yi-ting.com"
-description = "Long Screen as a native library and command line: a screen recording in, one big screenshot out"
+description = "Long Screen as a Rust library and command line: a screen recording in, one big screenshot out"
 readme = "README.md"
 keywords = ["screenshot", "screen-recording", "stitching", "panorama", "long-screenshot"]
-categories = ["command-line-utilities", "multimedia::video", "multimedia::images", "computer-vision"]
-# Published (crates-v<version> tags, .github/workflows/release-crates.yml): only what the build and the crate page need.
-include = ["Cargo.toml", "README.md", "LICENSE", "src/**/*.rs"]
+categories = ["command-line-utilities", "multimedia::video", "multimedia::images", "computer-vision", "wasm"]
+# Published (crates-v<version> tags, .github/workflows/release-crates.yml): only what the build and the crate page
+# need. The engine's catalogue embeds catalog/*.json.
+include = ["Cargo.toml", "README.md", "LICENSE", "src/**/*.rs", "catalog/*.json"]
 
 [lib]
 name = "long_screen"
@@ -21,26 +22,86 @@ name = "long-screen"
 path = "src/bin/long-screen.rs"
 required-features = ["cli"]
 
+[[example]]
+name = "parity"
+required-features = ["driver"]
+
+[[example]]
+name = "probe"
+required-features = ["decode"]
+
+[[test]]
+name = "driver"
+required-features = ["driver"]
+
+[[test]]
+name = "decode"
+required-features = ["decode"]
+
 [features]
-default = ["cli"]
+# Native hosts get everything. The web page's WebAssembly (rust/wasm) turns the defaults off and keeps only the
+# kernels and the engine, so no decoder, thread pool, catalogue or JSON parser reaches the .wasm.
+default = ["cli", "decode", "driver", "rayon", "catalog"]
 # The `long-screen` command line (argument parsing). The library itself needs none of it.
-cli = ["dep:clap"]
+cli = ["driver", "decode", "dep:clap"]
+# The driver API at the crate root: `run`, its options and result, the sources and the in-memory row store.
+# `float_roundtrip`: numbers read from JSON (the parity harness's frame times) must be the exact doubles.
+driver = ["catalog", "dep:png", "dep:sha2", "dep:serde_json", "serde_json/preserve_order", "serde_json/float_roundtrip"]
+# Native video decoding (the `decode` module, `VideoSource`): AVFoundation on macOS, Media Foundation on Windows, a
+# user-installed ffmpeg everywhere. ffprobe's numbers are read as the exact doubles too.
+decode = [
+  "dep:serde",
+  "dep:serde_json",
+  "serde_json/float_roundtrip",
+  "dep:objc2",
+  "dep:objc2-foundation",
+  "dep:objc2-av-foundation",
+  "dep:objc2-core-media",
+  "dep:objc2-core-video",
+  "dep:objc2-core-foundation",
+  "dep:windows",
+]
+# The kernels run `pool::par_for` chunks on rayon's thread pool; results do not depend on the thread count. Never
+# enabled for wasm: the threaded WebAssembly build has its own Web Worker helpers.
+rayon = ["dep:rayon"]
+# The embedded zh/en message catalogue and its formatter (`engine::catalog`). Native hosts format diagnostics with
+# it; the web page formats them with its own i18n catalogue.
+catalog = ["dep:serde_json"]
 
 [dependencies]
-# The other published crates, pinned exactly: results depend on the core, the engine and this driver coming from the
-# same release (.github/workflows/release-crates.yml checks the pins against the tag).
-# Kernels run on rayon's thread pool (`pool::par_for`); results do not depend on the thread count.
-long-screen-core = { path = "../core", version = "=0.1.0", features = ["rayon"] }
-long-screen-engine = { path = "../engine", version = "=0.1.0" }
-long-screen-decode = { path = "../decode", version = "=0.1.0" }
-rayon = "1.12.0"
+# Every exp/pow/log/hypot the kernels and the engine compute (clippy.toml forbids std's forms). The WebAssembly
+# build's compiler-builtins resolves std's math to this same musl-derived code, so calling it directly gives the
+# page's results bit for bit on every native host too, instead of whatever the system's math library rounds to.
+# Pinned to the copy the pinned toolchain (rust-toolchain.toml) vendors, whose source is identical to 0.2.16: a
+# toolchain bump must recheck it, and the scenario fingerprints on the three wasm builds show any drift.
+libm = "=0.2.16"
+rayon = { version = "1.12.0", optional = true }
 # The tile codec, at the settings the web page encodes tiles with (rust/wasm/src/png.rs), so the bytes match.
-png = "=0.18.1"
+png = { version = "=0.18.1", optional = true }
 # Row fingerprints (the format scripts/fingerprint-scenarios.ts writes) and the JSON report.
-sha2 = "0.11.0"
-# `float_roundtrip`: numbers read from JSON (the parity harness's frame times, ffprobe's) must be the exact doubles.
-serde_json = { version = "1.0.152", features = ["preserve_order", "float_roundtrip"] }
+sha2 = { version = "0.11.0", optional = true }
+# The catalogues (catalog/*.json, exported from src/i18n by scripts/export-catalog.ts), the driver's JSON values and
+# ffprobe's output.
+serde_json = { version = "1.0.152", optional = true }
+serde = { version = "1.0.229", features = ["derive"], optional = true }
 clap = { version = "4.6.7", features = ["derive"], optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = { version = "0.6.5", optional = true }
+objc2-foundation = { version = "0.3.2", optional = true }
+objc2-av-foundation = { version = "0.3.2", features = ["objc2-core-media", "objc2-core-video"], optional = true }
+objc2-core-media = { version = "0.3.2", optional = true }
+objc2-core-video = { version = "0.3.2", optional = true }
+objc2-core-foundation = { version = "0.3.2", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", optional = true, features = [
+  "Win32_Foundation",
+  "Win32_Media_MediaFoundation",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_Variant",
+] }
 
 [dev-dependencies]
 png = "=0.18.1"

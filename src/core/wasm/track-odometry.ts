@@ -1,5 +1,5 @@
 /** `track.ts::odometry` fused into one call — split out of `wasm/track.ts`. The solve session calls the core
- *  directly (rust/engine/src/solve/); this marshalling is what tests/unit/parity/track.test.ts checks the core
+ *  directly (rust/long-screen/src/engine/solve/); this marshalling is what tests/unit/parity/track.test.ts checks the core
  *  against the frozen oracle through. */
 import type { Feature, Gray, Point, Rect, Region } from '../../types.ts';
 import type { Core, LabelMask } from './core.ts';
@@ -123,7 +123,7 @@ export function odometry(core: Core, exports: CoreExports, inputs: OdometryInput
   const decision = ODOMETRY_DECISION_TAGS[tag], ambiguous = view.getUint32(24, true) === 1, weakStep = view.getUint32(28, true) === 1;
   const stepError = view.getFloat64(32, true);
   // The 'tracked' confidence (including the exp(-stepError / 20) factor) is fully computed in Rust
-  // (rust/core/src/track/odometry.rs's `odometry` — see its WHY comment) with `f64::exp`, a software libm
+  // (rust/long-screen/src/kernels/track/odometry.rs's `odometry` — see its WHY comment) with `f64::exp`, a software libm
   // identical on every engine, rather than finished here with the host's own `Math.exp`.
   return {
     decision,

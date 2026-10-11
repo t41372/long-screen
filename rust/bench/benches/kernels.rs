@@ -10,20 +10,20 @@
 //!
 //! `benches/pipeline.rs` runs the whole native pipeline over a longer window of two of the cases.
 
-use long_screen_bench::{load_fixture, manifest};
-use long_screen_core::compositor::{composite_tile, Observation, TileBuffers, QUALITY_BLOCK};
-use long_screen_core::consistency::{consistency_mask, MaskInput, Neighbour};
-use long_screen_core::features::{extract_features, match_features, Feature};
-use long_screen_core::geometry::Rect;
-use long_screen_core::layers::{informative, Field, FieldMotion, Learner};
-use long_screen_core::motion::{
+use long_screen::kernels::compositor::{composite_tile, Observation, TileBuffers, QUALITY_BLOCK};
+use long_screen::kernels::consistency::{consistency_mask, MaskInput, Neighbour};
+use long_screen::kernels::features::{extract_features, match_features, Feature};
+use long_screen::kernels::geometry::Rect;
+use long_screen::kernels::layers::{informative, Field, FieldMotion, Learner};
+use long_screen::kernels::motion::{
     estimate_motion, refine_native, Gray, MatchPoints, MotionField, Point,
 };
-use long_screen_core::pyramid::assemble_parent;
-use long_screen_core::raster::{downscale_gray, downscaled_size, grayscale};
-use long_screen_core::region::Region;
-use long_screen_core::voting::Ring;
-use long_screen_core::yuv::{self, Format, Plane, Signal};
+use long_screen::kernels::pyramid::assemble_parent;
+use long_screen::kernels::raster::{downscale_gray, downscaled_size, grayscale};
+use long_screen::kernels::region::Region;
+use long_screen::kernels::voting::Ring;
+use long_screen::kernels::yuv::{self, Format, Plane, Signal};
+use long_screen_bench::{load_fixture, manifest};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 

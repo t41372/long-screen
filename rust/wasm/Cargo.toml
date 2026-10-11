@@ -10,10 +10,10 @@ description = "The WebAssembly exports the Long Screen web page calls (scalar, S
 crate-type = ["cdylib"]
 
 [dependencies]
-long-screen-core = { path = "../core" }
-# The run's state machines (pose graph, keyframe index, scan). Without its catalogue: the page formats diagnostics
-# with its own i18n, so serde_json stays out of the .wasm.
-long-screen-engine = { path = "../engine", default-features = false }
+# The kernels and the engine's state machines, without the crate's native defaults (the driver, the decoders, rayon,
+# the catalogue): the page decodes in the browser and formats diagnostics with its own i18n, so none of their
+# dependencies reach the .wasm.
+long-screen = { path = "../long-screen", default-features = false }
 # Tile PNG codec (replaces the hand-rolled Sub filter + browser CompressionStream + JS CRC32 table — see
 # src/png.rs). Pinned exact: a `png` point release can change its Adaptive-filter heuristic or its error Display
 # text, either of which this crate depends on byte-for-byte (fingerprints) or string-for-string (`classify` in

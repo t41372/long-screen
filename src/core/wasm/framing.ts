@@ -1,5 +1,5 @@
 /** Presentation canvases (mirrors `rust/wasm/src/framing.rs`): the engine's framing session
- *  (`long_screen_engine::framing::FramingSession`) that `src/core/framing.ts::buildFramedCanvas` drives for one framed
+ *  (`long_screen::engine::framing::FramingSession`) that `src/core/framing.ts::buildFramedCanvas` drives for one framed
  *  canvas, plus the layout/coordinate mapping the parity tests check on their own. */
 import type { Rect, Region, RGBA } from '../../types.ts';
 import type { Core } from './core.ts';
@@ -119,7 +119,7 @@ export interface FramingSource {
   tileCount: number;
   attached: boolean;
 }
-/** A framed canvas the session built (`long_screen_engine::framing::FramedCanvas`). */
+/** A framed canvas the session built (`long_screen::engine::framing::FramedCanvas`). */
 export interface FramedCanvas {
   id: string;
   width: number;
@@ -149,7 +149,7 @@ export interface DetachedTile {
   existed: boolean;
   touched?: number;
 }
-/** One step of a framing session (`long_screen_engine::framing::Step`). */
+/** One step of a framing session (`long_screen::engine::framing::Step`). */
 export type FramingStep =
   /** Read the reference frame and pass it to `reference()`. */
   | { kind: 'reference' }

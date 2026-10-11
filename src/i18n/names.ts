@@ -1,6 +1,6 @@
 /** Display names for regions and canvases. The names the pipeline persists are a closed zh vocabulary, not text in
  *  the viewer's language: the Rust core and src/core/wasm/regions.ts name auto-detected regions (固定界面, 固定分隔界面
- *  — which rust/core/src/regions/crops.rs also matches on — and 内容画布 N), src/core/layers.ts names the unassigned
+ *  — which rust/long-screen/src/kernels/regions/crops.rs also matches on — and 内容画布 N), src/core/layers.ts names the unassigned
  *  layer, src/ui/regions.ts names manual regions, and solve/state.ts and core/framing.ts append the fragment and
  *  framed-presentation suffixes. Keeping them canonical keeps persisted projects, parity oracles and scenario
  *  fingerprints independent of the UI language; they are translated here, at display time, which also covers

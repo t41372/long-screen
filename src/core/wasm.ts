@@ -1,4 +1,5 @@
-/** Adapter for the Rust reconstruction core (`rust/core`, compiled to `assets/core.wasm`).
+/** Adapter for the Rust reconstruction core (the `long-screen` crate's kernels and engine, exported by `rust/wasm`
+ *  and compiled to `assets/core.wasm`).
  *
  *  This is the only place TypeScript touches Wasm linear memory. Every kernel call follows one shape:
  *  reserve arena space, copy inputs in, call, copy outputs out, leave the arena for the next call to replan.

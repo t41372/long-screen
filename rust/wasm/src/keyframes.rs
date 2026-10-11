@@ -1,4 +1,4 @@
-//! The solve pass's keyframe index (`long_screen_engine::keyframes::KeyframeIndex`), one handle per
+//! The solve pass's keyframe index (`long_screen::engine::keyframes::KeyframeIndex`), one handle per
 //! `src/core/keyframes.ts` instance. Records are `bytes.rs` records; features travel separately in the usual
 //! serialised layout (`wire::FEATURE_BYTES` each).
 //!
@@ -11,8 +11,8 @@ use crate::features::read_features;
 use crate::memory::{slice, slice_mut, HandleTable};
 use crate::wire::FEATURE_BYTES;
 use crate::{STATUS_BAD_ARGUMENT, STATUS_OK};
-use long_screen_core::features::DESCRIPTOR_WORDS;
-use long_screen_engine::keyframes::{KeyframeIndex, Retrieval};
+use long_screen::engine::keyframes::{KeyframeIndex, Retrieval};
+use long_screen::kernels::features::DESCRIPTOR_WORDS;
 
 struct Session {
     index: KeyframeIndex,

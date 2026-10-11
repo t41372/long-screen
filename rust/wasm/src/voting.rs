@@ -4,8 +4,8 @@
 use crate::memory::{slice, slice_mut, HandleTable};
 use crate::wire::{read_optional_rect, read_rects, Reader, VOTING_REGION_BYTES};
 use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::region::{Mask as RegionMask, Region as RegionDef};
-use long_screen_core::voting::{Finalized, Ring};
+use long_screen::kernels::region::{Mask as RegionMask, Region as RegionDef};
+use long_screen::kernels::voting::{Finalized, Ring};
 
 /// Finalised voting records waiting to be read by the adapter, oldest first.
 struct VotingHandle {

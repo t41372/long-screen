@@ -1,5 +1,5 @@
 /** FROZEN TypeScript oracle for the framing (presentation canvas) port: the parity oracle for
- *  rust/core/src/framing.rs (tests/unit/parity/framing.test.ts). Verbatim copy of `src/core/framing.ts` as of the
+ *  rust/long-screen/src/kernels/framing.rs (tests/unit/parity/framing.test.ts). Verbatim copy of `src/core/framing.ts` as of the
  *  port (see git history for the exact commit); production now calls the Rust core. Not used by production code.
  *  Do not "fix" this — if a bug is found here, the same bug must exist (or have existed) in the shipped behaviour,
  *  and the fix belongs in a new commit, not a silent edit of the frozen copy. */

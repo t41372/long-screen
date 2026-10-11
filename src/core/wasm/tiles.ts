@@ -1,4 +1,4 @@
-/** The engine's tile cache (`long_screen_engine::tiles`, via `rust/wasm/src/tiles.rs`): residency, LRU eviction,
+/** The engine's tile cache (`long_screen::engine::tiles`, via `rust/wasm/src/tiles.rs`): residency, LRU eviction,
  *  the memory budget, dirty bookkeeping and the encode/decode counters. Tile planes live in core memory; `planes()`
  *  reports where, and those pointers stay valid while the tile is resident (or, once evicted, until `release()`). */
 import type { Core } from './core.ts';

@@ -207,7 +207,7 @@ function readRegions(core: Core, exports: CoreExports, handle: number, width: nu
 }
 
 /** Name of the region that owns the native pixels a hand-placed layout leaves uncovered
- *  (`rust/engine/src/layers.rs::UNASSIGNED_NAME`); region names are a fixed zh vocabulary. */
+ *  (`rust/long-screen/src/engine/layers.rs::UNASSIGNED_NAME`); region names are a fixed zh vocabulary. */
 const UNASSIGNED_NAME = '未指定区域 · 屏幕坐标观察';
 
 /** Decodes a finished region set (`rust/wasm/src/regions.rs::write_finished`) at `r`'s position. An automatic

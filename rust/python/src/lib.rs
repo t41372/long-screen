@@ -9,8 +9,8 @@
 mod frames;
 mod result;
 
+use long_screen::decode;
 use long_screen::{run, Control, Error, Locale, Observer, Options, Progress, VideoSource};
-use long_screen_decode as decode;
 use pyo3::create_exception;
 use pyo3::exceptions::{PyException, PyFileNotFoundError, PyValueError};
 use pyo3::prelude::*;

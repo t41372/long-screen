@@ -3,19 +3,19 @@
 //! and drops the pass's scratch.
 
 use crate::context::{pad, t, Ctx};
-use crate::scan::Features;
-use crate::source::FrameSource;
-use crate::value::{detail, rect, to_fixed, Js, Obj};
-use long_screen_core::features::{Feature, DESCRIPTOR_WORDS};
-use long_screen_core::region::{Mask, Region as Shape};
-use long_screen_core::regions::{Kind, RegionOut};
-use long_screen_engine::catalog::{Locale, Param};
-use long_screen_engine::diagnostic::Diagnostic as EngineDiagnostic;
-use long_screen_engine::pose_graph::{PoseEdge, PoseNode, PoseRow, Write};
-use long_screen_engine::solve::{
+use crate::engine::catalog::{Locale, Param};
+use crate::engine::diagnostic::Diagnostic as EngineDiagnostic;
+use crate::engine::pose_graph::{PoseEdge, PoseNode, PoseRow, Write};
+use crate::engine::solve::{
     Begin, Effect, Keyframe, Placement, Poll, ScanFields, SolveConfig, SolveRegion, SolveSession,
     VotingRecord, VOTING_RING_BYTES,
 };
+use crate::kernels::features::{Feature, DESCRIPTOR_WORDS};
+use crate::kernels::region::{Mask, Region as Shape};
+use crate::kernels::regions::{Kind, RegionOut};
+use crate::scan::Features;
+use crate::source::FrameSource;
+use crate::value::{detail, rect, to_fixed, Js, Obj};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -313,7 +313,7 @@ fn solve_diagnostic(d: &EngineDiagnostic, l: Locale) -> Obj {
 }
 
 /// Stored compact features as the session takes them (`ls_solve_run`).
-fn features(f: &long_screen_engine::scan::CompactFeatures) -> Vec<Feature> {
+fn features(f: &crate::engine::scan::CompactFeatures) -> Vec<Feature> {
     (0..f.score.len())
         .map(|i| {
             let mut descriptor = [0u32; DESCRIPTOR_WORDS];

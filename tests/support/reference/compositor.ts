@@ -1,5 +1,5 @@
 // Diagnostics advanced with production: one TEMPORAL_OR_ALIGNMENT_CONFLICT per frame and canvas (src/core/compositor.ts).
-/** FROZEN pre-migration Compositor (parity oracle for rust/core/src/compositor.rs). Not used by production code. */
+/** FROZEN pre-migration Compositor (parity oracle for rust/long-screen/src/kernels/compositor.rs). Not used by production code. */
 import type { CanvasMeta, Diagnostic, Placement, Rect, Region, RGBA } from '../../../src/types.ts';
 import type { KV } from '../../../src/storage/db.ts';
 import { iterate } from '../../../src/storage/db.ts';

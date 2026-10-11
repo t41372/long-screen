@@ -8,7 +8,7 @@ use crate::wire::{
     MOTION_FIELD_HEADER_BYTES, PATCH_BYTES, POINT_BYTES, REFINEMENT_BYTES,
 };
 use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::motion::{
+use long_screen::kernels::motion::{
     audit_translation, detect_scale, estimate_motion, extract_patches, probe_scale,
     refine_native_at, refine_patches, refine_translation, resample_gray, select_native_points,
     translation_hypotheses, verify_translation, Gray, MatchPoints, Motion, NativeRefinement, Patch,

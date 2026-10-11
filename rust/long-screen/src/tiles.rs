@@ -3,9 +3,9 @@
 //! `tile-index/` rows. Tiles are PNG, encoded with the same `png` crate settings the page uses
 //! (`rust/wasm/src/png.rs`: `Compression::Fast`, the default adaptive filter), so the bytes are the same.
 
+use crate::engine::tiles::{StoredTile, Tile, TileCache, TileKey};
 use crate::store::Store;
 use crate::value::{Js, Obj, Typed};
-use long_screen_engine::tiles::{StoredTile, Tile, TileCache, TileKey};
 use std::io::Cursor;
 
 /// RGBA → PNG, as `ls_png_encode` does.

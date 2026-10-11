@@ -140,7 +140,7 @@ function rawReport(
 ): ConversionReport {
   return { method, ms: choice?.ms, ...(transfer ? { hdr: { transfer, verified: choice?.verified ?? false, aboveShare } } : {}) };
 }
-/** Codes of rust/core/src/yuv.rs `Format::from_code`. */
+/** Codes of rust/long-screen/src/kernels/yuv.rs `Format::from_code`. */
 const FRAME_FORMATS: Record<string, number> = { I420: 0, I422: 1, I444: 2, NV12: 3 };
 /** `VideoFrame.copyTo` in the frame's own YUV layout (I420, I422, I444, NV12) plus the core's conversion to RGBA — libyuv's
  *  integer math, which is what Chrome's `copyTo({ format: 'RGBA' })` computes for a software-decoded frame — for

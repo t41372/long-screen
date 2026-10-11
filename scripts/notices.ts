@@ -62,7 +62,8 @@ interface AboutJson {
 }
 
 /** The crate the page's .wasm files are built from (scripts/build-core.sh): only its dependency closure ships in the
- *  page. Other workspace crates (the engine, decoder, CLI) carry dependencies that never reach the browser. */
+ *  page. It takes the long-screen crate without its native default features; those (the driver, decoders, thread
+ *  pool and CLI) and the other workspace crates carry dependencies that never reach the browser. */
 const SHIPPED_CRATE = 'long-screen-wasm';
 
 /** Third-party (non-workspace) Rust crates compiled into the page's .wasm, via cargo-about when installed. */
@@ -94,7 +95,7 @@ async function rustNoticesViaCargoAbout(root: string): Promise<NoticeEntry[] | u
   const entries: NoticeEntry[] = [];
   for (const crate of parsed.crates) {
     if (crate.package.source === null) {
-      continue; // workspace-local crate (long-screen-wasm, long-screen-core), not a third-party dependency
+      continue; // workspace-local crate (long-screen-wasm, long-screen), not a third-party dependency
     }
     const found = textFor.get(`${crate.package.name}@${crate.package.version}`);
     if (!found) {
@@ -115,10 +116,41 @@ async function rustNoticesViaCargoAbout(root: string): Promise<NoticeEntry[] | u
   return entries;
 }
 
-/** Fallback when cargo-about isn't installed: `cargo metadata` for the dependency list and declared license, plus
- *  the crate's own vendored license file(s) in the local cargo registry source cache (already downloaded — cargo
- *  can't have built the core without it) as the license text. */
+/** Fallback when cargo-about isn't installed: `cargo tree` for what the shipped crate links, `cargo metadata` for each
+ *  crate's declared license, plus the crate's own vendored license file(s) in the local cargo registry source cache
+ *  (already downloaded — cargo can't have built the core without it) as the license text. */
 async function rustNoticesViaCargoMetadata(root: string): Promise<NoticeEntry[]> {
+  // Only what the shipped crate actually links: its wasm32 normal-dependency closure, with the features it is built
+  // with. `cargo tree -p` resolves features for that package alone, as `cargo build -p` does; `cargo metadata`'s
+  // resolve graph unifies the features every workspace member asks for, so it would add the native driver's,
+  // decoders' and CLI's dependencies (and rayon), which the page never ships.
+  const tree = await run('cargo', [
+    'tree',
+    '--locked',
+    '-p',
+    SHIPPED_CRATE,
+    '--target',
+    'wasm32-unknown-unknown',
+    '-e',
+    'normal',
+    '--prefix',
+    'none',
+    '--format',
+    '{p}',
+    '--manifest-path',
+    join(root, 'rust/Cargo.toml'),
+  ], rustCwd(root));
+  if (!tree.ok) {
+    throw new Error(`cargo tree failed (${SHIPPED_CRATE} dependency licenses):\n${tree.stderr}`);
+  }
+  const linked = new Set<string>();
+  for (const line of tree.stdout.split('\n')) {
+    const found = line.match(/^(\S+) v(\S+)/);
+    if (found) linked.add(`${found[1]}@${found[2]}`);
+  }
+  if (!linked.size) {
+    throw new Error(`cargo tree listed no dependencies of ${SHIPPED_CRATE}`);
+  }
   const result = await run('cargo', [
     'metadata',
     '--format-version',
@@ -142,27 +174,11 @@ async function rustNoticesViaCargoMetadata(root: string): Promise<NoticeEntry[]>
       repository: string | null;
       manifest_path: string;
     }[];
-    workspace_members: string[];
-    resolve: { nodes: { id: string; deps: { pkg: string }[] }[]; root: string | null } | null;
   } = JSON.parse(result.stdout);
-  // Only what the shipped crate actually links (its wasm32 dependency closure), not every workspace member's deps.
-  const shipped = meta.packages.find((p) => p.name === SHIPPED_CRATE && p.source === null);
-  if (!shipped || !meta.resolve) {
-    throw new Error(`cargo metadata did not resolve ${SHIPPED_CRATE}'s dependencies`);
-  }
-  const deps = new Map(meta.resolve.nodes.map((node) => [node.id, node.deps.map((d) => d.pkg)]));
-  const linked = new Set<string>();
-  const queue = [shipped.id];
-  while (queue.length) {
-    const id = queue.pop()!;
-    if (linked.has(id)) continue;
-    linked.add(id);
-    queue.push(...(deps.get(id) ?? []));
-  }
   const cargoHome = Deno.env.get('CARGO_HOME') || join(Deno.env.get('HOME') || '', '.cargo');
   const entries: NoticeEntry[] = [];
   for (const pkg of meta.packages) {
-    if (pkg.source === null || !linked.has(pkg.id)) {
+    if (pkg.source === null || !linked.has(`${pkg.name}@${pkg.version}`)) {
       continue; // workspace-local, or a dependency of a crate the page does not ship
     }
     if (!pkg.license) {

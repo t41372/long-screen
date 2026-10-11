@@ -13,7 +13,7 @@ fn main() {
     };
     let path = std::path::Path::new(video);
     let mut source =
-        VideoSource::open(path, long_screen_decode::Options::default()).expect("open the video");
+        VideoSource::open(path, long_screen::decode::Options::default()).expect("open the video");
     let result = match run(&mut source, &Options::default(), &mut (), &Control::new()) {
         Ok(r) => r,
         Err(Error::Failed { result, .. }) => *result,

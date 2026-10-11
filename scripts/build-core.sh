@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Builds the Rust reconstruction core (long-screen-core, exported through the long-screen-wasm crate in rust/wasm)
-# to WebAssembly three times from one source: a baseline (scalar) module for
-# every engine; a SIMD128 module for engines whose WebAssembly.validate accepts v128 (Chrome 91+, Safari 16.4+); and
-# a SIMD128 + shared-memory threads module for cross-origin-isolated pages, whose kernels split work across pool
-# helper workers (rust/core/src/pool.rs). The adapter picks at load time (src/core/wasm/loader.ts::planCore). Outputs under
+# Builds the Rust reconstruction core (the long-screen crate's kernels and engine without its native default
+# features, exported through the long-screen-wasm crate in rust/wasm) to WebAssembly three times from one source: a
+# baseline (scalar) module for every engine; a SIMD128 module for engines whose WebAssembly.validate accepts v128
+# (Chrome 91+, Safari 16.4+); and a SIMD128 + shared-memory threads module for cross-origin-isolated pages, whose
+# kernels split work across pool helper workers (rust/long-screen/src/kernels/pool.rs). The adapter picks at load
+# time (src/core/wasm/loader.ts::planCore). Outputs under
 # rust/target/{scalar,simd,threads}/wasm32-unknown-unknown/release/long_screen_wasm.wasm; scripts/build.ts
 # copies them to dist/assets/core.wasm, core.simd.wasm and core.threads.wasm.
 #

@@ -151,7 +151,7 @@ export interface Diagnostic {
 }
 /** A frame's Feature[] as stored under scan-features/<frame>: three flat typed arrays instead of n small objects
  * each carrying an 8-element descriptor. Analysis-resolution coordinates fit an Int16Array; only solve() reads this,
- * and the run deletes it once solve() has consumed it. Built by the scan session (rust/engine/src/scan.rs). */
+ * and the run deletes it once solve() has consumed it. Built by the scan session (rust/long-screen/src/engine/scan.rs). */
 export interface CompactFeatures {
   xy: Int16Array;
   score: Float32Array;
@@ -259,7 +259,7 @@ export interface FrameImage {
   index: number;
 }
 /** A decoded frame in its own YUV layout, as `VideoFrame.copyTo` wrote it, with what converting it needs: the core's
- *  format and matrix codes (rust/core/src/yuv.rs). `release()` returns the buffer to the source's pool. */
+ *  format and matrix codes (rust/long-screen/src/kernels/yuv.rs). `release()` returns the buffer to the source's pool. */
 export interface FramePlanes {
   data: Uint8Array;
   layout: { offset: number; stride: number }[];

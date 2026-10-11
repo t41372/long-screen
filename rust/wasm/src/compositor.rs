@@ -1,11 +1,11 @@
-//! ABI surface of the engine's compositor (`long_screen_engine::compositor`, mirrored by
+//! ABI surface of the engine's compositor (`long_screen::engine::compositor`, mirrored by
 //! `src/core/wasm/compositor.ts`).
 
 use crate::memory::{slice, slice_mut};
 use crate::wire::{read_rects, Reader};
 use crate::STATUS_BAD_ARGUMENT;
 
-// --- The engine's compositor (`long_screen_engine::compositor`): one placement as a resumable job over the tile
+// --- The engine's compositor (`long_screen::engine::compositor`): one placement as a resumable job over the tile
 // cache (`tiles.rs`), the per-canvas temporal indexes and the diagnostics it raises. Mirrored by
 // `Compositor` in src/core/wasm/compositor.ts. ---
 
@@ -16,12 +16,12 @@ use crate::temporal::{
 use crate::tiles::{read_str, tiles};
 use crate::wire::read_rect as rect_at;
 use crate::STATUS_OK;
-use long_screen_core::geometry::Rect;
-use long_screen_core::temporal::TemporalRecord;
-use long_screen_engine::compositor::{
+use long_screen::engine::compositor::{
     CompositeError, Compositor, CompositorDiagnostic, Frame, Placement, Step, TemporalFlush,
     TemporalPolicy,
 };
+use long_screen::kernels::geometry::Rect;
+use long_screen::kernels::temporal::TemporalRecord;
 use std::collections::HashSet;
 
 /// Placement descriptor (`ls_compositor_begin`): u32 canvas ptr, u32 canvas len, rect (32 bytes) at 8, u32 code

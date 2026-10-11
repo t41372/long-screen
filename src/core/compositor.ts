@@ -17,14 +17,14 @@ import type { RegionAtlas } from './layers.ts';
 import { union } from './math.ts';
 import { t } from '../i18n/index.ts';
 /** Persisted row shape (`temporal/<canvasId>/<id>` — frozen; do not change the key layout or field order): a
- *  `TemporalRow` (rust/core/src/temporal.rs's `TemporalRecord`) plus the canvas it belongs to. */
+ *  `TemporalRow` (rust/long-screen/src/kernels/temporal.rs's `TemporalRecord`) plus the canvas it belongs to. */
 type TemporalRegion = TemporalRow & { canvasId: string };
 
 export type CompositeStats = CompositorStats;
 
 const releaseCompositor = new FinalizationRegistry((engine: CompositorHandle) => engine.free());
 
-/** Pixel ownership, not alpha blending: the engine's compositor (`long_screen_engine::compositor`, docs/ARCHITECTURE.md
+/** Pixel ownership, not alpha blending: the engine's compositor (`long_screen::engine::compositor`, docs/ARCHITECTURE.md
  *  §七) paints each placement into the tile cache and resolves temporal conflicts against the per-canvas temporal
  *  records. This wrapper is its host: it brings in the tiles and stored temporal records a placement asks for,
  *  writes the records it changed, and formats the diagnostics it raises. */

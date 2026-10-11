@@ -246,7 +246,7 @@ impl From<Vec<Js>> for Js {
 }
 
 /// `{ x, y, width, height }`.
-pub fn rect(r: long_screen_core::geometry::Rect) -> Js {
+pub fn rect(r: crate::kernels::geometry::Rect) -> Js {
     Js::Obj(
         Obj::new()
             .with("x", r.x)
@@ -257,9 +257,9 @@ pub fn rect(r: long_screen_core::geometry::Rect) -> Js {
 }
 
 /// Reads `{ x, y, width, height }`.
-pub fn read_rect(v: &Js) -> Option<long_screen_core::geometry::Rect> {
+pub fn read_rect(v: &Js) -> Option<crate::kernels::geometry::Rect> {
     let o = v.as_obj()?;
-    Some(long_screen_core::geometry::Rect {
+    Some(crate::kernels::geometry::Rect {
         x: o.num("x"),
         y: o.num("y"),
         width: o.num("width"),
@@ -268,8 +268,8 @@ pub fn read_rect(v: &Js) -> Option<long_screen_core::geometry::Rect> {
 }
 
 /// A diagnostic `detail` payload as a value.
-pub fn detail(v: &long_screen_engine::diagnostic::Value) -> Js {
-    use long_screen_engine::diagnostic::Value;
+pub fn detail(v: &crate::engine::diagnostic::Value) -> Js {
+    use crate::engine::diagnostic::Value;
     match v {
         Value::Number(n) => Js::Num(*n),
         Value::Bool(b) => Js::Bool(*b),
@@ -291,7 +291,7 @@ pub fn write_json(v: &Js, out: &mut String) {
         Js::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Js::Num(n) => {
             if n.is_finite() {
-                out.push_str(&long_screen_engine::catalog::js_number(*n))
+                out.push_str(&crate::engine::catalog::js_number(*n))
             } else {
                 out.push_str("null")
             }
@@ -434,10 +434,10 @@ pub fn fingerprint(v: &Js, run: &str) -> String {
 /// tie of the exact binary value), in plain notation below 1e21.
 pub fn to_fixed(value: f64, digits: usize) -> String {
     if !value.is_finite() {
-        return long_screen_engine::catalog::js_number(value);
+        return crate::engine::catalog::js_number(value);
     }
     if value.abs() >= 1e21 {
-        return long_screen_engine::catalog::js_number(value);
+        return crate::engine::catalog::js_number(value);
     }
     let negative = value < 0.0;
     // Rust prints the exact decimal expansion of the double with enough digits; round that half up.
@@ -481,7 +481,7 @@ pub fn to_fixed(value: f64, digits: usize) -> String {
 /// most three fraction digits.
 pub fn to_locale(value: f64) -> String {
     if !value.is_finite() {
-        return long_screen_engine::catalog::js_number(value);
+        return crate::engine::catalog::js_number(value);
     }
     let fixed = to_fixed(value, 3);
     let (int, frac) = fixed.split_once('.').unwrap_or((&fixed, ""));

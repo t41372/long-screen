@@ -1,7 +1,7 @@
 /** Pool helper for the threaded core build (`core.threads.wasm`). It instantiates the same module on the shared
  *  memory it is handed, moves its stack (and TLS, if the build has any) onto blocks the owning instance allocated
  *  for it, reports ready, and then parks in `ls_pool_worker` for the life of the core — that call never returns,
- *  so this worker handles exactly one message. See rust/core/src/pool.rs for the job protocol. */
+ *  so this worker handles exactly one message. See rust/long-screen/src/kernels/pool.rs for the job protocol. */
 interface HelperInit {
   module: WebAssembly.Module;
   memory: WebAssembly.Memory;

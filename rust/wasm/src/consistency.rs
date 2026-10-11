@@ -4,8 +4,8 @@
 use crate::memory::{slice, slice_mut};
 use crate::wire::{read_rects, Reader};
 use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::consistency::{consistency_mask, MaskInput, Neighbour, Vote};
-use long_screen_core::geometry::Rect;
+use long_screen::kernels::consistency::{consistency_mask, MaskInput, Neighbour, Vote};
+use long_screen::kernels::geometry::Rect;
 
 /// Vote descriptor: 4 × i32 (x0, y0, w, h) followed by two u32 pointers (bits, clean).
 /// # Safety

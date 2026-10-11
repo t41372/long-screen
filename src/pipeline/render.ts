@@ -1,7 +1,7 @@
 // Host of the render pass. The pass itself — placement resolution through the pose graph and the attachment chain,
 // the duplicate and fixed-region shortcuts, the world-consistency mask against the ±1 frames and solve's voting
 // records, compositing, the observation ledger and the canvas metadata it updates — is the engine's
-// `RenderSession` (rust/engine/src/render.rs). This file decodes, reads what the session asks for from storage
+// `RenderSession` (rust/long-screen/src/engine/render.rs). This file decodes, reads what the session asks for from storage
 // (plans, voting records, canvas rows, tiles, temporal rows), writes what it produces on the same cadence as
 // before, formats its diagnostics, and reports progress. The one-frame lookahead loop mirrors scan()'s and
 // solve()'s decode-loop shape but is NOT the same skeleton: on a decode failure or natural end it composites the

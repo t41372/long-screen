@@ -2,14 +2,14 @@
 //! the `scan/` rows, the first frame's facts, the region rows and the diagnostics' text.
 
 use crate::context::{error_text, pad, t, Ctx};
+use crate::engine::catalog::{Locale, Param};
+use crate::engine::diagnostic::Diagnostic as EngineDiagnostic;
+use crate::engine::scan::{CompactFeatures, FieldLayout, FrameMeta, ScanRecord, ScanSession};
+use crate::kernels::motion::MotionField;
+use crate::kernels::regions::{Kind, RegionOut};
 use crate::source::FrameSource;
 use crate::tiles::encode_png;
 use crate::value::{rect, Js, Obj};
-use long_screen_core::motion::MotionField;
-use long_screen_core::regions::{Kind, RegionOut};
-use long_screen_engine::catalog::{Locale, Param};
-use long_screen_engine::diagnostic::Diagnostic as EngineDiagnostic;
-use long_screen_engine::scan::{CompactFeatures, FieldLayout, FrameMeta, ScanRecord, ScanSession};
 use std::collections::HashMap;
 
 /// The scan rows solve reads back natively (features are scratch the page deletes after solve; they never reach
@@ -361,7 +361,7 @@ fn finish(
     let session = session.unwrap_or_else(|| ScanSession::new(width, height, ctx.factor));
     let done = session.finish(&[]);
     drop(session);
-    let (labels, counts) = long_screen_engine::layers::label_atlas(&done.regions, width, height)
+    let (labels, counts) = crate::engine::layers::label_atlas(&done.regions, width, height)
         .ok_or("Too many regions for the pixel atlas.")?;
     ctx.atlas = Some((labels, counts));
     ctx.project_regions = Js::Arr(done.regions.iter().map(|r| region_js(r, false)).collect());

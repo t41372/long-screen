@@ -104,7 +104,8 @@
 
 1. 打開 https://github.com/t41372/long-screen/actions/workflows/python.yml ，按 **Run workflow**，分支選 `main`，執行。它會建出五個平台的 wheel 和 sdist 並跑測試，但不會發布（只有 `py-v` 標籤會發布）。
 2. 打開 https://github.com/t41372/long-screen/actions/workflows/release-npm.yml ，同樣按 **Run workflow**，分支選 `main`。它會建出 npm 套件，把 tarball 存成這次執行的附件（artifact）`npm-package`，不會發布。記下這次執行的編號（網址裡 `/runs/` 後面的數字），第 6.3 節要用。
-3. 兩個都要綠燈才往下走。失敗的話先修，修好推 `main` 再跑一次。
+3. 打開 https://github.com/t41372/long-screen/actions/workflows/release-crates.yml ，同樣按 **Run workflow**，分支選 `main`。手動執行只跑檢查：在 Linux、macOS、Windows 上打包 crate、從打包結果編譯並跑測試，Linux 上再把打包結果不帶預設 feature 編譯成 wasm32（網頁用的形狀），不會發布（只有 `crates-v` 標籤會發布）。
+4. 三個都要綠燈才往下走。失敗的話先修，修好推 `main` 再跑一次。
 
 ### 6.1 PyPI（第一版自動發布）
 
@@ -155,7 +156,7 @@ crates.io 的可信發布只能用在已經存在的 crate 上，新 crate 一�
    - **Repository name**：`long-screen`
    - **Workflow filename**：`release-crates.yml`
    - **Environment**：`crates-io`
-8. 0.1.0 **不要**推 `crates-v0.1.0` 標籤：目前的 `release-crates.yml` 會試著再發一次 0.1.0，在發布那一步因為版本已存在而失敗（不會造成損害，但會留下一次紅燈）。發布的 `.crate` 檔裡已經記錄了 commit（`.cargo_vcs_info.json`），不打標籤也查得到 0.1.0 是哪個 commit。之後的版本（0.1.1 起）才用標籤發布。
+8. 手動發布、設好可信發布之後，在同一個 commit 上推 `crates-v0.1.0` 標籤：`git tag -a crates-v0.1.0 -m "crate 0.1.0" <commit>` → `git push origin crates-v0.1.0`。工作流程照樣在三個系統上檢查；發布那一步先查 crates.io，看到 0.1.0 已經在上面就跳過上傳，整次執行是綠燈，並留下一則「already on crates.io; nothing to publish」的說明。這樣 0.1.0 和之後的版本一樣有標籤可查。之後的版本（0.1.1 起）由標籤發布。
 9. crates.io 的 crate 設定裡還有一個「只允許可信發布」（Trusted Publishing only）的選項，開啟後 API token 就不能再發新版本。建議等第一次用標籤自動發布成功之後再開：開了之後，萬一工作流程出問題，就沒有手動發布這條退路了（要先把它關掉）。
 
 之後的版本：改 `rust/long-screen/Cargo.toml` 的版本 → commit → 推 `main` → `git tag -a crates-v0.1.1 -m "crate 0.1.1" <commit>` → `git push origin crates-v0.1.1`。工作流程先在三個系統上打包、編譯、跑測試，全部通過才由 `rust-lang/crates-io-auth-action` 換到一個 30 分鐘有效的 token 發布，工作結束時 token 自動撤銷。crates.io 會寄信通知每一次發布。
@@ -238,7 +239,7 @@ git tag -d py-v0.1.0                   # 刪掉本機的標籤
 - 可信發布被拒絕（錯誤訊息通常提到 token exchange、OIDC 或 not authorized）：註冊表上的設定和實際不一致。逐項比對倉庫擁有者 `t41372`、倉庫名 `long-screen`、workflow 檔名、環境名稱。改好設定後按 **Re-run failed jobs**。npm 的設定只能刪掉重建，而且新設定又有 48 小時期限。
 - PyPI 上傳到一半中斷：`python.yml` 設了 `skip-existing`，按 **Re-run failed jobs** 會跳過已經上傳的檔案，只補上剩下的。
 - npm：發布是一次完成的，重跑時如果版本已經在 npm 上，工作流程只會印一行說明。
-- crates.io：只有一個 crate，上傳是一次完成的。重跑時如果顯示版本已存在，代表上一次其實已經成功。
+- crates.io：只有一個 crate，上傳是一次完成的。重跑時如果版本已經在 crates.io 上，發布步驟會跳過上傳、只留一則說明，代表上一次其實已經成功。
 
 **本機手動發布時出現「already exists」或「cannot publish over the previously published versions」。** 這個版本號已經用掉了（可能是你自己剛剛發成功）。先到註冊表網頁確認；需要再發就改用下一個版本號。
 
@@ -265,7 +266,7 @@ git tag -d py-v0.1.0                   # 刪掉本機的標籤
 - [ ] `cargo publish --dry-run --locked -p long-screen` 通過
 - [ ] `deno task build:package` 後，`npm pack --dry-run` 列出 12 個檔案、版本正確
 - [ ] `git push origin main`，網站部署正常（這一步會更新正式網站）
-- [ ] GitHub 上手動執行「Python package」和「npm package」工作流程，都是綠燈（第 6.0 節）
+- [ ] GitHub 上手動執行「Python package」、「npm package」和「Rust crates」工作流程，都是綠燈（第 6.0 節）
 
 第一次發布（0.1.0）：
 
@@ -274,7 +275,8 @@ git tag -d py-v0.1.0                   # 刪掉本機的標籤
 - [ ] crates.io token（7 天、只有 `publish-new`、限 `long-screen`）已建立並 `cargo login`
 - [ ] **【不可撤回】** `cargo publish --locked -p long-screen`
 - [ ] token 已撤銷、`cargo logout`；docs.rs 建置成功
-- [ ] crates.io 可信發布已設定（`t41372` / `long-screen` / `release-crates.yml` / `crates-io`）；0.1.0 不推 `crates-v` 標籤
+- [ ] crates.io 可信發布已設定（`t41372` / `long-screen` / `release-crates.yml` / `crates-io`）
+- [ ] 推 `crates-v0.1.0`（指向手動發布的 commit），工作流程綠燈、發布步驟說明 0.1.0 已存在而跳過
 - [ ] 下載 npm 工作流程的 `npm-package` 附件，確認 12 個檔案
 - [ ] **【不可撤回】** `npm publish long-screen-0.1.0.tgz --access public`（或 `npm stage publish` 後在網站核准）
 - [ ] npmjs.com 上看得到 0.1.0；npm 的可信發布**先不設**

@@ -1,5 +1,5 @@
 //! Presentation canvases (`src/core/wasm/framing.ts` mirrors this file): the engine's framing session
-//! (`long_screen_engine::framing::FramingSession`), one handle per framed canvas `buildFramedCanvas` builds, plus
+//! (`long_screen::engine::framing::FramingSession`), one handle per framed canvas `buildFramedCanvas` builds, plus
 //! the layout/coordinate mapping the parity tests check on their own.
 //!
 //! `ls_framing_step` returns its result's length (error convention 6) and leaves it in the handle for
@@ -19,13 +19,13 @@ use crate::memory::{slice, slice_mut, HandleTable};
 use crate::tiles::{tiles, TILE_PLANES_BYTES};
 use crate::wire::{read_rect, Reader, VOTING_REGION_BYTES};
 use crate::{STATUS_BAD_ARGUMENT, STATUS_OK};
-use long_screen_core::framing::{frame_coordinate, frame_layout, Coordinate, Layout};
-use long_screen_core::geometry::Rect;
-use long_screen_core::region::{Mask as RegionMask, Region};
-use long_screen_engine::framing::{
+use long_screen::engine::framing::{
     FramingError, FramingSession, Outcome, Reference, SaveTile, SourceCanvas, Step,
 };
-use long_screen_engine::tiles::Tile;
+use long_screen::engine::tiles::Tile;
+use long_screen::kernels::framing::{frame_coordinate, frame_layout, Coordinate, Layout};
+use long_screen::kernels::geometry::Rect;
+use long_screen::kernels::region::{Mask as RegionMask, Region};
 
 /// Bytes of one serialised `Layout` (`ls_frame_layout`'s `out`): pane rect (32), content rect (32), dx f64 (8),
 /// dy f64 (8), seam_x f64 (8), width f64 (8), height f64 (8).

@@ -1,7 +1,7 @@
 /** Checks shared by the converters (src/media/convert.ts, src/media/gpu-convert.ts): which YUV matrix a frame takes,
  *  and how close one conversion of a frame must be to another to take a run. Dependency-free, because
  *  convert-worker.ts is bundled on its own and must not pull in src/core/wasm.ts. */
-/** Index into rust/core/src/yuv.rs `MATRICES`, or undefined for BT.2020 (its gamut conversion to sRGB is left to
+/** Index into rust/long-screen/src/kernels/yuv.rs `MATRICES`, or undefined for BT.2020 (its gamut conversion to sRGB is left to
  *  the canvas) or for GBR/RGB-native planes (there is no YUV matrix to invert at all — a 4:4:4 stream whose colour
  *  space reports `matrix: 'rgb'`, or, measured on VP9 Profile 1's GBR planes decoded by Chrome, an I444 frame whose
  *  `VideoFrame.colorSpace.matrix` comes back `null`; declined here rather than left to the first-frame agreement
@@ -25,7 +25,7 @@ export function hdrTransfer(container: VideoColorSpaceInit | undefined, frame?: 
   }
   return undefined;
 }
-/** rust/core/src/yuv.rs `Signal` colour code: transfer × 8 + matrix × 2 + full range. */
+/** rust/long-screen/src/kernels/yuv.rs `Signal` colour code: transfer × 8 + matrix × 2 + full range. */
 export function colourCode(matrix: 'bt709' | 'bt601' | 'bt2020', fullRange: boolean, transfer: 'sdr' | 'pq' | 'hlg'): number {
   return { sdr: 0, pq: 8, hlg: 16 }[transfer] + { bt709: 0, bt601: 2, bt2020: 4 }[matrix] + (fullRange ? 1 : 0);
 }

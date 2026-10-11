@@ -1,4 +1,4 @@
-/** Byte-exact parity between the Rust tracking verdicts (rust/core/src/track.rs + rust/wasm/src/track.rs) and the frozen
+/** Byte-exact parity between the Rust tracking verdicts (rust/long-screen/src/kernels/track.rs + rust/wasm/src/track.rs) and the frozen
  *  TS oracle they replace (tests/support/reference/track.ts). Runs on whichever build `LONGSCREEN_CORE` selects
  *  (scalar/simd/threads — see tests/support/core.ts). Covers the stateless verdicts and the fused odometry,
  *  reacquire and driftCorrection calls. */
@@ -488,7 +488,7 @@ Deno.test('core parity: track.driftCorrection matches the frozen oracle (correct
     );
     const plane = core.gray(w, h);
     if (c.preFilled) core.grayscaleInto(residentFrame, plane);
-    // The solve session takes `max(confidence, confidenceFloor)` of a correction (rust/engine/src/solve/region.rs).
+    // The solve session takes `max(confidence, confidenceFloor)` of a correction (rust/long-screen/src/engine/solve/region.rs).
     const drift = core.trackDriftCorrection({
       anchor,
       pose,

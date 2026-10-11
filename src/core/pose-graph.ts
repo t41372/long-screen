@@ -5,7 +5,7 @@ import { core, type PoseEdge, type PoseGraphState, type PoseNode, type PoseWrite
 export type { PoseEdge, PoseNode } from './wasm.ts';
 /** Sweeps per relaxation step: the host checks for pause and stop after each one. */
 const SWEEPS_PER_STEP = 1;
-/** Host for the pose graph state object (`rust/engine/src/pose_graph.rs`): the graph itself lives in core memory;
+/** Host for the pose graph state object (`rust/long-screen/src/engine/pose_graph.rs`): the graph itself lives in core memory;
  * this class reads it back from the store once (all `node/` rows, then all `edge/` rows) and stores every row the
  * engine hands back, with the same `put`/`putMany` calls in the same order. Nodes it returns are copies: a change
  * goes through a method (`unpin`), not through the object. */

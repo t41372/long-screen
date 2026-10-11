@@ -1,4 +1,4 @@
-//! The solve pass's session (`long_screen_engine::solve::SolveSession`), one handle per `src/core/wasm/solve.ts`
+//! The solve pass's session (`long_screen::engine::solve::SolveSession`), one handle per `src/core/wasm/solve.ts`
 //! instance. Inputs and results are `bytes.rs` records:
 //!
 //! - region (`ls_solve_new`): str id, str name, str kind, u8 moving, u8 unassigned, u8 code; its shape is the
@@ -21,12 +21,12 @@ use crate::memory::{slice, slice_mut, HandleTable};
 use crate::pose_graph::{status as graph_status, write_writes};
 use crate::voting::read_voting_regions;
 use crate::{STATUS_BAD_ARGUMENT, STATUS_OK};
-use long_screen_core::features::{Feature, DESCRIPTOR_WORDS};
-use long_screen_core::geometry::Rect;
-use long_screen_engine::solve::{
+use long_screen::engine::solve::{
     Begin, Effect, KeyPatch, Keyframe, Placement, Plane, Poll, ScanFields, SolveConfig, SolveError,
     SolveRegion, SolveSession, VotingRecord, VOTING_RING_BYTES,
 };
+use long_screen::kernels::features::{Feature, DESCRIPTOR_WORDS};
+use long_screen::kernels::geometry::Rect;
 use std::sync::Arc;
 
 struct Session {
@@ -200,7 +200,7 @@ fn write_poll(out: &mut Out, poll: &Poll) {
     }
 }
 
-fn write_attachment(out: &mut Out, a: &long_screen_engine::attachments::Attachment) {
+fn write_attachment(out: &mut Out, a: &long_screen::engine::attachments::Attachment) {
     out.str(&a.id);
     out.str(&a.target);
     out.f64(a.dx);

@@ -79,7 +79,7 @@ export class RunContext {
    *  how many per-frame, per-region voting layers solve() finalised, and how many of those were finalised on
    *  fewer than CONSISTENCY_VERDICT_MIN partner comparisons (a "thin" layer can still flag cells, but never
    *  carries a positive verdict). Only the first and last frames of a run should ever be thin; a larger count
-   *  means the voting ring's partner selection (rust/core/src/voting.rs `Ring::partners`) has stopped sharing comparisons fairly. */
+   *  means the voting ring's partner selection (rust/long-screen/src/kernels/voting.rs `Ring::partners`) has stopped sharing comparisons fairly. */
   consistencyVotedLayers = 0;
   consistencyThinLayers = 0;
   /** Core-resident scan session (frames, layer learning) of the scan pass; released by the pass, or run()'s finally. */

@@ -3,7 +3,7 @@
 use crate::memory::{slice, slice_mut};
 use crate::wire::{read_rect, read_rects};
 use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::chrome::{stationary_boundary, sticky_occlusions, Axis, Choose};
+use long_screen::kernels::chrome::{stationary_boundary, sticky_occlusions, Axis, Choose};
 
 /// Persistent appearance edge in `rgba` (width×height) along `axis` (0 = x, 1 = y) between `from` and `to`,
 /// sampling cross coordinates `cross_from..cross_to`; `choose` 0 = first, 1 = last. Returns the coordinate

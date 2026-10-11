@@ -3,7 +3,7 @@
 
 use crate::memory::{slice, slice_mut};
 use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::raster::{
+use long_screen::kernels::raster::{
     downscale_gray, downscaled_size, grayscale, halve_rgba, mean_difference,
 };
 

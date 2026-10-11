@@ -5,15 +5,15 @@
 //   context.ts       RunContext: state and services every pass shares, plus checkpoint/report/persist/
 //                     putMany/commitRows/passMismatch and StorageError/StopRequested. Shell, not algorithm.
 //   scan.ts          the scan pass (motion evidence, layer learning, region finalisation). Shell.
-//   solve/solve.ts   the solve pass's host: drives the engine's solve session (rust/engine/src/solve/) frame by
+//   solve/solve.ts   the solve pass's host: drives the engine's solve session (rust/long-screen/src/engine/solve/) frame by
 //                     frame, stores the rows it hands back, relaxes the pose graph, deletes the scratch. Shell.
 //   solve/diagnostics.ts  the session's structured diagnostics as journal rows. Shell.
-//   render.ts        the render pass's host: drives the engine's render session (rust/engine/src/render.rs)
+//   render.ts        the render pass's host: drives the engine's render session (rust/long-screen/src/engine/render.rs)
 //                     frame by frame with the one-frame lookahead, reads what it asks for, stores what it hands
 //                     back. Shell.
 //   presentation.ts  run()'s framing and pyramid stages. Shell.
 //   consistency.ts   the exported pure consistencyMask() and its ConsistencyBox/Vote/Record types. Shell
-//                     around a Rust-core call (rust/core/src/consistency.rs).
+//                     around a Rust-core call (rust/long-screen/src/kernels/consistency.rs).
 // Public surface kept importable from this file: `Engine` (constructor signature, run(), setPaused(), stop(),
 // `stopRequested` (tests set it), `project`, `store`, `tiles`, `diagnostics`, `factor`, `refineRadius`, `noise`)
 // and `EngineEvents`.

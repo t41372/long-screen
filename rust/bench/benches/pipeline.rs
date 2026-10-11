@@ -5,11 +5,11 @@
 //! the driver (the core's YUV conversion, HDR through its PQ path); each benchmark then times one complete run on one
 //! thread, so the figure does not depend on the machine's core count. Decoding is not included.
 
+use long_screen::kernels::yuv::{self, Format, Plane, Signal};
 use long_screen::source::{Frame, FrameSource, Frames, MediaInfo, SourceError};
 use long_screen::value::{Js, Obj};
 use long_screen::{run, Control, Options};
 use long_screen_bench::{load_span, manifest, Span};
-use long_screen_core::yuv::{self, Format, Plane, Signal};
 use std::sync::OnceLock;
 
 fn main() {

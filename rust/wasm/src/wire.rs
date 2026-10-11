@@ -3,8 +3,8 @@
 //! one redefining its own `u = |i| u32::from_le_bytes(..)` closure.
 
 use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::features::DESCRIPTOR_WORDS;
-use long_screen_core::geometry::Rect;
+use long_screen::kernels::features::DESCRIPTOR_WORDS;
+use long_screen::kernels::geometry::Rect;
 
 /// Bytes per serialised feature: i32 x, i32 y, f32 score, 8 × u32 descriptor.
 pub const FEATURE_BYTES: usize = 4 + 4 + 4 + DESCRIPTOR_WORDS * 4;

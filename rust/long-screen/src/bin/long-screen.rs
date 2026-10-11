@@ -5,12 +5,12 @@
 //! not be opened (no decoder for it, or ffmpeg missing where it is needed), 5 an output file could not be written.
 
 use clap::{Parser, ValueEnum};
+use long_screen::decode::{Backend as DecodeBackend, Options as DecodeOptions};
 use long_screen::value::{to_json, Js, Obj};
 use long_screen::{
     run, CanvasInfo, Control, Diagnostic, Error, Framing, Locale, Observer, Options, Progress,
     RunResult, Settings, TemporalPolicy, VideoSource,
 };
-use long_screen_decode::{Backend as DecodeBackend, Options as DecodeOptions};
 use std::fs::File;
 use std::io::{BufWriter, IsTerminal, Write};
 use std::path::{Path, PathBuf};

@@ -8,12 +8,12 @@ import { intersect } from './math.ts';
 
 export type { FrameLayout } from './wasm.ts';
 
-/** Planned output tiles a framed canvas may have before it is skipped (`long_screen_engine::framing::DEFAULT_MAX_TILES`). */
+/** Planned output tiles a framed canvas may have before it is skipped (`long_screen::engine::framing::DEFAULT_MAX_TILES`). */
 const MAX_TILES = 20000;
 
 /** Presentation is deliberately separate from reconstruction. No toolbar is translated into world coordinates,
  * no sidebar icons are stretched or repeated, and background extensions never count as observed evidence.
- * The framed canvas is built by the engine's framing session (rust/engine/src/framing.rs, docs/ARCHITECTURE.md §十
+ * The framed canvas is built by the engine's framing session (rust/long-screen/src/engine/framing.rs, docs/ARCHITECTURE.md §十
  * "呈现画布"); this module is its host — the frame-reference row and its PNG decode, the source canvas's tile index,
  * bringing tiles into the cache and storing the ones it fills, the pause/stop checkpoint before each output tile,
  * and the canvas row. */

@@ -1,10 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["core", "engine", "wasm", "decode", "bench", "long-screen", "python"]
-# Plain `cargo` commands (`cargo test --lib`, the wasm clippy runs in `deno task lint`) cover the crates that build for
-# wasm32: the core, the engine and the wasm exports. scripts/build-core.sh names the wasm crate with `-p`; native-only
-# crates (decode, bench, long-screen) are built by name with `-p` too.
-default-members = ["core", "engine", "wasm"]
+members = ["long-screen", "wasm", "bench", "python"]
+# Plain `cargo` commands mean the published crate and the wasm exports: `cargo test --lib <name>` runs the kernels',
+# the engine's and the driver's unit tests natively. They select long-screen with its native default features, so a
+# command aimed at wasm32 adds `--no-default-features`, which is how rust/wasm depends on it (scripts/build-core.sh
+# names the wasm crate with `-p`; `deno task lint` runs the wasm32 clippy that way). The native-only crates (bench,
+# python) are built by name with `-p`.
+default-members = ["long-screen", "wasm"]
 
 [profile.release]
 opt-level = 3

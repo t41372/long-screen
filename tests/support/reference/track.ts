@@ -1,5 +1,5 @@
 /** FROZEN TypeScript oracle for the solve pass's per-region tracking decisions and keyframe scoring, as they ran
- * before the port to rust/core/src/track.rs. Verbatim copy of src/pipeline/solve/track.ts plus
+ * before the port to rust/long-screen/src/kernels/track.rs. Verbatim copy of src/pipeline/solve/track.ts plus
  * KeyframeIndex.evaluateCandidates from src/core/keyframes.ts, frozen at the commit that ported them to Rust.
  * Parity oracle for tests/unit/parity/track.test.ts. Not used by production code. Do not "fix" this — if the
  * production algorithm changes, that is a behaviour change and belongs in its own commit, not a silent edit here. */

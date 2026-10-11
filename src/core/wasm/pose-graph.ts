@@ -1,4 +1,4 @@
-/** The pose graph state object (`long_screen_engine::pose_graph`), mirroring `rust/wasm/src/pose_graph.rs`: encodes
+/** The pose graph state object (`long_screen::engine::pose_graph`), mirroring `rust/wasm/src/pose_graph.rs`: encodes
  *  each call's input, and decodes the node and the rows to store into the same JS objects the store has always
  *  held (field order included — `next` only once set, and last). */
 import type { Point } from '../../types.ts';
@@ -79,7 +79,7 @@ export function readWrites(r: ByteReader): PoseWrite[] {
   return writes;
 }
 
-/** One `long_screen_engine::pose_graph::PoseGraph` in core memory. `free()` releases it; a graph nobody frees is
+/** One `long_screen::engine::pose_graph::PoseGraph` in core memory. `free()` releases it; a graph nobody frees is
  *  released when it is garbage collected. */
 export class PoseGraphState {
   private static readonly registry = new FinalizationRegistry<{ exports: CoreExports; handle: number }>(({ exports, handle }) =>

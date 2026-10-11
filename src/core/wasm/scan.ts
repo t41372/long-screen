@@ -1,5 +1,5 @@
 /** The scan pass's engine session and the motion estimate it runs per frame (mirrors `rust/wasm/src/scan.rs`, over
- *  `rust/engine/src/scan.rs`). Marshalling only: the session decides duplicates, motion, layer learning, the rows
+ *  `rust/long-screen/src/engine/scan.rs`). Marshalling only: the session decides duplicates, motion, layer learning, the rows
  *  and the diagnostics; this module copies frames in and decodes what comes back into the page's own objects. */
 import type { CompactFeatures, Feature, Gray, Motion, MotionField, Region, RGBA, ScanRecord } from '../../types.ts';
 import type { Core } from './core.ts';
@@ -127,7 +127,7 @@ export function scanSession(core: Core, exports: CoreExports, width: number, hei
 }
 
 /** Motion from analysis frame `a` to `b`, matching the given features (extracted in the core when absent); a paused
- *  pair skips matching (rust/engine/src/scan.rs `estimate_motion`). */
+ *  pair skips matching (rust/long-screen/src/engine/scan.rs `estimate_motion`). */
 export function estimateMotion(core: Core, exports: CoreExports, a: Gray, b: Gray, af?: Feature[], bf?: Feature[]): MotionField {
   if (a.width !== b.width || a.height !== b.height) throw new Error('FRAME_GEOMETRY_CHANGED');
   const capacity = MOTION_FIELD_HEADER + 8 * MOTION_BYTES + 3 * Math.ceil(a.width / MOTION_CELL) * Math.ceil(a.height / MOTION_CELL);

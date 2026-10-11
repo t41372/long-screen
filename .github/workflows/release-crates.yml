@@ -1,17 +1,20 @@
-# The Rust crates on crates.io: long-screen-core, long-screen-engine, long-screen-decode and long-screen (the native
-# driver library and the `long-screen` command line). Pushing a tag `crates-v<version>` checks that all four crates
-# carry that version, packages and builds them against each other on Linux, macOS and Windows, then publishes them in
-# dependency order by crates.io trusted publishing (no stored token). Pull requests and branches never run it, and
-# deploys of the web app do not depend on it (production builds on Cloudflare Pages from main).
+# The Rust crate on crates.io: long-screen (the driver library and the `long-screen` command line, with the kernels,
+# the engine and the native decoders as its modules). Pushing a tag `crates-v<version>` checks that the crate carries
+# that version, packages it and builds and tests it from the package on Linux, macOS and Windows, then publishes it by
+# crates.io trusted publishing (no stored token). Running the workflow by hand (Actions → Rust crates → Run workflow)
+# runs only the checks, as a preflight; it never publishes. Pull requests and branches never run it, and deploys of
+# the web app do not depend on it (production builds on Cloudflare Pages from main).
 #
-# Trusted publishing (https://crates.io/docs/trusted-publishing, RFC 3691): each crate's settings on crates.io name
-# this repository, this workflow file and the `crates-io` environment. crates.io only accepts it for crates that
-# already exist, so each crate's first version is published by hand with an API token.
+# Trusted publishing (https://crates.io/docs/trusted-publishing, RFC 3691): the crate's settings on crates.io name
+# this repository, this workflow file and the `crates-io` environment. crates.io only accepts it for a crate that
+# already exists, so the first version is published by hand with an API token (docs/RELEASING.md §6.2). A tag whose
+# version is already on crates.io (such as that first version's) passes the checks and skips the upload with a notice.
 name: Rust crates
 
 on:
   push:
     tags: ["crates-v*"]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -34,44 +37,43 @@ jobs:
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
 
-      - name: Check the tag against the crate versions
-        if: runner.os == 'Linux'
+      - name: Check the tag against the crate version
+        if: runner.os == 'Linux' && startsWith(github.ref, 'refs/tags/crates-v')
         run: |
           version="${GITHUB_REF_NAME#crates-v}"
-          cargo metadata --locked --no-deps --format-version 1 > "$RUNNER_TEMP/metadata.json"
-          status=0
-          for name in long-screen-core long-screen-engine long-screen-decode long-screen; do
-            actual=$(jq -r --arg n "$name" '.packages[] | select(.name == $n) | .version' "$RUNNER_TEMP/metadata.json")
-            if [ "$actual" != "$version" ]; then
-              echo "::error::$name is at $actual, the tag $GITHUB_REF_NAME says $version"
-              status=1
-            fi
-          done
-          # Every dependency of a published crate on another one must ask for exactly this version (=x.y.z): results
-          # depend on the core, the engine and the driver coming from the same release.
-          wrong=$(jq -r --arg v "=$version" '.packages[]
-            | select(.name | IN("long-screen-core", "long-screen-engine", "long-screen-decode", "long-screen"))
-            | .name as $p | .dependencies[]
-            | select(.name | IN("long-screen-core", "long-screen-engine", "long-screen-decode"))
-            | select(.req != $v) | "\($p) -> \(.name) \(.req)"' "$RUNNER_TEMP/metadata.json")
-          if [ -n "$wrong" ]; then
-            echo "::error::dependencies not on version $version: $wrong"
-            status=1
+          actual=$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "long-screen") | .version')
+          if [ "$actual" != "$version" ]; then
+            echo "::error::long-screen is at $actual, the tag $GITHUB_REF_NAME says $version"
+            exit 1
           fi
-          exit $status
 
-      # Packages each crate, then builds it from the package against the other packaged crates (cargo's local
-      # registry overlay), exactly as crates.io users will get it.
+      # Packages the crate, then builds it from the package with its default features, exactly as crates.io users
+      # will get it.
       - name: Package and verify
-        run: cargo publish --dry-run --locked -p long-screen-core -p long-screen-engine -p long-screen-decode -p long-screen
+        run: cargo publish --dry-run --locked -p long-screen
 
-      - name: Unit tests and doctests (crate docs and READMEs)
+      # The web page builds the same package for wasm32 without the native defaults (only the kernels and the
+      # engine); the packaged copy must build that way too. Outside the workspace, so the pinned toolchain is named.
+      - name: Build the package for wasm32 without default features
+        if: runner.os == 'Linux'
         run: |
-          cargo test --locked --lib -p long-screen-core -p long-screen-engine -p long-screen-decode -p long-screen
-          cargo test --locked --doc -p long-screen-core -p long-screen-engine -p long-screen-decode -p long-screen
+          version=$(cargo metadata --locked --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "long-screen") | .version')
+          toolchain=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          cargo package --locked --no-verify -p long-screen
+          tar -xzf "target/package/long-screen-$version.crate" -C "$RUNNER_TEMP"
+          cd "$RUNNER_TEMP/long-screen-$version"
+          cargo "+$toolchain" build --locked --target wasm32-unknown-unknown --no-default-features
+
+      - name: Unit tests and doctests (crate docs and README)
+        run: |
+          cargo test --locked --lib -p long-screen
+          cargo test --locked --doc -p long-screen
 
   publish:
     name: Publish to crates.io
+    if: startsWith(github.ref, 'refs/tags/crates-v')
     needs: check
     runs-on: ubuntu-24.04
     environment:
@@ -86,18 +88,37 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # crates.io never accepts a version twice. When this one is already there (the first version, published by
+      # hand), the run ends green without uploading.
+      - name: Check whether this version is already on crates.io
+        id: existing
+        run: |
+          version="${GITHUB_REF_NAME#crates-v}"
+          status=$(curl -s -o /dev/null -w '%{http_code}' \
+            -A "long-screen release workflow (https://github.com/${GITHUB_REPOSITORY})" \
+            "https://crates.io/api/v1/crates/long-screen/$version")
+          if [ "$status" = 200 ]; then
+            echo "::notice::long-screen $version is already on crates.io; nothing to publish"
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          elif [ "$status" = 404 ]; then
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::crates.io answered $status for long-screen $version"
+            exit 1
+          fi
+
       - name: Install the pinned Rust toolchain
+        if: steps.existing.outputs.published == 'false'
         run: rustup toolchain install
 
-      # A short-lived publish token for the crates whose trusted publisher names this workflow; the action's post step
+      # A short-lived publish token for the crate whose trusted publisher names this workflow; the action's post step
       # revokes it when the job ends.
       - uses: rust-lang/crates-io-auth-action@v1
+        if: steps.existing.outputs.published == 'false'
         id: auth
 
-      # One invocation: cargo publishes in dependency order and waits for each crate to reach the index before the
-      # next. If a run stops partway, delete nothing: rerunning fails on the crates already published, so publish the
-      # rest by hand (`cargo publish -p <crate>`) at the same commit.
       - name: Publish
-        run: cargo publish --locked -p long-screen-core -p long-screen-engine -p long-screen-decode -p long-screen
+        if: steps.existing.outputs.published == 'false'
+        run: cargo publish --locked -p long-screen
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

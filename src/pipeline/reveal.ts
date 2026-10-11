@@ -1,8 +1,8 @@
 // Reveal stage (docs/ARCHITECTURE.md §七): after the compositor has written every canvas, four more frame-major
 // passes replace what overlays burned in — a composer bar, a floating button, a scrollbar thumb, a cursor, a fade
 // veil — with the cleanest observation of the same page content, and give content that really changed over time a
-// single moment. The stage is the engine's reveal session (rust/engine/src/reveal.rs, over the algorithm in
-// rust/core/src/reveal/); this host reads the rows it asks for, brings tiles into the cache, decodes the recording
+// single moment. The stage is the engine's reveal session (rust/long-screen/src/engine/reveal.rs, over the algorithm in
+// rust/long-screen/src/kernels/reveal/); this host reads the rows it asks for, brings tiles into the cache, decodes the recording
 // once per pass, stores what it hands back, and keeps the clock, progress, pause and stop.
 import type { CanvasMeta, Diagnostic } from '../types.ts';
 import { iterate } from '../storage/db.ts';

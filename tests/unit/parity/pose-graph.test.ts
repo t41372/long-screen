@@ -1,5 +1,5 @@
-/** Byte-exact parity between the Rust pose-graph relaxation (rust/core/src/pose_graph.rs, driven through the engine's
- *  pose graph in rust/engine/src/pose_graph.rs) and the frozen TS oracle it replaces (tests/support/reference/pose-graph.ts). Runs on whichever build `LONGSCREEN_CORE` selects
+/** Byte-exact parity between the Rust pose-graph relaxation (rust/long-screen/src/kernels/pose_graph.rs, driven through the engine's
+ *  pose graph in rust/long-screen/src/engine/pose_graph.rs) and the frozen TS oracle it replaces (tests/support/reference/pose-graph.ts). Runs on whichever build `LONGSCREEN_CORE` selects
  *  (scalar/simd/threads — see tests/support/core.ts). */
 import { assertEquals } from '@std/assert';
 import { ensureCore } from '../../support/core.ts';
@@ -50,7 +50,7 @@ function cloneNodes(nodes: ReferenceNode[]): ReferenceNode[] {
   return nodes.map((n) => ({ ...n }));
 }
 
-/** The fixture as a stored graph handed to the engine's pose graph (`rust/engine/src/pose_graph.rs`), relaxed the
+/** The fixture as a stored graph handed to the engine's pose graph (`rust/long-screen/src/engine/pose_graph.rs`), relaxed the
  *  way `PoseGraph.optimize()` relaxes it: one sweep per step until it converges or runs out of sweeps. Every edge is
  *  a loop edge, which relaxes exactly like an odometry one; an index of -1 becomes an id no node has. */
 function runRust(core: Awaited<ReturnType<typeof ensureCore>>, fixture: Fixture) {

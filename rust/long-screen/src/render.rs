@@ -3,21 +3,21 @@
 //! canvas rows, tiles, temporal rows), storing what it produces, and formatting its diagnostics.
 
 use crate::context::{pad, t, Ctx};
-use crate::solve::kind_str;
-use crate::source::{Frame, FrameSource};
-use crate::value::{detail, read_rect, rect, to_locale, Js, Obj};
-use long_screen_core::geometry::Rect;
-use long_screen_core::temporal::TemporalRecord;
-use long_screen_engine::attachments::Attachment;
-use long_screen_engine::catalog::{Locale, Param};
-use long_screen_engine::compositor::{Compositor, TemporalPolicy};
-use long_screen_engine::diagnostic::Diagnostic as EngineDiagnostic;
-use long_screen_engine::pose_graph::{EdgeKind, PoseEdge, PoseGraph, PoseNode};
-use long_screen_engine::render::{
+use crate::engine::attachments::Attachment;
+use crate::engine::catalog::{Locale, Param};
+use crate::engine::compositor::{Compositor, TemporalPolicy};
+use crate::engine::diagnostic::Diagnostic as EngineDiagnostic;
+use crate::engine::pose_graph::{EdgeKind, PoseEdge, PoseGraph, PoseNode};
+use crate::engine::render::{
     CanvasMeta, ConsistencyRecord, ConsistencyVote, FrameInput, FramePlan, PlanPlacement,
     RegionKind, RenderConfig, RenderIo, RenderRegion, RenderSession, RenderStep,
 };
-use long_screen_engine::tiles::TileKey;
+use crate::engine::tiles::TileKey;
+use crate::kernels::geometry::Rect;
+use crate::kernels::temporal::TemporalRecord;
+use crate::solve::kind_str;
+use crate::source::{Frame, FrameSource};
+use crate::value::{detail, read_rect, rect, to_locale, Js, Obj};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 

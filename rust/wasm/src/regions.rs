@@ -1,5 +1,5 @@
 //! Region construction and pixel labelling (`src/core/layers.ts::LayerLearner.finish`, `RegionAtlas`), backed by
-//! `long_screen_core::regions`. Coarse-grained entry points, no per-region or per-pixel FFI:
+//! `long_screen::kernels::regions`. Coarse-grained entry points, no per-region or per-pixel FFI:
 //!   - `ls_regions_finish` builds every algorithmic-path region in one call, into a handle the adapter drains with
 //!     `ls_regions_count`/`_cells_total`/`_read_headers`/`_read_masks`/`_read_cells`/`_free`. The scan session and
 //!     the learner handle (`ls_scan_finish`, `ls_learner_finish`) hand their finished regions over the same way,
@@ -20,9 +20,9 @@ use crate::bytes::Out;
 use crate::memory::{slice, slice_mut, HandleTable};
 use crate::wire::{read_optional_rect, read_rects, Reader, VOTING_REGION_BYTES};
 use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::geometry::Rect;
-use long_screen_core::regions::{self, AtlasMask, AtlasRegion, FinishInput, Rgba};
-use long_screen_engine::layers::ManualRegion;
+use long_screen::engine::layers::ManualRegion;
+use long_screen::kernels::geometry::Rect;
+use long_screen::kernels::regions::{self, AtlasMask, AtlasRegion, FinishInput, Rgba};
 
 /// `ls_layout` selector 10: bytes of one `ls_regions_finish` request descriptor (`run_finish`).
 pub(crate) const REGIONS_FINISH_DESC_BYTES: usize = 112;

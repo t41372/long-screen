@@ -341,7 +341,7 @@ Deno.test('keyframes: a keyframe minted again for a frame already indexed replac
   index.free();
 });
 // Posting order (frame order whatever order keyframes arrive in) is checked where the postings now live:
-// rust/engine/src/keyframes.rs, `postings_stay_in_frame_order_whatever_order_keyframes_arrive_in`.
+// rust/long-screen/src/engine/keyframes.rs, `postings_stay_in_frame_order_whatever_order_keyframes_arrive_in`.
 // Failure case: a keyframe row whose patch data does not match its declared size (a damaged or foreign row) must be
 // refused before the core reads past the patch, not measured against.
 Deno.test('keyframes: a patch whose data does not match its size is refused', () => {

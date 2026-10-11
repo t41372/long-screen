@@ -1,6 +1,6 @@
 /** FROZEN TypeScript kernels: the pre-migration implementations, kept verbatim as parity oracles for the
  *  Rust core (tests/unit/parity/). Not used by production code. Do not "fix" these; a behaviour
- *  change belongs in rust/core with a deliberately updated test. */
+ *  change belongs in rust/long-screen/src/kernels with a deliberately updated test. */
 import type { Feature, Gray, Match, Rect, RGBA } from '../../../src/types.ts';
 import { contains, hamming, rng } from './math.ts';
 const random = rng(0xabc7361);

@@ -1,4 +1,4 @@
-//! The render pass's session (`long_screen_engine::render::RenderSession`), one handle per render pass, mirrored by
+//! The render pass's session (`long_screen::engine::render::RenderSession`), one handle per render pass, mirrored by
 //! `src/core/wasm/render.ts`. Inputs and results are `bytes.rs` records:
 //!
 //! - rect: f64 x, y, width, height
@@ -20,12 +20,12 @@ use crate::memory::{slice, slice_mut, HandleTable};
 use crate::pose_graph::graph;
 use crate::tiles::tiles;
 use crate::{STATUS_BAD_ARGUMENT, STATUS_OK};
-use long_screen_core::geometry::Rect;
-use long_screen_engine::attachments::Attachment;
-use long_screen_engine::render::{
+use long_screen::engine::attachments::Attachment;
+use long_screen::engine::render::{
     CanvasMeta, ConsistencyRecord, ConsistencyVote, FrameInput, FramePlan, PlanPlacement,
     RegionKind, RenderConfig, RenderIo, RenderRegion, RenderSession, RenderStep,
 };
+use long_screen::kernels::geometry::Rect;
 
 struct Session {
     session: RenderSession,

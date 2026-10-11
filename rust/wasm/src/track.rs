@@ -1,4 +1,4 @@
-//! `extern "C"` surface for `long_screen_core::track`'s stateless tracking verdicts: hub module for the track trio's ABI
+//! `extern "C"` surface for `long_screen::kernels::track`'s stateless tracking verdicts: hub module for the track trio's ABI
 //! layer plus the shared buffer-marshalling helpers `track_reacquire`/`track_keyframes` both need
 //! (`read_patches`, `fill_native_plane`, `resolve_native`). Split into `track_odometry` (`ls_track_odometry`),
 //! `track_reacquire` (`ls_track_reacquire`/`ls_track_drift_correction`), `track_keyframes`
@@ -18,8 +18,8 @@ use super::motion::read_match_points;
 use crate::memory::{slice, slice_mut};
 use crate::wire::PATCH_BYTES;
 use crate::{STATUS_BAD_ARGUMENT, STATUS_OK};
-use long_screen_core::motion::{Gray, Patch};
-use long_screen_core::track;
+use long_screen::kernels::motion::{Gray, Patch};
+use long_screen::kernels::track;
 
 fn b(v: bool) -> i32 {
     if v {
@@ -53,7 +53,7 @@ pub extern "C" fn ls_track_relocalize_verdict(
     b(track::relocalize_verdict(m, zoom_change != 0))
 }
 
-/// `long_screen_core::track::FragmentCauseGate` as a tag: 0 = none, 1 = zoom-change, 2 = probe-scale.
+/// `long_screen::kernels::track::FragmentCauseGate` as a tag: 0 = none, 1 = zoom-change, 2 = probe-scale.
 #[no_mangle]
 pub extern "C" fn ls_track_fragment_cause_gate(
     zoom_change: u32,
@@ -67,7 +67,7 @@ pub extern "C" fn ls_track_fragment_cause_gate(
     }
 }
 
-/// `decision`: 0 = tracked, 1 = static, 2 = blind, 3 = lost (see `long_screen_core::track::occlusion_eligible`).
+/// `decision`: 0 = tracked, 1 = static, 2 = blind, 3 = lost (see `long_screen::kernels::track::occlusion_eligible`).
 #[no_mangle]
 pub extern "C" fn ls_track_occlusion_eligible(
     has_previous: u32,
@@ -190,7 +190,7 @@ pub extern "C" fn ls_track_thin_overlap_correction(
     }
 }
 
-/// `long_screen_core::track::LoopVerdict` as a tag: 0 = closure, 1 = inconsistent, 2 = ambiguous, 3 = none.
+/// `long_screen::kernels::track::LoopVerdict` as a tag: 0 = closure, 1 = inconsistent, 2 = ambiguous, 3 = none.
 /// Always writes `discrepancy` (8 bytes) to `out` — unlike the correction exports above, the TS original
 /// always returns a discrepancy alongside the verdict.
 #[no_mangle]
@@ -270,7 +270,7 @@ pub extern "C" fn ls_track_zoom_changed(
     b(track::zoom_changed(rz, field_zoom))
 }
 
-/// `track.ts::regionZoom` fused with `detect_scale` (see `long_screen_core::track::region_zoom`). `NaN` means
+/// `track.ts::regionZoom` fused with `detect_scale` (see `long_screen::kernels::track::region_zoom`). `NaN` means
 /// `undefined` (never a real `detect_scale` result); a bad match buffer also yields `NaN` (matches
 /// `ls_detect_scale`'s convention of a neutral default on a bad argument, since this export has no
 /// separate status channel).
@@ -284,7 +284,7 @@ pub extern "C" fn ls_track_region_zoom(kind_moving: u32, matches: u32, count: u3
 }
 
 /// # Safety
-/// `ptr` points at `count × PATCH_BYTES` descriptors (`rust/core/src/abi/motion.rs::ls_refine_patches`'s wire
+/// `ptr` points at `count × PATCH_BYTES` descriptors (`rust/long-screen/src/kernels/abi/motion.rs::ls_refine_patches`'s wire
 /// format) whose `data` pointers each cover `size × size` readable bytes.
 pub(crate) unsafe fn read_patches<'a>(ptr: u32, count: u32) -> Option<Vec<Patch<'a>>> {
     let bytes = slice(ptr, count as usize * PATCH_BYTES)?;
@@ -304,7 +304,7 @@ pub(crate) unsafe fn read_patches<'a>(ptr: u32, count: u32) -> Option<Vec<Patch<
 }
 
 /// Fills `native_plane` (`native_width × native_height` bytes) with `current_frame`'s luma
-/// (`native_width × native_height × 4` RGBA bytes) — `long_screen_core::raster::grayscale`, the same kernel
+/// (`native_width × native_height × 4` RGBA bytes) — `long_screen::kernels::raster::grayscale`, the same kernel
 /// `ls_grayscale`/`core().grayscaleInto` already wrap, called directly (same crate, no ABI round trip) so the
 /// two lazy-fill call sites below (`ls_track_reacquire`, `ls_track_drift_correction`) share one implementation.
 ///
@@ -322,7 +322,7 @@ pub(crate) unsafe fn fill_native_plane(
     else {
         return false;
     };
-    long_screen_core::raster::grayscale(rgba, plane);
+    long_screen::kernels::raster::grayscale(rgba, plane);
     true
 }
 

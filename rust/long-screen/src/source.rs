@@ -1,18 +1,22 @@
 //! Where frames come from. A run reads its source once per pass (scan, solve, render, and the reveal's sweeps), in
 //! order, as the web page re-decodes its file for every pass; [`FrameSource::frames`] starts one such read.
 //!
-//! [`VideoSource`] decodes a file with `long-screen-decode` (AVFoundation, Media Foundation or ffmpeg) and turns each
-//! frame into RGBA with the core's converter, as the page does: 10-bit PQ/HLG frames are rounded to 8 bits first and
-//! converted through the core's HDR path. [`RawSource`] replays RGBA frames already in memory or on disk (the
-//! parity harness feeds the web page's exact frames this way).
+//! `VideoSource` (feature `decode`) decodes a file with the `decode` module (AVFoundation, Media Foundation or
+//! ffmpeg) and turns each frame into RGBA with the kernels' converter, as the page does: 10-bit PQ/HLG frames are
+//! rounded to 8 bits first and converted through the kernels' HDR path. [`RawSource`] replays RGBA frames already in
+//! memory or on disk (the parity harness feeds the web page's exact frames this way).
 
+#[cfg(feature = "decode")]
+use crate::decode::{self as decode, PixelFormat};
+#[cfg(feature = "decode")]
+use crate::kernels::yuv::{self, Format, Signal};
 use crate::value::{Js, Obj};
-use long_screen_core::yuv::{self, Format, Signal};
-use long_screen_decode::{self as decode, PixelFormat};
 use std::fmt;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+#[cfg(feature = "decode")]
+use std::path::Path;
+use std::path::PathBuf;
 
 /// Per-channel decode noise a decoded video declares (`DECODED_VIDEO_NOISE` in src/media/source.ts).
 pub const DECODED_VIDEO_NOISE: f64 = 10.0;
@@ -128,9 +132,10 @@ pub trait FrameSource: Send {
     }
 }
 
-// --- Decoded video ---
+// --- Decoded video (feature `decode`) ---
 
 /// A video file decoded natively.
+#[cfg(feature = "decode")]
 pub struct VideoSource {
     path: PathBuf,
     options: decode::Options,
@@ -138,6 +143,7 @@ pub struct VideoSource {
     info: MediaInfo,
 }
 
+#[cfg(feature = "decode")]
 impl VideoSource {
     /// Opens `path` with `options` (probing it once); errors carry the decoder's reason, including how to install
     /// ffmpeg when it is needed and missing.
@@ -183,6 +189,7 @@ impl VideoSource {
     }
 }
 
+#[cfg(feature = "decode")]
 impl FrameSource for VideoSource {
     fn info(&self) -> &MediaInfo {
         &self.info
@@ -197,6 +204,7 @@ impl FrameSource for VideoSource {
     }
 }
 
+#[cfg(feature = "decode")]
 impl VideoSource {
     fn read(&mut self, wanted: Option<Vec<bool>>) -> Result<Frames<'_>, SourceError> {
         let mut decoder =
@@ -287,6 +295,7 @@ impl VideoSource {
 
 /// The core's YUV → RGBA conversion of one decoded frame (10-bit frames rounded to 8 bits first, as the page
 /// copies them), turned for display.
+#[cfg(feature = "decode")]
 fn to_rgba(
     frame: &decode::Frame,
     signal: Signal,
@@ -321,6 +330,7 @@ fn to_rgba(
 }
 
 /// Turns an RGBA frame clockwise by `rotation` degrees (0, 90, 180, 270).
+#[cfg(feature = "decode")]
 fn rotate(w: usize, h: usize, rgba: Vec<u8>, rotation: u16) -> (usize, usize, Vec<u8>) {
     if rotation == 0 {
         return (w, h, rgba);

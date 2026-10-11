@@ -4,13 +4,13 @@
 //! Rows are written straight into the store; the page batches them (24 rows, 1.2 s) only to spare IndexedDB
 //! transactions, and what ends up stored is the same.
 
+use crate::engine::catalog::{self, Locale, Param};
+use crate::kernels::regions::RegionOut;
 use crate::source::MediaInfo;
 use crate::store::Store;
 use crate::tiles::Tiles;
 use crate::value::{Js, Obj};
 use crate::{Control, Diagnostic, Observer, Progress, Settings};
-use long_screen_core::regions::RegionOut;
-use long_screen_engine::catalog::{self, Locale, Param};
 use std::time::{Duration, Instant};
 
 /// `String(n).padStart(10, '0')`.

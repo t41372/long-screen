@@ -6,7 +6,8 @@ publish = false
 description = "Benchmarks of the Long Screen core on the public test recordings, run on CodSpeed"
 
 [dependencies]
-long-screen-core = { path = "../core" }
+# The kernels (src/lib.rs, benches/kernels.rs).
+long-screen = { path = "../long-screen", default-features = false }
 # The same encoder and settings as the core's tile export (rust/wasm/src/png.rs), which this crate cannot call
 # through its wasm-pointer ABI.
 png = "=0.18.1"
@@ -17,8 +18,9 @@ sha2 = "=0.11.0"
 [dev-dependencies]
 # CodSpeed's drop-in for divan: plain divan timing locally, CPU simulation under `cargo codspeed run` in CI.
 divan = { package = "codspeed-divan-compat", version = "=5.0.2" }
-# The native driver the pipeline benchmark runs end to end.
-long-screen = { path = "../long-screen", default-features = false }
+# The native driver the pipeline benchmark runs end to end, on rayon's pool (benches/kernels.rs sets it to one
+# thread).
+long-screen = { path = "../long-screen", default-features = false, features = ["driver", "rayon"] }
 
 [[bench]]
 name = "kernels"

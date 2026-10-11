@@ -1,11 +1,11 @@
 /** Decoded-video-frame-to-RGBA conversion (mirrors `rust/wasm/src/yuv.rs`). */
 import type { Core } from './core.ts';
 
-/** What a conversion saw: pixels brighter than SDR white (HDR signals only; rust/core/src/yuv/hdr.rs `ABOVE_WHITE`). */
+/** What a conversion saw: pixels brighter than SDR white (HDR signals only; rust/long-screen/src/kernels/yuv/hdr.rs `ABOVE_WHITE`). */
 export interface ConversionReport {
   above: number;
 }
-/** RGBA of a decoded frame given in its `VideoFrame.copyTo` layout (see rust/core/src/yuv.rs for the format and colour
+/** RGBA of a decoded frame given in its `VideoFrame.copyTo` layout (see rust/long-screen/src/kernels/yuv.rs for the format and colour
  *  codes). `dest`, when given and the right length, is filled in place instead of allocating a fresh output buffer —
  *  how `planarConverter` (src/media/convert.ts) hands this the explicit-release pool's buffer (src/media/pool.ts)
  *  instead of paying for a new 30 MB buffer every frame. Either way this is one copy out of the arena (the arena
@@ -66,7 +66,7 @@ function convert(
 }
 /** How `hdrToRGBA` receives R'G'B': RGBA8, or RGB10A2 (WebGPU `rgb10a2unorm`, red in the low ten bits). */
 export const PACKINGS = { rgba8: 0, rgb10a2: 1 } as const;
-/** Transfer codes shared with rust/core/src/yuv.rs `Signal` (1 PQ, 2 HLG). */
+/** Transfer codes shared with rust/long-screen/src/kernels/yuv.rs `Signal` (1 PQ, 2 HLG). */
 export const TRANSFERS = { pq: 1, hlg: 2 } as const;
 /** sRGB RGBA, written over `pixels` in place, of R'G'B' that a browser converted from an HDR frame without undoing its
  *  transfer (BT.2020 primaries, PQ or HLG); returns how many pixels lie above SDR white. */

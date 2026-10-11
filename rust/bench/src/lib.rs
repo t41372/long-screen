@@ -253,7 +253,7 @@ mod tests {
             assert!(c.window.count >= 3, "{}: benches need three frames", c.id);
             assert!(c.window.start + c.window.count <= c.frames, "{}", c.id);
             assert!(
-                long_screen_core::yuv::Signal::from_code(c.signal_code()).is_some(),
+                long_screen::kernels::yuv::Signal::from_code(c.signal_code()).is_some(),
                 "{}",
                 c.id
             );

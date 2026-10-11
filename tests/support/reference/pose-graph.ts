@@ -1,7 +1,7 @@
 /** FROZEN copy of `PoseGraph.optimize()`'s/residual's Gauss-Seidel relaxation math (pre-Rust-port pose-graph.ts,
  *  commit 6f838af), lifted to operate on plain arrays + CSR adjacency instead of the KV-backed `Map<string,
  *  PoseNode>` graph — the exact shape `pose-graph.ts::optimize()` now builds before handing it to
- *  `rust/core/src/pose_graph.rs`. Parity oracle for tests/unit/parity/pose-graph.test.ts. Not used by production
+ *  `rust/long-screen/src/kernels/pose_graph.rs`. Parity oracle for tests/unit/parity/pose-graph.test.ts. Not used by production
  *  code. Do not "fix": if this drifts from what the original TS computed, the port it is checking against is no
  *  longer verified. */
 export interface ReferenceNode {

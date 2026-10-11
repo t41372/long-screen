@@ -3,7 +3,7 @@
 use crate::memory::{slice, slice_mut};
 use crate::wire::{read_rects, FEATURE_BYTES, MATCH_BYTES};
 use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::features::{
+use long_screen::kernels::features::{
     extract_features, feature_words, match_features, Feature, DESCRIPTOR_WORDS,
 };
 

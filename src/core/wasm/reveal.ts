@@ -1,6 +1,6 @@
-/** The engine's reveal session (`long_screen_engine::reveal::RevealSession`, mirrors `rust/wasm/src/reveal.rs`) that
+/** The engine's reveal session (`long_screen::engine::reveal::RevealSession`, mirrors `rust/wasm/src/reveal.rs`) that
  *  `src/pipeline/reveal.ts` drives: overlay-aware block selection after the compositor. The algorithm is
- *  `rust/core/src/reveal/`; the run around it — which decisions count, the memory check, the passes, the tile writes —
+ *  `rust/long-screen/src/kernels/reveal/`; the run around it — which decisions count, the memory check, the passes, the tile writes —
  *  is the session's. */
 import type { Rect } from '../../types.ts';
 import type { Core } from './core.ts';
@@ -50,7 +50,7 @@ export interface RevealProvenance {
   bh: number;
   source: Int32Array;
 }
-/** One step of a reveal session (`long_screen_engine::reveal::Step`). */
+/** One step of a reveal session (`long_screen::engine::reveal::Step`). */
 export type RevealStep =
   /** Answer with `memory()`: can `bytes` more be allocated? */
   | { kind: 'memory'; bytes: number; stage: 'canvases' | 'fallback' }

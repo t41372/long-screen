@@ -2,12 +2,12 @@
 //! fingerprint of every row (the format `scripts/fingerprint-scenarios.ts` writes, for parity with the web page).
 
 use crate::context::Ctx;
+use crate::engine::catalog::{display_name, Locale};
+use crate::kernels::geometry::Rect;
 use crate::store::Store;
 use crate::tiles::decode_png;
 use crate::value::{fingerprint, read_rect, Js, Obj};
 use crate::Diagnostic;
-use long_screen_core::geometry::Rect;
-use long_screen_engine::catalog::{display_name, Locale};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 

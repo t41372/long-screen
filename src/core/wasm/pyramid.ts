@@ -1,5 +1,5 @@
 /** Preview pyramids (mirrors `rust/wasm/src/pyramid.rs`): the engine's pyramid session
- *  (`long_screen_engine::pyramid::PyramidSession`) that `TileStore.buildPyramid` (src/storage/tiles.ts) drives for
+ *  (`long_screen::engine::pyramid::PyramidSession`) that `TileStore.buildPyramid` (src/storage/tiles.ts) drives for
  *  one canvas, and the single parent-tile assembly kernel the parity test checks on its own. */
 import type { RGBA } from '../../types.ts';
 import type { Core } from './core.ts';
@@ -30,7 +30,7 @@ export function assemblePyramidParent(core: Core, children: (Uint8ClampedArray |
   return { width: size, height: size, data: new Uint8ClampedArray(core.readBytes(out, bytes).buffer) };
 }
 
-/** One step of a pyramid session (`long_screen_engine::pyramid::Step`). */
+/** One step of a pyramid session (`long_screen::engine::pyramid::Step`). */
 export type PyramidStep =
   /** Pass every stored `tile-index/` row of level `level - 1` to `queue()`, then step again. */
   | { kind: 'index'; level: number }

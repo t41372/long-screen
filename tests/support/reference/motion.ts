@@ -1,4 +1,4 @@
-/** FROZEN pre-migration motion module (parity oracle for rust/core/src/motion.rs). Not used by production code. */
+/** FROZEN pre-migration motion module (parity oracle for rust/long-screen/src/kernels/motion.rs). Not used by production code. */
 import type { Feature, Gray, Match, Motion, MotionField, Point, Rect, RGBA } from '../../../src/types.ts';
 import { clamp, median, norm, rng } from './math.ts';
 import { extractFeatures, matchFeatures, meanDifference } from './kernels.ts';
@@ -101,7 +101,7 @@ export function auditTranslation(a: Gray, b: Gray, dx: number, dy: number, roi?:
   const r = roi || { x: 0, y: 0, width: b.width, height: b.height };
   dx = Math.round(dx);
   dy = Math.round(dy);
-  // ORACLE FIX (mirrors rust/core): the shipped TS sampled x+dx = 0 / y+dy = 0 and read a.data[j - width] out of
+  // ORACLE FIX (mirrors the Rust kernels): the shipped TS sampled x+dx = 0 / y+dy = 0 and read a.data[j - width] out of
   // bounds (NaN in JS, a trap in Rust). Both gradients need a one-pixel margin in their own image.
   const x0 = Math.max(2, Math.ceil(r.x), Math.ceil(r.x - dx), 1 - dx), y0 = Math.max(2, Math.ceil(r.y), Math.ceil(r.y - dy), 1 - dy);
   const x1 = Math.min(b.width - 2, a.width - dx - 2, r.x + r.width, r.x + r.width - dx),
@@ -362,7 +362,7 @@ export interface NativeRefinement extends Point {
   runnerUp: number;
 }
 /** Coarse-to-fine guide for `refineNative`: `b`'s own analysis-scale gray at integer downscale `factor` (see
- *  `select_native_points`'s doc comment in rust/core/src/motion.rs). Omitted, refinement falls back to a
+ *  `select_native_points`'s doc comment in rust/long-screen/src/kernels/motion.rs). Omitted, refinement falls back to a
  *  full-resolution native scan. */
 export interface NativePointGuide {
   g: Gray;
@@ -612,7 +612,7 @@ export function resampleGray(g: Gray, scale: number): Gray {
     data = new Uint8Array(width * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
-      // ORACLE FIX (mirrors rust/core): clamp to the image, or a 1-pixel source reads undefined (→ 0) neighbours.
+      // ORACLE FIX (mirrors the Rust kernels): clamp to the image, or a 1-pixel source reads undefined (→ 0) neighbours.
       const sx = Math.max(0, Math.min(g.width - 1.001, x / scale)),
         sy = Math.max(0, Math.min(g.height - 1.001, y / scale)),
         x0 = Math.floor(sx),

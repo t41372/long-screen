@@ -1,4 +1,4 @@
-//! The solve and render passes' pose graph (`long_screen_engine::pose_graph::PoseGraph`), one handle per
+//! The solve and render passes' pose graph (`long_screen::engine::pose_graph::PoseGraph`), one handle per
 //! `src/core/pose-graph.ts` instance. Inputs and results are `bytes.rs` records:
 //!
 //! - node: str id, str canvasId, u32 frame, f64 x, y, originalX, originalY, u8 pinned, u8 has next, [str next]
@@ -12,7 +12,7 @@
 use crate::bytes::{Cursor, Out};
 use crate::memory::{slice, slice_mut, HandleTable};
 use crate::{STATUS_BAD_ARGUMENT, STATUS_OK};
-use long_screen_engine::pose_graph::{
+use long_screen::engine::pose_graph::{
     EdgeKind, Optimizer, PoseEdge, PoseGraph, PoseGraphError, PoseNode, PoseRow, Write,
 };
 

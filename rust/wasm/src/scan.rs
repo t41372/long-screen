@@ -1,4 +1,4 @@
-//! The scan pass (`long_screen_engine::scan::ScanSession`) for `src/core/wasm/scan.ts`. A session is a handle; the
+//! The scan pass (`long_screen::engine::scan::ScanSession`) for `src/core/wasm/scan.ts`. A session is a handle; the
 //! adapter writes each decoded frame straight into the session's own frame buffer (`ls_scan_frame`), then steps it.
 //! `ls_scan_push` and `ls_scan_finish` return their result's length and leave the result in the handle for
 //! `ls_scan_take` (error convention 6). Results are `bytes.rs` records:
@@ -15,9 +15,9 @@ use crate::motion::write_motions;
 use crate::regions::{read_manual, write_finished};
 use crate::wire::{FEATURE_BYTES, MOTION_BYTES, MOTION_FIELD_HEADER_BYTES};
 use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::features::Feature;
-use long_screen_core::motion::{Gray, MotionField, MOTION_CELL};
-use long_screen_engine::scan::{estimate_motion, FieldLayout, FrameMeta, ScanSession};
+use long_screen::engine::scan::{estimate_motion, FieldLayout, FrameMeta, ScanSession};
+use long_screen::kernels::features::Feature;
+use long_screen::kernels::motion::{Gray, MotionField, MOTION_CELL};
 
 struct Session {
     scan: ScanSession,
@@ -147,7 +147,7 @@ fn write_field(w: &mut Out, f: &MotionField) {
     w.bytes(&f.dynamic);
 }
 
-/// `long_screen_engine::scan::estimate_motion` for `src/core/motion.ts::estimateMotion`: motion from analysis gray
+/// `long_screen::engine::scan::estimate_motion` for `src/core/motion.ts::estimateMotion`: motion from analysis gray
 /// `a` to `b` (`width × height` each). `flags` bit 0 says `a_features` (`a_count × FEATURE_BYTES`) is given, bit 1
 /// the same for `b_features`; a feature list that is not given is extracted here. Writes the field (`write_field`)
 /// into `out`, which holds `MOTION_FIELD_HEADER_BYTES + 8 × MOTION_BYTES + 3 × cells` bytes, and returns the length

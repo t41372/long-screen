@@ -91,7 +91,7 @@ try {
       }
       throw error;
     }
-    console.log(`rust/core → ${outName}/${output} (${((await Deno.stat(from)).size / 1024).toFixed(1)} KB)`);
+    console.log(`rust/wasm → ${outName}/${output} (${((await Deno.stat(from)).size / 1024).toFixed(1)} KB)`);
   }
   for (const [input, output] of entries) {
     const target = join(staging, output);

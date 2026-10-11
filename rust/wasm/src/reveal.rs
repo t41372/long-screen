@@ -1,4 +1,4 @@
-//! The engine's reveal session (`long_screen_engine::reveal::RevealSession`, mirrored by `src/core/wasm/reveal.ts`):
+//! The engine's reveal session (`long_screen::engine::reveal::RevealSession`, mirrored by `src/core/wasm/reveal.ts`):
 //! overlay-aware block selection after the compositor, driven by `src/pipeline/reveal.ts` over the tile cache
 //! (`tiles.rs`).
 //!
@@ -24,11 +24,11 @@ use crate::diagnostic::write_diagnostic;
 use crate::memory::{slice, HandleTable};
 use crate::tiles::tiles;
 use crate::{STATUS_BAD_ARGUMENT, STATUS_OK};
-use long_screen_core::geometry::Rect;
-use long_screen_engine::reveal::{
+use long_screen::engine::reveal::{
     MemoryStage, ObservedDecision, Outcome, Pass, RevealCanvas, RevealError, RevealLayer,
     RevealSession, Step,
 };
+use long_screen::kernels::geometry::Rect;
 
 /// `ls_reveal_step` was called after `NeedTile` without the tile being inserted.
 pub const STATUS_NOT_PROVIDED: i32 = -2;

@@ -1,4 +1,4 @@
-//! ABI surface of the engine's tile cache (`long_screen_engine::tiles`, mirrored by `src/core/wasm/tiles.ts`).
+//! ABI surface of the engine's tile cache (`long_screen::engine::tiles`, mirrored by `src/core/wasm/tiles.ts`).
 //!
 //! Tile planes live in engine memory; the adapter reads and writes them through the pointers `ls_tiles_planes`
 //! reports, which stay valid while the tile is resident (or, after `ls_tiles_evict`, until `ls_tiles_release`).
@@ -6,7 +6,7 @@
 
 use crate::memory::{slice, slice_mut, HandleTable};
 use crate::{STATUS_BAD_ARGUMENT, STATUS_OK};
-use long_screen_engine::tiles::{StoredTile, Tile, TileCache, TileKey};
+use long_screen::engine::tiles::{StoredTile, Tile, TileCache, TileKey};
 use std::collections::HashMap;
 
 /// `ls_tiles_planes` output: 8 × (u32 pointer, u32 byte length) for pixels, coverage, provisional, quality,

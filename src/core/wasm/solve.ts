@@ -1,4 +1,4 @@
-/** The solve pass's session (`long_screen_engine::solve::SolveSession`), mirroring `rust/wasm/src/solve.rs`: encodes
+/** The solve pass's session (`long_screen::engine::solve::SolveSession`), mirroring `rust/wasm/src/solve.rs`: encodes
  *  each call's input and decodes the placements, voting records, rows to store and diagnostic events into the same
  *  JS objects the pass has always stored (field order included); diagnostics are `diagnostic.ts`'s structured form. */
 import type { Attachment, CanvasMeta, CompactFeatures, Feature, Gray, Placement, Rect, Region } from '../../types.ts';
@@ -140,7 +140,7 @@ function readEffect(r: ByteReader): SolveEffect {
   }
 }
 
-/** One `long_screen_engine::solve::SolveSession` in core memory. Its owner frees it when the pass ends. */
+/** One `long_screen::engine::solve::SolveSession` in core memory. Its owner frees it when the pass ends. */
 export class SolveSessionState {
   private readonly freeGuard = new FreeGuard();
   constructor(

@@ -112,7 +112,7 @@ export async function newestSource(dir: string, extensions: readonly string[] = 
   return latest;
 }
 /** Newest mtime among everything that should invalidate a built dist/: the TS/HTML/CSS layer (src/, static/) and
- *  the Rust core (rust/core/src/**\/*.rs, both Cargo.toml, rust-toolchain.toml, Cargo.lock, .cargo/config.toml),
+ *  the Rust core (rust/long-screen/src/**\/*.rs, both Cargo.toml, rust-toolchain.toml, Cargo.lock, .cargo/config.toml),
  *  plus the build scripts themselves. Without the Rust half, editing a .rs file and running `deno task start` kept
  *  serving the old core.wasm forever — nothing under src/ or static/ ever changes when only the core changes.
  *  Throws if `root` has no source tree at all (e.g. a standalone dist/ deployed without one); callers that want to
@@ -121,12 +121,12 @@ export async function newestBuildInput(root: string): Promise<number> {
   let latest = Math.max(
     await newestSource(join(root, 'src')),
     await newestSource(join(root, 'static')),
-    await newestSource(join(root, 'rust', 'core', 'src'), ['.rs']),
+    await newestSource(join(root, 'rust', 'long-screen', 'src'), ['.rs']),
   );
   for (
     const rel of [
       'rust/Cargo.toml',
-      'rust/core/Cargo.toml',
+      'rust/long-screen/Cargo.toml',
       'rust/Cargo.lock',
       'rust/.cargo/config.toml',
       'rust/rust-toolchain.toml',

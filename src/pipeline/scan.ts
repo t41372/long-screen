@@ -1,6 +1,6 @@
 // Shell around the scan pass. The pass itself — duplicate detection, the analysis gray, features, motion against the
 // previous frame and the long-baseline retry, layer learning, the scan/ and scan-features/ rows, the per-frame
-// diagnostics and the regions at the end — is the engine's scan session (rust/engine/src/scan.rs). This file is the
+// diagnostics and the regions at the end — is the engine's scan session (rust/long-screen/src/engine/scan.rs). This file is the
 // host around it: the decode loop, copying each frame into the session, the WebGPU gray when that backend runs,
 // storing rows in 24-row batches, the facts only the host knows (compute backend, frame conversion, the frame
 // reference image), formatting the session's diagnostics with the catalogue, failure classification, progress,

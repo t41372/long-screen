@@ -167,7 +167,7 @@ class TileView implements Tile {
 
 const releaseCache = new FinalizationRegistry((cache: TileCacheHandle) => cache.free());
 
-/** The tile cache: the engine's (`long_screen_engine::tiles`: residency, LRU eviction, budget, dirty bookkeeping and
+/** The tile cache: the engine's (`long_screen::engine::tiles`: residency, LRU eviction, budget, dirty bookkeeping and
  *  counters, with the planes in core memory) plus the storage it does not do itself — loading and decoding a stored
  *  tile it asks for, and encoding and writing the tiles it evicts or flushes. */
 export class TileStore {
@@ -326,7 +326,7 @@ export class TileStore {
     return this.db.get<StoredTile>(`tile/${key}`);
   }
   /** Small image pyramids are previews only. Level zero remains at source resolution. The engine's pyramid session
-   *  (`long_screen_engine::pyramid`) decides the levels, the parents each level queues and their order, and
+   *  (`long_screen::engine::pyramid`) decides the levels, the parents each level queues and their order, and
    *  assembles each parent; this host reads the stored rows it asks for and writes what it returns, straight to
    *  storage (the pyramid does not go through the tile cache). The `pyramid-todo/` rows record the queued parents
    *  while a level is built. */

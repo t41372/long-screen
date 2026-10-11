@@ -1,4 +1,4 @@
-//! `ls_keyframes_evaluate_candidates`: `extern "C"` surface for `long_screen_core::track::evaluate_candidates_audit` /
+//! `ls_keyframes_evaluate_candidates`: `extern "C"` surface for `long_screen::kernels::track::evaluate_candidates_audit` /
 //! `evaluate_candidates_refine` — split out of the former monolithic `abi/track.rs`. See `abi/track.rs`'s
 //! module doc comment for the split; `read_patches` and `resolve_native` stay there (shared with
 //! `track_reacquire`).
@@ -8,9 +8,9 @@ use crate::memory::{slice, slice_mut};
 use crate::track::{read_patches, resolve_native};
 use crate::wire::{read_rect, FEATURE_BYTES};
 use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::features::Feature;
-use long_screen_core::motion::{Gray, Patch};
-use long_screen_core::track;
+use long_screen::kernels::features::Feature;
+use long_screen::kernels::motion::{Gray, Patch};
+use long_screen::kernels::track;
 
 /// `ls_keyframes_evaluate_candidates`'s per-keyframe descriptor (this module's own wire format, 64 bytes): u32
 /// featuresPtr, featureCount, patchesPtr, patchCount, grayPtr, grayWidth, grayHeight, canonicalIdx, f64 x, f64
@@ -83,11 +83,11 @@ const CANDIDATE_HEADER_BYTES: usize = 8;
 pub(crate) const CANDIDATE_RECORD_BYTES: usize = 56;
 
 /// `keyframes.ts::evaluateCandidates` fused into one call, end to end: the audit phase (match + hypotheses +
-/// the analysis-scale audit, no native luma; `long_screen_core::track::evaluate_candidates_audit`) over every keyframe,
+/// the analysis-scale audit, no native luma; `long_screen::kernels::track::evaluate_candidates_audit`) over every keyframe,
 /// THEN, only if at least one candidate passed the audit, the lazy native-plane fill (`resolve_native`, shared
 /// with `ls_track_reacquire`/`ls_track_drift_correction`), native-patch refinement
-/// (`long_screen_core::track::evaluate_candidates_refine`), and the confidence/score/sort/strong-best/rival-ambiguity
-/// selection (`long_screen_core::track::select_candidate`) that picks the one candidate to return. `out` must have room
+/// (`long_screen::kernels::track::evaluate_candidates_refine`), and the confidence/score/sort/strong-best/rival-ambiguity
+/// selection (`long_screen::kernels::track::select_candidate`) that picks the one candidate to return. `out` must have room
 /// for `CANDIDATE_HEADER_BYTES + CANDIDATE_RECORD_BYTES` bytes. Returns `1` (a candidate was chosen — `out`
 /// holds it), `0` (no candidate passed the audit, or none of the audited-and-refined candidates was strong
 /// enough to choose; native luma was touched in the second case but not the first — see `filledNative`), or
