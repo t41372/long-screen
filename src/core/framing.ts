@@ -174,7 +174,7 @@ export async function buildFramedCanvas(
           for (let sx = Math.floor(wx / size); sx <= Math.floor((wx + overlap.width - 1) / size); sx++) {
             if (!existingSourceTiles.has(`${sx}_${sy}`)) continue;
             const raw = await tiles.get(sourceCanvas.id, sx, sy);
-            sources.push({ sx, sy, ...raw });
+            sources.push({ sx, sy, tile: raw });
           }
         }
         if (sources.length) session.foldEvidence(tile, bounds, sourceCanvas.bounds.x, sourceCanvas.bounds.y, sources);

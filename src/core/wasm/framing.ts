@@ -30,9 +30,12 @@ export interface FramingTile {
   conflicts: Uint8Array;
   frozen: Uint8Array;
 }
-export interface SourceFramingTile extends FramingTile {
+/** One source tile and its tile coordinates. The tile itself, not a copy of its fields: a cached tile's planes are
+ *  views of core memory, read only when they are copied in. */
+export interface SourceFramingTile {
   sx: number;
   sy: number;
+  tile: FramingTile;
 }
 const SOURCE_TILE_BYTES = 40, MAX_SOURCE_TILES = 4;
 
@@ -258,14 +261,14 @@ export function openFramingSession(
         writeTileIn(tile, 'all');
         sources.forEach((s, i) => {
           const [sp, sc, spr, sq, ssc, so, scf, sfr] = sourceSlots[i];
-          core.writeBytes(sp, s.pixels);
-          core.writeBytes(sc, s.coverage);
-          core.writeBytes(spr, s.provisional);
-          core.writeBytes(sq, s.quality);
-          core.writeBytes(ssc, s.score);
-          core.writeBytes(so, s.owner);
-          core.writeBytes(scf, s.conflicts);
-          core.writeBytes(sfr, s.frozen);
+          core.writeBytes(sp, s.tile.pixels);
+          core.writeBytes(sc, s.tile.coverage);
+          core.writeBytes(spr, s.tile.provisional);
+          core.writeBytes(sq, s.tile.quality);
+          core.writeBytes(ssc, s.tile.score);
+          core.writeBytes(so, s.tile.owner);
+          core.writeBytes(scf, s.tile.conflicts);
+          core.writeBytes(sfr, s.tile.frozen);
           const ev = new DataView(exports.memory.buffer, sourcesP + i * SOURCE_TILE_BYTES, SOURCE_TILE_BYTES);
           ev.setInt32(0, s.sx, true);
           ev.setInt32(4, s.sy, true);

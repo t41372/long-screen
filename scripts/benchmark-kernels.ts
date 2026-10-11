@@ -92,30 +92,4 @@ await bench('consistency mask (2 nbrs)', (core) => {
 });
 await bench('downscaleGray f=3', (core) => gray(core, frames[0]));
 await bench('grayscale', (core) => core.grayscale(frames[0].data, W, H));
-const tileSize = 512, n = tileSize * tileSize, blocks = (tileSize / 16) ** 2;
-const tile = () => ({
-  pixels: new Uint8ClampedArray(n * 4),
-  coverage: new Uint8Array(n / 8),
-  provisional: new Uint8Array(n / 8),
-  quality: new Uint8Array(blocks),
-  conflicts: new Uint8Array(blocks),
-  owner: new Uint32Array(blocks),
-  score: new Float32Array(blocks),
-  frozen: new Uint8Array(blocks),
-});
-const tiles = new Map<Core, ReturnType<typeof tile>[]>(cores.map(([, core]) => [core, Array.from({ length: 12 }, tile)]));
-await bench('composite 12 tiles', (core) => {
-  const prepared = core.prepareObservation(
-    { image: frames[frameIndex % 3], confidence: .8, uncertain: false, frame: frameIndex },
-    tileSize,
-  );
-  const set = tiles.get(core)!;
-  let k = 0;
-  for (let ty = 0; ty < 4; ty++) {
-    for (let tx = 0; tx < 3; tx++) {
-      prepared.compositeTile(set[k++], { x: 0, y: (frameIndex % 3) * 40, width: W, height: H }, 0, (frameIndex % 3) * 40, tx, ty);
-    }
-  }
-  frameIndex++;
-});
 for (const ring of rings.values()) ring.free();

@@ -258,6 +258,7 @@ export class Engine {
     ctx.atlas?.dispose();
     ctx.atlas = undefined;
     ctx.releaseResidentRenderState();
+    ctx.tiles.free();
     ctx.computer.dispose();
     ctx.source.dispose();
     // The `stopped` latch (unlike `stopRequested`) is deliberately left set across the whole run, from

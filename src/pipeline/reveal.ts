@@ -124,7 +124,7 @@ async function ingestCanvases(ctx: RunContext, run: RevealRun, metas: CanvasMeta
     for (let ty = Math.floor(b.y / size); ty * size < b.y + b.height; ty++) {
       for (let tx = Math.floor(b.x / size); tx * size < b.x + b.width; tx++) {
         const tile = await ctx.tiles.get(meta.id, tx, ty);
-        run.ingest(slots.get(meta.id)!, tx * size, ty * size, size, tile.pixels, tile.coverage);
+        run.ingest(slots.get(meta.id)!, tx * size, ty * size, size, tile);
         await ctx.checkpoint();
       }
     }

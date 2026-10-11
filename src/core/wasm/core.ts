@@ -12,8 +12,6 @@ import { check as checkStatus } from './exports.ts';
 import * as raster from './raster.ts';
 import * as yuv from './yuv.ts';
 import * as pyramid from './pyramid.ts';
-import * as temporal from './temporal.ts';
-import type { OverwriteStats, OverwriteTile, TemporalComponent, TemporalIndexHandle } from './temporal.ts';
 import * as featuresDomain from './features.ts';
 import * as motion from './motion.ts';
 import * as chrome from './chrome.ts';
@@ -21,7 +19,9 @@ import * as consistency from './consistency.ts';
 import type { ConsistencyMaskInput } from './consistency.ts';
 import * as png from './png.ts';
 import * as composite from './compositor.ts';
-import type { CompositeObservation, PreparedObservation } from './compositor.ts';
+import type { CompositorHandle } from './compositor.ts';
+import * as tilesDomain from './tiles.ts';
+import type { TileCacheHandle } from './tiles.ts';
 import { learner as learnerFactory, type LearnerHandle } from './layers.ts';
 import { type VotingRing, votingRing as votingRingFactory } from './voting.ts';
 import { type RevealRun, revealRun as revealRunFactory } from './reveal.ts';
@@ -266,27 +266,13 @@ export class Core {
   assemblePyramidParent(children: (Uint8ClampedArray | undefined)[], size: number): RGBA {
     return pyramid.assemblePyramidParent(this, children, size);
   }
-  temporalComponents(cells: [number, number][], size: number): TemporalComponent[] {
-    return temporal.temporalComponents(this, cells, size);
+  /** The engine's tile cache for `size`-pixel tiles under a `memoryMB` budget (`storage/tiles.ts::TileStore`). */
+  tileCache(size: number, memoryMB: number): TileCacheHandle {
+    return tilesDomain.newTileCache(this, this.exports, size, memoryMB);
   }
-  /** A fresh, empty in-memory temporal index (one per canvas — `Compositor.temporalIndex()`, src/core/compositor.ts). */
-  newTemporalIndex(): TemporalIndexHandle {
-    return temporal.newTemporalIndex(this, this.exports);
-  }
-  overwriteTile(
-    tile: OverwriteTile,
-    tileSize: number,
-    image: FrameInput,
-    blocks: [number, number][],
-    ox: number,
-    oy: number,
-    tx: number,
-    ty: number,
-    frame: number,
-    confidence: number,
-    stable: boolean,
-  ): OverwriteStats {
-    return temporal.overwriteTile(this, tile, tileSize, image, blocks, ox, oy, tx, ty, frame, confidence, stable);
+  /** The engine's compositor for one render pass (`core/compositor.ts::Compositor`). */
+  compositor(latest: boolean, atlasWidth: number, atlasHeight: number): CompositorHandle {
+    return composite.newCompositor(this, this.exports, latest, atlasWidth, atlasHeight);
   }
   /** RGBA of a decoded frame given in its `VideoFrame.copyTo` layout (see rust/core/src/yuv.rs for the codes).
    *  `dest`, when given and the right length, is filled in place instead of allocating a fresh output buffer. */
@@ -457,10 +443,6 @@ export class Core {
     scales?: number[],
   ): { scale: number; error: number } | undefined {
     return motion.probeScale(this, previous, current, currentFeatures, roi, scales);
-  }
-  /** Plans the frame-wide observation buffers once; each `compositeTile` call then only moves one tile. */
-  prepareObservation(obs: CompositeObservation, tileSize: number): PreparedObservation {
-    return composite.prepareObservation(this, obs, tileSize);
   }
 
   /** Every algorithmic-path region of `LayerLearner.finish()` (band detection through sticky-header cleanup),

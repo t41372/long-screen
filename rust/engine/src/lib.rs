@@ -11,5 +11,10 @@
 //! web page shows, from the catalogues exported out of `src/i18n`.
 
 pub mod catalog;
+pub mod compositor;
 pub mod keyframes;
 pub mod pose_graph;
+pub mod tiles;
+
+#[cfg(test)]
+mod host_tests;

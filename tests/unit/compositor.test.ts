@@ -871,45 +871,6 @@ Deno.test("compositor: dispose() before the trailing flush() (render.ts's actual
   assertEquals(withDispose.length, 1);
 });
 Deno.test(
-  'temporal ABI: ls_temporal_flush_take rejects a wrong count before draining the index',
-  async () => {
-    // Regression for rust/wasm/src/temporal.rs::ls_temporal_flush_take, which must check the caller's counts
-    // against the index BEFORE calling TemporalIndex::flush_take() (which drains `dirty`/`deleted`): checking
-    // after would let a bad count silently lose every dirty/deleted row instead of returning an error with the
-    // index unchanged. Reaches Compositor's private per-canvas handle the way this suite already reaches other
-    // private state (tests may reach private members through casts).
-    const width = B, region = makeRegion({ x: 0, y: 0, width, height: B });
-    const db = new MemoryKV(), tiles = new TileStore(db, width, 8), atlas = new RegionAtlas([region], width, B);
-    const compositor = new Compositor(db, tiles, 'stable', async () => {}, atlas);
-    const meta = makeMeta();
-    const base: RGB4 = [100, 100, 100, 255], hot: RGB4 = [250, 10, 10, 255];
-    await compositor.add(solid(width, B, base), region, place(0, 0, 0.5), 0, meta); // base coverage, no conflict
-    const img1 = solid(width, B, base);
-    paintRect(img1, { x: 0, y: 0, width: B, height: B }, hot);
-    await compositor.add(img1, region, place(0, 0, 0.5), 1, meta); // conflicts with the base -> a dirty record
-    const handle = (compositor as unknown as { temporal: Map<string, { handle: number }> }).temporal.get('c')!;
-    const exports = core().exports;
-    const [sizesOut] = core().scratch([12]);
-    assert(exports.ls_temporal_flush_sizes(handle.handle, sizesOut) === 0);
-    const sizesView = new DataView(exports.memory.buffer);
-    const deletedCount = sizesView.getUint32(sizesOut, true);
-    const dirtyCount = sizesView.getUint32(sizesOut + 4, true);
-    const dirtyBlockTotal = sizesView.getUint32(sizesOut + 8, true);
-    assert(dirtyCount > 0, 'setup should have produced at least one dirty record to flush');
-    const [deletedOut, headersOut, blocksOut] = core().scratch([
-      Math.max(1, deletedCount) * 10,
-      Math.max(1, dirtyCount) * 66,
-      Math.max(1, dirtyBlockTotal) * 8,
-    ]);
-    const badStatus = exports.ls_temporal_flush_take(handle.handle, deletedOut, deletedCount + 1, headersOut, blocksOut, dirtyCount);
-    assert(badStatus < 0, 'a wrong deletedCount must be rejected');
-    // The index must still hold every dirty/deleted row: a real flush() with the correct counts persists them.
-    await compositor.flush();
-    const rows = await db.scan('temporal/c/', { limit: 10 });
-    assertEquals(rows.length, 1, 'the row the bad call almost dropped is still there after a real flush()');
-  },
-);
-Deno.test(
   'temporal ABI: ls_overwrite_tile returns a status (not a wasm trap) for a block whose pixel footprint falls ' +
     'outside the source frame, tile buffers unchanged',
   () => {

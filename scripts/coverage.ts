@@ -107,6 +107,7 @@ const FLOORS: [RegExp, number][] = [
   [/^core\/wasm\/raster\.ts$/, 92],
   [/^core\/wasm\/regions\.ts$/, 96],
   [/^core\/wasm\/temporal\.ts$/, 99],
+  [/^core\/wasm\/tiles\.ts$/, 96],
   [/^core\/wasm\/track\.ts$/, 98],
   [/^core\/wasm\/track-keyframes\.ts$/, 99],
   [/^core\/wasm\/track-odometry\.ts$/, 97],

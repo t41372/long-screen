@@ -258,5 +258,6 @@ export async function exportCanvas(
     throw error;
   } finally {
     await tiles.clear();
+    tiles.free();
   }
 }

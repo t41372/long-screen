@@ -349,6 +349,11 @@ class SolveRun {
     this.voting.free();
     this.ctx.voting = undefined;
   }
+  /** Releases the engine's pose graph and keyframe index; the pass is over, however it ended. */
+  free(): void {
+    this.graph?.free();
+    this.index?.free();
+  }
   /** Relaxes the pose graph (honouring a mid-relaxation stop), warns on a large residual, then deletes the
    * scan-features/keyframe/word scratch this pass alone consumed. */
   async optimizeAndCleanup(): Promise<void> {
@@ -391,9 +396,13 @@ class SolveRun {
 }
 export async function solve(ctx: RunContext): Promise<void> {
   const run = new SolveRun(ctx);
-  await run.setup();
-  await run.runLoop();
-  await run.trailingCommitAndMismatch();
-  await run.drainVotingAndFree();
-  await run.optimizeAndCleanup();
+  try {
+    await run.setup();
+    await run.runLoop();
+    await run.trailingCommitAndMismatch();
+    await run.drainVotingAndFree();
+    await run.optimizeAndCleanup();
+  } finally {
+    run.free();
+  }
 }

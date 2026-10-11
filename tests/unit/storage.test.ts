@@ -329,3 +329,40 @@ Deno.test('takeover: render cache rebalance avoids a viewport-sized cyclic evict
   assertEquals(tiles.peakResidentTiles, tiles.maxTiles);
   assertEquals(tiles.evictions, 3);
 });
+Deno.test('tiles: a tile evicted while a caller holds it keeps its planes, and an explicit save() of it still lands', async () => {
+  // The engine's cache owns resident planes; a caller that holds a tile across another get() (framing holds its
+  // output tile while fetching sources) must still be able to finish writing it and save it, as with the plain
+  // objects the cache handed out before.
+  const db = new MemoryKV(), tiles = new TileStore(db, 16, 128);
+  tiles.maxTiles = 1;
+  const held = await tiles.get('c', 0, 0);
+  held.pixels[0] = 7;
+  held.coverage[0] = 1;
+  held.dirty = true;
+  await tiles.get('c', 1, 0); // evicts (and stores) the held tile
+  assertEquals(tiles.evictions, 1);
+  held.pixels[4] = 9;
+  held.dirty = true;
+  held.touched = 5;
+  assertEquals(held.touched, 5);
+  await tiles.save(held);
+  assert(!held.dirty && held.existed);
+  const reloaded = await tiles.get('c', 0, 0);
+  assert(reloaded !== held, 'a reload is a new tile');
+  assertEquals([reloaded.pixels[0], reloaded.pixels[4], reloaded.coverage[0]], [7, 9, 1]);
+  // payload() stores a resident dirty tile first, so it reads back what the cache holds.
+  reloaded.pixels[8] = 3;
+  reloaded.dirty = true;
+  reloaded.touched = 6;
+  assertEquals(reloaded.touched, 6);
+  assert(await tiles.payload('c', 0, 0, 0));
+  assert(!reloaded.dirty);
+  await tiles.clear();
+  assertThrows(() => reloaded.pixels, Error, 'dropped by TileStore.clear()');
+  // free() releases the engine's cache once; the counters stay readable and a second free() does nothing.
+  const evictions = tiles.evictions, limit = tiles.maxTiles;
+  tiles.free();
+  tiles.free();
+  assertEquals([tiles.evictions, tiles.maxTiles], [evictions, limit]);
+  await assertRejects(() => tiles.get('c', 0, 0));
+});

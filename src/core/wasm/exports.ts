@@ -46,46 +46,6 @@ export interface CoreExports {
     size: number,
     out: number,
   ): number;
-  ls_temporal_components(cells: number, count: number, size: number, headerOut: number, blocksOut: number): number;
-  ls_temporal_index_new(): number;
-  ls_temporal_index_free(handle: number): void;
-  ls_temporal_index_load(handle: number, header: number, blocks: number): number;
-  ls_temporal_decide(
-    handle: number,
-    compBounds: number,
-    compBlocks: number,
-    compBlockCount: number,
-    frame: number,
-    time: number,
-    visible: number,
-    latestPolicy: number,
-    nextSeq: number,
-    out: number,
-  ): number;
-  ls_temporal_mask_complete_and_commit(
-    handle: number,
-    labels: number,
-    atlasWidth: number,
-    atlasHeight: number,
-    code: number,
-    occlusions: number,
-    occlusionCount: number,
-    consistent: number,
-    ox: number,
-    oy: number,
-    writeBlocksOut: number,
-    writeBlockCount: number,
-    out: number,
-  ): number;
-  ls_temporal_flush_sizes(handle: number, out: number): number;
-  ls_temporal_flush_take(
-    handle: number,
-    deletedOut: number,
-    deletedCount: number,
-    dirtyHeadersOut: number,
-    dirtyBlocksOut: number,
-    dirtyCount: number,
-  ): number;
   ls_overwrite_tile(
     tile: number,
     rgba: number,
@@ -224,7 +184,43 @@ export interface CoreExports {
     scaleCount: number,
     out: number,
   ): number;
-  ls_composite_tile(tile: number, observation: number, world: number, ox: number, oy: number, tx: number, ty: number, out: number): number;
+  ls_tiles_new(size: number, memoryMB: number): number;
+  ls_tiles_free(handle: number): void;
+  ls_tiles_configure_budget(handle: number, memoryMB: number, reserved: number): number;
+  ls_tiles_ensure_footprint(handle: number, areas: number, count: number): number;
+  ls_tiles_max(handle: number): number;
+  ls_tiles_set_max(handle: number, max: number): number;
+  ls_tiles_stats(handle: number, out: number): number;
+  ls_tiles_touch(handle: number, canvas: number, canvasLen: number, level: number, x: number, y: number): number;
+  ls_tiles_evict(handle: number): number;
+  ls_tiles_release(handle: number, id: number): void;
+  ls_tiles_insert(handle: number, canvas: number, canvasLen: number, level: number, x: number, y: number, stored: number): number;
+  ls_tiles_planes(handle: number, id: number, out: number): number;
+  ls_tiles_set_dirty(handle: number, id: number, dirty: number): number;
+  ls_tiles_set_touched(handle: number, id: number, touched: number): number;
+  ls_tiles_dirty(handle: number, settledBefore: number, out: number, capacity: number): number;
+  ls_tiles_encoded(handle: number): void;
+  ls_tiles_saved(handle: number, id: number): void;
+  ls_tiles_observed(handle: number, id: number): number;
+  ls_tiles_clear(handle: number): void;
+  ls_compositor_new(policy: number, atlasWidth: number, atlasHeight: number): number;
+  ls_compositor_free(handle: number): void;
+  ls_compositor_begin(handle: number, tiles: number, placement: number, frame: number): number;
+  ls_compositor_cancel(handle: number): void;
+  ls_compositor_step(handle: number, tiles: number, frame: number, now: number, out: number): number;
+  ls_compositor_diagnostics(handle: number, out: number): number;
+  ls_compositor_load_temporal(handle: number, canvas: number, canvasLen: number, headers: number, blocks: number, count: number): number;
+  ls_compositor_flush(handle: number): number;
+  ls_compositor_flush_sizes(handle: number, canvas: number, out: number): number;
+  ls_compositor_flush_take(
+    handle: number,
+    canvas: number,
+    idOut: number,
+    deletedOut: number,
+    headersOut: number,
+    blocksOut: number,
+  ): number;
+  ls_compositor_dispose(handle: number): void;
   ls_voting_new(
     factor: number,
     noise: number,

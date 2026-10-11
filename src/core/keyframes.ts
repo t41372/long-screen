@@ -203,4 +203,8 @@ export class KeyframeIndex {
       canonical,
     );
   }
+  /** Releases the engine's index (the solve pass calls it at its end); safe to call again. */
+  free(): void {
+    this.state.free();
+  }
 }

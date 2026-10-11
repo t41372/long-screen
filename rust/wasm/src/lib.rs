@@ -43,6 +43,7 @@ mod raster;
 mod regions;
 mod reveal;
 mod temporal;
+mod tiles;
 mod track;
 mod track_keyframes;
 mod track_odometry;

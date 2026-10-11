@@ -90,10 +90,17 @@ export class RevealRun {
     return this.core.check(this.exports.ls_reveal_canvas(this.handle, bounds.x, bounds.y, bounds.width, bounds.height), 'reveal canvas');
   }
   /** Adds one tile of the compositor's canvas to that canvas's reference (world origin `x`, `y`). */
-  ingest(canvas: number, x: number, y: number, size: number, pixels: Uint8ClampedArray, coverage: Uint8Array): void {
-    const [rgba, cov] = this.core.scratch([pixels.byteLength, coverage.byteLength]);
-    this.core.writeBytes(rgba, pixels);
-    this.core.writeBytes(cov, coverage);
+  /** `tile`'s planes are read after scratch is planned: a cached tile's planes are views of core memory. */
+  ingest(
+    canvas: number,
+    x: number,
+    y: number,
+    size: number,
+    tile: { readonly pixels: Uint8ClampedArray; readonly coverage: Uint8Array },
+  ): void {
+    const [rgba, cov] = this.core.scratch([tile.pixels.byteLength, tile.coverage.byteLength]);
+    this.core.writeBytes(rgba, tile.pixels);
+    this.core.writeBytes(cov, tile.coverage);
     this.core.check(this.exports.ls_reveal_ingest(this.handle, canvas, x, y, size, size, rgba, cov), 'reveal ingest');
   }
   begin(pass: RevealPass): void {

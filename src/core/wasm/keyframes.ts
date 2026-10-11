@@ -4,15 +4,18 @@ import type { Core } from './core.ts';
 import type { CoreExports } from './exports.ts';
 import { ByteReader, ByteWriter } from './bytes.ts';
 import { writeFeatures } from './features.ts';
+import { FreeGuard } from './memory.ts';
 
-/** One `long_screen_engine::keyframes::KeyframeIndex` in core memory, released when it is garbage collected (the
- *  solve pass holds one for its whole run). */
+/** One `long_screen_engine::keyframes::KeyframeIndex` in core memory. `free()` releases it (the solve pass does at
+ *  its end); one nobody frees is released when it is garbage collected. */
 export class KeyframeIndexState {
   private static readonly registry = new FinalizationRegistry<{ exports: CoreExports; handle: number }>(({ exports, handle }) =>
     exports.ls_keyframe_index_free(handle)
   );
+  private readonly freeGuard = new FreeGuard();
+  private readonly token = {};
   constructor(private readonly core: Core, private readonly exports: CoreExports, private readonly handle: number) {
-    KeyframeIndexState.registry.register(this, { exports, handle });
+    KeyframeIndexState.registry.register(this, { exports, handle }, this.token);
   }
   /** Places `input` and `features` in one scratch plan: `[input ptr, input length, features ptr]`. */
   private place(input: ByteWriter, features: Feature[]): number[] {
@@ -51,6 +54,12 @@ export class KeyframeIndexState {
   /** Whether the last retrieval admits a loaded candidate keyframe at `frame` (not an odometry neighbour). */
   admits(frame: number): boolean {
     return this.core.check(this.exports.ls_keyframe_index_admits(this.handle, frame), 'keyframe index admits') === 1;
+  }
+  free(): void {
+    this.freeGuard.once(() => {
+      KeyframeIndexState.registry.unregister(this.token);
+      this.exports.ls_keyframe_index_free(this.handle);
+    });
   }
 }
 

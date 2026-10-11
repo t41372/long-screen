@@ -83,4 +83,8 @@ export class PoseGraph {
   async correction(id: string, frame: number): Promise<Point> {
     return (await this.hydrate()).correction(id, frame);
   }
+  /** Releases the engine's graph (the pass that built this one calls it at its end); safe to call again. */
+  free(): void {
+    this.state?.free();
+  }
 }

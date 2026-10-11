@@ -1,153 +1,240 @@
-/** Tile compositing: merges one prepared observation into a resident tile's pixels, coverage and quality
- *  bookkeeping (mirrors `rust/wasm/src/compositor.rs`). */
+/** The engine's compositor (mirrors the `ls_compositor_*` exports in `rust/wasm/src/compositor.rs`). */
 import type { Rect, RGBA } from '../../types.ts';
 import type { Core } from './core.ts';
-import { type BytesInput, type FrameInput, Resident, ResidentFrame } from './memory.ts';
-import { COMPOSITE_HEADER } from './exports.ts';
+import { type BytesInput, type FrameInput, FreeGuard, Resident, ResidentFrame } from './memory.ts';
+import type { CoreExports } from './exports.ts';
+import type { TileCacheHandle } from './tiles.ts';
+import {
+  decodeId,
+  readBlocksAt,
+  readRowHeader,
+  TEMPORAL_RECORD_HEADER_BYTES,
+  type TemporalRow,
+  writeBlocksAt,
+  writeRowHeader,
+} from './temporal.ts';
 
-/** The mutable buffers of one resident tile, as `TileStore` holds them. */
-export interface CompositeTile {
-  pixels: Uint8ClampedArray;
-  coverage: Uint8Array;
-  provisional: Uint8Array;
-  quality: Uint8Array;
-  conflicts: Uint8Array;
-  owner: Uint32Array;
-  score: Float32Array;
-  frozen: Uint8Array;
-}
-export interface CompositeObservation {
-  image: FrameInput;
-  /** Atlas labels and this region's code; omitted for a rectangular region that owns its whole rect. */
-  mask?: { labels: BytesInput; code: number };
-  occlusions?: Rect[];
-  consistent?: BytesInput;
+// --- The engine's compositor (`long_screen_engine::compositor` via `rust/wasm/src/compositor.rs`): one placement
+// as a resumable job over the tile cache, the per-canvas temporal indexes, and the diagnostics they raise. ---
+
+/** Layouts in `rust/wasm/src/compositor.rs`. */
+const PLACEMENT_BYTES = 112, FRAME_BYTES = 20, STEP_OUT_BYTES = 80, DIAGNOSTIC_BYTES = 72;
+/** `ls_compositor_begin`/`_step` statuses the caller turns into its own errors. */
+export const COMPOSITOR_OUTSIDE_CANVAS = -11, COMPOSITOR_DISPOSED = -15 as const;
+
+export interface CompositorPlacement {
+  canvas: string;
+  /** The region's rect on screen, its atlas code and how many pixels the atlas gives it. */
+  region: Rect;
+  code: number;
+  ownedPixels: number;
+  x: number;
+  y: number;
+  frame: number;
+  time: number;
   confidence: number;
   uncertain: boolean;
-  frame: number;
+  occlusions?: Rect[];
 }
-export interface CompositeTileStats {
+export interface CompositorFrameInput {
+  image: FrameInput;
+  /** The atlas label plane, resident in the core. */
+  labels: Resident;
+  consistent?: BytesInput;
+}
+export interface CompositorStats {
   added: number;
   conflicts: number;
   uncertain: number;
+  tiles: number;
+  /** The placed rect in canvas coordinates. */
+  bounds: Rect;
+  /** Net change in provisional pixels this placement contributed (set minus healed); can be negative. */
   provisionalPixels: number;
-  changed: boolean;
-  /** Tile-local block coordinates flagged conflicting by this call. */
-  conflictBlocks: [number, number][];
+}
+export type CompositorEvent =
+  | { kind: 'incomplete'; frame: number; time: number; region: Rect }
+  | { kind: 'conflict'; frame: number; time: number; region: Rect; confidence: number; regions: Rect[]; conflicts: number };
+export type CompositorStep =
+  | { kind: 'tile'; x: number; y: number }
+  | { kind: 'temporal' }
+  | { kind: 'done'; stats: CompositorStats; diagnostics: CompositorEvent[] };
+export interface TemporalFlushRows {
+  canvas: string;
+  deleted: string[];
+  dirty: TemporalRow[];
 }
 
-/** Keeps one observation resident across the tiles of a frame so the frame is copied into Wasm memory once. */
-export interface PreparedObservation {
-  compositeTile(tile: CompositeTile, world: Rect, ox: number, oy: number, tx: number, ty: number): CompositeTileStats;
-}
-
-/** Plans the frame-wide observation buffers once; each `compositeTile` call then only moves one tile. */
-export function prepareObservation(core: Core, obs: CompositeObservation, tileSize: number): PreparedObservation {
-  const { width, height } = obs.image, pixels = width * height, n = tileSize * tileSize, blocks = (tileSize / 16) ** 2;
-  const occlusions = obs.occlusions || [];
-  const residentImage = obs.image instanceof ResidentFrame ? obs.image : undefined;
-  const residentLabels = obs.mask?.labels instanceof Resident ? obs.mask.labels : undefined;
-  const residentConsistent = obs.consistent instanceof Resident ? obs.consistent : undefined;
-  for (const [what, r] of [['labels', residentLabels], ['consistency mask', residentConsistent]] as const) {
-    if (r && r.length !== pixels) throw new Error(`CORE_BAD_ARGUMENT: resident ${what} do not match the frame.`);
-  }
-  const ptr = core.scratchFrame([
-    residentImage ? 0 : pixels * 4,
-    obs.mask && !residentLabels ? pixels : 0,
-    occlusions.length * 32,
-    obs.consistent && !residentConsistent ? pixels : 0,
-    64,
-    32,
-    COMPOSITE_HEADER + 8 * blocks,
-    40,
-    n * 4,
-    Math.ceil(n / 8),
-    Math.ceil(n / 8),
-    blocks,
-    blocks,
-    blocks * 4,
-    blocks * 4,
-    blocks,
-  ]);
-  const [
-    rgbaScratch,
-    labelsScratch,
-    occ,
-    consistentScratch,
-    desc,
-    world,
-    output,
-    tileDesc,
-    tPixels,
-    tCoverage,
-    tProvisional,
-    tQuality,
-    tConflicts,
-    tOwner,
-    tScore,
-    tFrozen,
-  ] = ptr;
-  const rgba = residentImage ? residentImage.ptr : rgbaScratch;
-  if (!residentImage) core.writeBytes(rgba, (obs.image as RGBA).data);
-  const labels = residentLabels ? residentLabels.ptr : labelsScratch;
-  if (obs.mask && !residentLabels) core.writeBytes(labels, obs.mask.labels as Uint8Array);
-  occlusions.forEach((r, i) => core.writeRect(occ + i * 32, r));
-  const consistent = residentConsistent ? residentConsistent.ptr : consistentScratch;
-  if (obs.consistent && !residentConsistent) core.writeBytes(consistent, obs.consistent as Uint8Array);
-  const view = new DataView(core.exports.memory.buffer, desc, 64);
-  view.setUint32(0, rgba, true);
-  view.setUint32(4, width, true);
-  view.setUint32(8, height, true);
-  view.setUint32(12, obs.mask ? labels : 0, true);
-  view.setUint32(16, obs.mask?.code ?? 0, true);
-  view.setUint32(20, occlusions.length ? occ : 0, true);
-  view.setUint32(24, occlusions.length, true);
-  view.setUint32(28, obs.consistent ? consistent : 0, true);
-  view.setFloat64(32, obs.confidence, true);
-  view.setUint32(40, obs.uncertain ? 1 : 0, true);
-  view.setUint32(44, obs.frame, true);
-  const tileView = new DataView(core.exports.memory.buffer, tileDesc, 40);
-  [tPixels, tCoverage, tProvisional, tQuality, tConflicts, tOwner, tScore, tFrozen].forEach((p, i) => tileView.setUint32(i * 4, p, true));
-  tileView.setUint32(32, tileSize, true);
+function rectAt(view: DataView, at: number): Rect {
   return {
-    compositeTile: (tile, rect, ox, oy, tx, ty) => {
-      if (tile.pixels.byteLength !== n * 4) throw new Error('CORE_BAD_ARGUMENT: tile size differs from the prepared observation.');
-      core.writeBytes(tPixels, tile.pixels);
-      core.writeBytes(tCoverage, tile.coverage);
-      core.writeBytes(tProvisional, tile.provisional);
-      core.writeBytes(tQuality, tile.quality);
-      core.writeBytes(tConflicts, tile.conflicts);
-      core.writeBytes(tOwner, tile.owner);
-      core.writeBytes(tScore, tile.score);
-      core.writeBytes(tFrozen, tile.frozen);
-      core.writeRect(world, rect);
-      core.check(core.exports.ls_composite_tile(tileDesc, desc, world, ox, oy, tx, ty, output), 'compositeTile');
-      const result = new DataView(core.exports.memory.buffer, output, COMPOSITE_HEADER + 8 * blocks);
-      const changed = result.getUint32(16, true) === 1,
-        count = result.getUint32(20, true),
-        mem = new Uint8Array(core.exports.memory.buffer);
-      if (changed) {
-        tile.pixels.set(mem.subarray(tPixels, tPixels + n * 4));
-        tile.coverage.set(mem.subarray(tCoverage, tCoverage + tile.coverage.byteLength));
-        tile.provisional.set(mem.subarray(tProvisional, tProvisional + tile.provisional.byteLength));
-      }
-      // Block metadata can change without any pixel write (quality caps, ownership, conflicts).
-      tile.quality.set(mem.subarray(tQuality, tQuality + blocks));
-      tile.conflicts.set(mem.subarray(tConflicts, tConflicts + blocks));
-      tile.owner.set(new Uint32Array(mem.buffer, tOwner, blocks));
-      tile.score.set(new Float32Array(mem.buffer, tScore, blocks));
-      const conflictBlocks: [number, number][] = [];
-      for (let i = 0; i < count; i++) {
-        conflictBlocks.push([result.getUint32(COMPOSITE_HEADER + i * 8, true), result.getUint32(COMPOSITE_HEADER + i * 8 + 4, true)]);
-      }
-      return {
-        added: result.getUint32(0, true),
-        conflicts: result.getUint32(4, true),
-        uncertain: result.getUint32(8, true),
-        provisionalPixels: result.getInt32(12, true),
-        changed,
-        conflictBlocks,
-      };
-    },
+    x: view.getFloat64(at, true),
+    y: view.getFloat64(at + 8, true),
+    width: view.getFloat64(at + 16, true),
+    height: view.getFloat64(at + 24, true),
   };
+}
+const textEncoder = new TextEncoder(), textDecoder = new TextDecoder();
+
+export class CompositorHandle {
+  private readonly freeGuard = new FreeGuard();
+  /** The frame descriptor of the placement in progress, in the frame arena (it survives the PNG work between steps). */
+  private frameDesc = 0;
+  constructor(private readonly core: Core, private readonly exports: CoreExports, readonly handle: number) {}
+  /** Plans one placement; returns 0, or `COMPOSITOR_OUTSIDE_CANVAS` when the placed rect leaves the canvas. */
+  begin(tiles: TileCacheHandle, p: CompositorPlacement, frame: CompositorFrameInput): number {
+    const { width, height } = frame.image, pixels = width * height;
+    const residentImage = frame.image instanceof ResidentFrame ? frame.image : undefined;
+    const residentConsistent = frame.consistent instanceof Resident ? frame.consistent : undefined;
+    for (const [what, r] of [['labels', frame.labels], ['consistency mask', residentConsistent]] as const) {
+      if (r && r.length !== pixels) throw new Error(`CORE_BAD_ARGUMENT: resident ${what} do not match the frame.`);
+    }
+    const [desc, rgbaScratch, consistentScratch] = this.core.scratchFrame([
+      FRAME_BYTES,
+      residentImage ? 0 : pixels * 4,
+      frame.consistent && !residentConsistent ? pixels : 0,
+    ]);
+    const rgba = residentImage ? residentImage.ptr : rgbaScratch;
+    if (!residentImage) this.core.writeBytes(rgba, (frame.image as RGBA).data);
+    const consistent = residentConsistent ? residentConsistent.ptr : frame.consistent ? consistentScratch : 0;
+    if (frame.consistent && !residentConsistent) this.core.writeBytes(consistentScratch, frame.consistent as Uint8Array);
+    const fv = new DataView(this.exports.memory.buffer, desc, FRAME_BYTES);
+    [rgba, width, height, frame.labels.ptr, consistent].forEach((v, i) => fv.setUint32(i * 4, v, true));
+    this.frameDesc = desc;
+    const canvas = textEncoder.encode(p.canvas), occlusions = p.occlusions ?? [];
+    const [placement, canvasPtr, occ] = this.core.scratch([PLACEMENT_BYTES, Math.max(1, canvas.length), occlusions.length * 32]);
+    this.core.writeBytes(canvasPtr, canvas);
+    occlusions.forEach((r, i) => this.core.writeRect(occ + i * 32, r));
+    const pv = new DataView(this.exports.memory.buffer, placement, PLACEMENT_BYTES);
+    pv.setUint32(0, canvasPtr, true);
+    pv.setUint32(4, canvas.length, true);
+    this.core.writeRect(placement + 8, p.region);
+    pv.setUint32(40, p.code, true);
+    pv.setFloat64(48, p.ownedPixels, true);
+    pv.setFloat64(56, p.x, true);
+    pv.setFloat64(64, p.y, true);
+    pv.setUint32(72, p.frame, true);
+    pv.setFloat64(80, p.time, true);
+    pv.setFloat64(88, p.confidence, true);
+    pv.setUint32(96, p.uncertain ? 1 : 0, true);
+    pv.setUint32(100, occlusions.length ? occ : 0, true);
+    pv.setUint32(104, occlusions.length, true);
+    const status = this.exports.ls_compositor_begin(this.handle, tiles.handle, placement, desc);
+    return status === COMPOSITOR_OUTSIDE_CANVAS ? status : this.core.check(status, 'compositorBegin');
+  }
+  cancel(): void {
+    this.exports.ls_compositor_cancel(this.handle);
+  }
+  /** Runs the placement until it needs a tile or temporal records, or is done; `now` stamps the tiles it writes.
+   *  Returns the step, or `COMPOSITOR_DISPOSED` when the placement's canvas was disposed. */
+  step(tiles: TileCacheHandle, now: number): CompositorStep | typeof COMPOSITOR_DISPOSED {
+    const [out] = this.core.scratch([STEP_OUT_BYTES]);
+    const status = this.exports.ls_compositor_step(this.handle, tiles.handle, this.frameDesc, now, out);
+    if (status === COMPOSITOR_DISPOSED) return status;
+    this.core.check(status, 'compositorStep');
+    const view = new DataView(this.exports.memory.buffer, out, STEP_OUT_BYTES);
+    if (status === 1) return { kind: 'tile', x: view.getInt32(0, true), y: view.getInt32(4, true) };
+    if (status === 2) return { kind: 'temporal' };
+    const stats: CompositorStats = {
+      added: view.getFloat64(0, true),
+      conflicts: view.getFloat64(8, true),
+      uncertain: view.getFloat64(16, true),
+      tiles: view.getFloat64(24, true),
+      bounds: rectAt(view, 40),
+      provisionalPixels: view.getFloat64(32, true),
+    };
+    const bytes = view.getUint32(72, true);
+    const diagnostics: CompositorEvent[] = [];
+    if (bytes) {
+      const [buf] = this.core.scratch([bytes]);
+      this.core.check(this.exports.ls_compositor_diagnostics(this.handle, buf), 'compositorDiagnostics');
+      const d = new DataView(this.exports.memory.buffer, buf, bytes);
+      for (let at = 0; at < bytes;) {
+        const kind = d.getUint32(at, true), frame = d.getUint32(at + 4, true), time = d.getFloat64(at + 8, true);
+        const region = rectAt(d, at + 16), count = d.getUint32(at + 64, true);
+        const regions = Array.from({ length: count }, (_, i) => rectAt(d, at + DIAGNOSTIC_BYTES + i * 32));
+        diagnostics.push(
+          kind === 0 ? { kind: 'incomplete', frame, time, region } : {
+            kind: 'conflict',
+            frame,
+            time,
+            region,
+            confidence: d.getFloat64(at + 48, true),
+            regions,
+            conflicts: d.getFloat64(at + 56, true),
+          },
+        );
+        at += DIAGNOSTIC_BYTES + count * 32;
+      }
+    }
+    return { kind: 'done', stats, diagnostics };
+  }
+  /** Seeds `canvas`'s temporal index from its stored rows, in ascending id order. */
+  loadTemporal(canvas: string, rows: TemporalRow[]): void {
+    const id = textEncoder.encode(canvas), total = rows.reduce((n, r) => n + r.blocks.length, 0);
+    const [canvasPtr, headers, blocks] = this.core.scratch([Math.max(1, id.length), rows.length * TEMPORAL_RECORD_HEADER_BYTES, total * 8]);
+    this.core.writeBytes(canvasPtr, id);
+    const mem = new Uint8Array(this.exports.memory.buffer), view = new DataView(this.exports.memory.buffer);
+    let at = blocks;
+    rows.forEach((row, i) => {
+      writeRowHeader(mem, view, headers + i * TEMPORAL_RECORD_HEADER_BYTES, row, row.blocks.length);
+      writeBlocksAt(view, at, row.blocks);
+      at += row.blocks.length * 8;
+    });
+    this.core.check(
+      this.exports.ls_compositor_load_temporal(this.handle, canvasPtr, id.length, headers, blocks, rows.length),
+      'compositorLoadTemporal',
+    );
+  }
+  /** Temporal rows changed since the last flush, per canvas in first-loaded order. */
+  flush(): TemporalFlushRows[] {
+    const canvases = this.core.check(this.exports.ls_compositor_flush(this.handle), 'compositorFlush'), out: TemporalFlushRows[] = [];
+    for (let c = 0; c < canvases; c++) {
+      const [sizes] = this.core.scratch([16]);
+      this.core.check(this.exports.ls_compositor_flush_sizes(this.handle, c, sizes), 'compositorFlushSizes');
+      const sv = new DataView(this.exports.memory.buffer, sizes, 16);
+      const [idBytes, deletedCount, dirtyCount, blockTotal] = [0, 1, 2, 3].map((i) => sv.getUint32(i * 4, true));
+      const [idOut, deletedOut, headersOut, blocksOut] = this.core.scratch([
+        Math.max(1, idBytes),
+        deletedCount * 10,
+        dirtyCount * TEMPORAL_RECORD_HEADER_BYTES,
+        blockTotal * 8,
+      ]);
+      this.core.check(
+        this.exports.ls_compositor_flush_take(this.handle, c, idOut, deletedOut, headersOut, blocksOut),
+        'compositorFlushTake',
+      );
+      const mem = new Uint8Array(this.exports.memory.buffer), view = new DataView(this.exports.memory.buffer);
+      const deleted = Array.from({ length: deletedCount }, (_, i) => decodeId(mem, deletedOut + i * 10));
+      const dirty: TemporalRow[] = [];
+      let at = blocksOut;
+      for (let i = 0; i < dirtyCount; i++) {
+        const { row, blockCount } = readRowHeader(mem, view, headersOut + i * TEMPORAL_RECORD_HEADER_BYTES);
+        dirty.push({ ...row, blocks: readBlocksAt(view, at, blockCount) });
+        at += blockCount * 8;
+      }
+      out.push({ canvas: textDecoder.decode(mem.slice(idOut, idOut + idBytes)), deleted, dirty });
+    }
+    return out;
+  }
+  /** Releases every canvas's index, keeping what the next `flush()` owes storage. */
+  dispose(): void {
+    this.exports.ls_compositor_dispose(this.handle);
+  }
+  free(): void {
+    this.freeGuard.once(() => this.exports.ls_compositor_free(this.handle));
+  }
+}
+
+export function newCompositor(
+  core: Core,
+  exports: CoreExports,
+  latest: boolean,
+  atlasWidth: number,
+  atlasHeight: number,
+): CompositorHandle {
+  return new CompositorHandle(
+    core,
+    exports,
+    core.check(exports.ls_compositor_new(latest ? 1 : 0, atlasWidth, atlasHeight), 'compositorNew'),
+  );
 }

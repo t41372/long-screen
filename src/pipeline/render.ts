@@ -563,6 +563,10 @@ export class RenderPass {
         try {
           await this.ctx.diagnostics.emit(prefixOnly('PERSISTENCE_PREFIX_ONLY', 'render', this.ctx.project.renderedFrames, error));
         } catch { /* the journal write itself failed too; the run is already marked partial. */ }
+      } finally {
+        // The engine's compositor and pose graph end with the pass, after the last temporal flush.
+        this.compositor?.free();
+        this.graph?.free();
       }
     }
   }

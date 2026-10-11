@@ -29,15 +29,9 @@ export type {
   OcclusionDecision,
 } from './wasm/track.ts';
 export type { FrameLayout, FramingSession, FramingTile, SourceFramingTile } from './wasm/framing.ts';
-export type { CompositeObservation, CompositeTile, CompositeTileStats, PreparedObservation } from './wasm/compositor.ts';
-export type {
-  OverwriteStats,
-  OverwriteTile,
-  TemporalCommitResult,
-  TemporalComponent,
-  TemporalIndexHandle,
-  TemporalMaskInput,
-  TemporalRow,
-} from './wasm/temporal.ts';
+export type { CompositorEvent, CompositorHandle, CompositorStats } from './wasm/compositor.ts';
+export { COMPOSITOR_DISPOSED, COMPOSITOR_OUTSIDE_CANVAS } from './wasm/compositor.ts';
+export { type StoredPlanes, TILE_PLANES, type TileCacheHandle, type TileCacheStats, type TilePlanes } from './wasm/tiles.ts';
+export type { TemporalRow } from './wasm/temporal.ts';
 export type { ConsistencyMaskInput, ConsistencyNeighbourInput, ConsistencyVoteInput } from './wasm/consistency.ts';
 export { core, coreBuild, coreLoaded, type CorePlan, loadCore, loadPlannedCore, planCore, simdSupported } from './wasm/loader.ts';
