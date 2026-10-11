@@ -7,7 +7,7 @@ use crate::solve::{kind_str, shape};
 use crate::tiles::{decode_png, encode_png};
 use crate::value::{read_rect, rect, Js, Obj};
 use long_screen_engine::framing::{
-    FramingSession, Outcome, Reference, SaveTile, SourceCanvas, Step as FramingStep,
+    intersect, FramingSession, Outcome, Reference, SaveTile, SourceCanvas, Step as FramingStep,
     DEFAULT_MAX_TILES,
 };
 use long_screen_engine::pyramid::{PyramidSession, Step as PyramidStep};
@@ -31,7 +31,9 @@ fn build_framed(ctx: &mut Ctx, source: &Obj, started: Instant) -> Result<Option<
     let region = ctx.regions.iter().find(|r| r.id == layer).ok_or_else(|| {
         "TypeError: Cannot read properties of undefined (reading 'crop')".to_string()
     })?;
-    let pane = region.crop.unwrap_or(region.rect);
+    let pane = region
+        .crop
+        .map_or(region.rect, |crop| intersect(region.rect, crop));
     let ignore = ctx
         .regions
         .iter()

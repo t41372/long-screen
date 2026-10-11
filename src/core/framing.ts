@@ -4,6 +4,7 @@ import { iterate } from '../storage/db.ts';
 import type { TileIndex, TileStore } from '../storage/tiles.ts';
 import { decodePNG } from '../codec/png.ts';
 import { core, type FrameLayout } from './wasm.ts';
+import { intersect } from './math.ts';
 
 export type { FrameLayout } from './wasm.ts';
 
@@ -17,7 +18,12 @@ const MAX_TILES = 20000;
  * bringing tiles into the cache and storing the ones it fills, the pause/stop checkpoint before each output tile,
  * and the canvas row. */
 export function frameLayout(source: RGBA, region: Region, canvas: CanvasMeta): FrameLayout {
-  return core().frameLayout(source, region.crop || region.rect, canvas.bounds.width, canvas.bounds.height);
+  return core().frameLayout(
+    source,
+    region.crop ? intersect(region.rect, region.crop) : region.rect,
+    canvas.bounds.width,
+    canvas.bounds.height,
+  );
 }
 /** Native source coordinate for a context pixel; undefined is a decorative extension, null is reconstructed
  * content. Test/diagnostic use only — the framing session classifies pixels inline in Rust. */
@@ -42,7 +48,7 @@ export async function buildFramedCanvas(
 ): Promise<CanvasMeta | undefined> {
   const session = core().framingSession(
     { id: sourceCanvas.id, bounds: sourceCanvas.bounds, tileCount: sourceCanvas.tileCount || 0, attached: !!sourceCanvas.attachedTo },
-    region.crop || region.rect,
+    region.crop ? intersect(region.rect, region.crop) : region.rect,
     regions.filter((r) => r.kind === 'ignore'),
     tiles.size,
     options?.maxTiles ?? MAX_TILES,

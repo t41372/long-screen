@@ -313,3 +313,34 @@ Deno.test('framing: giant sparse bounds stop at the candidate limit without trav
   assertEquals(await countPrefix(db, `tile/${giant.id}-framed/`), 0);
   assertEquals(await countPrefix(db, `tile-index/${giant.id}-framed/`), 0);
 });
+
+Deno.test('framing: a crop constrains the pane without swallowing fixed chrome on its other axis', async () => {
+  const source = reference();
+  // Cropping one axis is independent of the fixed toolbar/sidebar boundary on the other axis.
+  for (
+    const crop of [
+      { x: 3, y: 0, width: 6, height: 10 },
+      { x: 0, y: 3, width: 12, height: 4 },
+    ]
+  ) {
+    const cropped = { ...region, crop };
+    const expected = crop.x === 0 ? { x: 2, y: 3, width: 8, height: 4 } : { x: 3, y: 2, width: 6, height: 6 };
+    assertEquals(frameLayout(source, cropped, meta).pane, expected);
+    const db = new MemoryKV(), tiles = new TileStore(db, 16, 64);
+    await paintSourceTile(tiles, meta.id, 0, 0);
+    await db.put('frame-reference', { frame: 0, image: new Blob([await encodeRGBA(source)]) });
+    const content = { ...meta, bounds: { ...meta.bounds, width: expected.width } };
+    const framed = await buildFramedCanvas(db, tiles, content, cropped, [cropped], async () => {});
+    assertEquals(framed?.presentation?.sourceRegion, expected);
+    const tile = await tiles.get(framed!.id, 0, 0);
+    // The complete header comes from the reference, including the part above the moving pane.
+    for (let y = 0; y < expected.y; y++) {
+      for (let x = 0; x < source.width; x++) {
+        assertEquals([...tile.pixels.subarray((y * 16 + x) * 4, (y * 16 + x) * 4 + 4)], [
+          ...source.data.subarray((y * source.width + x) * 4, (y * source.width + x) * 4 + 4),
+        ]);
+      }
+    }
+    tiles.free();
+  }
+});

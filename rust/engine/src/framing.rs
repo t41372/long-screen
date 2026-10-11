@@ -199,7 +199,8 @@ pub struct FramingSession {
     framed: Option<FramedCanvas>,
 }
 
-fn intersect(a: Rect, b: Rect) -> Rect {
+/// Intersection of the pane with its crop, or of an output tile with the content.
+pub fn intersect(a: Rect, b: Rect) -> Rect {
     let x = a.x.max(b.x);
     let y = a.y.max(b.y);
     Rect {
@@ -244,7 +245,7 @@ fn any_opaque(pixels: &[u8]) -> bool {
 }
 
 impl FramingSession {
-    /// A session framing `source`, seen through `pane` of the reference frame (`region.crop || region.rect`), with
+    /// A session framing `source`, seen through `pane` of the reference frame (the region rectangle intersected with its crop), with
     /// `ignore` regions left out of the chrome, over the cache's `size`-pixel tiles.
     pub fn new(
         source: SourceCanvas,
