@@ -2,7 +2,7 @@
 dist/
 dist.build*/
 dist-portable/
-# the npm/JSR package: `deno task build:package` regenerates it
+# the npm package: `deno task build:package` regenerates it
 dist-package/
 dist-package.build/
 # the browser suite's own dev build (tests/browser/support.ts) and its staging directory

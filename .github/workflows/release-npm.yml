@@ -1,0 +1,111 @@
+# The TypeScript package on npm (`long-screen`, src/package; built into dist-package/ by `deno task build:package`).
+# Running this workflow by hand (Actions → npm package → Run workflow) only builds and packs it: the tarball is kept as
+# the run's `npm-package` artifact. Pushing a tag `npm-v<version>` (the version in deno.json, which the package build
+# copies) builds the same way and then publishes that tarball to npm by trusted publishing, with provenance. Deploys of
+# the web app do not depend on this workflow (production builds on Cloudflare Pages from main). docs/RELEASING.md
+# describes the whole release.
+#
+# Trusted publishing (https://docs.npmjs.com/trusted-publishers): the package's settings on npmjs.com name this
+# repository, this workflow file and the `npm` environment, with `npm publish` among the allowed actions. npm can
+# only configure that for a package that already exists, so the first version is published by hand from the
+# artifact of a manual run; a tag for a version already on npm publishes nothing.
+name: npm package
+
+on:
+  push:
+    tags: ["npm-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and pack
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.pack.outputs.version }}
+      tarball: ${{ steps.pack.outputs.tarball }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # scripts/build-core.sh builds the three WebAssembly cores with the toolchain rust/rust-toolchain.toml pins.
+      - name: Install the pinned Rust toolchain
+        working-directory: rust
+        run: rustup toolchain install
+
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Build the package
+        run: deno task build:package
+
+      - name: Check the tag against the package version
+        if: startsWith(github.ref, 'refs/tags/npm-v')
+        run: |
+          version=$(jq -r .version dist-package/package.json)
+          if [ "npm-v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::the tag $GITHUB_REF_NAME does not match the package version $version (deno.json)"
+            exit 1
+          fi
+
+      - name: Pack
+        id: pack
+        working-directory: dist-package
+        run: |
+          npm pack --dry-run
+          tarball=$(npm pack --json | jq -r ".[0].filename")
+          sha256sum "$tarball"
+          echo "version=$(jq -r .version package.json)" >> "$GITHUB_OUTPUT"
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-package
+          path: dist-package/${{ steps.pack.outputs.tarball }}
+          if-no-files-found: error
+
+  publish:
+    name: Publish to npm
+    if: startsWith(github.ref, 'refs/tags/npm-v')
+    needs: build
+    runs-on: ubuntu-24.04
+    environment:
+      name: npm
+      url: https://www.npmjs.com/package/long-screen
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      # Trusted publishing needs npm 11.5.1 or later; this pins one rather than taking whatever Node 24 bundles.
+      - name: Install npm
+        run: npm install --global npm@11.20.0
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-package
+
+      # npm never accepts a version twice, so a version that is already there (the first one, published by hand, or a
+      # rerun after a publish that went through) is left alone. A package that does not exist yet cannot have a
+      # trusted publisher, so that case stops with what to do instead.
+      - name: Publish
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          TARBALL: ${{ needs.build.outputs.tarball }}
+        run: |
+          if ! curl -sSf -o /dev/null https://registry.npmjs.org/long-screen; then
+            echo "::error::long-screen is not on npm yet: publish its first version by hand from this run's npm-package artifact (docs/RELEASING.md), then push the next version's tag"
+            exit 1
+          fi
+          if curl -sf -o /dev/null "https://registry.npmjs.org/long-screen/$VERSION"; then
+            echo "::notice::long-screen@$VERSION is already on npm; nothing to publish"
+            exit 0
+          fi
+          npm publish "./$TARBALL" --provenance --access public

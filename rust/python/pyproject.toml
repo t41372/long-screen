@@ -31,7 +31,7 @@ dependencies = ["numpy>=1.24"]
 dynamic = ["version"]
 
 [project.urls]
-Homepage = "https://github.com/t41372/long-screen"
+Homepage = "https://long-screen.yi-ting.com"
 Repository = "https://github.com/t41372/long-screen"
 Issues = "https://github.com/t41372/long-screen/issues"
 

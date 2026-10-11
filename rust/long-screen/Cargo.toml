@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.94"
 license = "MIT"
 repository = "https://github.com/t41372/long-screen"
-homepage = "https://github.com/t41372/long-screen"
+homepage = "https://long-screen.yi-ting.com"
 description = "Long Screen as a native library and command line: a screen recording in, one big screenshot out"
 readme = "README.md"
 keywords = ["screenshot", "screen-recording", "stitching", "panorama", "long-screenshot"]
@@ -33,14 +33,14 @@ cli = ["dep:clap"]
 long-screen-core = { path = "../core", version = "=0.1.0", features = ["rayon"] }
 long-screen-engine = { path = "../engine", version = "=0.1.0" }
 long-screen-decode = { path = "../decode", version = "=0.1.0" }
-rayon = "=1.12.0"
+rayon = "1.12.0"
 # The tile codec, at the settings the web page encodes tiles with (rust/wasm/src/png.rs), so the bytes match.
 png = "=0.18.1"
 # Row fingerprints (the format scripts/fingerprint-scenarios.ts writes) and the JSON report.
-sha2 = "=0.11.0"
+sha2 = "0.11.0"
 # `float_roundtrip`: numbers read from JSON (the parity harness's frame times, ffprobe's) must be the exact doubles.
-serde_json = { version = "=1.0.152", features = ["preserve_order", "float_roundtrip"] }
-clap = { version = "=4.6.7", features = ["derive"], optional = true }
+serde_json = { version = "1.0.152", features = ["preserve_order", "float_roundtrip"] }
+clap = { version = "4.6.7", features = ["derive"], optional = true }
 
 [dev-dependencies]
 png = "=0.18.1"

@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.94"
 license = "MIT"
 repository = "https://github.com/t41372/long-screen"
-homepage = "https://github.com/t41372/long-screen"
+homepage = "https://long-screen.yi-ting.com"
 description = "Native video decoding for Long Screen: system decoders (AVFoundation, Media Foundation) or a user-installed ffmpeg"
 readme = "README.md"
 keywords = ["video", "decoder", "avfoundation", "media-foundation", "ffmpeg"]
@@ -15,19 +15,19 @@ include = ["Cargo.toml", "README.md", "LICENSE", "src/**/*.rs"]
 
 [dependencies]
 # ffprobe's JSON output (the ffmpeg backend's metadata).
-serde = { version = "=1.0.229", features = ["derive"] }
-serde_json = "=1.0.152"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.152"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "=0.6.5"
-objc2-foundation = "=0.3.2"
-objc2-av-foundation = { version = "=0.3.2", features = ["objc2-core-media", "objc2-core-video"] }
-objc2-core-media = "=0.3.2"
-objc2-core-video = "=0.3.2"
-objc2-core-foundation = "=0.3.2"
+objc2 = "0.6.5"
+objc2-foundation = "0.3.2"
+objc2-av-foundation = { version = "0.3.2", features = ["objc2-core-media", "objc2-core-video"] }
+objc2-core-media = "0.3.2"
+objc2-core-video = "0.3.2"
+objc2-core-foundation = "0.3.2"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "=0.62.2", features = [
+windows = { version = "0.62.2", features = [
   "Win32_Foundation",
   "Win32_Media_MediaFoundation",
   "Win32_System_Com",

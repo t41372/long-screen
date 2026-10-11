@@ -417,7 +417,7 @@ PyO3 绑定（`long-screen-py`，cdylib，导入名 `long_screen._native`），�
 - `install.ts` — 安装成 PWA：页面加载完后注册 `sw.js`；页眉的「安装到本地」键只在能装、又还没以装好的 App 打开时出现：Chromium 收到 `beforeinstallprompt` 后按键弹浏览器自己的安装框，iPhone/iPad 与 Mac Safari 没有安装 API，按键打开分步说明；Firefox 和 file:// 便携版不显示。UI，兼浏览器 API。
 - `flight.ts` — 崩溃记录器：把重建的最后已知状态写入 localStorage，页面被杀或崩溃后下次加载上报一次并清除。UI，兼 I/O（localStorage）。
 
-### src/package（TS 外壳：npm/JSR 包）
+### src/package（TS 外壳：npm 包）
 
 让别的网页也能跑重建（§十三第 8 步的 TS 部分）。包就是应用自己的 worker、三个核心构建和两个辅助 worker，原样打包，外加一个在页面这一侧驱动它们的入口；没有任何算法，也不复制引擎逻辑。
 
@@ -427,7 +427,7 @@ PyO3 绑定（`long-screen-py`，cdylib，导入名 `long_screen._native`），�
 
 存储：库不沿用应用「保留最近一张 24 小时」的规则。那条规则是给有界面的应用防刷新和崩溃的，库没有可以恢复到的界面。每次调用用自己的 IndexedDB 数据库（`long-screen-package-<uuid>`，`protocol.ts` 的 `PACKAGE_DB_PREFIX`），`result` 落定之前删掉，成功、出错、`cancel()` 都一样；这样 worker 在 `start` 时的清扫也碰不到同源的应用自己的数据库。调用期间持有 Web Lock `long-screen-package:<库名>`；页面中途关掉留下的库，由同源下一次调用删掉（没有锁持有的才删）。不用内存 KV：长录屏的中间记录可能有几百 MB，应用正是为此才把它们放进 IndexedDB。
 
-打包路线：不用 `@deno/dnt`。dnt 把模块树逐文件转成 npm 模块，处理不了 worker 必须是单个自足文件、以及 worker 按 `new URL('./x', import.meta.url)` 去取的那些同级文件（三个 `.wasm`、`core-helper.js`、`convert-worker.js`）。`scripts/build-package.ts` 沿用应用构建的 `deno bundle`，产出一个扁平目录，npm 和 JSR 发布同一个目录。所有文件引用都是字面量 `new URL('./文件', import.meta.url)`，Vite 和 webpack 会自己发出这些文件（用 Vite 8.3.4、webpack 5.111.1 构建的使用者页面在 Chrome 和 WebKit 里跑通过，PNG 与应用的相同）；为此 `loader.ts` 给每个核心构建写了自己的字面量（`coreURL`）。esbuild 和 `deno bundle` 不处理这种 URL，要把包里的 `*.js`、`*.wasm` 复制到打包结果旁边；Vite 开发服务器要 `optimizeDeps.exclude`。
+打包路线：不用 `@deno/dnt`。dnt 把模块树逐文件转成 npm 模块，处理不了 worker 必须是单个自足文件、以及 worker 按 `new URL('./x', import.meta.url)` 去取的那些同级文件（三个 `.wasm`、`core-helper.js`、`convert-worker.js`）。`scripts/build-package.ts` 沿用应用构建的 `deno bundle`，产出一个扁平目录，npm 发布的就是这个目录。所有文件引用都是字面量 `new URL('./文件', import.meta.url)`，Vite 和 webpack 会自己发出这些文件（用 Vite 8.3.4、webpack 5.111.1 构建的使用者页面在 Chrome 和 WebKit 里跑通过，PNG 与应用的相同）；为此 `loader.ts` 给每个核心构建写了自己的字面量（`coreURL`）。esbuild 和 `deno bundle` 不处理这种 URL，要把包里的 `*.js`、`*.wasm` 复制到打包结果旁边；Vite 开发服务器要 `optimizeDeps.exclude`。
 
 ### src/i18n（TS 外壳：界面语言）
 
@@ -494,7 +494,7 @@ PyO3 绑定（`long-screen-py`，cdylib，导入名 `long_screen._native`），�
 ### scripts/ 工具
 
 - `build.ts` / `build-core.sh` — 应用构建（bundle + dist 静态资源 + THIRD_PARTY_NOTICES + 写进 `sw.js` 的离线文件清单，并把构建所用的提交写进页脚：Cloudflare Pages 上取 `CF_PAGES_COMMIT_SHA`，本地取 git HEAD，工作区有改动时标 `-dirty`，两者都没有时页脚这一行保持隐藏，不让构建失败）与 Rust 核心三构建编译；后者是修改任何 `.rs` 后唯一允许的构建入口。
-- `build-package.ts` — `deno task build:package`：把 npm/JSR 包构建进 `dist-package/`（`index.js` + `index.d.ts`、应用的 `worker.js`、两个辅助 worker、三个核心构建、`package.json`、`jsr.json`、README、LICENSE、不含字体和徽标的 THIRD_PARTY_NOTICES）；包里的文件引用不是字面量 `new URL('./文件', import.meta.url)` 或指向不存在的文件时构建失败。
+- `build-package.ts` — `deno task build:package`：把 npm 包构建进 `dist-package/`（`index.js` + `index.d.ts`、应用的 `worker.js`、两个辅助 worker、三个核心构建、`package.json`、README、LICENSE、不含字体和徽标的 THIRD_PARTY_NOTICES）；包里的文件引用不是字面量 `new URL('./文件', import.meta.url)` 或指向不存在的文件时构建失败。
 - `fingerprint-scenarios.ts` / `compare-fingerprints.ts` — 24 个合成场景跑一遍并哈希每一条持久化记录；两份指纹逐行比较，任何差异退出码 1。
 - `export-catalog.ts` — 把 `src/i18n` 的 `diag`、`progress`、`names` 三节导出成 `rust/engine/catalog/*.json`（`deno task export-catalog`，`--check` 只检查）；遇到 Rust 格式化器不支持的写法（嵌套 `$t()`、格式化器、`{{- }}`、复数键）直接报错。
 - `compare-tiles.ts` — `benchmark-pipeline.ts --verify-tiles` 产出的逐瓦片指纹按字段比较，定位差异瓦片。
@@ -591,7 +591,7 @@ Rust 核心的完整迁移时间线（哪一轮做了什么、每一步的验证
 5. reveal（已完成，`test-results/port-reveal/`）。揭示阶段整个在 `rust/engine/src/reveal.rs` 的 `RevealSession`：哪些决定算数、内存检查与 `REVEAL_SKIPPED`、喂合成器瓦片、四遍的顺序与 `wanted`、投票后的整块拷贝、延后块、来源行与汇总；解码出的帧写进会话自己的帧缓冲（同扫描会话）。宿主 `src/pipeline/reveal.ts` 只剩读行、内存探测、解码循环、瓦片载入与存储、计时、进度、暂停与停止。原来 `src/core/wasm/reveal.ts` 里逐个调用核心的 `RevealRun` 与它的 `ls_reveal_*` 导出一并删除。场景指纹在三种构建上逐行相同（`performance` 行的瓦片编码、解码、换出次数也相同），真实录屏 A/B 的瓦片、瓦片索引、画布与来源行哈希及诊断计数相同。
 6. framing 与金字塔（已完成，`test-results/port-present/`）。呈现画布（`rust/engine/src/framing.rs` 的 `FramingSession`）与预览金字塔（`rust/engine/src/pyramid.rs` 的 `PyramidSession`）都是宿主逐步驱动的可续作业：呈现画布每个输出瓦片之前停一次，供宿主检查暂停与停止，金字塔每个父瓦片之后停一次，与原来的检查点一一对应；呈现画布的规划（周长与源瓦片映射，受瓦片上限约束）是一步算完，不再每 256 格停一次。`buildFramedCanvas` 与 `TileStore.buildPyramid` 保留原来的签名，成为宿主：参照帧的 PNG 解码、瓦片索引的读取、瓦片的载入与存储、`pyramid-todo/` 行和画布行都还在宿主，写入的键、字段顺序与时机不变；瓦片缓存看到的使用、换出、编码与解码次数也不变（`performance` 行逐字节相同）。场景指纹在三种构建上逐行相同，真实录屏 A/B 的瓦片、瓦片索引与画布行哈希及诊断计数相同。
 7. 原生驱动和命令行（已完成，`test-results/native-cli/`）。`rust/long-screen` 是一个同步宿主（见十一节）：与网页同序驱动全部会话，行的键、字段顺序和值与网页相同，诊断用同一份目录格式化；`run()` 带进度与诊断回调、跨线程的暂停与停止、线程数和存储内存预算，结果按瓦片保存，可流式写出任意尺寸的 PNG。命令行 `long-screen` 在它上面。核心的 `pool.rs` 原生走 rayon。全部 24 个合成场景在原生驱动上与网页三种构建的指纹逐行相同（1 线程与默认线程数都是），test_1、test_3、test_6、test_7 上与网页（同样用 ffmpeg 解码的帧）逐行相同，只有 `performance` 行的 `tileEncodes` 随网页的墙钟落盘变化。要做到逐位相同，核心的超越函数都调 `libm` crate（wasm 构建所用的 musl 实现，见十一节 rust/core/src），不经系统数学库。网页的结果包（ZIP、离线查看器）尚未搬到原生。
-8. TS 包（npm/jsr）与 Python 包。TS 包已完成（`src/package/`，见§十一；`test-results/ts-package/`），还没有发布：npm 名 `long-screen` 在 2026-10-10 无人占用，JSR 的 scope 由维护者决定（`jsr.json` 暂用 `@long-screen/long-screen`）。Python 包已完成（`rust/python`，见§十一；`test-results/python-package/`），也还没有发布：PyPI 名 `long-screen` 在 2026-10-10 无人占用，发布要维护者在 PyPI 上建项目并配置可信发布者。
+8. TS 包（npm）与 Python 包。TS 包已完成（`src/package/`，见§十一；`test-results/ts-package/`），还没有发布：npm 名 `long-screen` 在 2026-10-11 仍无人占用；只发 npm，不发 JSR（维护者 2026-10-11 的决定）。发布步骤见 `docs/RELEASING.md`。Python 包已完成（`rust/python`，见§十一；`test-results/python-package/`），也还没有发布：PyPI 名 `long-screen` 在 2026-10-10 无人占用，发布要维护者在 PyPI 上建项目并配置可信发布者。
 
 ### 每一步怎么验证
 

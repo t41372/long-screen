@@ -1,4 +1,4 @@
-/** The npm/JSR package (src/package/, built by scripts/build-package.ts into dist-package/) used the way another site
+/** The npm package (src/package/, built by scripts/build-package.ts into dist-package/) used the way another site
  *  would use it, in real Chrome and WebKit: tests/package/consumer.html imports the built `index.js` through an import
  *  map and reconstructs the app's sample recording (static/demo/sample.mp4)
  *   - on a cross-origin-isolated page, where the threaded core must load;

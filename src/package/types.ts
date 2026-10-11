@@ -1,4 +1,4 @@
-/** The public types of the npm/JSR package. Declarations only, with no imports and no runtime code, so
+/** The public types of the npm package. Declarations only, with no imports and no runtime code, so
  *  scripts/build-package.ts publishes this file as is as the package's `index.d.ts` (plus the `reconstruct`
  *  declaration). src/package/index.ts checks at compile time that these match what the worker sends. */
 /** The language of diagnostic and progress messages and of print labels. */

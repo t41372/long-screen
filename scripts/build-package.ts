@@ -1,20 +1,19 @@
-/** Builds the npm/JSR package into dist-package/ (gitignored): Long Screen's reconstruction for other web pages.
+/** Builds the npm package into dist-package/ (gitignored): Long Screen's reconstruction for other web pages.
  *
  *  Route (docs/ARCHITECTURE.md §十一, `src/package/`): the same `deno bundle` the app build uses, not @deno/dnt. The
  *  package is a Worker that loads one of three Wasm builds and two helper workers by `new URL('./x',
  *  import.meta.url)`; dnt converts a module tree into per-file npm modules and has no notion of those sibling files,
  *  and the worker has to be one self-contained file anyway. So the package is a flat directory of ready-to-serve
  *  files: the public entry `index.js` (+ `index.d.ts`), `worker.js`, `core-helper.js`, `convert-worker.js` and the
- *  three `core*.wasm`, plus package.json (npm), jsr.json (JSR), README.md, LICENSE and THIRD_PARTY_NOTICES.txt. The
- *  same directory is published to both registries.
+ *  three `core*.wasm`, plus package.json, README.md, LICENSE and THIRD_PARTY_NOTICES.txt. The directory is what
+ *  `npm publish` uploads (.github/workflows/release-npm.yml, docs/RELEASING.md).
  *
  *  Every file reference in the bundles is a string-literal `new URL('./name', import.meta.url)`, the form Vite and
  *  webpack rewrite into emitted assets; the build fails if a bundle refers to a file the package lacks or
  *  loses that literal form. `index.d.ts` is src/package/types.ts, which declares the public types without importing
  *  anything (so they stand on their own), plus the `reconstruct` declaration; no TypeScript compiler is involved.
  *
- *  Usage: deno task build:package [--skip-core]. Verify with `npm pack --dry-run` and `deno publish --dry-run`
- *  inside dist-package/ (README.md, "Use it in your own page"). */
+ *  Usage: deno task build:package [--skip-core]. Verify with `npm pack --dry-run` inside dist-package/. */
 import { ensureDir } from '@std/fs';
 import { fromFileUrl, join } from '@std/path';
 import { generateNotices } from './notices.ts';
@@ -24,9 +23,8 @@ const outDir = join(root, 'dist-package'), staging = `${outDir}.build`;
 const skipCore = Deno.args.includes('--skip-core');
 /** The package's version follows the app's (deno.json). */
 const version: string = JSON.parse(await Deno.readTextFile(join(root, 'deno.json'))).version;
-/** The npm name `long-screen` was free on 2026-10-10 (registry.npmjs.org answered 404). The JSR scope is the
- *  owner's to choose; `@long-screen` is a placeholder until then. */
-const NPM_NAME = 'long-screen', JSR_NAME = '@long-screen/long-screen';
+/** The npm name `long-screen` was free on 2026-10-11 (registry.npmjs.org answered 404). */
+const NPM_NAME = 'long-screen';
 const bundles: [string, string][] = [
   ['src/package/index.ts', 'index.js'],
   ['src/worker.ts', 'worker.js'],
@@ -83,7 +81,7 @@ try {
   if (!doc) throw new Error('src/package/types.ts: no documented `export type Reconstruct =` to declare `reconstruct` by.');
   const declaration = `\n${doc}\nexport declare const reconstruct: Reconstruct;\n`;
   await Deno.writeTextFile(join(staging, 'index.d.ts'), types + declaration);
-  // Deno and JSR read the types of a JavaScript module from this directive.
+  // Deno reads the types of a JavaScript module from this directive.
   const index = join(staging, 'index.js');
   await Deno.writeTextFile(index, `/* @ts-self-types="./index.d.ts" */\n${await Deno.readTextFile(index)}`);
 
@@ -104,7 +102,7 @@ try {
         version,
         description,
         keywords: ['screen-recording', 'screenshot', 'stitching', 'panorama', 'webassembly', 'webcodecs', 'worker'],
-        homepage: 'https://github.com/t41372/long-screen#readme',
+        homepage: 'https://long-screen.yi-ting.com',
         bugs: 'https://github.com/t41372/long-screen/issues',
         repository: { type: 'git', url: 'git+https://github.com/t41372/long-screen.git' },
         license: 'MIT',
@@ -119,21 +117,13 @@ try {
       2,
     ) + '\n',
   );
-  await Deno.writeTextFile(
-    join(staging, 'jsr.json'),
-    JSON.stringify(
-      { name: JSR_NAME, version, license: 'MIT', exports: './index.js', publish: { include: [...files, 'jsr.json'] } },
-      null,
-      2,
-    ) + '\n',
-  );
 
   await Deno.remove(outDir, { recursive: true }).catch(() => {});
   await Deno.rename(staging, outDir);
-  for (const name of [...files, 'package.json', 'jsr.json'].sort()) {
+  for (const name of [...files, 'package.json'].sort()) {
     console.log(`dist-package/${name} (${((await Deno.stat(join(outDir, name))).size / 1024).toFixed(1)} KB)`);
   }
-  console.log(`Built ${NPM_NAME}@${version} (JSR ${JSR_NAME}) in dist-package/.`);
+  console.log(`Built ${NPM_NAME}@${version} in dist-package/.`);
 } catch (error) {
   await Deno.remove(staging, { recursive: true }).catch(() => {});
   throw error;

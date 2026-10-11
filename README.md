@@ -2,6 +2,8 @@
 
 **Recover a sparse 2D canvas from a local screen recording.**
 
+**Use it in your browser: [long-screen.yi-ting.com](https://long-screen.yi-ting.com)** (also at [long-screen.pages.dev](https://long-screen.pages.dev)). Nothing is uploaded; the recording is processed on your own device.
+
 Record a web page, an app, a map or a design file while you move around it — scroll, pan, go diagonally, loop back, pause, shake — and Long Screen puts everything the recording showed back in place as one native-size PNG. Fixed window chrome and status bars are restored too. Everything runs on your own machine: there is no upload endpoint, cloud inference, OCR or model download.
 
 The main form is a static web app: a thin layer of TypeScript (UI, Worker RPC, browser I/O, orchestration) wraps a Rust core compiled to WebAssembly, which holds every algorithm — motion layering, historical relocalization, an on-disk pose graph, native-resolution tile composition and quality diagnostics. The same engine also runs [outside the browser](#use-it-outside-the-browser), as a command line, a Rust library, a Python package and a TypeScript package for other web pages.
@@ -9,6 +11,8 @@ The main form is a static web app: a thin layer of TypeScript (UI, Worker RPC, b
 > Think of this as a visual reconstruction system with inspectable evidence, not a page recoverer that can prove correctness for any arbitrary screen recording. Automatic layering, relocalization, and dynamic-region detection are still heuristic. **A completed run does not mean the result is proven correct.** For the range of what's actually tested and what's not implemented, see [Capabilities](docs/CAPABILITIES.md) and [Testing notes](docs/TESTING.md) (both in Chinese).
 
 ## Try it
+
+The quickest way is the hosted app at [long-screen.yi-ting.com](https://long-screen.yi-ting.com). To run it from a checkout instead:
 
 Requires [Deno](https://deno.com) 2.x and [rustup](https://rustup.rs). No `npm install`, no API key, and no internet connection needed at runtime. The build compiles the Rust core: `rust/rust-toolchain.toml` pins the Rust version, the wasm32 target, and the required components, which rustup downloads and installs automatically on the first build.
 
@@ -115,7 +119,7 @@ It decodes the way the command line does, and `reconstruct_frames` takes frames 
 
 ### TypeScript package
 
-`src/package` is the same reconstruction as a package for other web pages; `deno task build:package` builds it into `dist-package/`, ready for npm and JSR.
+`src/package` is the same reconstruction as a package for other web pages; `deno task build:package` builds it into `dist-package/`, ready for npm.
 
 ```js
 import { reconstruct } from 'long-screen';
@@ -158,7 +162,7 @@ src/storage       IndexedDB / in-memory KV, tiles, diagnostics
 src/synthetic     Synthetic scenes, renderer, ground-truth validator (used by the tests)
 src/export        ZIP64 (via the npm package client-zip), PNG paging, offline viewer
 src/ui            UI and tile viewer
-src/package       The npm/JSR package's entry: reconstruct() driving the app's worker from another page
+src/package       The npm package's entry: reconstruct() driving the app's worker from another page
 scripts           Build (build.ts/build-core.sh), benchmarks, fingerprinting, sample generation, and other tooling scripts
 static            COOP/COEP `_headers`, dev harness page, and other static assets
 tests/unit        Pure Deno unit tests, scenario end-to-end tests, TS↔Rust byte-level parity checks under `tests/unit/parity/`
