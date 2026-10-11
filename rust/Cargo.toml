@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["core"]
+members = ["core", "decode"]
+# Plain `cargo build`/`cargo clippy` here (scripts/build-core.sh, `deno task lint`) target wasm32 and mean the core;
+# native-only crates are built by name with `-p`.
+default-members = ["core"]
 
 [profile.release]
 opt-level = 3
