@@ -164,14 +164,14 @@ pub struct SelectedCandidate {
     pub ambiguous: bool,
     pub error: f64,
     pub analysis_error: f64,
-    /// `min(0.95, 0.45 + 0.5 * (1 - exp(-unique / 7))) * exp(-error / 20)`, using `f64::exp` — see
+    /// `min(0.95, 0.45 + 0.5 * (1 - exp(-unique / 7))) * exp(-error / 20)`, using `libm::exp` — see
     /// `odometry.rs`'s `OdometryEstimate.confidence` doc comment for why this no longer needs the host's
     /// `Math.exp` for bit-identity.
     pub confidence: f64,
 }
 
 fn candidate_confidence(unique: u32, error: f64) -> f64 {
-    (0.45 + 0.5 * (1.0 - (-(unique as f64) / 7.0).exp())).min(0.95) * (-error / 20.0).exp()
+    (0.45 + 0.5 * (1.0 - libm::exp(-(unique as f64) / 7.0))).min(0.95) * libm::exp(-error / 20.0)
 }
 
 fn candidate_score(support: u32, unique: u32, confidence: f64) -> f64 {

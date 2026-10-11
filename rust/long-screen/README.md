@@ -41,9 +41,9 @@ Frames you already have go in through the `FrameSource` trait instead of `VideoS
 
 Decoding uses AVFoundation on macOS and Media Foundation on Windows; Linux, and files the system decoder cannot open, need a user-installed `ffmpeg` and `ffprobe` on `PATH` (see [`long-screen-decode`](https://crates.io/crates/long-screen-decode)).
 
-## Math functions in your binary
+## Same numbers as the web page
 
-To give the same numbers as the web page's WebAssembly bit for bit, this crate defines the C functions `exp`, `pow`, `log` and `hypot` (and their `f32` forms) with the [`libm`](https://crates.io/crates/libm) crate, the musl code WebAssembly links. A binary that depends on `long-screen` therefore uses these definitions for every call its Rust code makes to them, in place of the system's math library. The results differ from the system's at most in the last bit, and only for some inputs.
+The core computes its exponentials, powers, logarithms and hypotenuses with the [`libm`](https://crates.io/crates/libm) crate, the musl code the web page's WebAssembly links, instead of the system's math library, so a run gives the web page's results row for row.
 
 ## Features
 

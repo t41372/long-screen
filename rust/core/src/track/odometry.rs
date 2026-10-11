@@ -240,7 +240,7 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
             } else {
                 None
             };
-            // Finished here, in Rust, with `f64::exp` (a software libm, identical across every engine) rather
+            // Finished here, in Rust, with `libm::exp` (the same code on every engine and native host) rather
             // than by the TS caller with `Math.exp`: JS engines' `Math.exp` implementations differ in the last
             // bit on some inputs, and `stepError` is a continuous, effectively-arbitrary float, so finishing this
             // multiply in TS would let the same recording reach a different confidence — and, at a threshold, a
@@ -251,7 +251,7 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
             // behaviour is the more robust of the two (a floor, not a NaN that then poisons every factor
             // multiplied against it), so this is kept rather than reproduced.
             let confidence = best_m.confidence.max(0.05)
-                * (-step_error / 20.0).exp()
+                * libm::exp(-step_error / 20.0)
                 * if ambiguous { 0.6 } else { 1.0 }
                 * if weak_step { 0.5 } else { 1.0 };
             if best_n.error < TRACKED_ERROR {

@@ -57,7 +57,7 @@ fn median(values: &mut [f64]) -> f64 {
 
 #[inline]
 fn hypot(x: f64, y: f64) -> f64 {
-    x.hypot(y)
+    libm::hypot(x, y)
 }
 
 /// Candidate translations (current → previous) from binned match displacements, strongest first.
@@ -106,7 +106,7 @@ pub fn translation_hypotheses(matches: &[MatchPoints], max: usize) -> Vec<Motion
         cells.dedup();
         let spread = cells.len() as f64;
         let n = support.len() as f64;
-        let confidence = ((1.0 - (-n / 9.0).exp())
+        let confidence = ((1.0 - libm::exp(-n / 9.0))
             * (0.48 + 0.52 * unique as f64 / n)
             * (spread / 4.0).min(1.0))
         .clamp(0.0, 0.99);
@@ -524,7 +524,7 @@ pub fn estimate_motion(
             verify_translation(a, b, m.x, m.y, None)
         };
         if m.support > 0 {
-            m.confidence *= (-(m.error.min(80.0)) / 35.0).exp();
+            m.confidence *= libm::exp(-(m.error.min(80.0)) / 35.0);
         }
     }
     motions.sort_by(|a, b| (b.support + b.unique).cmp(&(a.support + a.unique)));
@@ -571,7 +571,7 @@ pub fn estimate_motion(
             } else {
                 labels[idx] = choice as u8;
                 confidence[idx] = js_round(
-                    255.0 * (-best / 24.0).exp() * ((second - best) / 8.0).clamp(0.25, 1.0),
+                    255.0 * libm::exp(-best / 24.0) * ((second - best) / 8.0).clamp(0.25, 1.0),
                 ) as u8;
                 informative[idx] = (confidence[idx] > 100) as u8;
                 if best > 22.0 {

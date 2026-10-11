@@ -1,6 +1,5 @@
 //! The native-executable twin of `long_screen.reconstruct(video)._fingerprint()`: the same driver call with the
-//! same defaults, run in an executable (where `rust/long-screen/src/wasm_math.rs` pins the C math functions), so
-//! the two can be compared row by row with `scripts/compare-fingerprints.ts`.
+//! same defaults, run in an executable, so the two can be compared row by row with `scripts/compare-fingerprints.ts`.
 //!
 //!   cargo run --release -p long-screen-py --example fingerprint -- <video> <out.json>
 

@@ -195,7 +195,7 @@ fn srgb_table() -> &'static [u8] {
                 let v = if l <= 0.003_130_8 {
                     12.92 * l
                 } else {
-                    1.055 * l.powf(1.0 / 2.4) - 0.055
+                    1.055 * libm::pow(l, 1.0 / 2.4) - 0.055
                 };
                 (v * 255.0).round() as u8
             })
@@ -215,19 +215,19 @@ fn pq_eotf(e: f64) -> f64 {
         18.851_562_5,
         18.687_5,
     );
-    let p = e.clamp(0.0, 1.0).powf(1.0 / m2);
-    10000.0 * ((p - c1).max(0.0) / (c2 - c3 * p)).powf(1.0 / m1)
+    let p = libm::pow(e.clamp(0.0, 1.0), 1.0 / m2);
+    10000.0 * libm::pow((p - c1).max(0.0) / (c2 - c3 * p), 1.0 / m1)
 }
 
 /// ARIB STD-B67 / BT.2100 HLG inverse OETF: coded value → scene light 0..=1.
 fn hlg_inverse_oetf(e: f64) -> f64 {
     let (a, b) = (0.178_832_77f64, 1.0 - 4.0 * 0.178_832_77);
-    let c = 0.5 - a * (4.0 * a).ln();
+    let c = 0.5 - a * libm::log(4.0 * a);
     let e = e.clamp(0.0, 1.0);
     if e <= 0.5 {
         e * e / 3.0
     } else {
-        (((e - c) / a).exp() + b) / 12.0
+        (libm::exp((e - c) / a) + b) / 12.0
     }
 }
 
@@ -299,8 +299,8 @@ mod tests {
             18.851_562_5,
             18.687_5,
         );
-        let p = (nits.max(0.0) / 10000.0).powf(m1);
-        ((c1 + c2 * p) / (1.0 + c3 * p)).powf(m2)
+        let p = libm::pow(nits.max(0.0) / 10000.0, m1);
+        libm::pow((c1 + c2 * p) / (1.0 + c3 * p), m2)
     }
     fn pq_eotf(e: f64) -> f64 {
         let (m1, m2, c1, c2, c3) = (
@@ -310,19 +310,19 @@ mod tests {
             18.851_562_5,
             18.687_5,
         );
-        let p = e.clamp(0.0, 1.0).powf(1.0 / m2);
-        10000.0 * ((p - c1).max(0.0) / (c2 - c3 * p)).powf(1.0 / m1)
+        let p = libm::pow(e.clamp(0.0, 1.0), 1.0 / m2);
+        10000.0 * libm::pow((p - c1).max(0.0) / (c2 - c3 * p), 1.0 / m1)
     }
     const HLG_A: f64 = 0.178_832_77;
     const HLG_B: f64 = 1.0 - 4.0 * HLG_A;
     fn hlg_c() -> f64 {
-        0.5 - HLG_A * (4.0 * HLG_A).ln()
+        0.5 - HLG_A * libm::log(4.0 * HLG_A)
     }
     fn hlg_oetf(e: f64) -> f64 {
         if e <= 1.0 / 12.0 {
             (3.0 * e).sqrt()
         } else {
-            HLG_A * (12.0 * e - HLG_B).ln() + hlg_c()
+            HLG_A * libm::log(12.0 * e - HLG_B) + hlg_c()
         }
     }
     fn hlg_inverse(v: f64) -> f64 {
@@ -330,7 +330,7 @@ mod tests {
         if v <= 0.5 {
             v * v / 3.0
         } else {
-            (((v - hlg_c()) / HLG_A).exp() + HLG_B) / 12.0
+            (libm::exp((v - hlg_c()) / HLG_A) + HLG_B) / 12.0
         }
     }
     /// Scene light of HLG's reference white (75 % signal).
@@ -341,7 +341,7 @@ mod tests {
         if v <= 0.040_45 {
             v / 12.92
         } else {
-            ((v + 0.055) / 1.055).powf(2.4)
+            libm::pow((v + 0.055) / 1.055, 2.4)
         }
     }
     fn srgb_oetf(l: f64) -> f64 {
@@ -349,7 +349,7 @@ mod tests {
         if l <= 0.003_130_8 {
             12.92 * l
         } else {
-            1.055 * l.powf(1.0 / 2.4) - 0.055
+            1.055 * libm::pow(l, 1.0 / 2.4) - 0.055
         }
     }
     /// The coded value of linear light `l` (1.0 = SDR white).

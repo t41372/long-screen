@@ -40,7 +40,6 @@ pub mod source;
 pub mod store;
 mod tiles;
 pub mod value;
-mod wasm_math;
 
 // The crate README's examples, compiled by `cargo test --doc`.
 #[cfg(doctest)]

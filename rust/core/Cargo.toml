@@ -20,3 +20,9 @@ rayon = ["dep:rayon"]
 
 [dependencies]
 rayon = { version = "=1.12.0", optional = true }
+# Every exp/pow/log/hypot the core computes (clippy.toml forbids std's forms). The WebAssembly build's
+# compiler-builtins resolves std's math to this same musl-derived code, so calling it directly gives the page's
+# results bit for bit on every native host too, instead of whatever the system's math library rounds to. Pinned to
+# the copy the pinned toolchain (rust-toolchain.toml) vendors, whose source is identical to 0.2.16: a toolchain bump
+# must recheck it, and the scenario fingerprints on the three wasm builds show any drift.
+libm = "=0.2.16"

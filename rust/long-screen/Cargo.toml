@@ -34,9 +34,6 @@ long-screen-core = { path = "../core", version = "=0.1.0", features = ["rayon"] 
 long-screen-engine = { path = "../engine", version = "=0.1.0" }
 long-screen-decode = { path = "../decode", version = "=0.1.0" }
 rayon = "=1.12.0"
-# The musl-derived math the wasm build links (compiler-builtins vendors this crate), so exp/pow/log/hypot round the
-# same way natively (src/wasm_math.rs).
-libm = "=0.2.16"
 # The tile codec, at the settings the web page encodes tiles with (rust/wasm/src/png.rs), so the bytes match.
 png = "=0.18.1"
 # Row fingerprints (the format scripts/fingerprint-scenarios.ts writes) and the JSON report.
