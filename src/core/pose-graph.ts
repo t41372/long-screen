@@ -13,6 +13,14 @@ export class PoseGraph {
   private state: PoseGraphState | undefined;
   private hydrated: Promise<PoseGraphState> | undefined;
   constructor(readonly db: KV) {}
+  /** A host for a graph the engine already holds (the solve session's, once its frames are done): nothing is read
+   *  back from the store. */
+  static adopt(db: KV, state: PoseGraphState): PoseGraph {
+    const graph = new PoseGraph(db);
+    graph.state = state;
+    graph.hydrated = Promise.resolve(state);
+    return graph;
+  }
   /** Loop edges in the graph, each counted once (valid once any other method has run). */
   get loops(): number {
     return this.state?.loops ?? 0;

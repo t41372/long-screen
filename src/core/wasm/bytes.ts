@@ -1,5 +1,6 @@
 /** Little-endian records with strings, for the engine's row types (mirrors `rust/wasm/src/bytes.rs`): a string is a
- *  u32 byte length followed by its UTF-8 bytes, numbers are unpadded little-endian. */
+ *  u32 byte length followed by its UTF-8 bytes, a blob a u32 byte length followed by its bytes, numbers are
+ *  unpadded little-endian. */
 import type { Core } from './core.ts';
 
 const encoder = new TextEncoder(), decoder = new TextDecoder();
@@ -32,6 +33,19 @@ export class ByteWriter {
   u32(v: number): this {
     const at = this.reserve(4);
     this.view.setUint32(at, v, true);
+    return this;
+  }
+  i32(v: number): this {
+    const at = this.reserve(4);
+    this.view.setInt32(at, v, true);
+    return this;
+  }
+  /** A u32 byte length followed by the bytes. */
+  blob(v: ArrayBufferView): this {
+    const bytes = new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+    this.u32(bytes.length);
+    const at = this.reserve(bytes.length);
+    this.bytes.set(bytes, at);
     return this;
   }
   f64(v: number): this {
@@ -79,6 +93,17 @@ export class ByteReader {
   f64(): number {
     const v = this.view.getFloat64(this.at, true);
     this.at += 8;
+    return v;
+  }
+  i32(): number {
+    const v = this.view.getInt32(this.at, true);
+    this.at += 4;
+    return v;
+  }
+  /** A copy of a u32-length-prefixed byte run. */
+  blob(): Uint8Array<ArrayBuffer> {
+    const n = this.u32(), v = this.bytes.slice(this.at, this.at + n) as Uint8Array<ArrayBuffer>;
+    this.at += n;
     return v;
   }
   str(): string {

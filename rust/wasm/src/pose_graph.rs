@@ -37,7 +37,7 @@ fn handles() -> &'static mut HandleTable<Session> {
     unsafe { &mut *std::ptr::addr_of_mut!(HANDLES) }
 }
 
-fn status(error: PoseGraphError) -> i32 {
+pub(crate) fn status(error: PoseGraphError) -> i32 {
     match error {
         PoseGraphError::MissingPrevious => STATUS_MISSING_PREVIOUS,
         PoseGraphError::MissingNode => STATUS_MISSING_NODE,
@@ -45,7 +45,7 @@ fn status(error: PoseGraphError) -> i32 {
     }
 }
 
-fn read_node(c: &mut Cursor) -> Option<PoseNode> {
+pub(crate) fn read_node(c: &mut Cursor) -> Option<PoseNode> {
     Some(PoseNode {
         id: c.str()?.to_string(),
         canvas_id: c.str()?.to_string(),
@@ -114,7 +114,7 @@ fn write_row(out: &mut Out, row: &PoseRow) {
     }
 }
 
-fn write_writes(out: &mut Out, writes: &[Write]) {
+pub(crate) fn write_writes(out: &mut Out, writes: &[Write]) {
     out.u32(writes.len() as u32);
     for w in writes {
         let rows = match w {
@@ -164,6 +164,15 @@ fn call(
 pub extern "C" fn ls_pose_graph_new() -> i32 {
     handles().insert(Session {
         graph: PoseGraph::new(),
+        optimizer: None,
+        out: Vec::new(),
+    })
+}
+
+/// A handle for a graph built elsewhere (the solve session hands its graph over when the pass ends).
+pub(crate) fn adopt(graph: PoseGraph) -> i32 {
+    handles().insert(Session {
+        graph,
         optimizer: None,
         out: Vec::new(),
     })

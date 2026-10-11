@@ -17,13 +17,10 @@
 //!   analysis-cell indices, concatenated in region order, each region's span given by its header's `cells_count`.
 
 use crate::bytes::Out;
-use crate::features::{read_features, write_features};
 use crate::memory::{slice, slice_mut, HandleTable};
-use crate::voting::read_voting_regions;
-use crate::wire::{read_optional_rect, read_rects, Reader, FEATURE_BYTES, VOTING_REGION_BYTES};
+use crate::wire::{read_optional_rect, read_rects, Reader, VOTING_REGION_BYTES};
 use crate::STATUS_BAD_ARGUMENT;
 use long_screen_core::geometry::Rect;
-use long_screen_core::region;
 use long_screen_core::regions::{self, AtlasMask, AtlasRegion, FinishInput, Rgba};
 use long_screen_engine::layers::ManualRegion;
 
@@ -340,46 +337,6 @@ pub extern "C" fn ls_regions_label_atlas(
         d.copy_from_slice(&c.to_le_bytes());
     }
     crate::STATUS_OK
-}
-
-/// `src/pipeline/solve/track.ts::ownFeaturesOf`'s region-membership feature filter
-/// (`long_screen_core::region::filter_features`). `features` is `count ×
-/// wire::FEATURE_BYTES` (this adapter's feature wire format); `region` is one `wire::VOTING_REGION_BYTES`
-/// descriptor (the same layout `ls_voting_new`/`ls_track_odometry`'s `region` argument use). `out` must have room
-/// for `count × FEATURE_BYTES` (an upper bound — filtering only ever removes features). Returns the number kept,
-/// or a negative status.
-#[no_mangle]
-pub extern "C" fn ls_region_filter_features(
-    features: u32,
-    count: u32,
-    region: u32,
-    factor: f64,
-    native_width: f64,
-    native_height: f64,
-    out: u32,
-) -> i32 {
-    // SAFETY: adapter-owned buffers, bounds checked.
-    let Some(feature_bytes) = (unsafe { slice(features, count as usize * FEATURE_BYTES) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    // SAFETY: one VOTING_REGION_BYTES descriptor, bounds checked by read_voting_regions.
-    let Some(region_defs) = (unsafe { read_voting_regions(region, 1) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let parsed = read_features(feature_bytes);
-    let kept = region::filter_features(
-        &region_defs[0],
-        &parsed,
-        factor,
-        native_width,
-        native_height,
-    );
-    // SAFETY: adapter-owned output, sized for the input count (an upper bound, per this export's doc comment).
-    let Some(dst) = (unsafe { slice_mut(out, kept.len() * FEATURE_BYTES) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    write_features(&kept, dst);
-    kept.len() as i32
 }
 
 /// Bytes of one hand-placed region descriptor (`read_manual`): 32-byte rect, u32 kind (0 moving, 1 fixed,

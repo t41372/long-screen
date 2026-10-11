@@ -22,7 +22,7 @@ const INCLUDE = '--include=^file:.*/(src/.*|main\\.ts)$';
  *  does not grant plus spawning a real build/server from a unit test, both out of scope here.
  *  Reseeded: the gate had been failing since before the 2026-09 refactor — 55 of 89 src files
  *  (mostly new modules from the Rust-porting rounds: core/wasm/**, pipeline/solve/**, pipeline/{attachments,consistency,
- *  context,features-codec,presentation,render,scan}.ts, media/{convert,pool,rgba-copy}.ts, storage/projects.ts,
+ *  context,presentation,render,scan}.ts, media/{convert,pool,rgba-copy}.ts, storage/projects.ts,
  *  core/id.ts, core/wasm.ts) had neither a floor nor a BROWSER_ONLY entry, so `deno task coverage` could never pass.
  *  Fixed the stale `export/crc.ts` floor (the file is `codec/crc.ts`), added ui/*, device-check.ts,
  *  media/convert-worker.ts, core/helper.ts and protocol.ts (type-only, never emits a runtime line) to BROWSER_ONLY,
@@ -137,14 +137,11 @@ const FLOORS: [RegExp, number][] = [
   [/^pipeline\/consistency\.ts$/, 100],
   [/^pipeline\/context\.ts$/, 92],
   [/^pipeline\/engine\.ts$/, 84],
-  [/^pipeline\/features-codec\.ts$/, 100],
   [/^pipeline\/presentation\.ts$/, 87],
   [/^pipeline\/render\.ts$/, 92],
   [/^pipeline\/scan\.ts$/, 92],
-  [/^pipeline\/solve\/keyframe-step\.ts$/, 96],
-  [/^pipeline\/solve\/region-step\.ts$/, 96],
+  [/^pipeline\/solve\/diagnostics\.ts$/, 96],
   [/^pipeline\/solve\/solve\.ts$/, 84],
-  [/^pipeline\/solve\/state\.ts$/, 100],
   [/^pipeline\/solve\/track\.ts$/, 100],
   [/^storage\/db\.ts$/, 52],
   [/^storage\/diagnostics\.ts$/, 100],
@@ -166,6 +163,7 @@ const FLOORS: [RegExp, number][] = [
   [/^i18n\/zh\/pipeline\.ts$/, 100],
   [/^i18n\/zh\/ui\.ts$/, 100],
   [/^core\/wasm\/reveal\.ts$/, 100],
+  [/^core\/wasm\/solve\.ts$/, 99],
   [/^export\/crop\.ts$/, 100],
   [/^media\/conversion-check\.ts$/, 50],
   [/^pipeline\/reveal\.ts$/, 89],

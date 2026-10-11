@@ -345,15 +345,6 @@ export interface CoreExports {
   ls_regions_read_masks(handle: number, out: number): number;
   ls_regions_read_cells(handle: number, out: number): number;
   ls_regions_label_atlas(regions: number, count: number, width: number, height: number, labelsOut: number, countsOut: number): number;
-  ls_region_filter_features(
-    features: number,
-    count: number,
-    region: number,
-    factor: number,
-    nativeWidth: number,
-    nativeHeight: number,
-    out: number,
-  ): number;
   ls_pose_graph_new(): number;
   ls_pose_graph_free(handle: number): void;
   ls_pose_graph_take(handle: number, out: number, len: number): number;
@@ -368,6 +359,16 @@ export interface CoreExports {
   ls_pose_graph_optimize_step(handle: number, sweeps: number): number;
   ls_pose_graph_optimize_finish(handle: number): number;
   ls_pose_graph_optimize_cancel(handle: number): void;
+  ls_solve_new(input: number, len: number, shapes: number): number;
+  ls_solve_free(handle: number): void;
+  ls_solve_take(handle: number, out: number, len: number): number;
+  ls_solve_begin(handle: number, index: number, time: number, duplicate: number, zoom: number, difference: number): number;
+  ls_solve_frame(handle: number): number;
+  ls_solve_run(handle: number, gray: number, grayLen: number, features: number, featureCount: number, labels: number): number;
+  ls_solve_provide(handle: number, input: number, len: number, labels: number): number;
+  ls_solve_effects(handle: number): number;
+  ls_solve_drain(handle: number): number;
+  ls_solve_take_graph(handle: number): number;
   ls_keyframe_index_new(): number;
   ls_keyframe_index_free(handle: number): void;
   ls_keyframe_index_add(handle: number, input: number, len: number, features: number, count: number): number;

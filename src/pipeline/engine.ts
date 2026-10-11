@@ -5,24 +5,16 @@
 //   context.ts       RunContext: state and services every pass shares, plus checkpoint/report/persist/
 //                     putMany/commitRows/passMismatch and StorageError/StopRequested. Shell, not algorithm.
 //   scan.ts          the scan pass (motion evidence, layer learning, region finalisation). Shell.
-//   solve/solve.ts   the solve pass shell (setup, frame loop, duplicate-frame shortcut, plan/consistency
-//                     batching, voting ring lifecycle, graph optimise, scratch deletion). Shell.
-//   solve/state.ts   RegionState, Decision, initialState(), newCanvas() — the per-region tracking state
-//                     solve.ts and region-step.ts share. Shell.
-//   solve/track.ts   the per-region tracking DECISIONS (hypothesis scoring, audit acceptance, native
-//                     refinement, confidence, anchor re-acquisition, keyframe/revisit/attachment/loop-closure
-//                     verdicts) as pure functions — plain inputs, plain results, no storage or diagnostics.
-//                     Still plain TypeScript, algorithm-awaiting-port (see docs/history/2026-09-rust-migration-log.md "已在 Rust 核心中").
-//   solve/region-step.ts, solve/keyframe-step.ts  the per-region shell that applies track.ts's decisions, in
-//                     the original order, to storage/diagnostics/the pose graph/keyframe index. Shell.
+//   solve/solve.ts   the solve pass's host: drives the engine's solve session (rust/engine/src/solve/) frame by
+//                     frame, stores the rows it hands back, relaxes the pose graph, deletes the scratch. Shell.
+//   solve/diagnostics.ts  the session's structured diagnostics as journal rows. Shell.
+//   solve/track.ts   POSE_BOUND/isValidPose, which render.ts mirrors. Shell.
 //   render.ts        the render pass (placement resolution, consistency-mask consultation, compositing,
 //                     observation ledger). Shell.
 //   presentation.ts  run()'s framing and pyramid stages. Shell.
 //   consistency.ts   the exported pure consistencyMask() and its ConsistencyBox/Vote/Record types. Shell
 //                     around a Rust-core call (rust/core/src/consistency.rs).
-//   attachments.ts   the fragment-attachment chain walk (resolveTarget/attachmentShift/attachedRenderShift),
-//                     shared by solve() and render(). Shell.
-//   features-codec.ts CompactFeatures encode/decode (scan writes, solve reads). Shell.
+//   attachments.ts   render()'s walk of the fragment-attachment chain (resolveTarget/attachedRenderShift). Shell.
 // Public surface kept importable from this file: `Engine` (constructor signature, run(), setPaused(), stop(),
 // `stopRequested` (tests set it), `project`, `store`, `tiles`, `diagnostics`, `factor`, `refineRadius`, `noise`)
 // and `EngineEvents`.

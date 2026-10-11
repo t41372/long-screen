@@ -60,7 +60,7 @@ function readNode(r: ByteReader): PoseNode {
   if (r.bool()) node.next = r.str();
   return node;
 }
-function readWrites(r: ByteReader): PoseWrite[] {
+export function readWrites(r: ByteReader): PoseWrite[] {
   const writes: PoseWrite[] = [];
   for (let i = r.u32(); i > 0; i--) {
     const many = r.bool(), rows: Row[] = [];

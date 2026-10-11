@@ -29,6 +29,7 @@ import { type FinishAccumulators, finishRegions as finishRegionsImpl, labelAtlas
 import { estimateMotion as scanEstimateMotion, type ScanSession, scanSession as scanSessionFactory } from './scan.ts';
 import { poseGraph as poseGraphFactory, type PoseGraphState } from './pose-graph.ts';
 import { keyframeIndex as keyframeIndexFactory, type KeyframeIndexState } from './keyframes.ts';
+import { type SolveRegionInput, solveSession as solveSessionFactory, type SolveSessionState } from './solve.ts';
 import {
   frameCoordinate as frameCoordinateImpl,
   type FrameLayout,
@@ -477,6 +478,12 @@ export class Core {
   keyframeIndex(): KeyframeIndexState {
     return keyframeIndexFactory(this, this.exports);
   }
+  /** The solve pass's session (`long_screen_engine::solve::SolveSession`); the pass frees it when it ends. */
+  solveSession(
+    options: { width: number; height: number; factor: number; radius: number; noise: number; regions: SolveRegionInput[] },
+  ): SolveSessionState {
+    return solveSessionFactory(this, this.exports, options);
+  }
 
   /** Per-region, per-frame tracking verdicts for `src/pipeline/solve/track.ts`: stateless, one small call each. */
   trackUncertainty(confidence: number, ambiguous: boolean, weakStep: boolean): boolean {
@@ -556,11 +563,6 @@ export class Core {
   ): { result: track.EvaluateCandidatesResult | undefined; filledNative: boolean } {
     return track.evaluateCandidates(this, this.exports, keyframes, q);
   }
-  /** `solve/track.ts::ownFeaturesOf`'s region-membership feature filter, moved out of TS. */
-  filterFeatures(features: Feature[], region: Region, factor: number, nativeWidth: number, nativeHeight: number): Feature[] {
-    return track.filterFeatures(this, this.exports, features, region, factor, nativeWidth, nativeHeight);
-  }
-
   /** `buildFramedCanvas`'s `frameLayout()`. */
   frameLayout(source: { width: number; height: number }, pane: Rect, boundsWidth: number, boundsHeight: number): FrameLayout {
     return frameLayoutImpl(this, this.exports, source, pane, boundsWidth, boundsHeight);

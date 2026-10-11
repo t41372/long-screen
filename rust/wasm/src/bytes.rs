@@ -1,6 +1,7 @@
 //! Little-endian records with strings, for the engine's row types: a cursor that reads what the adapter wrote and a
 //! buffer the engine's results are written into. A string is a u32 byte length followed by its UTF-8 bytes; numbers
-//! are unpadded little-endian. The TypeScript half is `src/core/wasm/bytes.ts`.
+//! are unpadded little-endian; a blob is a u32 byte length followed by its bytes. The TypeScript half is
+//! `src/core/wasm/bytes.ts`.
 
 /// Reads one adapter-written record; every read is bounds-checked and returns `None` past the end.
 pub(crate) struct Cursor<'a> {
@@ -42,6 +43,16 @@ impl<'a> Cursor<'a> {
         let n = self.u32()? as usize;
         std::str::from_utf8(self.take(n)?).ok()
     }
+
+    pub(crate) fn i32(&mut self) -> Option<i32> {
+        self.u32().map(|v| v as i32)
+    }
+
+    /// A u32 byte length followed by that many bytes.
+    pub(crate) fn blob(&mut self) -> Option<&'a [u8]> {
+        let n = self.u32()? as usize;
+        self.take(n)
+    }
 }
 
 /// Builds one result record for the adapter to copy out.
@@ -72,6 +83,16 @@ impl Out {
 
     /// Raw bytes, no length prefix (the reader knows how many follow).
     pub(crate) fn bytes(&mut self, v: &[u8]) {
+        self.0.extend_from_slice(v);
+    }
+
+    pub(crate) fn i32(&mut self, v: i32) {
+        self.0.extend_from_slice(&v.to_le_bytes());
+    }
+
+    /// A u32 byte length followed by the bytes.
+    pub(crate) fn blob(&mut self, v: &[u8]) {
+        self.u32(v.len() as u32);
         self.0.extend_from_slice(v);
     }
 }

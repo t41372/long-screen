@@ -22,6 +22,7 @@ export type { PoseEdge, PoseGraphState, PoseNode, PoseWrite } from './wasm/pose-
 export type { KeyframeIndexState } from './wasm/keyframes.ts';
 export type { ScanSession, ScanStep } from './wasm/scan.ts';
 export type { EngineDiagnostic } from './wasm/diagnostic.ts';
+export type { SolveEffect, SolvePoll, SolveRegionInput, SolveSessionState } from './wasm/solve.ts';
 export type {
   EvaluateCandidatesKeyframe,
   EvaluateCandidatesQuery,

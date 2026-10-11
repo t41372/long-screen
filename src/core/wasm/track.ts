@@ -9,11 +9,10 @@
  *  `resolveNative`) share. Split into `track-odometry.ts` (`odometry`), `track-reacquire.ts`
  *  (`reacquire`/`driftCorrection`), `track-keyframes.ts` (`evaluateCandidates`); `wasm/core.ts`'s
  *  `import * as track from './track.ts'` needs no edit — re-exported here via `export *`. */
-import type { Feature, Gray, Match, Point, Region } from '../../types.ts';
+import type { Gray, Match, Point, Region } from '../../types.ts';
 import type { Core, PatchInput } from './core.ts';
 import type { CoreExports } from './exports.ts';
-import { MATCH_POINT_BYTES, PATCH_BYTES, VOTING_REGION_BYTES } from './exports.ts';
-import { readFeatures, writeFeatures } from './features.ts';
+import { MATCH_POINT_BYTES, PATCH_BYTES } from './exports.ts';
 import { writeRegionDescriptor } from './marshal.ts';
 import { type FrameInput, ResidentFrame, ResidentGray } from './memory.ts';
 export * from './track-odometry.ts';
@@ -212,37 +211,6 @@ export function regionZoom(core: Core, exports: CoreExports, kindMoving: boolean
  *  path — the fast native refinement failed — actually reads it core-side). */
 export function writeRegion(core: Core, base: number, exclusions: number, crop: number, mask: number, r: Region): void {
   writeRegionDescriptor(core.exports, base, 0, r, exclusions, crop, mask);
-}
-
-/** `src/pipeline/solve/track.ts::ownFeaturesOf`'s region-membership feature filter
- *  (`rust/core/src/region.rs::filter_features`). Reuses `writeRegion`'s wire format (`ls_track_odometry`'s own
- *  `region` argument). */
-export function filterFeatures(
-  core: Core,
-  exports: CoreExports,
-  features: Feature[],
-  region: Region,
-  factor: number,
-  nativeWidth: number,
-  nativeHeight: number,
-): Feature[] {
-  if (!features.length) return [];
-  const ptr = core.scratch([
-    features.length * core.featureBytes,
-    VOTING_REGION_BYTES,
-    (region.exclusions?.length || 0) * 32,
-    region.crop ? 32 : 0,
-    region.mask && !region.solid ? region.mask.byteLength : 0,
-    features.length * core.featureBytes,
-  ]);
-  const [pFeat, pRegion, pExcl, pCrop, pMask, pOut] = ptr;
-  writeFeatures(core, pFeat, features);
-  writeRegion(core, pRegion, pExcl, pCrop, pMask, region);
-  const count = core.check(
-    exports.ls_region_filter_features(pFeat, features.length, pRegion, factor, nativeWidth, nativeHeight, pOut),
-    'filterFeatures',
-  );
-  return readFeatures(core, pOut, count);
 }
 
 export function b2(v: boolean) {

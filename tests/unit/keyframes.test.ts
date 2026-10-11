@@ -1,5 +1,5 @@
 import '../support/core.ts';
-import { assert, assertEquals } from '@std/assert';
+import { assert, assertEquals, assertThrows } from '@std/assert';
 import { KeyframeIndex } from '../../src/core/keyframes.ts';
 import { core } from '../../src/core/wasm.ts';
 import { MemoryKV } from '../../src/storage/db.ts';
@@ -113,6 +113,8 @@ Deno.test('keyframes: relocalization finds a revisit at native precision and ref
       radius: 3,
     });
   assert(!match || match.ambiguous, JSON.stringify(match && { ...match, keyframe: match.keyframe.id }));
+  index.free();
+  repeated.free();
 });
 Deno.test('keyframes: a densely keyframed long scroll spreads candidate retrieval across a 100+ posting and warns once per layer', async () => {
   const db = new MemoryKV(),
@@ -219,6 +221,7 @@ Deno.test('keyframes: a densely keyframed long scroll spreads candidate retrieva
   });
   assert(foundOther);
   assertEquals(warnings.length, 2, 'a different layer must get its own single warning, independent of the first');
+  index.free();
 });
 Deno.test('keyframes: canonical resolves a fragment-space rival to the same place as its attachment target (not ambiguous), and stays ambiguous when they genuinely differ', async () => {
   const db = new MemoryKV(), index = new KeyframeIndex(db, async () => {});
@@ -293,6 +296,7 @@ Deno.test('keyframes: canonical resolves a fragment-space rival to the same plac
   });
   assert(differentPlace, 'expected a relocalization');
   assert(differentPlace!.ambiguous, 'a rival that canonicalizes to a genuinely different place must stay ambiguous');
+  index.free();
 });
 // Failure case: a keyframe minted again for a frame the index already holds (the region's anchor re-posted on the same
 // frame) leaves the old row's id in the posting, so a later revisit relocalises onto the superseded keyframe.
@@ -334,6 +338,32 @@ Deno.test('keyframes: a keyframe minted again for a frame already indexed replac
     radius: 3,
   });
   assertEquals(found?.keyframe.id, 'body/10-again');
+  index.free();
 });
 // Posting order (frame order whatever order keyframes arrive in) is checked where the postings now live:
 // rust/engine/src/keyframes.rs, `postings_stay_in_frame_order_whatever_order_keyframes_arrive_in`.
+// Failure case: a keyframe row whose patch data does not match its declared size (a damaged or foreign row) must be
+// refused before the core reads past the patch, not measured against.
+Deno.test('keyframes: a patch whose data does not match its size is refused', () => {
+  const w = 64, h = 48, frame = core().frame(w, h), plane = core().gray(w, h);
+  try {
+    assertThrows(
+      () =>
+        core().trackDriftCorrection({
+          anchor: { x: 0, y: 0, patches: [{ x: 0, y: 0, size: 32, data: new Uint8Array(10) }] },
+          pose: { x: 0, y: 0 },
+          current: frame,
+          nativePlane: plane,
+          nativeFilled: false,
+          native: () => plane,
+          rect: { x: 0, y: 0, width: w, height: h },
+          radius: 3,
+        }),
+      Error,
+      'patch data does not match its size',
+    );
+  } finally {
+    frame.free();
+    plane.free();
+  }
+});

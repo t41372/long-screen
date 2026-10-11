@@ -24,7 +24,8 @@
 //!      on a status here).
 //!   6. A result length (≥ 0, the result waiting in the handle for its `_take`) or a negative status, some with
 //!      their own meaning: the engine state objects (`ls_pose_graph_*`, see `pose_graph.rs` for its
-//!      missing-node statuses; `ls_keyframe_index_retrieve`).
+//!      missing-node statuses; `ls_keyframe_index_retrieve`; the solve session `ls_solve_*`, whose pose-graph
+//!      failures use the same missing-node statuses).
 
 mod bytes;
 mod chrome;
@@ -44,6 +45,7 @@ mod raster;
 mod regions;
 mod reveal;
 mod scan;
+mod solve;
 mod temporal;
 mod tiles;
 mod track;

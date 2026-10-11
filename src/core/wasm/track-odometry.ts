@@ -1,11 +1,12 @@
-/** `track.ts::odometry` fused into one call — split out of `wasm/track.ts`. See `track.ts`'s module doc
- *  comment for the split. */
+/** `track.ts::odometry` fused into one call — split out of `wasm/track.ts`. The solve session calls the core
+ *  directly (rust/engine/src/solve/); this marshalling is what tests/unit/parity/track.test.ts checks the core
+ *  against the frozen oracle through. */
 import type { Feature, Gray, Point, Rect, Region } from '../../types.ts';
 import type { Core, LabelMask } from './core.ts';
 import type { CoreExports } from './exports.ts';
 import { VOTING_REGION_BYTES } from './exports.ts';
 import { writeFeatures } from './features.ts';
-import { type FrameInput, Resident, ResidentFrame } from './memory.ts';
+import { type FrameInput, ResidentFrame } from './memory.ts';
 import { writeRegion } from './track.ts';
 
 export interface OdometryEstimate {
@@ -16,9 +17,6 @@ export interface OdometryEstimate {
   weakStep: boolean;
   stepError: number;
   contentChange?: { agreement: number; blocks: number };
-  /** On 'static'/'lost': a step the plain native error rejected but the core measured as unambiguous
-   *  (rust/core/src/track/odometry.rs `Rescue`), for a caller about to start a new fragment instead. */
-  rescue?: { delta: Point; confidence: number; ambiguous: boolean; weakStep: boolean; stepError: number };
 }
 const ODOMETRY_DECISION_TAGS: OdometryEstimate['decision'][] = ['tracked', 'static', 'lost'];
 /** `ls_track_odometry`'s `out` layout (`TRACK_ODOMETRY_OUT_BYTES` in `rust/wasm/src/track.rs`). */
@@ -64,10 +62,6 @@ export function odometry(core: Core, exports: CoreExports, inputs: OdometryInput
     confidence: inputConfidence,
   } = inputs;
   const frameBytes = (fr: FrameInput) => fr instanceof ResidentFrame ? 0 : fr.data.byteLength;
-  const residentLabels = mask?.labels instanceof Resident ? mask.labels : undefined;
-  if (residentLabels && residentLabels.length !== image.width * image.height) {
-    throw new Error('CORE_BAD_ARGUMENT: resident labels do not match the frame.');
-  }
   const ptr = core.scratch([
     frameBytes(previous),
     frameBytes(current),
@@ -81,7 +75,7 @@ export function odometry(core: Core, exports: CoreExports, inputs: OdometryInput
     (region.exclusions?.length || 0) * 32,
     region.crop ? 32 : 0,
     region.mask && !region.solid ? region.mask.byteLength : 0,
-    mask && !residentLabels ? (mask.labels as Uint8Array).byteLength : 0,
+    mask ? (mask.labels as Uint8Array).byteLength : 0,
     TRACK_ODOMETRY_OUT_BYTES,
   ]);
   const [pPrev, pCur, pPrevGray, pG, pPrevFeat, pOwnFeat, pRoi, pRect, pRegion, pExcl, pCrop, pMask, pLabels, pOut] = ptr;
@@ -94,8 +88,7 @@ export function odometry(core: Core, exports: CoreExports, inputs: OdometryInput
   core.writeRect(pRect, rect);
   writeRegion(core, pRegion, pExcl, pCrop, pMask, region);
   let labels = 0;
-  if (residentLabels) labels = residentLabels.ptr;
-  else if (mask) {
+  if (mask) {
     core.writeBytes(pLabels, mask.labels as Uint8Array);
     labels = pLabels;
   }
@@ -140,16 +133,5 @@ export function odometry(core: Core, exports: CoreExports, inputs: OdometryInput
     weakStep,
     stepError,
     ...(hasContentChange ? { contentChange: { agreement: view.getFloat64(48, true), blocks: view.getUint32(56, true) } } : {}),
-    ...(view.getUint32(96, true) === 1
-      ? {
-        rescue: {
-          delta: { x: view.getFloat64(64, true), y: view.getFloat64(72, true) },
-          confidence: view.getFloat64(80, true),
-          stepError: view.getFloat64(88, true),
-          ambiguous: (view.getUint32(100, true) & 1) !== 0,
-          weakStep: (view.getUint32(100, true) & 2) !== 0,
-        },
-      }
-      : {}),
   };
 }

@@ -10,7 +10,6 @@ import type { Feature, Gray, Match, Point, Region } from '../../../src/types.ts'
 import * as kernelsRef from '../../support/reference/kernels.ts';
 import { rgbaOf, textureGray } from '../../support/parity-fixtures.ts';
 import type { PatchInput } from '../../../src/core/wasm.ts';
-import * as trackPipeline from '../../../src/pipeline/solve/track.ts';
 import { evaluateCandidates, type Keyframe } from '../../../src/core/keyframes.ts';
 /** `f64::exp` (Rust libm, used by the odometry/reacquire/driftCorrection confidence formulas) and V8's `Math.exp`
  * (the frozen reference oracle in tests/support/reference/track.ts, never updated to call the Rust core) can
@@ -433,17 +432,13 @@ Deno.test('core parity: track.reacquire matches the frozen oracle (found, no can
     );
     const plane = core.gray(w, h);
     if (c.preFilled) core.grayscaleInto(residentFrame, plane);
-    let filledNative = false;
-    const result = trackPipeline.reacquire({
+    const { result, filledNative } = core.trackReacquire({
       anchorFeatures: inputs.anchorFeatures,
       ownFeatures: inputs.ownFeatures,
       anchorPatches: inputs.anchorPatches,
       current: residentFrame,
       nativePlane: plane,
       nativeFilled: c.preFilled,
-      markNativeFilled: () => {
-        filledNative = true;
-      },
       native: () => inputs.currentNative,
       rect,
       f: 1,
@@ -493,21 +488,19 @@ Deno.test('core parity: track.driftCorrection matches the frozen oracle (correct
     );
     const plane = core.gray(w, h);
     if (c.preFilled) core.grayscaleInto(residentFrame, plane);
-    let filledNative = false;
-    const result = trackPipeline.driftCorrection({
+    // The solve session takes `max(confidence, confidenceFloor)` of a correction (rust/engine/src/solve/region.rs).
+    const drift = core.trackDriftCorrection({
       anchor,
       pose,
       current: residentFrame,
       nativePlane: plane,
       nativeFilled: c.preFilled,
-      markNativeFilled: () => {
-        filledNative = true;
-      },
       native: () => inputs.currentNative,
       rect,
       radius,
-      confidence: c.confidence,
     });
+    const filledNative = drift.filledNative;
+    const result = drift.pose ? { pose: drift.pose, confidence: Math.max(c.confidence, drift.confidenceFloor) } : undefined;
     const what = `case ${i} (dx=${c.dx} dy=${c.dy} preFilled=${c.preFilled})`;
     assertEquals(!!result, !!refResult, `${what} found`);
     if (refResult) {

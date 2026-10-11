@@ -1,119 +1,79 @@
-// Shell around the solve pass: setup (pose graph, keyframe index, per-region states, frame ring, atlas label
-// plane, native luma plane, voting ring), the frame loop (duplicate-frame shortcut, per-frame preparation, one
-// stepRegion() call per region), plan/consistency batching, voting push/drain, trailing commits, pass-mismatch
-// accounting, graph optimise, scratch deletion. The per-region tracking DECISIONS (hypothesis scoring, audit
-// acceptance, native refinement choice, the confidence formula, anchor re-acquisition, keyframe/revisit/
-// attachment/loop-closure decisions) live in track.ts, most of them thin calls into the Rust core (see its
-// header and docs/history/2026-09-rust-migration-log.md "已在 Rust 核心中"); region-step.ts's stepRegion() applies
-// them in a fixed order. Everything in this file is orchestration shell, unambiguously not awaiting a port.
-import type { Attachment, Feature, FramePlan, Gray, Placement, RGBA, ScanRecord } from '../../types.ts';
+// Host of the solve pass. The pass itself — per-region tracking, keyframes and revisits, fragment attachment, the
+// pose graph's nodes and edges, consistency voting and each frame's placements — is the engine's solve session
+// (rust/engine/src/solve/). This file drives it frame by frame: the decode loop, the scan record and stored features
+// each frame needs, the keyframe rows a revisit search asks for, storing the rows the session hands back (plan and
+// consistency rows in batches of 24), the diagnostics' text, progress, pause and stop, the prefix-only failure
+// classification, the frame-count check, relaxing the pose graph and deleting the pass's scratch rows.
+import type { CompactFeatures, FramePlan, RGBA, ScanRecord } from '../../types.ts';
 import { deletePrefix } from '../../storage/db.ts';
-import type { RegionAtlas } from '../../core/layers.ts';
 import { PoseGraph } from '../../core/pose-graph.ts';
-import { KeyframeIndex } from '../../core/keyframes.ts';
+import type { Keyframe } from '../../core/keyframes.ts';
 import { pad } from '../../core/math.ts';
-import {
-  core,
-  type FrameRing,
-  type LabelMask,
-  ResidentFrame,
-  type ResidentGray,
-  type VotingRecord,
-  type VotingRing,
-} from '../../core/wasm.ts';
+import { core, type SolveEffect, type SolvePoll, type SolveSessionState, type VotingRecord } from '../../core/wasm.ts';
 import { releaseUnlessHeld } from '../../media/pool.ts';
-import { type CompactFeatures, decodeFeatures } from '../features-codec.ts';
 import type { ConsistencyRecord } from '../consistency.ts';
 import { t } from '../../i18n/index.ts';
 import { prefixOnly, type RunContext, StopRequested, StorageError } from '../context.ts';
-import { initialState, type RegionState } from './state.ts';
-import { type FrameInput, SolvePass } from './region-step.ts';
-// Displacement-spread consistency voting (docs/ARCHITECTURE.md §七) runs in the Rust core (rust/core/src/voting.rs):
-// a ring of recent analysis-resolution frames bounded by bytes retained, each moving region's final pose compared
-// against partners whose world displacement clears Dmin. Only the moving regions take part. The ring is freed in
-// the finally of this pass.
-const CONSISTENCY_RING_BYTES = 24 * 1024 * 1024;
-/** All per-pass state as fields rather than closed-over locals, so the small methods below can each be one
- * sub-step of the pass instead of one large inline body. Mirrors scan.ts's ScanPass / render.ts's RenderPass
- * shape. */
+import { solveDiagnostic } from './diagnostics.ts';
+
 class SolveRun {
-  graph!: PoseGraph;
-  index!: KeyframeIndex;
-  atlas!: RegionAtlas;
-  f!: number;
-  radius!: number;
-  attachments!: Map<string, Attachment>;
-  states!: RegionState[];
-  previous: RGBA | ResidentFrame | undefined;
-  previousGray: Gray | undefined;
-  previousFeaturesAll: Feature[] | undefined;
-  previousPlan: FramePlan | undefined;
+  session!: SolveSessionState;
   solved = 0;
-  solveFrames!: FrameRing;
-  residentLabels!: LabelMask['labels'];
-  nativePlane!: ResidentGray;
   pending: { key: string; value: FramePlan }[] = [];
+  pendingConsistency: { key: string; value: ConsistencyRecord }[] = [];
   endedNaturally = false;
   missingScan = false;
-  votingSlot!: Map<string, number>;
-  voting!: VotingRing;
-  pendingConsistency: { key: string; value: ConsistencyRecord }[] = [];
-  pass!: SolvePass;
   storageFailed = false;
+  graph: PoseGraph | undefined;
   constructor(readonly ctx: RunContext) {}
-  /** Pose graph, keyframe index, per-region states, the frame ring and native-luma plane, the voting ring, and
-   * the SolvePass instance that carries them across the whole loop. */
   async setup(): Promise<void> {
     const ctx = this.ctx;
     ctx.phase = 'solving';
     ctx.project.status = 'solving';
     await ctx.persist();
-    this.graph = new PoseGraph(ctx.store);
-    this.index = new KeyframeIndex(
-      ctx.store,
-      async (message) => ctx.diagnostics.emit({ code: 'RELOCALIZATION_BUDGET', severity: 'warning', message }),
-    );
-    this.atlas = ctx.atlas!;
-    this.f = ctx.factor;
-    this.radius = ctx.refineRadius;
-    this.attachments = new Map<string, Attachment>();
-    this.states = ctx.regions.filter((r) => r.kind !== 'ignore').map((region) => initialState(region, this.atlas.code(region)));
-    // Native frames (previous, current) enter core memory once per frame; native refinement, sticky-band detection
-    // and the downscale all read them there. Released in this pass's finally (run()'s finally covers abnormal
-    // exits through the same field).
-    this.solveFrames = ctx.frames = core().frameRing(2, ctx.source.info.width, ctx.source.info.height);
-    // The atlas label plane is already core-resident (built once by scan(), owned by `atlas`) — read it directly
-    // instead of uploading another copy; freed once with the atlas itself, not here.
-    this.residentLabels = this.atlas.resident;
-    // Full-resolution luma of the current frame, recomputed in place on first use each frame.
-    this.nativePlane = ctx.nativePlane = core().gray(ctx.source.info.width, ctx.source.info.height);
-    const votingRegions = this.states.filter((s) => s.region.kind === 'moving').map((s) => s.region);
-    this.votingSlot = new Map(votingRegions.map((r, i) => [r.id, i]));
-    this.voting = ctx.voting = core().votingRing(votingRegions, {
-      factor: this.f,
+    const atlas = ctx.atlas!;
+    this.session = core().solveSession({
+      width: ctx.source.info.width,
+      height: ctx.source.info.height,
+      factor: ctx.factor,
+      radius: ctx.refineRadius,
       noise: ctx.noise,
-      nativeWidth: ctx.source.info.width,
-      nativeHeight: ctx.source.info.height,
-      analysisWidth: Math.max(1, Math.ceil(ctx.source.info.width / this.f)),
-      analysisHeight: Math.max(1, Math.ceil(ctx.source.info.height / this.f)),
-      budgetBytes: CONSISTENCY_RING_BYTES,
+      regions: ctx.regions.filter((r) => r.kind !== 'ignore').map((region) => ({ region, code: atlas.code(region) })),
     });
-    // A keyframe minted on a fragment before it was attached still carries the fragment's raw canvasId and raw x/y;
-    // SolvePass's canonicalCanvas/canonicalPose translate that into the canvas and pose it is actually observed at
-    // today, so revisit geometry and rival scoring compare like with like instead of raw-vs-canonical mismatches.
-    this.pass = new SolvePass(
-      ctx,
-      this.graph,
-      this.index,
-      this.attachments,
-      this.f,
-      this.radius,
-      this.residentLabels,
-      this.voting,
-      this.votingSlot,
-    );
   }
-  /** Queues finalised ring records for persistence and folds their layer statistics into the run's counters. */
+  /** Stores what the session did, in order. */
+  private async apply(effects: SolveEffect[]): Promise<void> {
+    const ctx = this.ctx;
+    for (const effect of effects) {
+      switch (effect.kind) {
+        case 'canvas':
+          await ctx.store.put(`canvas/${effect.meta.id}`, effect.meta);
+          if (effect.created) ctx.project.canvasCount++;
+          break;
+        case 'attach':
+          await ctx.store.put(`attach/${effect.attachment.id}`, effect.attachment);
+          break;
+        case 'keyframe':
+          await ctx.store.put(`keyframe/${effect.keyframe.id}`, effect.keyframe);
+          break;
+        case 'graph':
+          if (effect.write.many) await ctx.store.putMany(effect.write.rows);
+          else await ctx.store.put(effect.write.rows[0].key, effect.write.rows[0].value);
+          break;
+        case 'diagnostic':
+          await ctx.diagnostics.emit(solveDiagnostic(effect.diagnostic));
+          break;
+      }
+    }
+  }
+  /** Runs one session call, then stores its effects — also when the call failed, since they happened first. */
+  private async step(call: () => SolvePoll): Promise<SolvePoll> {
+    try {
+      return call();
+    } finally {
+      await this.apply(this.session.effects());
+    }
+  }
   private queueVoting(records: VotingRecord[]): void {
     for (const record of records) {
       this.ctx.consistencyVotedLayers += record.votedLayers;
@@ -123,109 +83,50 @@ class SolveRun {
       }
     }
   }
-  /** The duplicate-frame shortcut: replays the previous plan instead of re-solving pixels this frame never
-   * changed. Returns true when the caller's loop should `continue` straight to the next decode without falling
-   * through to the full per-frame body. */
-  private async duplicateShortcut(frame: { index: number; time: number; image: RGBA }, scan: ScanRecord): Promise<boolean> {
-    if (!(scan.duplicate && this.previousPlan && this.states.every((s) => !s.blind))) {
-      return false;
+  /** One decoded frame: the duplicate shortcut, or the frame's pixels, gray and features into the session, the
+   * keyframe rows it asks for, and its plan and voting rows. */
+  private async frame(frame: { index: number; time: number; image: RGBA }, scan: ScanRecord): Promise<void> {
+    const ctx = this.ctx, session = this.session;
+    const begin = session.begin(frame.index, frame.time, scan);
+    if ('duplicate' in begin) {
+      releaseUnlessHeld(frame.image);
+      const plan: FramePlan = { index: frame.index, time: frame.time, duplicate: true, placements: begin.duplicate };
+      this.pending.push({ key: `plan/${pad(frame.index)}`, value: plan });
+      if (this.pending.length >= 24) await ctx.commitRows(this.pending);
+      this.solved = frame.index + 1;
+      await ctx.report(this.solved, frame.time, t('progress.duplicateReuse'), this.solved / ctx.project.frames);
+      return;
     }
-    // The duplicate-frame shortcut never looks at this frame's own decoded pixels (it just replays the previous
-    // plan) — this is the only use `frame.image` would otherwise get, so it is done right now.
-    releaseUnlessHeld(frame.image, this.previous as RGBA | undefined);
-    const plan: FramePlan = {
-      index: frame.index,
-      time: frame.time,
-      duplicate: true,
-      placements: this.previousPlan.placements.map((p) => ({ ...p, time: frame.time })),
-    };
+    const image = frame.image;
+    if (image.width !== session.width || image.height !== session.height) {
+      throw new Error(
+        `FRAME_GEOMETRY_CHANGED: observation is ${image.width}×${image.height}; the run is ${ctx.source.info.width}×${ctx.source.info.height}.`,
+      );
+    }
+    const current = session.frame();
+    current.write(image.data);
+    releaseUnlessHeld(image);
+    const gray = begin.gray ? await ctx.gray(current) : undefined;
+    const stored = scan.duplicate ? undefined : await ctx.store.get<CompactFeatures>(`scan-features/${pad(frame.index)}`);
+    const labels = ctx.atlas!.resident;
+    let poll = await this.step(() => session.run(gray, stored, labels));
+    while ('keyframes' in poll) {
+      const rows: (Keyframe | undefined)[] = [];
+      for (const id of poll.keyframes) rows.push(await ctx.store.get<Keyframe>(`keyframe/${id}`));
+      poll = await this.step(() => session.provide(rows, labels));
+    }
+    if (poll.joinedRing) {
+      this.queueVoting(poll.voting);
+      if (this.pendingConsistency.length >= 24) await ctx.commitRows(this.pendingConsistency);
+    }
+    const plan: FramePlan = { index: frame.index, time: frame.time, placements: poll.placements, duplicate: scan.duplicate };
     this.pending.push({ key: `plan/${pad(frame.index)}`, value: plan });
-    if (this.pending.length >= 24) await this.ctx.commitRows(this.pending);
-    this.previousPlan = plan;
-    for (const s of this.states) s.velocity = { x: 0, y: 0 };
+    if (this.pending.length >= 24) await ctx.commitRows(this.pending);
     this.solved = frame.index + 1;
-    await this.ctx.report(this.solved, frame.time, t('progress.duplicateReuse'), this.solved / this.ctx.project.frames);
-    return true;
+    await ctx.report(this.solved, frame.time, t('progress.solveFrame'), this.solved / ctx.project.frames);
   }
-  /** One decoded frame's full per-region pass: prepares the shared FrameInput (current native upload, gray,
-   * features, the lazily-filled native-luma memo), runs stepRegion() once per region in order, then joins the
-   * voting ring and persists the frame's plan. */
-  private async regionLoop(frame: { index: number; time: number; image: RGBA }, scan: ScanRecord): Promise<void> {
-    const image = frame.image, oldPrevious = this.previous;
-    // A frame whose geometry differs from the run's stays in JS; gray() rejects it with the historical message.
-    const current = image.width === this.solveFrames.width && image.height === this.solveFrames.height
-      ? this.solveFrames.upload(frame.index, image)
-      : image;
-    const g = scan.duplicate && this.previousGray ? this.previousGray : await this.ctx.gray(current);
-    const storedFeatures = scan.duplicate ? undefined : await this.ctx.store.get<CompactFeatures>(`scan-features/${pad(frame.index)}`);
-    const features = (storedFeatures && decodeFeatures(storedFeatures)) || (scan.duplicate ? this.previousFeaturesAll : undefined) ||
-      core().extractFeatures(g, 480);
-    // Full-resolution luma is only needed for keyframe patches, revisit search and anchor re-acquisition, which
-    // most frames never reach; it is computed on first use, once per FRAME (shared by every region and both
-    // tracking steps within it — not recomputed per region).
-    let nativeGray: Gray | ResidentGray | undefined;
-    const native = (): Gray | ResidentGray =>
-      nativeGray ??= current instanceof ResidentFrame
-        ? core().grayscaleInto(current, this.nativePlane)
-        : core().grayscale(image.data, image.width, image.height);
-    const placements: Placement[] = [];
-    const votingState = { uploaded: false, observed: false };
-    const input: FrameInput = {
-      frame: { index: frame.index, time: frame.time },
-      image,
-      scan,
-      current,
-      previous: this.previous,
-      g,
-      previousGray: this.previousGray,
-      features,
-      native,
-      // reacquire()/driftCorrection() fill `nativePlane` themselves, core-side, lazily — this shares the SAME
-      // per-frame memo `native()` above uses (`nativeGray ??= ...`), not a separate one, so whichever call (a
-      // fused Rust call or a later `native()` caller, e.g. keyframe-step.ts) fills the plane first, every other
-      // consumer this frame sees it already filled.
-      nativePlane: current instanceof ResidentFrame ? this.nativePlane : undefined,
-      nativeFilled: () => nativeGray !== undefined,
-      markNativeFilled: () => {
-        nativeGray = this.nativePlane;
-      },
-      previousPlan: this.previousPlan,
-      voting: votingState,
-    };
-    for (const state of this.states) {
-      placements.push(await this.pass.stepRegion(state, input));
-    }
-    // This frame joins the ring (unless it had no moving-region evidence at all) only after every state's voting
-    // comparisons above have already used it as a "current" frame against older partners; eviction below then
-    // finalises whichever frame the new one's bytes just pushed out, oldest first.
-    if (votingState.observed) {
-      this.queueVoting(this.voting.pushFrame(frame.index));
-      if (this.pendingConsistency.length >= 24) {
-        await this.ctx.commitRows(this.pendingConsistency);
-      }
-    }
-    this.previousPlan = { index: frame.index, time: frame.time, placements, duplicate: scan.duplicate };
-    this.pending.push({ key: `plan/${pad(frame.index)}`, value: this.previousPlan });
-    this.previousFeaturesAll = features;
-    if (this.pending.length >= 24) {
-      await this.ctx.commitRows(this.pending);
-    }
-    this.previous = current;
-    this.previousGray = g;
-    // `current` is `image` itself only on a geometry mismatch (the FrameRing branch above copies into core memory
-    // and returns a ResidentFrame, which never aliases a JS RGBA, so this is a safe no-op then); either way,
-    // whatever `previous` held before this frame is no longer referenced by anything once `previous` has moved
-    // on. `releaseUnlessHeld` is a no-op on a plain `ResidentFrame` (no `release()`), so this call is correct
-    // regardless of which branch `oldPrevious`/`current` took.
-    releaseUnlessHeld(oldPrevious as RGBA | undefined, this.previous as RGBA | undefined);
-    releaseUnlessHeld(image, this.previous as RGBA | undefined);
-    this.solved = frame.index + 1;
-    await this.ctx.report(this.solved, frame.time, t('progress.solveFrame'), this.solved / this.ctx.project.frames);
-  }
-  /** The decode/solve loop: mirrors scan()'s and render()'s shape (see this file's header) — decode-step and
-   * per-frame body are two separate try blocks so a decoder failure is never blamed on the solver and vice versa.
-   * Kept as one method (just over the usual size) because its three nested try/catch/finally blocks share loop
-   * control flow (`break`/`continue` on stop/EOF/failure) that a further split would have to thread back out. */
+  /** The decode/solve loop: decode-step and per-frame body are two separate try blocks so a decoder failure is
+   * never blamed on the solver and vice versa. */
   async runLoop(): Promise<void> {
     const it = this.ctx.source.frames();
     try {
@@ -235,9 +136,7 @@ class SolveRun {
         try {
           step = await it.next();
         } catch (error) {
-          if (!this.solved) {
-            throw error;
-          }
+          if (!this.solved) throw error;
           this.ctx.partial = true;
           await this.ctx.diagnostics.emit(prefixOnly('DECODE_PREFIX_ONLY', 'solve', this.solved, error));
           break;
@@ -262,31 +161,15 @@ class SolveRun {
             });
             break;
           }
-          if (await this.duplicateShortcut(frame, scan)) {
-            if (this.ctx.stopRequested) {
-              this.ctx.honourStop();
-              break;
-            }
-            if (this.solved >= this.ctx.project.frames) break;
-            continue;
-          }
-          await this.regionLoop(frame, scan);
+          await this.frame(frame, scan);
           if (this.ctx.stopRequested) {
             this.ctx.honourStop();
             break;
           }
-          if (this.solved >= this.ctx.project.frames) {
-            break;
-          }
+          if (this.solved >= this.ctx.project.frames) break;
         } catch (error) {
-          // `previous` was never reassigned on this (failing) iteration, so whatever it already held is still
-          // exactly what it was — release() is idempotent, so this is safe even if the failure happened after
-          // this frame's own release call already ran (the duplicate-shortcut branch, or a commitRows() throw
-          // after `previous = current` below already executed).
-          releaseUnlessHeld(frame.image, this.previous as RGBA | undefined);
-          if (!this.solved) {
-            throw error;
-          }
+          releaseUnlessHeld(frame.image);
+          if (!this.solved) throw error;
           this.ctx.partial = true;
           if (error instanceof StorageError) {
             this.storageFailed = true;
@@ -303,15 +186,9 @@ class SolveRun {
       try {
         await it.return(undefined);
       } catch { /* already unwinding */ }
-      this.solveFrames.free();
-      // residentLabels (atlas.resident) is NOT freed here: this pass borrowed it, it did not upload it. It is
-      // released exactly once, with the atlas, in run()'s finally.
-      this.nativePlane.free();
-      this.ctx.frames = this.ctx.nativePlane = undefined;
     }
   }
-  /** Trailing commit of whatever plan rows never reached a 24-row batch, then the solve-vs-source frame-count
-   * mismatch check. */
+  /** Trailing commit of whatever plan rows never reached a 24-row batch, then the frame-count check. */
   async trailingCommitAndMismatch(): Promise<void> {
     if (this.pending.length && !this.storageFailed) {
       try {
@@ -328,12 +205,10 @@ class SolveRun {
       await this.ctx.passMismatch('solve', this.ctx.project.frames, this.solved);
     }
   }
-  /** Every frame still resident in the ring when the loop ended (the tail of the run never got displaced by a
-   * later frame's bytes) is finalised here exactly as an evicted one would have been, then the ring itself and
-   * its `ctx.voting` handle are released. */
-  async drainVotingAndFree(): Promise<void> {
+  /** Finalises every frame still in the voting ring, stores its rows, and hands the pose graph over. */
+  async drainVoting(): Promise<void> {
     if (!this.storageFailed) {
-      this.queueVoting(this.voting.drain());
+      this.queueVoting(this.session.drain());
       if (this.pendingConsistency.length) {
         try {
           await this.ctx.commitRows(this.pendingConsistency);
@@ -346,33 +221,30 @@ class SolveRun {
         }
       }
     }
-    this.voting.free();
-    this.ctx.voting = undefined;
+    this.graph = PoseGraph.adopt(this.ctx.store, this.session.takeGraph());
+    this.session.free();
   }
-  /** Releases the engine's pose graph and keyframe index; the pass is over, however it ended. */
+  /** Releases the session and the pose graph; the pass is over, however it ended. */
   free(): void {
+    this.session?.free();
     this.graph?.free();
-    this.index?.free();
   }
   /** Relaxes the pose graph (honouring a mid-relaxation stop), warns on a large residual, then deletes the
-   * scan-features/keyframe/word scratch this pass alone consumed. */
+   * scan-features/keyframe scratch this pass alone consumed. */
   async optimizeAndCleanup(): Promise<void> {
-    const ctx = this.ctx;
+    const ctx = this.ctx, graph = this.graph!;
     ctx.processed = this.solved;
     ctx.events.progress({ phase: 'optimizing', fraction: 0, frames: this.solved, time: 0, message: t('progress.optimizing') });
-    // pose-graph.ts only persists relaxed positions once optimize() finishes its loop; a stop mid-relaxation
-    // unwinds via StopRequested before that, so the unrelaxed (but already-persisted, pre-optimize) node
-    // positions are what render() sees — geometrically consistent, just without this pass's loop-closure fix-up.
+    // The relaxed positions are only stored once the relaxation finishes; a stop mid-relaxation leaves the
+    // already-stored, unrelaxed node positions for render() — consistent, just without the loop-closure fix-up.
     let result: { residual: number; iterations: number };
     try {
-      result = await this.graph.optimize(async () => {
+      result = await graph.optimize(async () => {
         await ctx.checkpoint();
         if (ctx.stopRequested) throw new StopRequested();
       });
     } catch (error) {
-      if (!(error instanceof StopRequested)) {
-        throw error;
-      }
+      if (!(error instanceof StopRequested)) throw error;
       ctx.honourStop();
       result = { residual: 0, iterations: 0 };
     }
@@ -385,9 +257,8 @@ class SolveRun {
         action: t('diag.GRAPH_RESIDUAL.action'),
       });
     }
-    await ctx.store.put('graph-summary', { loops: this.graph.loops, ...result });
-    // scan-features/ and keyframe/ are scratch this pass alone consumed (per-frame features and relocalization
-    // keyframes); render() never reads them, so they are deleted here rather than carried to export or reopen.
+    await ctx.store.put('graph-summary', { loops: graph.loops, ...result });
+    // scan-features/ and keyframe/ are scratch this pass alone consumed; render() never reads them.
     await deletePrefix(ctx.store, 'scan-features/');
     await deletePrefix(ctx.store, 'keyframe/');
     await ctx.diagnostics.flush();
@@ -400,7 +271,7 @@ export async function solve(ctx: RunContext): Promise<void> {
     await run.setup();
     await run.runLoop();
     await run.trailingCommitAndMismatch();
-    await run.drainVotingAndFree();
+    await run.drainVoting();
     await run.optimizeAndCleanup();
   } finally {
     run.free();

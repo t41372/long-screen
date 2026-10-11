@@ -144,7 +144,7 @@ export function evaluateCandidates(
 }
 /** The text of the `RELOCALIZATION_BUDGET` warning, as the page has always stored it. It is not in the message
  *  catalogue (an English sentence in the zh journal); kept byte for byte so stored diagnostics do not change. */
-const BUDGET_MESSAGE =
+export const BUDGET_MESSAGE =
   'A highly repetitive visual-word posting exceeded the 96-candidate retrieval budget. Relocalization is approximate here; all image observations remain in the reconstruction journal.';
 /** Host for the keyframe index state object (`rust/engine/src/keyframes.rs`): word postings live in core memory,
  *  keyframes in the store (`keyframe/<id>`). A search asks the engine for candidate ids, loads those rows, keeps the
