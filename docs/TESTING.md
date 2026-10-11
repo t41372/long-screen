@@ -72,6 +72,8 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 头less 运行 + Playwr
 
 `tests/browser/planes.test.ts` 覆盖揭示阶段的平面直转：在 Chrome 和 WebKit 里，转进常驻帧槽的像素必须与平面转换器的 RGBA 逐字节相同；新运行的第一帧（平面路径还没通过首帧比对）不能以平面交出；走浏览器自己 `copyTo(RGBA)` 的运行永远拿不到平面；同时持有几帧的平面时缓冲池不能复用其中任何一块；没被要的帧不带像素。
 
+`tests/browser/frame-count.test.ts` 覆盖编辑段终点还列着一个样本的 iPhone 录屏（§四）：在 Chrome 和 WebKit 里，`MediaInfo.frameCount` 等于 mediabunny 交给解码器的包数，每一趟都解出这么多帧，没有 `PASS_FRAME_COUNT_MISMATCH`，状态完成，揭示阶段运行。默认只跑 `test_case/public_test_cases/` 里的 test_6（每个浏览器约 35 s），`LONGSCREEN_REAL=all` 再加 test_7、test_8；没有录屏时跳过。产物：`test-results/frame-count/<浏览器>-<文件>.json`。原生一侧对应 `rust/decode/tests/decode.rs` 的 `an_edit_list_trim_is_counted_the_way_each_backend_presents_it`（ffmpeg 生成、编辑段两头各缩一帧的片段）与 `real_recordings_expect_the_frames_each_backend_presents`（`LONGSCREEN_CASES` 指向公开录屏时，8 段都要求 `frame_count` 等于各后端实际解出的帧数），以及 `rust/long-screen/tests/driver.rs` 的 `a_source_that_ends_before_its_expected_frames_is_partial`（真少了帧仍报部分完成）。
+
 ### 编码差异如何处理
 
 同一份源像素，Chrome 的 H.264 路径解出来与源相差约每通道 1 级；VP9 路径则系统性偏暗（平均带符号差约 −19，最大 78）。这是解码器的色彩范围转换，不是重建错误。

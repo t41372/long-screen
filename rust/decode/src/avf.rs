@@ -143,6 +143,7 @@ impl AvfDecoder {
                 let d = asset.duration();
                 (d.timescale > 0).then(|| d.value as f64 / d.timescale as f64)
             };
+            let frame_count = presented_frames(&track);
 
             let reader = AVAssetReader::assetReaderWithAsset_error(&asset).map_err(|e| {
                 Error::Unsupported(format!(
@@ -186,7 +187,7 @@ impl AvfDecoder {
                     height: 0,
                     rotation,
                     duration,
-                    frame_count: None,
+                    frame_count,
                     codec: codec_name(description.media_sub_type()),
                     bit_depth,
                     colour: Colour {
@@ -296,6 +297,51 @@ impl AvfDecoder {
         }
         Ok(())
     }
+}
+
+/// The frames `AVAssetReader` will present: the track's samples whose presentation time lies in its edit, the
+/// half-open media-time range `[start, start + duration)` of its one non-empty segment, compared exactly. A sample
+/// the container lists at or past the edit's end (iPhone and macOS recordings commonly hold one) is not presented,
+/// nor is one before its start. Read with a sample cursor over the track's sample table, without decoding; checked
+/// against the frames decoded from every public test recording. `None` when the track offers no sample cursors or
+/// has more than one non-empty edit (the web app rejects that layout too), rather than a count that might be wrong.
+///
+/// SAFETY: plain AVFoundation calls on a track the caller owns.
+unsafe fn presented_frames(track: &AVAssetTrack) -> Option<u64> {
+    let segments = track.segments();
+    let mut edits = segments.iter().filter(|s| !s.isEmpty());
+    let edit = edits.next()?.timeMapping().source;
+    if edits.next().is_some() || !track.canProvideSampleCursors() {
+        return None;
+    }
+    let (start, length) = (edit.start, edit.duration);
+    if start.timescale <= 0 || length.timescale <= 0 {
+        return None;
+    }
+    let cursor = track.makeSampleCursorAtFirstSampleInDecodeOrder()?;
+    let mut count = 0u64;
+    loop {
+        let pts = cursor.presentationTimeStamp();
+        if pts.timescale <= 0 {
+            return None;
+        }
+        // pts ∈ [start, start + length), on the common denominator of the three timescales.
+        let (p, s, l) = (
+            pts.timescale as i128,
+            start.timescale as i128,
+            length.timescale as i128,
+        );
+        let at = pts.value as i128 * s * l;
+        let from = start.value as i128 * p * l;
+        let span = length.value as i128 * p * s;
+        if at >= from && at < from + span {
+            count += 1;
+        }
+        if cursor.stepInDecodeOrderByCount(1) != 1 {
+            break;
+        }
+    }
+    (count > 0).then_some(count)
 }
 
 fn seconds(t: CMTime) -> f64 {

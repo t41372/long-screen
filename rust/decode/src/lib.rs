@@ -198,7 +198,11 @@ pub struct VideoInfo {
     pub rotation: u16,
     /// Seconds, when the container says.
     pub duration: Option<f64>,
-    /// Frames the container lists for the track, when it lists them.
+    /// Frames this backend will present (decode and output), counted before decoding: the track's samples inside its
+    /// edit list, as the backend applies it. This can be fewer than the samples the container lists: iPhone and macOS
+    /// recordings commonly list one sample starting where the edit ends, which the backend does not present. A run
+    /// that decodes fewer frames than this has lost some. `None` when the backend cannot tell in advance (Media Foundation; an
+    /// AVFoundation track with several edits; ffprobe unable to list the packets).
     pub frame_count: Option<u64>,
     /// The codec's short name: `h264`, `hevc`, `vp9`, `av1`, `prores` …
     pub codec: String,

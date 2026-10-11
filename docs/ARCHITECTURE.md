@@ -56,6 +56,8 @@ MP4/MOV 解析普通 sample table 与 fragmented `trun`：DTS/CTS、sync sample�
 
 WebCodecs 支持查询在启动前完成。按展示顺序消费输出、处理 B 帧、主动 `close()`；背压限制 decode queue、输出队列与在途请求。解码期的异常一律显式化，不静默：负时间戳帧按容器语义不展示但**计数并上报**；时间戳倒退时保留解码器顺序并上报，不再中止整段录屏；首帧尺寸与容器声明不符时以码流为准并上报，其后的尺寸变化保留前缀并报错。
 
+扫描趟结束时拿处理到的帧数核对「期望帧数」（`MediaInfo.frameCount`，减去负时间戳跳过的帧），少了就报 `PASS_FRAME_COUNT_MISMATCH` 并把结果标为部分完成。期望帧数指解码器会交出的帧数，不是容器列出的样本数，两者在 iPhone 和 Mac 录屏上常差一帧：轨道唯一的编辑段结束处还列着一个样本（8 段公开录屏里有 5 段：test_4、test_6、test_7 的这个样本正好从编辑段终点开始，test_5 的在终点之后，test_8 的比终点早百分之一个时间刻度开始）。网页用 mediabunny 把每个样本都交给 WebCodecs，编辑表只用来平移时间，不在终点截断，所以网页的期望帧数就是 mediabunny 列出的包数，Chrome 与 WebKit 实际也解出这么多帧（test_6/7/8 为 336/406/599，状态完成，揭示照常运行，`test-results/frame-count/`）；终点之后的帧是屏幕的真实截取，照常保留（见 `docs/TESTING.md`）。原生解码器按编辑表截断：ffmpeg 把这个样本标成丢弃（`D`）、解而不出，AVFoundation 只交出展示时间落在编辑段 `[起点, 起点+时长)` 内的样本（精确比较，所以 test_8 的那一帧它照样交出，ffmpeg 把终点取整到整刻度后则不交出）。因此 `rust/decode` 的 `VideoInfo::frame_count` 是各后端自己会交出的帧数：ffmpeg 数 ffprobe 列出的未标丢弃的包，AVFoundation 用样本游标（`AVSampleCursor`）数落在唯一非空编辑段内的样本，Media Foundation 事先数不出，为 `None`。原生驱动照网页的方式用它核对。于是同一段录屏，网页比原生多分析编辑段终点那一帧（test_6/7 多一帧，test_8 网页与 AVFoundation 相同、比 ffmpeg 多一帧）。
+
 解码帧转成 RGBA 在转换 worker 里做（`src/media/convert-worker.ts`），流水线线程同时处理上一帧，最多提前两帧。首帧用两种办法各转一次：WebGPU（`src/media/gpu-convert.ts`：按帧自身布局 `copyTo` 取出 Y 与色度平面，上传成纹理，着色器只做 YUV 矩阵，色度在每个像素中心双线性插值）和 `copyTo({ format: 'RGBA' })`。两者足够接近（与平面转换同一道闸门）而且 GPU 实测更快，才整段用 GPU，否则整段用 `copyTo`；一次运行只用一种转换，选定之后 GPU 出错就让这次运行失败，不中途换路。M5 Max 上的 Chrome 实测：3456×2234 的硬件解码帧 GPU 每帧约 4.3 ms，`copyTo(RGBA)` 约 16 ms，两者逐像素相差不超过 1 级（Chrome 对硬件解码帧的 `copyTo` 本身就是矩阵加双线性色度）。设置里的「仅 CPU」关掉这条路径；WebKit 的 Playwright 构建没有 WebGPU，照旧走平面转换。
 
 ## 五、运动候选与独立验证
@@ -184,6 +186,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 
 - **`ctts` 偏移在两个版本里都按有符号读取**（容器解析已交给 npm 包 mediabunny，它本身就这样读；本项目只在 `src/media/isobmff-probe.ts` 里加了一个轻量探测，专门用来在版本 0 出现负偏移时补上 mediabunny 没有的诊断）。版本 0 的负偏移会推送 `NONSTANDARD_SIGNED_CTTS_V0` 消息，以 `MEDIA_NOTICE` 码、`warning` 级别呈现；这个级别只标记非规范（QuickTime/ReplayKit）编码，不表示文件坏了。
 - **帧转换只做 YUV 矩阵，不做色彩管理。** 把解码帧作为 WebGPU external texture 导入更快（3456×2234 每帧约 1.5 ms），但浏览器会把 BT.709 的传递函数换算到 sRGB，照片中间调整体亮出约 10 级（0 的缩略图与原生帧的平均差从 2.1 变成 10.4），而且这一点亮度差足以改变区域学习与跟踪的结论：c、0-1、b、e 的画布切分都变了。屏幕录像的像素本来就来自 sRGB 屏幕，`gpu-convert.ts` 因此自己上传平面、自己做矩阵。
+- **期望帧数是解码器会交出的帧数，不是容器列出的样本数**（§四）。原生命令行原来用 ffprobe 的 `nb_frames`（容器样本数）作期望，ffmpeg 解码时 test_4 到 test_8 五段录屏全部以 `PASS_FRAME_COUNT_MISMATCH` 结束为部分完成（如 test_6 只处理 335/336 帧），揭示阶段也随之跳过；AVFoundation 则不给期望，真正少了帧也发现不了。网页的期望（mediabunny 的包数）与它交给 WebCodecs 的一致，不要改成按编辑表截断；原生各后端的期望由 `rust/decode` 按自己的截断方式数（`test-results/frame-count/`）。
 - **GPU 转换在转换 worker 里做，不在流水线线程上。** 放在流水线线程上时，平面拷贝、纹理上传和回读拷贝都压在关键路径上，f 的扫描与渲染反而比 worker 里的 `copyTo` 慢（2.9 对 2.8 s、4.3 对 3.6 s）；挪进 worker 后是 2.0 s 与 3.2 s。
 
 ### 几何与分层
@@ -484,7 +487,7 @@ PyO3 绑定（`long-screen-py`，cdylib，导入名 `long_screen._native`），�
 - `tests/unit/parity/*.test.ts` — 每个已迁移 Rust 域与其冻结 TS oracle 的 byte-exact 对照（`chrome`/`compositor`/`framing`/`kernels`/`layers`/`motion`/`pose-graph`/`pyramid`/`regions`/`track`/`voting`），oracle 源在 `tests/support/reference/*.ts`。
 - `tests/support/reference/*.ts` — 冻结的、迁移前 TS 实现快照，只作对照基准，不参与生产路径。
 - `tests/support/{core,run,scenario-check,parity-fixtures,pixel-fixtures}.ts` — 测试基础设施：加载工作区 Wasm 构建、跑一次场景到 KV、场景目录自检、parity/像素测试用的固定输入。
-- `tests/browser/*.test.ts` — Playwright 驱动的真实 Chrome/WebKit 集成测试（`ui`/`export-ui`/`flight`/`private`/`compatibility`/`device-check`/`compute`/`decode`/`planar`/`gpu-convert`/`reconstruct`/`pwa`/`package`），覆盖解码、Worker、IndexedDB、OPFS、界面等核心之外的部分。`tests/browser/support.ts` 不是测试文件，是上述用例共用的测试基础设施（启动/连接被测页面等）。
+- `tests/browser/*.test.ts` — Playwright 驱动的真实 Chrome/WebKit 集成测试（`ui`/`export-ui`/`flight`/`private`/`compatibility`/`device-check`/`compute`/`decode`/`planar`/`gpu-convert`/`reconstruct`/`frame-count`/`pwa`/`package`），覆盖解码、Worker、IndexedDB、OPFS、界面等核心之外的部分。`tests/browser/support.ts` 不是测试文件，是上述用例共用的测试基础设施（启动/连接被测页面等）。
 - `tests/package/consumer.{html,js}` — 用构建好的 npm 包的第三方页面（import map 指向 `dist-package/index.js`），由 `tests/browser/package.test.ts` 驱动：跨源隔离、不隔离和 `deno bundle` 打包后三种方式在 Chrome 与 WebKit 里重建示例录屏，PNG 必须与应用自己导出的逐字节相同（产物 `test-results/ts-package/`）。
 - `tests/fixtures/*` — 确定性编码/解码测试固件（mp4/mov/webm 样本、`truth.json`、`world.png`），多数由 `scripts/make-fixtures.ts` 生成。
 

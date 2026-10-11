@@ -39,7 +39,6 @@ struct Stream {
     color_space: Option<String>,
     color_transfer: Option<String>,
     color_primaries: Option<String>,
-    nb_frames: Option<String>,
     duration: Option<String>,
     bits_per_raw_sample: Option<String>,
     #[serde(default)]
@@ -130,10 +129,9 @@ fn parse_probe(json: &str) -> Result<(VideoInfo, &'static str, bool), Error> {
             height,
             rotation,
             duration,
-            frame_count: stream
-                .nb_frames
-                .and_then(|n| n.parse().ok())
-                .filter(|n| *n > 0),
+            // `nb_frames` would list the container's samples, which can be one more than ffmpeg presents (a sample at
+            // the end of the edit list); `FfmpegDecoder::open` counts the packets ffmpeg keeps instead.
+            frame_count: None,
             codec: stream.codec_name.unwrap_or_default(),
             bit_depth,
             colour: Colour {
@@ -220,7 +218,7 @@ impl FfmpegDecoder {
             .args(["-v", "error", "-select_streams", "V:0", "-show_entries"])
             .arg(
                 "stream=codec_name,width,height,pix_fmt,color_range,color_space,color_transfer,color_primaries,\
-                 nb_frames,duration,bits_per_raw_sample:stream_side_data:format=duration",
+                 duration,bits_per_raw_sample:stream_side_data:format=duration",
             )
             .args(["-of", "json"])
             .arg(path)
@@ -234,7 +232,8 @@ impl FfmpegDecoder {
                 String::from_utf8_lossy(&output.stderr).trim()
             )));
         }
-        let (info, pix_fmt, converted) = parse_probe(&String::from_utf8_lossy(&output.stdout))?;
+        let (mut info, pix_fmt, converted) = parse_probe(&String::from_utf8_lossy(&output.stdout))?;
+        info.frame_count = presented_frames(&ffprobe, path);
 
         let ffmpeg = resolve(&options.ffmpeg, "LONGSCREEN_FFMPEG", "ffmpeg");
         // A source outside the four 4:2:0 layouts is converted to limited range, so the tags stay true.
@@ -319,6 +318,35 @@ impl FfmpegDecoder {
             }
         }
     }
+}
+
+/// The frames ffmpeg will present: the first video track's packets, less those its demuxer marks discard (`D`), which
+/// the decoder decodes but never outputs. ffmpeg marks a sample discard when it lies outside the edit list: before
+/// the edit's start (decoded only because later frames depend on it), or at or after its end rounded to a whole tick
+/// of the track's timescale. iPhone and macOS recordings commonly hold one such sample at the end. The walk reads no
+/// pixels and takes tens of milliseconds for a few hundred MB. `None` when ffprobe cannot list the packets.
+fn presented_frames(ffprobe: &Path, path: &Path) -> Option<u64> {
+    let output = Command::new(ffprobe)
+        .args(["-v", "error", "-select_streams", "V:0"])
+        .args(["-show_entries", "packet=flags", "-of", "csv=p=0"])
+        .arg(path)
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    count_presented(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Counts the lines of ffprobe's `packet=flags` CSV whose flags (`K`ey, `D`iscard, `C`orrupt) leave out `D`.
+fn count_presented(flags: &str) -> Option<u64> {
+    let n = flags
+        .lines()
+        .map(|line| line.split(',').next().unwrap_or_default().trim())
+        .filter(|f| !f.is_empty() && !f.contains('D'))
+        .count() as u64;
+    (n > 0).then_some(n)
 }
 
 /// Fills `buf` from `r`; `Ok(false)` if the stream ended before the first byte.
@@ -419,6 +447,19 @@ mod tests {
     }
 
     #[test]
+    fn presented_frames_leave_out_discarded_packets() {
+        // test_6's last packets: the one at the edit's end carries ffmpeg's discard flag and is never shown.
+        assert_eq!(count_presented("K__\n___\n___\n_D_\n"), Some(3));
+        // A leading sample before the edit is discarded the same way; a corrupt one (`C`) is still decoded.
+        assert_eq!(count_presented("KD_\n___\n__C\n"), Some(2));
+        // A field ffprobe may append after the flags does not change the count.
+        assert_eq!(count_presented("K__,\n___,\n"), Some(2));
+        // Nothing listed (an empty walk, or ffprobe printing nothing): no count rather than an expectation of zero.
+        assert_eq!(count_presented(""), None);
+        assert_eq!(count_presented("_D_\n"), None);
+    }
+
+    #[test]
     fn negative_pts_parse() {
         assert_eq!(
             parse_showinfo("[Parsed_showinfo_0 @ 0x1] n:   0 pts:    -20 pts_time:-0.0333"),
@@ -438,7 +479,8 @@ mod tests {
         assert_eq!(info.format, PixelFormat::I420P10);
         assert_eq!((info.width, info.height, info.rotation), (1320, 2868, 0));
         assert_eq!(info.bit_depth, 10);
-        assert_eq!(info.frame_count, Some(336));
+        // `nb_frames` lists the container's samples (336), one more than ffmpeg presents; `open` counts instead.
+        assert_eq!(info.frame_count, None);
         assert_eq!(info.duration, Some(5.666667));
         assert_eq!(info.codec, "hevc");
         assert_eq!(

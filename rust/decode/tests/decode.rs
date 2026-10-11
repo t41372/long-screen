@@ -266,6 +266,75 @@ fn vfr_clip_keeps_every_frame_and_its_time_on_every_backend() {
     }
 }
 
+/// The VFR clip with its edit list narrowed by one frame at each end. ffmpeg's muxer writes one edit starting at the
+/// first frame's composition time (40 ticks of 1/600 s, the B-frame delay) and lasting to the end of the last frame;
+/// here it starts at the second frame (60) and ends exactly where the last frame starts (1059), so the first frame is
+/// decoded (the others depend on it) but not shown, and the last one is not shown either. Container samples: 45.
+fn trimmed_clip() -> PathBuf {
+    let path = scratch("trimmed.mp4");
+    if !path.exists() {
+        let mut bytes = std::fs::read(vfr_clip()).unwrap();
+        let at = bytes
+            .windows(4)
+            .position(|w| w == b"elst")
+            .expect("the muxer writes an edit list for a B-frame clip");
+        let entry = at + 12; // type, version and flags, entry count
+        let (version, count) = (bytes[at + 4], &bytes[at + 8..at + 12]);
+        assert_eq!(
+            (version, count),
+            (0, &[0, 0, 0, 1][..]),
+            "one version-0 edit"
+        );
+        let media_time = i32::from_be_bytes(bytes[entry + 4..entry + 8].try_into().unwrap());
+        assert_eq!(
+            media_time, 40,
+            "the clip's B-frame delay, in its 1/600 s timescale"
+        );
+        // The movie timescale is ffmpeg's default 1000: 999 media ticks (60 → 1059) are 1665 movie ticks exactly.
+        bytes[entry..entry + 4].copy_from_slice(&1665u32.to_be_bytes());
+        bytes[entry + 4..entry + 8].copy_from_slice(&60i32.to_be_bytes());
+        std::fs::write(&path, bytes).unwrap();
+    }
+    path
+}
+
+#[test]
+fn an_edit_list_trim_is_counted_the_way_each_backend_presents_it() {
+    if !have_ffmpeg() {
+        eprintln!("skipped: no ffmpeg");
+        return;
+    }
+    let clip = trimmed_clip();
+    let shown = ffprobe_times(&clip);
+    assert_eq!(
+        shown.len(),
+        43,
+        "ffprobe shows the 43 frames inside the edit"
+    );
+    for backend in std::iter::once(Backend::Ffmpeg).chain(system_backends()) {
+        let (decoder, frames) = decode_all(&clip, backend);
+        assert_eq!(
+            frames.len(),
+            43,
+            "{backend:?} decodes the frames inside the edit"
+        );
+        assert_eq!(
+            decoder.info().frame_count,
+            Some(43),
+            "{backend:?} expects the frames it presents, not the 45 samples the container lists"
+        );
+    }
+    // Untrimmed, every sample is presented and expected.
+    for backend in std::iter::once(Backend::Ffmpeg).chain(system_backends()) {
+        let (decoder, frames) = decode_all(&vfr_clip(), backend);
+        assert_eq!(
+            (frames.len(), decoder.info().frame_count),
+            (45, Some(45)),
+            "{backend:?}"
+        );
+    }
+}
+
 #[test]
 fn vfr_clip_backends_agree() {
     if !have_ffmpeg() {
@@ -405,6 +474,39 @@ fn real_recordings_decode_every_frame_ffprobe_decodes_at_its_time() {
                 times.len(),
                 decoder.info().frame_count
             );
+        }
+    }
+}
+
+/// Every public case, with the frames ffmpeg and AVFoundation present. Five of them (test_4 to test_8) list one sample
+/// more than ffmpeg presents, at the end of the track's single edit: test_4, test_6 and test_7's starts exactly where
+/// the edit ends and test_5's after it, so neither backend presents it; test_8's starts a hundredth of a tick before
+/// the end, which AVFoundation presents and ffmpeg, rounding the end to a whole tick, does not.
+const ALL: [&str; 8] = [
+    "test_1_sdr_desktop_basic_anypath.mov",
+    "test_2_sdr_desktop_gpt_scroll_with_floating.mov",
+    "test_3_hdr_desktop_vertical.mov",
+    "test_4_hdr_monalisa.mov",
+    "test_5_hdr_image.mov",
+    "test_6_iphone_safari.MP4",
+    "test_7_iphone_chatgpt.MP4",
+    "test_8_iphone_signal.MP4",
+];
+
+#[test]
+fn real_recordings_expect_the_frames_each_backend_presents() {
+    for name in ALL {
+        let Some(path) = case(name) else { continue };
+        for backend in std::iter::once(Backend::Ffmpeg).chain(system_backends()) {
+            let mut decoder = open(&path, &Options::with_backend(backend)).unwrap();
+            let expected = decoder.info().frame_count;
+            let mut frame = Frame::default();
+            let mut decoded = 0u64;
+            while decoder.read_frame(&mut frame).unwrap() {
+                decoded += 1;
+            }
+            eprintln!("{name}: {backend:?} expects {expected:?}, decoded {decoded}");
+            assert_eq!(expected, Some(decoded), "{name} with {backend:?}");
         }
     }
 }

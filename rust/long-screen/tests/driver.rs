@@ -192,6 +192,30 @@ fn a_frame_of_another_size_ends_the_scan_at_the_prefix() {
 }
 
 #[test]
+fn a_source_that_ends_before_its_expected_frames_is_partial() {
+    // The decoder said it would present 25 frames and stopped quietly after 24: a real shortfall, which no edit list
+    // explains. The run keeps what it has but says so.
+    let mut source = Scroll::new(scroll_offsets());
+    let mut js = source.info.js.clone();
+    js.set("frameCount", 25u32);
+    source.info = MediaInfo::from_js(js);
+    let result =
+        run(&mut source, &Options::default(), &mut (), &Control::new()).expect("a partial result");
+    assert_eq!(result.status(), "partial");
+    let mismatch = result
+        .diagnostics()
+        .iter()
+        .find(|d| d.code == "PASS_FRAME_COUNT_MISMATCH")
+        .expect("the shortfall is reported");
+    assert!(mismatch.message.contains("24/25"), "{}", mismatch.message);
+    // With the count it presents, the same source completes.
+    let mut source = Scroll::new(scroll_offsets());
+    let result = run(&mut source, &Options::default(), &mut (), &Control::new()).unwrap();
+    assert_eq!(result.status(), "complete");
+    assert!(!codes(&result).contains(&"PASS_FRAME_COUNT_MISMATCH".to_string()));
+}
+
+#[test]
 fn the_print_is_the_page_that_scrolled_past() {
     let mut source = Scroll::new(scroll_offsets());
     let mut options = Options::default();
