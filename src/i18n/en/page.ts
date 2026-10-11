@@ -167,7 +167,7 @@ export const pageSections: Catalog<typeof zh> = {
         'Long Screen is open source under the MIT license; the code is on <a href="https://github.com/t41372/long-screen" target="_blank" rel="noopener">GitHub</a>. If you hit a bug or get a wrong result, please <a class="report-link" href="https://github.com/t41372/long-screen/issues/new" target="_blank" rel="noopener">open an issue</a>; it comes pre-filled with your browser details and the warning codes from the run log. If you find it useful, a star on the project helps us a lot.',
       licenseHeading: 'Open-source licenses',
       licenseBody:
-        'Besides this project\'s own code, the third-party dependencies bundled into the Wasm core and front-end assets and their licenses, as well as the sources and licenses of the Rust, WebAssembly and GitHub logos on this page, are listed in the <a href="./THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener">open-source notices</a> (generated at build time).',
+        'Long Screen\'s own code is under the MIT license: you may use, copy, modify and redistribute it for free, sell it or ship it inside closed-source products, as long as copies keep the copyright notice and the <a href="https://github.com/t41372/long-screen/blob/main/LICENSE" target="_blank" rel="noopener">license text</a>. It comes as is, with no warranty. The third-party dependencies bundled into the Wasm core and front-end assets and their licenses, as well as the sources and licenses of the Rust, WebAssembly and GitHub logos on this page, are listed in the <a href="./THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener">open-source notices</a> (generated at build time).',
     },
     regions: {
       title: 'Set independent motion regions',

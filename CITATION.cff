@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use Long Screen or its core in your work, please cite it as below."
+type: software
+title: "Long Screen"
+abstract: "Turns a screen recording of a page explored along any path into one big screenshot, entirely in the browser: a thin TypeScript shell around a Rust core compiled to WebAssembly."
+authors:
+  - family-names: "Chiu"
+    given-names: "Yi-Ting"
+repository-code: "https://github.com/t41372/long-screen"
+url: "https://github.com/t41372/long-screen"
+license: MIT
+keywords:
+  - screen recording
+  - image stitching
+  - long screenshot
+  - WebAssembly
+  - Rust

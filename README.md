@@ -32,7 +32,7 @@ Browser tests (`deno task test:browser`) require Google Chrome (the Chromium bun
 
 The main app uses ES modules and Workers, so it needs a static file server — you can't just double-click `dist/index.html`. **Local development works over plain HTTP on localhost, no certificate setup needed.** A phone can also open the app over the computer's LAN HTTP IP and test a local video using "approximate · native seek" mode (the browser must be able to play that video; frames may be dropped). Browsers generally only expose WebCodecs frame-accurate decoding and OPFS disk export on secure origins; `localhost` counts as a secure origin, a LAN IP does not, so verifying these capabilities from a phone requires HTTPS, e.g. GitHub Pages. The app enables features based on actual API capability and won't refuse to run just because it's HTTP; these browser restrictions have nothing to do with uploading — all processing still happens locally. The exported **result package** is different: after unzipping, you can open its `index.html` directly to view it offline.
 
-For situations with no server and no easy way to run one yourself (e.g. a locked-down corporate laptop), use `deno task build:portable`: it first runs `deno task build:prod --out dist-portable/.site` (leaving `dist/` alone), then inlines the page, styles, Workers, and the single-threaded Wasm core into `dist-portable/long-screen/long-screen.html`, and zips it up together with usage instructions. Double-click it in Chrome / Edge to open — no software install, no internet connection needed. The approach rewrites each bundled artifact from ES modules into classic scripts, and replaces `Worker` and `fetch` in the page and in Workers so they return the embedded script and Wasm directly instead of requesting files from disk (see the comment at the top of `scripts/build-portable.ts` for why). Trade-offs: a `file://` page can't be cross-origin isolated, so the Rust core only runs a single-threaded build (results are unchanged; on real screen recordings in test_case it isn't slower than the multi-threaded build — the bottleneck is decoding and I/O); OPFS isn't available, so export goes through "Save As", falling back to an in-memory download (capped at 1 GB) if that dialog is disabled by policy; only Chromium-based browsers are supported — WebKit can't read the user's picked video file from a Worker under `file://`, so a screen recording cannot be processed there. Opened in any other browser, the page says at the top to use Chrome or Edge instead; if its script fails to load or throws during start-up, a notice at the top says so too, rather than leaving a page that does nothing (a Worker error after start-up is still reported by the app's own error message).
+For situations with no server and no easy way to run one yourself (e.g. a locked-down corporate laptop), use `deno task build:portable`: it first runs `deno task build:prod --out dist-portable/.site` (leaving `dist/` alone), then inlines the page, styles, Workers, and the single-threaded Wasm core into `dist-portable/long-screen/long-screen.html`, and zips it up together with usage instructions, the license and the third-party notices. Double-click it in Chrome / Edge to open — no software install, no internet connection needed. The approach rewrites each bundled artifact from ES modules into classic scripts, and replaces `Worker` and `fetch` in the page and in Workers so they return the embedded script and Wasm directly instead of requesting files from disk (see the comment at the top of `scripts/build-portable.ts` for why). Trade-offs: a `file://` page can't be cross-origin isolated, so the Rust core only runs a single-threaded build (results are unchanged; on real screen recordings in test_case it isn't slower than the multi-threaded build — the bottleneck is decoding and I/O); OPFS isn't available, so export goes through "Save As", falling back to an in-memory download (capped at 1 GB) if that dialog is disabled by policy; only Chromium-based browsers are supported — WebKit can't read the user's picked video file from a Worker under `file://`, so a screen recording cannot be processed there. Opened in any other browser, the page says at the top to use Chrome or Edge instead; if its script fails to load or throws during start-up, a notice at the top says so too, rather than leaving a page that does nothing (a Worker error after start-up is still reported by the app's own error message).
 
 ## Usage
 
@@ -93,4 +93,18 @@ tests/support   Test core loader, scenario ground-truth validation, frozen parit
 tests/browser   Playwright driving real Chrome + WebKit
 ```
 
-License: MIT.
+## License
+
+Long Screen is released under the [MIT License](LICENSE). In short:
+
+- **You may** use, copy, modify, merge, publish, distribute, sublicense and sell it, including inside closed-source products.
+- **You must** keep the copyright notice and the license text in every copy or substantial portion of it.
+- **No warranty**: it is provided as is, and the authors are not liable for what happens when you use it.
+
+Third-party code bundled into a build, and the logos shown on the page, carry their own licenses; each build lists them in `THIRD_PARTY_NOTICES.txt`.
+
+## How to cite
+
+[`CITATION.cff`](CITATION.cff) holds the citation metadata; GitHub turns it into the "Cite this repository" button on the repository page.
+
+If you use Long Screen or its core in a product, a project or a paper, please let us know with a [GitHub issue](https://github.com/t41372/long-screen/issues). It helps us see where it is useful.

@@ -286,25 +286,30 @@ for await (const entry of Deno.readDir(out)) {
 const encoder = new TextEncoder();
 const pageBytes = encoder.encode(page);
 const noticesBytes = encoder.encode(notices);
+// MIT asks for the copyright notice and license text in every copy, and the zip is one.
+const licenseBytes = await Deno.readFile(join(root, 'LICENSE'));
 const readmeBytes = encoder.encode('\uFEFF' + readmeText(hash, stamp).replaceAll('\n', '\r\n'));
 const htmlPath = join(folder, 'long-screen.html');
 const noticesPath = join(folder, 'THIRD_PARTY_NOTICES.txt');
+const licensePath = join(folder, 'LICENSE.txt');
 const readmePath = join(folder, 'README.txt');
 await Deno.writeFile(htmlPath, pageBytes);
 await Deno.writeFile(noticesPath, noticesBytes);
+await Deno.writeFile(licensePath, licenseBytes);
 await Deno.writeFile(readmePath, readmeBytes);
 
 const zipped = zipSync({
   'long-screen': {
     'long-screen.html': pageBytes,
     'THIRD_PARTY_NOTICES.txt': noticesBytes,
+    'LICENSE.txt': licenseBytes,
     'README.txt': readmeBytes,
   },
 });
 const zipPath = join(out, `long-screen-portable-${hash}.zip`);
 await Deno.writeFile(zipPath, zipped);
 
-for (const p of [htmlPath, noticesPath, readmePath, zipPath]) {
+for (const p of [htmlPath, noticesPath, licensePath, readmePath, zipPath]) {
   const size = (await Deno.stat(p)).size;
   console.log(`${p.slice(root.length)} (${(size / 1024).toFixed(1)} KB)`);
 }

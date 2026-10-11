@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 publish = false
 description = "Long Screen reconstruction core compiled to WebAssembly"
+license = "MIT"
+repository = "https://github.com/t41372/long-screen"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
