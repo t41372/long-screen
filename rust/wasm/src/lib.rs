@@ -7,7 +7,7 @@
 //! retain pointers between calls. Every pointer is validated against linear memory before use; an
 //! invalid request returns a negative status instead of trapping.
 //!
-//! Error conventions (five, by export — TS depends on each; do not change any of them):
+//! Error conventions (six, by export — TS depends on each; do not change any of them):
 //!   1. `STATUS_OK` (0) / `STATUS_BAD_ARGUMENT` (−1): most exports that write through an output pointer.
 //!   2. `STATUS_OK` / `STATUS_BAD_ARGUMENT` / `STATUS_BAD_FILTER − filter_byte`: `ls_png_decode` only.
 //!   3. A non-negative count or length, `STATUS_BAD_ARGUMENT` on failure: extraction/matching exports
@@ -22,12 +22,17 @@
 //!      (−1.0 none, −2.0 bad argument), `ls_verify_translation` (`NaN` bad argument), `ls_detect_scale` and
 //!      `ls_mean_difference` (a neutral default — 1.0 / 255.0 — on a bad argument, since callers cannot branch
 //!      on a status here).
+//!   6. A result length (≥ 0, the result waiting in the handle for its `_take`) or a negative status, some with
+//!      their own meaning: the engine state objects (`ls_pose_graph_*`, see `pose_graph.rs` for its
+//!      missing-node statuses; `ls_keyframe_index_retrieve`).
 
+mod bytes;
 mod chrome;
 mod compositor;
 mod consistency;
 mod features;
 mod framing;
+mod keyframes;
 mod layers;
 mod memory;
 mod motion;

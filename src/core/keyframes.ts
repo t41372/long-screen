@@ -1,7 +1,7 @@
 import type { Feature, Gray, Point, Rect, RGBA } from '../types.ts';
 import type { KV } from '../storage/db.ts';
 import type { Patch } from './motion.ts';
-import { core, type ResidentFrame, type ResidentGray } from './wasm.ts';
+import { core, type KeyframeIndexState, type ResidentFrame, type ResidentGray } from './wasm.ts';
 export interface Keyframe extends Point {
   id: string;
   node: string;
@@ -142,120 +142,50 @@ export function evaluateCandidates(
     analysisError: result.analysisError,
   };
 }
-/** One visual word's postings in one layer: keyframe ids in ascending frame order, one per frame (a later keyframe at
- *  the same frame replaces the earlier one). */
-interface Posting {
-  frames: number[];
-  ids: string[];
-}
-/** Keyframes live in the store (`keyframe/<id>`); their word postings live here, for the solve pass that builds and
- *  reads them. As store rows they were tens of thousands of tiny writes per recording (half of all rows a run wrote,
- *  and the slowest part of solve on a disk-backed IndexedDB); in memory they are a few bytes each. */
+/** The text of the `RELOCALIZATION_BUDGET` warning, as the page has always stored it. It is not in the message
+ *  catalogue (an English sentence in the zh journal); kept byte for byte so stored diagnostics do not change. */
+const BUDGET_MESSAGE =
+  'A highly repetitive visual-word posting exceeded the 96-candidate retrieval budget. Relocalization is approximate here; all image observations remain in the reconstruction journal.';
+/** Host for the keyframe index state object (`rust/engine/src/keyframes.rs`): word postings live in core memory,
+ *  keyframes in the store (`keyframe/<id>`). A search asks the engine for candidate ids, loads those rows, keeps the
+ *  ones the engine admits, and scores them with the core's candidate evaluation. */
 export class KeyframeIndex {
-  private warnedLayers = new Set<string>();
-  private postings = new Map<string, Map<number, Posting>>();
-  constructor(private db: KV, private warn: (message: string) => Promise<void>) {}
-  private async warnOnce(layer: string): Promise<void> {
-    if (this.warnedLayers.has(layer)) {
-      return;
-    }
-    this.warnedLayers.add(layer);
-    await this.warn(
-      'A highly repetitive visual-word posting exceeded the 96-candidate retrieval budget. Relocalization is approximate here; all image observations remain in the reconstruction journal.',
-    );
+  private readonly state: KeyframeIndexState;
+  constructor(private db: KV, private warn: (message: string) => Promise<void>) {
+    this.state = core().keyframeIndex();
   }
   async add(k: Keyframe): Promise<void> {
     await this.db.put(`keyframe/${k.id}`, k);
-    const words = core().featureWords(k.features.filter((_, i) => i % 2 === 0));
-    let layer = this.postings.get(k.layer);
-    if (!layer) this.postings.set(k.layer, layer = new Map());
-    for (const word of words) {
-      let posting = layer.get(word);
-      if (!posting) layer.set(word, posting = { frames: [], ids: [] });
-      const { frames, ids } = posting;
-      // Keyframes arrive in frame order, so this is almost always an append.
-      let at = frames.length;
-      while (at > 0 && frames[at - 1] > k.frame) at--;
-      if (at > 0 && frames[at - 1] === k.frame) {
-        ids[at - 1] = k.id;
-      } else {
-        frames.splice(at, 0, k.frame);
-        ids.splice(at, 0, k.id);
-      }
-    }
+    this.state.add(k.id, k.layer, k.frame, k.features);
   }
   /** Finds where the current observation sits relative to earlier keyframes. Returns nothing rather than guessing when several places fit. */
   async find(q: RelocalizationQuery): Promise<Relocalization | undefined> {
     const {
-        features,
-        gray,
-        native,
-        current,
-        nativePlane,
-        nativeFilled,
-        markNativeFilled,
-        layer,
-        frame,
-        roi,
-        region,
-        factor,
-        radius,
-        exclude,
-      } = q,
-      minGap = q.minGap ?? 3;
-    if (features.length < 8) {
-      return;
+      features,
+      gray,
+      native,
+      current,
+      nativePlane,
+      nativeFilled,
+      markNativeFilled,
+      layer,
+      frame,
+      roi,
+      region,
+      factor,
+      radius,
+      exclude,
+    } = q;
+    const { candidates, budgetWarning } = this.state.retrieve(layer, frame, features, exclude, q.minGap);
+    if (budgetWarning) {
+      await this.warn(BUDGET_MESSAGE);
     }
-    const allWords = core().featureWords(features.filter((_, i) => i % 2 === 0)),
-      words = allWords.filter((_, i) => i % Math.max(1, Math.floor(allWords.length / 48)) === 0).slice(0, 48),
-      votes = new Map<string, number>();
-    let truncated = false;
-    const postings = this.postings.get(layer);
-    for (const word of words) {
-      const ids = postings?.get(word)?.ids ?? [];
-      if (ids.length > 96) {
-        truncated = true;
-      }
-      const seen = new Set<string>();
-      // Taking only the start of a posting (ascending frame order) would starve recent keyframes on a long
-      // recording of ever becoming candidates. Take a spread — the earliest half and, when the list overruns the
-      // forward budget, the latest half too — within the same total candidate budget.
-      for (const id of ids.slice(0, 48)) {
-        if (id === exclude) {
-          continue;
-        }
-        seen.add(id);
-        votes.set(id, (votes.get(id) || 0) + 1);
-      }
-      if (ids.length > 48) {
-        const backward = ids.slice(-48).reverse();
-        for (const id of backward) {
-          if (id === exclude || seen.has(id)) {
-            continue;
-          }
-          seen.add(id);
-          votes.set(id, (votes.get(id) || 0) + 1);
-        }
-      }
-    }
-    if (truncated) {
-      await this.warnOnce(layer);
-    }
-    // Intentional TS, not an unported kernel: top-12 candidates by word-vote
-    // count, each needing at least 3 votes, is inline glue over `votes` (the posting tally built above), and the
-    // candidates' keyframes are KV reads — there is no buffer to hand Rust here until they finish, so this stays the
-    // adapter's own bookkeeping, like `evaluateCandidates`'s scoring above.
-    const candidateIds = [...votes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12),
-      keyframes: Keyframe[] = [];
-    for (const [id, count] of candidateIds) {
-      if (count < 3) {
-        continue;
-      }
+    const keyframes: Keyframe[] = [];
+    for (const id of candidates) {
       const k = await this.db.get<Keyframe>(`keyframe/${id}`);
-      if (!k || Math.abs(k.frame - frame) < minGap) {
-        continue;
+      if (k && this.state.admits(k.frame)) {
+        keyframes.push(k);
       }
-      keyframes.push(k);
     }
     // canonical() is a pure function of canvasId; memoize it once per candidate canvas instead of calling it
     // repeatedly from evaluateCandidates' position() closure.

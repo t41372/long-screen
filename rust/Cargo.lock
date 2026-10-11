@@ -406,11 +406,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "long-screen-engine"
+version = "0.1.0"
+dependencies = [
+ "long-screen-core",
+ "serde_json",
+]
+
+[[package]]
 name = "long-screen-wasm"
 version = "0.1.0"
 dependencies = [
  "crc32fast",
  "long-screen-core",
+ "long-screen-engine",
  "png",
 ]
 

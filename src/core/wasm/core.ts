@@ -31,16 +31,8 @@ import {
   labelAtlasResident as labelAtlasResidentImpl,
   manualUncovered,
 } from './regions.ts';
-import {
-  type PoseGraphEdges,
-  poseGraphFree as poseGraphFreeImpl,
-  poseGraphNew as poseGraphNewImpl,
-  type PoseGraphNodes,
-  poseGraphPass as poseGraphPassImpl,
-  poseGraphRead as poseGraphReadImpl,
-  poseGraphResidual as poseGraphResidualImpl,
-  poseGraphSolveCycle as poseGraphSolveCycleImpl,
-} from './pose-graph.ts';
+import { poseGraph as poseGraphFactory, type PoseGraphState } from './pose-graph.ts';
+import { keyframeIndex as keyframeIndexFactory, type KeyframeIndexState } from './keyframes.ts';
 import {
   frameCoordinate as frameCoordinateImpl,
   type FrameLayout,
@@ -494,25 +486,13 @@ export class Core {
   labelAtlasResident(regions: Region[], width: number, height: number): { resident: Resident; counts: Uint32Array } {
     return labelAtlasResidentImpl(this, this.exports, regions, width, height);
   }
-  /** Pose-graph relaxation (`src/core/pose-graph.ts::PoseGraph.optimize`): a handle per call, one Gauss-Seidel
-   *  sweep per `poseGraphPass`. */
-  poseGraphNew(nodes: PoseGraphNodes, edges: PoseGraphEdges): number {
-    return poseGraphNewImpl(this, this.exports, nodes, edges);
+  /** The pose graph state object (`long_screen_engine::pose_graph`): one per `src/core/pose-graph.ts` instance. */
+  poseGraph(): PoseGraphState {
+    return poseGraphFactory(this, this.exports);
   }
-  poseGraphSolveCycle(handle: number): boolean {
-    return poseGraphSolveCycleImpl(this, this.exports, handle);
-  }
-  poseGraphPass(handle: number, reverse: boolean): number {
-    return poseGraphPassImpl(this.exports, handle, reverse);
-  }
-  poseGraphResidual(handle: number): number {
-    return poseGraphResidualImpl(this.exports, handle);
-  }
-  poseGraphRead(handle: number, count: number): { x: Float64Array; y: Float64Array } {
-    return poseGraphReadImpl(this, this.exports, handle, count);
-  }
-  poseGraphFree(handle: number): void {
-    poseGraphFreeImpl(this.exports, handle);
+  /** The keyframe index state object (`long_screen_engine::keyframes`): one per `src/core/keyframes.ts` instance. */
+  keyframeIndex(): KeyframeIndexState {
+    return keyframeIndexFactory(this, this.exports);
   }
 
   /** Per-region, per-frame tracking verdicts for `src/pipeline/solve/track.ts`: stateless, one small call each. */

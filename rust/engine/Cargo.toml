@@ -1,0 +1,12 @@
+[package]
+name = "long-screen-engine"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+description = "Long Screen's run state machine: the scan, solve, render and presentation passes, driven step by step by a host"
+
+[dependencies]
+long-screen-core = { path = "../core" }
+# Parses the embedded zh/en message catalogues (catalog/*.json, exported from src/i18n by scripts/export-catalog.ts).
+serde_json = "=1.0.152"

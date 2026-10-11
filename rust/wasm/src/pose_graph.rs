@@ -1,158 +1,359 @@
-//! Pose-graph relaxation (`src/core/pose-graph.ts::PoseGraph.optimize`), backed by `long_screen_core::pose_graph`. One
-//! stateful handle per `optimize()` call: `ls_pose_graph_new` copies the node/edge arrays the adapter built from
-//! its `Map` iteration order into a Rust-owned `Graph`, `ls_pose_graph_pass` runs one Gauss-Seidel sweep (so the
-//! adapter can `await` its stop-checkpoint between sweeps — see pose-graph.ts's `optimize()`), and
-//! `ls_pose_graph_residual`/`ls_pose_graph_read` drain the final state before `ls_pose_graph_free`.
+//! The solve and render passes' pose graph (`long_screen_engine::pose_graph::PoseGraph`), one handle per
+//! `src/core/pose-graph.ts` instance. Inputs and results are `bytes.rs` records:
 //!
-//! All five node/edge arrays are plain little-endian buffers, no packed descriptor: `xs`/`ys` (f64 × node_count),
-//! `pinned` (u8 × node_count, 0/1), `offsets` (u32 × (node_count + 1), CSR row starts into the edge arrays) and
-//! `other`/`dx`/`dy`/`weight` (i32/f64/f64/f64 × edge_count, `other` a node index or −1 for "not found").
+//! - node: str id, str canvasId, u32 frame, f64 x, y, originalX, originalY, u8 pinned, u8 has next, [str next]
+//! - edge: str other, f64 dx, dy, weight, u8 kind (0 odometry, 1 loop)
+//! - writes: u32 count, then per write u8 (0 put, 1 putMany), u32 rows, then per row u8 0 + node, or u8 1 + str
+//!   owner id + edge
+//!
+//! A call that produces a result returns its byte length (or a negative status) and leaves it in the handle;
+//! `ls_pose_graph_take` copies it into an adapter buffer of that length.
 
+use crate::bytes::{Cursor, Out};
 use crate::memory::{slice, slice_mut, HandleTable};
-use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::pose_graph::{Edge, Graph, Node};
+use crate::{STATUS_BAD_ARGUMENT, STATUS_OK};
+use long_screen_engine::pose_graph::{
+    EdgeKind, Optimizer, PoseEdge, PoseGraph, PoseGraphError, PoseNode, PoseRow, Write,
+};
 
-static mut HANDLES: HandleTable<Graph> = HandleTable::new();
+/// `add` was given a previous node the graph does not hold.
+pub const STATUS_MISSING_PREVIOUS: i32 = -2;
+/// `connect` or `unpin` named a node the graph does not hold.
+pub const STATUS_MISSING_NODE: i32 = -3;
+/// `correction` named a node the graph does not hold.
+pub const STATUS_MISSING_POSE: i32 = -4;
 
-fn handles() -> &'static mut HandleTable<Graph> {
+struct Session {
+    graph: PoseGraph,
+    optimizer: Option<Optimizer>,
+    out: Vec<u8>,
+}
+
+static mut HANDLES: HandleTable<Session> = HandleTable::new();
+
+fn handles() -> &'static mut HandleTable<Session> {
     // SAFETY: only the main instance touches HANDLES, and only through these exported entry points — no pool
     // helper thread reaches this module.
     unsafe { &mut *std::ptr::addr_of_mut!(HANDLES) }
 }
 
-/// Bytes read from adapter memory are little-endian on every target this project builds for; a byte reinterpret
-/// avoids a per-element copy loop. `ls_alloc`'s 8-byte alignment guarantees every pointer the adapter hands us is
-/// `f64`-aligned (and therefore `i32`/`u32`-aligned too).
-fn as_f64_slice(bytes: &[u8]) -> &[f64] {
-    // SAFETY: `bytes` is 8-byte aligned and was bounds-checked by `slice()`; reinterpreting it as `f64` reads the
-    // same little-endian bytes `f64::from_le_bytes` would, and does not outlive `bytes`.
-    unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const f64, bytes.len() / 8) }
-}
-fn as_u32_slice(bytes: &[u8]) -> &[u32] {
-    // SAFETY: as `as_f64_slice`, 4-byte aligned.
-    unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const u32, bytes.len() / 4) }
-}
-fn as_i32_slice(bytes: &[u8]) -> &[i32] {
-    // SAFETY: as `as_f64_slice`, 4-byte aligned.
-    unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const i32, bytes.len() / 4) }
+fn status(error: PoseGraphError) -> i32 {
+    match error {
+        PoseGraphError::MissingPrevious => STATUS_MISSING_PREVIOUS,
+        PoseGraphError::MissingNode => STATUS_MISSING_NODE,
+        PoseGraphError::MissingPose => STATUS_MISSING_POSE,
+    }
 }
 
-/// Builds a graph from the adapter's node/edge arrays (layout in the module doc comment) and returns a handle
-/// (> 0) or a negative status. Copies everything into the handle's own `Vec`s; retains no adapter pointer.
-#[no_mangle]
-#[allow(clippy::too_many_arguments)]
-pub extern "C" fn ls_pose_graph_new(
-    xs: u32,
-    ys: u32,
-    pinned: u32,
-    node_count: u32,
-    offsets: u32,
-    other: u32,
-    dx: u32,
-    dy: u32,
-    weight: u32,
-    edge_count: u32,
+fn read_node(c: &mut Cursor) -> Option<PoseNode> {
+    Some(PoseNode {
+        id: c.str()?.to_string(),
+        canvas_id: c.str()?.to_string(),
+        frame: c.u32()?,
+        x: c.f64()?,
+        y: c.f64()?,
+        original_x: c.f64()?,
+        original_y: c.f64()?,
+        pinned: c.bool()?,
+        next: if c.bool()? {
+            Some(c.str()?.to_string())
+        } else {
+            None
+        },
+    })
+}
+
+fn kind(byte: u8) -> Option<EdgeKind> {
+    match byte {
+        0 => Some(EdgeKind::Odometry),
+        1 => Some(EdgeKind::Loop),
+        _ => None,
+    }
+}
+
+fn read_edge(c: &mut Cursor) -> Option<PoseEdge> {
+    Some(PoseEdge {
+        other: c.str()?.to_string(),
+        dx: c.f64()?,
+        dy: c.f64()?,
+        weight: c.f64()?,
+        kind: kind(c.u8()?)?,
+    })
+}
+
+fn write_node(out: &mut Out, n: &PoseNode) {
+    out.str(&n.id);
+    out.str(&n.canvas_id);
+    out.u32(n.frame);
+    out.f64(n.x);
+    out.f64(n.y);
+    out.f64(n.original_x);
+    out.f64(n.original_y);
+    out.bool(n.pinned);
+    out.bool(n.next.is_some());
+    if let Some(next) = &n.next {
+        out.str(next);
+    }
+}
+
+fn write_row(out: &mut Out, row: &PoseRow) {
+    match row {
+        PoseRow::Node(n) => {
+            out.u8(0);
+            write_node(out, n);
+        }
+        PoseRow::Edge { from, edge } => {
+            out.u8(1);
+            out.str(from);
+            out.str(&edge.other);
+            out.f64(edge.dx);
+            out.f64(edge.dy);
+            out.f64(edge.weight);
+            out.u8((edge.kind == EdgeKind::Loop) as u8);
+        }
+    }
+}
+
+fn write_writes(out: &mut Out, writes: &[Write]) {
+    out.u32(writes.len() as u32);
+    for w in writes {
+        let rows = match w {
+            Write::Put(row) => {
+                out.u8(0);
+                std::slice::from_ref(row)
+            }
+            Write::PutMany(rows) => {
+                out.u8(1);
+                rows.as_slice()
+            }
+        };
+        out.u32(rows.len() as u32);
+        for row in rows {
+            write_row(out, row);
+        }
+    }
+}
+
+/// Runs `f` on the session and the adapter's input record; `f` fills a result and returns its status. Returns the
+/// result's length (left in the session for `ls_pose_graph_take`) or a negative status.
+fn call(
+    handle: u32,
+    input: u32,
+    len: u32,
+    f: impl FnOnce(&mut Session, &mut Cursor, &mut Out) -> Option<i32>,
 ) -> i32 {
-    let n = node_count as usize;
-    let m = edge_count as usize;
-    // SAFETY: every buffer is adapter-owned and bounds-checked by `slice` below before use.
-    let built = (|| unsafe {
-        let xs = as_f64_slice(slice(xs, n * 8)?);
-        let ys = as_f64_slice(slice(ys, n * 8)?);
-        let pinned = slice(pinned, n)?;
-        let offsets = as_u32_slice(slice(offsets, (n + 1) * 4)?);
-        let other = as_i32_slice(slice(other, m * 4)?);
-        let dx = as_f64_slice(slice(dx, m * 8)?);
-        let dy = as_f64_slice(slice(dy, m * 8)?);
-        let weight = as_f64_slice(slice(weight, m * 8)?);
-        // `offsets` must be non-decreasing and terminate exactly at `m` (CSR row starts into the edge arrays),
-        // and every `other` index must be either the "not found" sentinel or an in-range node index — `pass`/
-        // `residual` index `self.nodes[e.other as usize]` and `self.edges[start..end]` with no further bounds
-        // check, so a malformed descriptor must be rejected here rather than let those index/slice.
-        if offsets[n] as usize != m || offsets.windows(2).any(|w| w[1] < w[0]) {
-            return None;
+    let Some(session) = handles().get(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    // SAFETY: adapter-owned input, bounds-checked by `slice`.
+    let Some(bytes) = (unsafe { slice(input, len as usize) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let mut out = Out::default();
+    match f(session, &mut Cursor::new(bytes), &mut out) {
+        Some(STATUS_OK) => {
+            session.out = out.0;
+            session.out.len() as i32
         }
-        if other.iter().any(|&o| o >= n as i32) {
-            return None;
-        }
-        let nodes = (0..n)
-            .map(|i| Node {
-                x: xs[i],
-                y: ys[i],
-                pinned: pinned[i] != 0,
-            })
-            .collect();
-        let edges = (0..m)
-            .map(|i| Edge {
-                other: other[i],
-                dx: dx[i],
-                dy: dy[i],
-                weight: weight[i],
-            })
-            .collect();
-        Some(Graph {
-            nodes,
-            offsets: offsets.to_vec(),
-            edges,
-        })
-    })();
-    match built {
-        Some(graph) => handles().insert(graph),
+        Some(error) => error,
         None => STATUS_BAD_ARGUMENT,
     }
 }
 
-/// Attempts the exact simple-cycle solution. Returns 1 when solved, 0 when the general solver is needed.
 #[no_mangle]
-pub extern "C" fn ls_pose_graph_solve_cycle(handle: u32) -> i32 {
-    match handles().get(handle) {
-        Some(graph) => graph.solve_cycle() as i32,
-        None => STATUS_BAD_ARGUMENT,
-    }
-}
-
-/// One Gauss-Seidel sweep (`long_screen_core::pose_graph::Graph::pass`); returns the largest single-node displacement, or a
-/// negative sentinel (`f64::MIN`, never a real displacement) on a bad handle.
-#[no_mangle]
-pub extern "C" fn ls_pose_graph_pass(handle: u32, reverse: u32) -> f64 {
-    match handles().get(handle) {
-        Some(graph) => graph.pass(reverse != 0),
-        None => f64::MIN,
-    }
-}
-
-/// Largest edge residual over the current positions (`long_screen_core::pose_graph::Graph::residual`); `f64::MIN` on a bad
-/// handle.
-#[no_mangle]
-pub extern "C" fn ls_pose_graph_residual(handle: u32) -> f64 {
-    match handles().get(handle) {
-        Some(graph) => graph.residual(),
-        None => f64::MIN,
-    }
-}
-
-/// Writes the current `x`/`y` of every node (`node_count` × f64 each) to `xs_out`/`ys_out`.
-#[no_mangle]
-pub extern "C" fn ls_pose_graph_read(handle: u32, xs_out: u32, ys_out: u32) -> i32 {
-    let Some(graph) = handles().get(handle) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let n = graph.nodes.len();
-    // SAFETY: adapter-owned output, sized from the node count it already knows (it built this same handle).
-    let (Some(xs), Some(ys)) = (
-        (unsafe { slice_mut(xs_out, n * 8) }),
-        (unsafe { slice_mut(ys_out, n * 8) }),
-    ) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    for (i, node) in graph.nodes.iter().enumerate() {
-        xs[i * 8..i * 8 + 8].copy_from_slice(&node.x.to_le_bytes());
-        ys[i * 8..i * 8 + 8].copy_from_slice(&node.y.to_le_bytes());
-    }
-    crate::STATUS_OK
+pub extern "C" fn ls_pose_graph_new() -> i32 {
+    handles().insert(Session {
+        graph: PoseGraph::new(),
+        optimizer: None,
+        out: Vec::new(),
+    })
 }
 
 #[no_mangle]
 pub extern "C" fn ls_pose_graph_free(handle: u32) {
     handles().free(handle);
+}
+
+/// Copies the last result (`len` bytes, as that call returned) into `out`.
+#[no_mangle]
+pub extern "C" fn ls_pose_graph_take(handle: u32, out: u32, len: u32) -> i32 {
+    let Some(session) = handles().get(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    if session.out.len() != len as usize {
+        return STATUS_BAD_ARGUMENT;
+    }
+    // SAFETY: adapter-owned output of the length it was told.
+    let Some(dst) = (unsafe { slice_mut(out, len as usize) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    dst.copy_from_slice(&session.out);
+    session.out = Vec::new();
+    STATUS_OK
+}
+
+/// Takes back stored rows: u32 count, then per row u8 0 + node, or u8 1 + str key + edge.
+#[no_mangle]
+pub extern "C" fn ls_pose_graph_hydrate(handle: u32, input: u32, len: u32) -> i32 {
+    let status = call(handle, input, len, |s, c, _| {
+        for _ in 0..c.u32()? {
+            match c.u8()? {
+                0 => s.graph.hydrate_node(read_node(c)?),
+                1 => {
+                    let key = c.str()?;
+                    let edge = read_edge(c)?;
+                    s.graph.hydrate_edge(key, edge);
+                }
+                _ => return None,
+            }
+        }
+        Some(STATUS_OK)
+    });
+    status.min(STATUS_OK)
+}
+
+/// Input: str canvasId, u32 frame, f64 x, f64 y, f64 weight, u8 has previous, [str previous id].
+/// Result: the new node, then the writes.
+#[no_mangle]
+pub extern "C" fn ls_pose_graph_add(handle: u32, input: u32, len: u32) -> i32 {
+    call(handle, input, len, |s, c, out| {
+        let canvas = c.str()?;
+        let frame = c.u32()?;
+        let (x, y, weight) = (c.f64()?, c.f64()?, c.f64()?);
+        let previous = if c.bool()? { Some(c.str()?) } else { None };
+        Some(match s.graph.add(canvas, frame, (x, y), previous, weight) {
+            Ok((node, writes)) => {
+                write_node(out, &node);
+                write_writes(out, &writes);
+                STATUS_OK
+            }
+            Err(e) => status(e),
+        })
+    })
+}
+
+/// Input: str a, str b, f64 dx, dy, weight, u8 kind. Result: the writes.
+#[no_mangle]
+pub extern "C" fn ls_pose_graph_connect(handle: u32, input: u32, len: u32) -> i32 {
+    call(handle, input, len, |s, c, out| {
+        let (a, b) = (c.str()?, c.str()?);
+        let (dx, dy, weight) = (c.f64()?, c.f64()?, c.f64()?);
+        let kind = kind(c.u8()?)?;
+        Some(match s.graph.connect(a, b, dx, dy, weight, kind) {
+            Ok(writes) => {
+                write_writes(out, &writes);
+                STATUS_OK
+            }
+            Err(e) => status(e),
+        })
+    })
+}
+
+/// Input: str id. Result: the writes.
+#[no_mangle]
+pub extern "C" fn ls_pose_graph_unpin(handle: u32, input: u32, len: u32) -> i32 {
+    call(handle, input, len, |s, c, out| {
+        Some(match s.graph.unpin(c.str()?) {
+            Ok(writes) => {
+                write_writes(out, &writes);
+                STATUS_OK
+            }
+            Err(e) => status(e),
+        })
+    })
+}
+
+/// Input: str id. Result: the node, or nothing (length 0) when the graph does not hold it.
+#[no_mangle]
+pub extern "C" fn ls_pose_graph_get(handle: u32, input: u32, len: u32) -> i32 {
+    call(handle, input, len, |s, c, out| {
+        if let Some(node) = s.graph.get(c.str()?) {
+            write_node(out, node);
+        }
+        Some(STATUS_OK)
+    })
+}
+
+/// Input: str id. Writes f64 x, f64 y to `out` (16 bytes); returns a status.
+#[no_mangle]
+pub extern "C" fn ls_pose_graph_correction(
+    handle: u32,
+    input: u32,
+    len: u32,
+    frame: f64,
+    out: u32,
+) -> i32 {
+    let mut correction = (0.0, 0.0);
+    let status = call(handle, input, len, |s, c, _| {
+        Some(match s.graph.correction(c.str()?, frame) {
+            Ok(xy) => {
+                correction = xy;
+                STATUS_OK
+            }
+            Err(e) => status(e),
+        })
+    });
+    if status < 0 {
+        return status;
+    }
+    // SAFETY: adapter-owned 16-byte output.
+    let Some(dst) = (unsafe { slice_mut(out, 16) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    dst[0..8].copy_from_slice(&correction.0.to_le_bytes());
+    dst[8..16].copy_from_slice(&correction.1.to_le_bytes());
+    STATUS_OK
+}
+
+#[no_mangle]
+pub extern "C" fn ls_pose_graph_loops(handle: u32) -> i32 {
+    match handles().get(handle) {
+        Some(s) => s.graph.loops() as i32,
+        None => STATUS_BAD_ARGUMENT,
+    }
+}
+
+/// Starts a relaxation. Returns 1 when one started, 0 when the graph holds no loop edge (nothing to relax).
+#[no_mangle]
+pub extern "C" fn ls_pose_graph_optimize_begin(handle: u32) -> i32 {
+    let Some(s) = handles().get(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    s.optimizer = s.graph.begin_optimize();
+    s.optimizer.is_some() as i32
+}
+
+/// Runs up to `sweeps` sweeps of the running relaxation. Returns 1 when it is done, 0 when more steps remain.
+#[no_mangle]
+pub extern "C" fn ls_pose_graph_optimize_step(handle: u32, sweeps: u32) -> i32 {
+    match handles().get(handle).and_then(|s| s.optimizer.as_mut()) {
+        Some(optimizer) => optimizer.step(sweeps) as i32,
+        None => STATUS_BAD_ARGUMENT,
+    }
+}
+
+/// Writes a finished relaxation back. Result: f64 residual, u32 iterations, then the writes.
+#[no_mangle]
+pub extern "C" fn ls_pose_graph_optimize_finish(handle: u32) -> i32 {
+    let Some(s) = handles().get(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let Some(optimizer) = s.optimizer.take_if(|o| o.is_done()) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let (outcome, writes) = s.graph.finish_optimize(optimizer);
+    let mut out = Out::default();
+    out.f64(outcome.residual);
+    out.u32(outcome.iterations);
+    write_writes(&mut out, &writes);
+    s.out = out.0;
+    s.out.len() as i32
+}
+
+/// Drops a running relaxation without writing anything back (a stop between steps).
+#[no_mangle]
+pub extern "C" fn ls_pose_graph_optimize_cancel(handle: u32) {
+    if let Some(s) = handles().get(handle) {
+        s.optimizer = None;
+    }
 }

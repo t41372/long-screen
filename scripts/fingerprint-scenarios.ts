@@ -79,7 +79,10 @@ const { DEFAULT_SETTINGS } = await import(new URL('src/types.ts', root).href);
 const LEGACY_SETTINGS: Record<string, Record<string, unknown>> = { factor4: { analysisSize: 480 } };
 
 /** Wall-clock or host-dependent fields; everything else must be byte-identical. */
-const VOLATILE = new Set(['created', 'updated', 'scanMS', 'solveMS', 'renderMS', 'framingMS', 'pyramidMS', 'compute', 'id']);
+const VOLATILE = new Set(['created', 'updated', 'compute', 'id']);
+/** Wall-clock fields: every stage timing ends in `MS` (`scanMS`, `revealMS`, `reveal.<pass>.waitMS`, …), and
+ *  `reveal-summary.seconds` is `revealMS / 1000`. They measure the host, not the reconstruction. */
+const volatile = (k: string): boolean => VOLATILE.has(k) || k.endsWith('MS') || k === 'seconds';
 
 async function canon(v: unknown, id: string): Promise<unknown> {
   if (v instanceof Blob) {
@@ -102,7 +105,7 @@ async function canon(v: unknown, id: string): Promise<unknown> {
     const hostTimed = (v as { code?: string }).code === 'COMPUTE_BACKEND';
     // Insertion order is kept (not sorted): a refactor that reorders fields of a persisted row changes exported JSON bytes.
     for (const k of Object.keys(v)) {
-      if (!VOLATILE.has(k) && !(hostTimed && (k === 'message' || k === 'detail'))) {
+      if (!volatile(k) && !(hostTimed && (k === 'message' || k === 'detail'))) {
         o[k] = await canon((v as Record<string, unknown>)[k], id);
       }
     }

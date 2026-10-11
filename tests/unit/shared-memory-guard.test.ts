@@ -6,8 +6,10 @@
  *  for the whole run (`RegionAtlas.counts`, src/core/layers.ts) with nothing to catch it under Deno, where a
  *  shared view behaves like any other TypedArray. Two static checks below keep the bug class from coming back,
  *  plus a runtime check on `MemoryKV.put` (the same shared-memory blind spot `structuredClone` has). */
-import { assert, assertRejects } from '@std/assert';
+import '../support/core.ts';
+import { assert, assertEquals, assertRejects } from '@std/assert';
 import { fromFileUrl } from '@std/path';
+import { core } from '../../src/core/wasm.ts';
 import { MemoryKV } from '../../src/storage/db.ts';
 
 const srcRoot = fromFileUrl(new URL('../../src/', import.meta.url));
@@ -75,4 +77,16 @@ Deno.test('shared-memory guard: MemoryKV.put rejects a value backed by a SharedA
   // A plain (non-shared) typed array, and structures around it, are unaffected.
   await db.put('k2', new Uint8Array(4));
   await db.put('k3', { blocks: new Uint8Array(4), n: 1 });
+});
+
+Deno.test('shared-memory guard: a resident buffer uploaded to the core hands back a plain copy, safe to store', async () => {
+  const resident = core().upload(new Uint8Array([1, 2, 3, 250]));
+  try {
+    const copy = resident.bytes();
+    assert(!(copy.buffer instanceof SharedArrayBuffer));
+    assertEquals([...copy], [1, 2, 3, 250]);
+    await new MemoryKV().put('k', copy);
+  } finally {
+    resident.free();
+  }
 });

@@ -338,23 +338,26 @@ export interface CoreExports {
     nativeHeight: number,
     out: number,
   ): number;
-  ls_pose_graph_new(
-    xs: number,
-    ys: number,
-    pinned: number,
-    nodeCount: number,
-    offsets: number,
-    other: number,
-    dx: number,
-    dy: number,
-    weight: number,
-    edgeCount: number,
-  ): number;
-  ls_pose_graph_solve_cycle(handle: number): number;
-  ls_pose_graph_pass(handle: number, reverse: number): number;
-  ls_pose_graph_residual(handle: number): number;
-  ls_pose_graph_read(handle: number, xsOut: number, ysOut: number): number;
+  ls_pose_graph_new(): number;
   ls_pose_graph_free(handle: number): void;
+  ls_pose_graph_take(handle: number, out: number, len: number): number;
+  ls_pose_graph_hydrate(handle: number, input: number, len: number): number;
+  ls_pose_graph_add(handle: number, input: number, len: number): number;
+  ls_pose_graph_connect(handle: number, input: number, len: number): number;
+  ls_pose_graph_unpin(handle: number, input: number, len: number): number;
+  ls_pose_graph_get(handle: number, input: number, len: number): number;
+  ls_pose_graph_correction(handle: number, input: number, len: number, frame: number, out: number): number;
+  ls_pose_graph_loops(handle: number): number;
+  ls_pose_graph_optimize_begin(handle: number): number;
+  ls_pose_graph_optimize_step(handle: number, sweeps: number): number;
+  ls_pose_graph_optimize_finish(handle: number): number;
+  ls_pose_graph_optimize_cancel(handle: number): void;
+  ls_keyframe_index_new(): number;
+  ls_keyframe_index_free(handle: number): void;
+  ls_keyframe_index_add(handle: number, input: number, len: number, features: number, count: number): number;
+  ls_keyframe_index_retrieve(handle: number, input: number, len: number, features: number, count: number): number;
+  ls_keyframe_index_take(handle: number, out: number, len: number): number;
+  ls_keyframe_index_admits(handle: number, frame: number): number;
   ls_track_uncertainty(confidence: number, ambiguous: number, weakStep: number): number;
   ls_track_relocalize_verdict(hasMatch: number, ambiguous: number, confidence: number, zoomChange: number): number;
   ls_track_fragment_cause_gate(zoomChange: number, hasPreviousGray: number, blind: number): number;

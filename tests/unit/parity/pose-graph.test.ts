@@ -1,5 +1,5 @@
-/** Byte-exact parity between the Rust pose-graph relaxation (rust/core/src/pose_graph.rs) and the frozen TS oracle
- *  it replaces (tests/support/reference/pose-graph.ts). Runs on whichever build `LONGSCREEN_CORE` selects
+/** Byte-exact parity between the Rust pose-graph relaxation (rust/core/src/pose_graph.rs, driven through the engine's
+ *  pose graph in rust/engine/src/pose_graph.rs) and the frozen TS oracle it replaces (tests/support/reference/pose-graph.ts). Runs on whichever build `LONGSCREEN_CORE` selects
  *  (scalar/simd/threads — see tests/support/core.ts). */
 import { assertEquals } from '@std/assert';
 import { ensureCore } from '../../support/core.ts';
@@ -50,55 +50,67 @@ function cloneNodes(nodes: ReferenceNode[]): ReferenceNode[] {
   return nodes.map((n) => ({ ...n }));
 }
 
-async function runRust(core: Awaited<ReturnType<typeof ensureCore>>, fixture: Fixture, passes: number) {
-  const n = fixture.nodes.length;
-  const xs = Float64Array.from(fixture.nodes.map((v) => v.x)), ys = Float64Array.from(fixture.nodes.map((v) => v.y));
-  const pinned = Uint8Array.from(fixture.nodes.map((v) => (v.pinned ? 1 : 0)));
-  const handle = core.poseGraphNew(
-    { x: xs, y: ys, pinned },
-    {
-      offsets: Uint32Array.from(fixture.offsets),
-      other: Int32Array.from(fixture.edges.map((e) => e.other)),
-      dx: Float64Array.from(fixture.edges.map((e) => e.dx)),
-      dy: Float64Array.from(fixture.edges.map((e) => e.dy)),
-      weight: Float64Array.from(fixture.edges.map((e) => e.weight)),
-    },
-  );
+/** The fixture as a stored graph handed to the engine's pose graph (`rust/engine/src/pose_graph.rs`), relaxed the
+ *  way `PoseGraph.optimize()` relaxes it: one sweep per step until it converges or runs out of sweeps. Every edge is
+ *  a loop edge, which relaxes exactly like an odometry one; an index of -1 becomes an id no node has. */
+function runRust(core: Awaited<ReturnType<typeof ensureCore>>, fixture: Fixture) {
+  const id = (i: number) => (i < 0 ? 'ghost' : `n${String(i).padStart(4, '0')}`);
+  const graph = core.poseGraph();
   try {
-    const maxChanges: number[] = [];
-    for (let i = 0; i < passes; i++) {
-      maxChanges.push(core.poseGraphPass(handle, i % 2 === 1));
+    graph.hydrate([
+      ...fixture.nodes.map((v, i) => ({
+        node: { id: id(i), canvasId: 'c', frame: i, x: v.x, y: v.y, originalX: v.x, originalY: v.y, pinned: v.pinned, edges: [] },
+      })),
+      ...fixture.edges.map((e, k) => {
+        const from = fixture.offsets.findIndex((_, i) => k < fixture.offsets[i + 1]);
+        return {
+          edge: {
+            key: `edge/${id(from)}/${id(e.other)}/loop`,
+            value: { other: id(e.other), dx: e.dx, dy: e.dy, weight: e.weight, kind: 'loop' as const },
+          },
+        };
+      }),
+    ]);
+    let iterations = 0, residual = 0;
+    if (graph.optimizeBegin()) {
+      while (!graph.optimizeStep(1));
+      ({ residual, iterations } = graph.optimizeFinish());
     }
-    const residual = core.poseGraphResidual(handle);
-    const { x, y } = core.poseGraphRead(handle, n);
-    return { maxChanges, residual, x: Array.from(x), y: Array.from(y) };
+    const nodes = fixture.nodes.map((_, i) => graph.get(id(i))!);
+    return { iterations, residual, x: nodes.map((n) => n.x), y: nodes.map((n) => n.y) };
   } finally {
-    core.poseGraphFree(handle);
+    graph.free();
   }
 }
 
-function runReference(fixture: Fixture, passes: number) {
+/** The oracle's sweeps in `PoseGraph.optimize()`'s loop: until a sweep moves no node 0.04 px, at most 200. */
+function runReference(fixture: Fixture) {
   const nodes = cloneNodes(fixture.nodes);
-  const maxChanges: number[] = [];
-  for (let i = 0; i < passes; i++) {
-    maxChanges.push(referencePass(nodes, fixture.offsets, fixture.edges, i % 2 === 1));
+  let iterations = 0;
+  if (fixture.edges.length) {
+    for (; iterations < 200; iterations++) {
+      if (referencePass(nodes, fixture.offsets, fixture.edges, iterations % 2 === 1) < .04) {
+        iterations++;
+        break;
+      }
+    }
   }
-  const residual = referenceResidual(nodes, fixture.offsets, fixture.edges);
-  return { maxChanges, residual, x: nodes.map((n) => n.x), y: nodes.map((n) => n.y) };
+  const residual = fixture.edges.length ? referenceResidual(nodes, fixture.offsets, fixture.edges) : 0;
+  return { iterations, residual, x: nodes.map((n) => n.x), y: nodes.map((n) => n.y) };
 }
 
 Deno.test('core parity: pose-graph relaxation matches the frozen oracle over varied graphs', async () => {
   const core = await ensureCore();
-  const fixtures: [number, number, number, number][] = [
-    [2, 1, 1, 6],
-    [8, 7, 3, 12],
-    [40, 11, 5, 30],
-    [201, 99, 8, 30],
+  const fixtures: [number, number, number][] = [
+    [2, 1, 1],
+    [8, 7, 3],
+    [40, 11, 5],
+    [201, 99, 8],
   ];
-  for (const [n, seed, loopEvery, passes] of fixtures) {
+  for (const [n, seed, loopEvery] of fixtures) {
     const fixture = buildFixture(n, seed, loopEvery);
-    const expected = runReference(fixture, passes), actual = await runRust(core, fixture, passes);
-    assertEquals(actual.maxChanges, expected.maxChanges, `n=${n} seed=${seed}: maxChange per pass`);
+    const expected = runReference(fixture), actual = runRust(core, fixture);
+    assertEquals(actual.iterations, expected.iterations, `n=${n} seed=${seed}: sweeps`);
     assertEquals(actual.x, expected.x, `n=${n} seed=${seed}: x`);
     assertEquals(actual.y, expected.y, `n=${n} seed=${seed}: y`);
     assertEquals(actual.residual, expected.residual, `n=${n} seed=${seed}: residual`);
@@ -108,7 +120,7 @@ Deno.test('core parity: pose-graph relaxation matches the frozen oracle over var
 Deno.test('core parity: pose-graph relaxation handles a single unpinned node with no edges (offsets equal)', async () => {
   const core = await ensureCore();
   const fixture: Fixture = { nodes: [{ x: 3, y: 4, pinned: false }], offsets: [0, 0], edges: [] };
-  const expected = runReference(fixture, 3), actual = await runRust(core, fixture, 3);
+  const expected = runReference(fixture), actual = runRust(core, fixture);
   assertEquals(actual.x, expected.x);
   assertEquals(actual.y, expected.y);
   assertEquals(actual.residual, expected.residual);

@@ -34,7 +34,7 @@ Deno.test('pose graph: a cross-canvas loop edge carrying the correct raw delta (
   // is 1085 = 60 (link.x) + 25 (revisit offset) + 1000 (the fragment's attachment shift into the target canvas T).
   const anchor = await graph.add('F', 0, { x: 60, y: 0 });
   const node = await graph.add('T', 1, { x: 1085, y: 0 });
-  node.pinned = false; // engine.ts unpins the relocalized/attached node before wiring its loop edge
+  await graph.unpin(node.id); // keyframe-step.ts unpins the relocalized/attached node before wiring its loop edge
   await graph.connect(anchor.id, node.id, node.x - anchor.x, node.y - anchor.y, 5, 'loop'); // raw delta = 1025 = offset + shift
   let previous = node;
   for (let i = 0; i < 3; i++) previous = await graph.add('T', 2 + i, { x: 1085 + (i + 1) * 20, y: 0 }, previous); // chain of 3 odometry nodes after
@@ -72,10 +72,11 @@ Deno.test('pose graph: a loop closure on one odometry chain leaves a disjoint ch
   const b2 = await graph.add('C', 102, { x: 520, y: 0 }, b1);
   // Deliberately inconsistent with a3's raw x (30), so a real, nonzero correction gets distributed along chain 1.
   await graph.connect(a0.id, a3.id, 50, 0, 1, 'loop');
-  assertEquals(b0.x, 500);
-  assertEquals(b1.x, 510);
-  assertEquals(b2.x, 520);
-  assert(Math.abs(a3.x - 50) < 1e-9, `a3.x ${a3.x}`);
+  assertEquals((await graph.get(b0.id))!.x, 500);
+  assertEquals((await graph.get(b1.id))!.x, 510);
+  assertEquals((await graph.get(b2.id))!.x, 520);
+  const moved = (await graph.get(a3.id))!.x;
+  assert(Math.abs(moved - 50) < 1e-9, `a3.x ${moved}`);
 });
 Deno.test('pose graph: add() rejects a previous node this instance does not know about', async () => {
   const db = new MemoryKV(), graph = new PoseGraph(db);
@@ -96,16 +97,27 @@ Deno.test('pose graph: connect() walks a broken next-chain defensively and treat
   assertEquals(graph.loops, 1);
 });
 Deno.test('pose graph: a loop-closure correction skips a pinned node inside the chain it walks', async () => {
-  const db = new MemoryKV(), graph = new PoseGraph(db);
-  const a0 = await graph.add('c', 0, { x: 0, y: 0 });
-  const a1 = await graph.add('c', 1, { x: 10, y: 0 }, a0);
-  const a2 = await graph.add('c', 2, { x: 20, y: 0 }, a1);
-  a2.pinned = true; // simulates a node independently pinned elsewhere (e.g. another canvas's origin merged in)
-  const a3 = await graph.add('c', 3, { x: 30, y: 0 }, a2);
-  await graph.connect(a0.id, a3.id, 50, 0, 1, 'loop'); // inconsistent with a3's raw x=30: forces a nonzero correction
-  assertEquals(a2.x, 20, 'a pinned node inside the chain must not be corrected');
-  assert(Math.abs(a1.x) > 1e-9, 'an unpinned node before the pinned one must still be corrected');
-  assert(Math.abs(a3.x - 50) < 1e-9, `a3.x ${a3.x}`);
+  const db = new MemoryKV();
+  // A stored chain a0 → a1 → a2 → a3 whose a2 is pinned (e.g. another canvas's origin merged in).
+  const chain = [0, 1, 2, 3].map((i): PoseNode => ({
+    id: `a${i}`,
+    canvasId: 'c',
+    frame: i,
+    x: i * 10,
+    y: 0,
+    originalX: i * 10,
+    originalY: 0,
+    pinned: i === 0 || i === 2,
+    edges: [],
+    ...(i < 3 ? { next: `a${i + 1}` } : {}),
+  }));
+  for (const n of chain) await db.put(`node/${n.id}`, n);
+  const graph = new PoseGraph(db);
+  await graph.connect('a0', 'a3', 50, 0, 1, 'loop'); // inconsistent with a3's raw x=30: forces a nonzero correction
+  assertEquals((await graph.get('a2'))!.x, 20, 'a pinned node inside the chain must not be corrected');
+  assert(Math.abs((await graph.get('a1'))!.x) > 1e-9, 'an unpinned node before the pinned one must still be corrected');
+  assert(Math.abs((await graph.get('a3'))!.x - 50) < 1e-9);
+  assertEquals((await db.get<PoseNode>('node/a3'))!.x, (await graph.get('a3'))!.x, 'the corrected node is stored');
 });
 Deno.test('pose graph: optimize() skips a node with no adjacency and an edge pointing at a missing node, without crashing', async () => {
   const db = new MemoryKV();
@@ -207,9 +219,33 @@ Deno.test('pose graph: a single loop reaches the weighted optimum without diffus
   await graph.connect(nodes[0].id, nodes[120].id, 1200, 0, 5, 'loop');
   await graph.optimize(async () => {});
   const resistance = 119 + 20 + .2;
+  const relaxed = await Promise.all(nodes.map(async (n) => (await graph.get(n.id))!));
   for (let i = 1; i <= 120; i++) {
-    const residual = nodes[i].x - nodes[i - 1].x - (10 + (i === 60 ? 2 : 0));
+    const residual = relaxed[i].x - relaxed[i - 1].x - (10 + (i === 60 ? 2 : 0));
     const expected = -2 / ((i === 60 ? .05 : 1) * resistance);
     assert(Math.abs(residual - expected) < 1e-9, `edge ${i}: residual ${residual} vs optimum ${expected}`);
   }
+});
+Deno.test('pose graph: a stop thrown from the checkpoint mid-relaxation leaves the graph and the store unrelaxed', async () => {
+  const db = new MemoryKV(), graph = new PoseGraph(db);
+  const nodes: PoseNode[] = [];
+  for (let i = 0; i <= 40; i++) nodes.push(await graph.add('c', i, { x: i * 10, y: (i % 3) * 2 }, nodes[i - 1]));
+  await graph.connect(nodes[0].id, nodes[40].id, 900, 0, 1, 'loop');
+  await graph.connect(nodes[5].id, nodes[30].id, 260, 7, 2, 'loop');
+  const snapshot = () => Promise.all(nodes.map(async (n) => [(await graph.get(n.id))!, (await db.get<PoseNode>(`node/${n.id}`))!]));
+  const before = await snapshot();
+  let calls = 0;
+  await assertRejects(
+    () =>
+      graph.optimize(async () => {
+        if (++calls === 2) throw new Error('stop');
+      }),
+    Error,
+    'stop',
+  );
+  assertEquals(await snapshot(), before);
+  // The same graph still relaxes afterwards, and does move nodes.
+  const result = await graph.optimize(async () => {});
+  assert(result.iterations > 2, `iterations ${result.iterations}`);
+  assert((await graph.get(nodes[20].id))!.x !== before[20][0].x);
 });

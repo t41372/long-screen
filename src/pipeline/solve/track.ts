@@ -5,7 +5,8 @@
 // per-region calls (odometry; re-acquisition and drift control, which fill the native luma plane lazily, core-side).
 // Each is a thin call into src/core/wasm/track*.ts under its original name and signature. A stateful cross-frame
 // tracker handle was measured and not built: it gave no measurable gain over these per-call fusions. Keyframe
-// candidate scoring lives in src/core/keyframes.ts and is bound the same way.
+// candidate retrieval is the engine's keyframe index (rust/engine/src/keyframes.rs); candidate scoring is bound the
+// same way, from src/core/keyframes.ts.
 // The odometry/re-acquisition/drift confidences (including their `exp()` factor) are fully computed in Rust, with
 // `f64::exp` — a software libm, identical on every JS engine, unlike `Math.exp`, so the same recording reaches
 // the same confidence (and, at a threshold, the same decision) in every browser (see docs/ARCHITECTURE.md §十二).

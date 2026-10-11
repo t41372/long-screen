@@ -252,8 +252,7 @@ async function connectRelinkOrLoopClosure(
   const { frame, relocalized } = input;
   const global = locals.global;
   if ((relocalized && locals.oldAnchor) || locals.attachedFrom) {
-    node.pinned = false;
-    await ctx.store.put(`node/${node.id}`, node);
+    await graph.unpin(node.id);
     const link = locals.attachMatch ? locals.attachMatch.keyframe : locals.oldAnchor!;
     // state.pose is already canonical (target-space); link.{x,y} is raw in link.canvasId's own space.
     // Their difference IS the raw edge delta (it already carries the target's attachment shift plus

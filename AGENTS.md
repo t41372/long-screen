@@ -21,13 +21,14 @@ deno task fmt            # deno fmt + cargo fmt (deno.json's fmt.include leaves 
 deno task coverage       # tests plus per-file line-coverage floors in scripts/coverage.ts
 deno task fingerprint out.json   # hash every persisted row of every synthetic scenario
 deno task bench          # core kernel benchmarks on the public test recordings (rust/bench); CodSpeed runs them on PRs
+deno task export-catalog # copy the diag/progress catalogues into rust/engine/catalog after changing those strings
 ```
 
 - One Deno test file: `deno test --allow-read --allow-write --allow-env tests/unit/motion.test.ts --filter "<name>"`. It loads the core from `rust/target/`, so run `deno task build:core` after changing Rust. `LONGSCREEN_CORE=scalar|threads` picks another core build (default simd) and `LONGSCREEN_THREADS` sets the helper count.
 - One Rust test: `cd rust && cargo test --lib <name>`. A bare `cargo build` uses the scalar flags from `rust/.cargo/config.toml` and does not produce the three builds the app loads.
 - One browser file: `deno test --allow-all tests/browser/ui.test.ts`. The full browser suite takes a few minutes; `docs/TESTING.md` lists the tests known to fail.
 - A/B against another checkout: `deno run -A scripts/fingerprint-scenarios.ts b.json --root ../other`, then `deno run -A scripts/compare-fingerprints.ts a.json b.json`.
-- Benchmarks: `rust/bench` is a native workspace member outside `default-members`, so plain `cargo` commands in `rust/` still mean the crates that build for wasm32 (core, wasm); name it with `-p long-screen-bench` and use the `bench-native` profile. `LONGSCREEN_CASES=<dir>` reads the public recordings from a local directory instead of downloading them. These benches run the core's scalar code natively, so browser-side timing still comes from `scripts/benchmark-pipeline.ts`.
+- Benchmarks: `rust/bench` is a native workspace member outside `default-members`, so plain `cargo` commands in `rust/` still mean the crates that build for wasm32 (core, engine, wasm); name it with `-p long-screen-bench` and use the `bench-native` profile. `LONGSCREEN_CASES=<dir>` reads the public recordings from a local directory instead of downloading them. These benches run the core's scalar code natively, so browser-side timing still comes from `scripts/benchmark-pipeline.ts`.
 
 ## Architecture
 
@@ -41,10 +42,10 @@ File/Blob → mediabunny demux (MP4/MOV/WebM) → WebCodecs → RGBA
 
 - Decoding is the only step that depends on browser APIs. Everything after it runs in the Wasm core, and Deno tests load the same core the browser does, so algorithm behaviour verified in Deno is what ships.
 - Each core domain has three matching files: `rust/core/src/<d>.rs` (algorithm, no FFI) ↔ `rust/wasm/src/<d>.rs` (`extern "C"` exports, in the `long-screen-wasm` crate the three builds come from) ↔ `src/core/wasm/<d>.ts` (marshalling). `src/core/wasm/loader.ts::planCore` picks the scalar, SIMD or threads build; threads need a cross-origin-isolated page.
-- `src/pipeline/` orders the passes, holds run state and does KV I/O; the per-pixel and tracking work happens in core calls. The page talks to `src/worker.ts` through the typed commands in `src/protocol.ts`.
+- `src/pipeline/` orders the passes, holds run state and does KV I/O; the per-pixel and tracking work happens in core calls. `rust/engine` is where those passes move, one at a time (docs/ARCHITECTURE.md §十三): it does no I/O, and a host drives it step by step. The page talks to `src/worker.ts` through the typed commands in `src/protocol.ts`.
 - `docs/` is written in Chinese and README.md in English. Read these when the task touches their area, not before every edit:
   - `docs/ARCHITECTURE.md` §十 before changing compositing, consistency, motion, layers or i18n. Each invariant there records a measured failure.
-  - §十一 for which module owns what; §十二 before moving code between TS and Rust.
+  - §十一 for which module owns what; §十二 before moving code between TS and Rust; §十三 before moving a pass into `rust/engine`.
   - `docs/TESTING.md` for scenario ground truth, ratchets, fingerprints and known browser failures.
   - `docs/FORMAT.md` when changing the export package or persisted rows. `docs/history/` is a closed log.
 
@@ -69,7 +70,7 @@ In this repository:
 - **Algorithms belong in `rust/core`.** TypeScript stays a thin shell, and logic never moves from Rust back to TS. A browser API such as WebCodecs, CompressionStream or WebGPU counts as shell and wins when it measures faster. Before porting, benchmark the options on real recordings in Chrome and WebKit and record the numbers in §十二. A port freezes the TS version as an oracle in `tests/support/reference/`, adds its parity test first, then implements in Rust. It is done when parity holds on all three builds, the fingerprint matches or every difference is explained, and a real-recording A/B has run.
 - **Prefer well-known dependencies** (crates, npm, jsr) to hand-written codecs, parsers, checksums and storage wrappers. Pin versions and use pure-Rust crates in the core. Hand-rolled code costs more to review than a trusted library.
 - **Formatting:** run `deno task fmt` before committing and `deno task lint` before calling work finished. Markdown is formatted but not hard-wrapped, one line per paragraph. When joining wrapped Chinese lines, do not insert spaces between CJK characters.
-- **i18n:** add both zh and en keys; en catalogues are typed against zh, so a missing key is a compile error. zh text is persisted in diagnostics and hashed by the fingerprint, so keep zh strings byte-identical when moving them, and rerun the fingerprint. Region and canvas names are a fixed zh vocabulary that is translated only for display (`src/i18n/names.ts`). Shared `src/i18n/index.ts` never reads `navigator`. Chinese UI copy should read as a person wrote it, not as a translation.
+- **i18n:** add both zh and en keys; en catalogues are typed against zh, so a missing key is a compile error. zh text is persisted in diagnostics and hashed by the fingerprint, so keep zh strings byte-identical when moving them, and rerun the fingerprint. The `diag` and `progress` sections are also copied into `rust/engine/catalog/` for the native engine; run `deno task export-catalog` after changing them (a unit test fails until you do). Region and canvas names are a fixed zh vocabulary that is translated only for display (`src/i18n/names.ts`). Shared `src/i18n/index.ts` never reads `navigator`. Chinese UI copy should read as a person wrote it, not as a translation.
 - **UI contract:** keep the ids the tests use, `details.advanced`, `.export-advanced`, the `replaceOnce` anchors in `scripts/build-portable.ts`, and zh text in `static/index.html` byte-identical to the zh catalogue. The page makes no external requests. Controls and status stay on the printer, and the how-to stays above the fold at 390 px and 1440 px. Copy describes any travel path turning into one big screenshot, not only scrolling. After a UI change, check screenshots at 390, 1024, 1440 and 1920 px in en, covering the settings flap, the log sheet, the spread print and the demo.
 - **Storage:** the browser keeps only the latest print, for 24 hours (`KEEP_MS` in `src/worker.ts`), as a safety net against reloads and crashes. Do not bring back project history or persistent-storage prompts.
 - **Logos:** read a brand's usage policy before showing its logo; TypeScript and Deno are named as text only. Keep the footer and `LOGO_NOTICES` in `scripts/notices.ts` in step with the logos shown.
