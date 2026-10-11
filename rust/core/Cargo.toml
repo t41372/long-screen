@@ -7,4 +7,10 @@ license = "MIT"
 repository = "https://github.com/t41372/long-screen"
 description = "Long Screen's reconstruction algorithms: motion, layers, tracking, compositing and presentation kernels"
 
+[features]
+# Native hosts (rust/long-screen) run `pool::par_for` chunks on rayon's thread pool. Never enabled for wasm: the
+# threaded wasm build has its own Web Worker helpers.
+rayon = ["dep:rayon"]
+
 [dependencies]
+rayon = { version = "=1.12.0", optional = true }

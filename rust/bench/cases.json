@@ -68,7 +68,12 @@
         "start": 310,
         "count": 3
       },
-      "fixture_sha256": "2a44314f6670138452b4098e0355a360a8d35c46ee4f2d5dbd2d299a8a59bbda"
+      "fixture_sha256": "2a44314f6670138452b4098e0355a360a8d35c46ee4f2d5dbd2d299a8a59bbda",
+      "pipeline": {
+        "start": 300,
+        "count": 48
+      },
+      "pipeline_sha256": "dfa5dbab2cd8bcd3e102b384fba7efc1a272b678c85374f0d3a878760113fac7"
     },
     {
       "id": "test_4",
@@ -152,7 +157,12 @@
         "start": 104,
         "count": 3
       },
-      "fixture_sha256": "b5da43740d9998bcadb00e77df730044f54fc9a7c8e9f43f8b03fbfc123aee63"
+      "fixture_sha256": "b5da43740d9998bcadb00e77df730044f54fc9a7c8e9f43f8b03fbfc123aee63",
+      "pipeline": {
+        "start": 96,
+        "count": 30
+      },
+      "pipeline_sha256": "323bcf89090f427cd858049f49dd3a2f693bc81e434ea82132d0cb5805729a7a"
     },
     {
       "id": "test_8",

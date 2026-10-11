@@ -149,9 +149,9 @@ ffmpeg 的 RGB 转换与浏览器在锐利色边上不一样（色度插值不�
 
 **测试用例。** `rust/bench/cases.json` 列出公开测试录屏：8 段由仓库所有者专门录制、可以公开的录屏（2 段 SDR H.264 桌面录屏，6 段 HDR PQ/BT.2020 的 10-bit HEVC，含 3 段 iPhone 录屏；其中一段拍的是所有者自己的照片，test_4 是公有领域的《蒙娜丽莎》）。每段记着文件名、字节数、SHA-256、ffprobe 读出的编码、尺寸、像素格式、色彩参数和帧数（按 `-fps_mode passthrough` 逐帧计数，录屏都是可变帧率）。录屏本身作为 GitHub Release `test-cases-v1` 的附件发布，不进仓库；所有者用 `bash scripts/upload-test-cases.sh <录屏目录>` 上传，脚本先按清单核对每个文件再创建 release。
 
-**固定片段（fixture）。** 整段 4K 录屏在 CPU 模拟下跑不完，所以每段只取清单里 `window` 指定的 3 个连续有运动的帧。`cargo run -p long-screen-bench --bin cases -- fixtures` 下载缺失的录屏（`curl`，下载后核对 SHA-256），再用 ffmpeg 按原像素格式解出这几帧的 YUV 平面（不缩放、不转换格式，`-fps_mode passthrough`），并核对清单里记录的 fixture SHA-256；10-bit 的帧在读入时取高 8 位，即浏览器 `VideoFrame.copyTo` 交给核心的 8-bit 平面，PQ 的帧因此走核心的 HDR 转换路径。macOS 上的 ffmpeg 9.0.2 与 Ubuntu 24.04（amd64）的 ffmpeg 6.1.1 解出的 fixture 逐字节一致；换了解码器而哈希不同时命令直接失败，不拿不同的字节去比。改了窗口或解码参数时，要把清单里的 `extractor` 加一，再用 `-- fixtures --write-hashes` 重新记录哈希。fixture 约 300 MB，放在 `rust/target/bench-fixtures/extractor-N/`，从不提交；CI 以 `cases.json` 的哈希为键缓存它，命中缓存时不用下载录屏。
+**固定片段（fixture）。** 整段 4K 录屏在 CPU 模拟下跑不完，所以每段只取清单里 `window` 指定的 3 个连续有运动的帧。`cargo run -p long-screen-bench --bin cases -- fixtures` 下载缺失的录屏（`curl`，下载后核对 SHA-256），再用 ffmpeg 按原像素格式解出这几帧的 YUV 平面（不缩放、不转换格式，`-fps_mode passthrough`），并核对清单里记录的 fixture SHA-256；10-bit 的帧在读入时取高 8 位，即浏览器 `VideoFrame.copyTo` 交给核心的 8-bit 平面，PQ 的帧因此走核心的 HDR 转换路径。macOS 上的 ffmpeg 9.0.2 与 Ubuntu 24.04（amd64）的 ffmpeg 6.1.1 解出的 fixture 逐字节一致；换了解码器而哈希不同时命令直接失败，不拿不同的字节去比。改了窗口或解码参数时，要把清单里的 `extractor` 加一，再用 `-- fixtures --write-hashes` 重新记录哈希。test_3 与 test_7 另有一个 `pipeline` 窗口（48 帧与 30 帧，哈希记在 `pipeline_sha256`），给整条管线的基准用，同一命令一并解出（`<id>-pipeline.yuv`，约 500 MB）。fixture 约 300 MB（加上管线窗口约 800 MB），放在 `rust/target/bench-fixtures/extractor-N/`，从不提交；CI 以 `cases.json` 的哈希为键缓存它，命中缓存时不用下载录屏。
 
-**基准项。** `rust/bench/benches/kernels.rs` 用 divan（CodSpeed 的兼容层 `codspeed-divan-compat`）对每段录屏各测一次这些核心函数：YUV/HDR 转 RGBA、原尺寸亮度、分析灰度图、特征提取与匹配、运动估计、原尺寸精修、层学习、一致性掩码、投票环、整帧合成到 512 瓦片、金字塔父瓦片、瓦片 PNG 编码。输入都在计时之外准备好，参数与应用默认值一致（`analysisSize` 640、480 个特征、512 瓦片、噪声 10）。
+**基准项。** `rust/bench/benches/kernels.rs` 用 divan（CodSpeed 的兼容层 `codspeed-divan-compat`）对每段录屏各测一次这些核心函数：YUV/HDR 转 RGBA、原尺寸亮度、分析灰度图、特征提取与匹配、运动估计、原尺寸精修、层学习、一致性掩码、投票环、整帧合成到 512 瓦片、金字塔父瓦片、瓦片 PNG 编码。输入都在计时之外准备好，参数与应用默认值一致（`analysisSize` 640、480 个特征、512 瓦片、噪声 10）。`rust/bench/benches/pipeline.rs` 在 test_3、test_7 的管线窗口上跑一次完整的原生驱动（`long_screen::run`：扫描、求解、渲染、揭示、外框、金字塔，单线程，帧事先转成 RGBA，不含解码）；本机（Apple Silicon）一次约 1.3 s 与 2.5 s，`cargo codspeed run` 的检查模式两套基准共 6 s，CPU 模拟下估计每项几分钟。这个包同时打开了核心的 rayon 线程池，`kernels.rs` 因此把 `RAYON_NUM_THREADS` 设成 1，内核照旧走单线程路径。
 
 **本地运行。**
 
@@ -166,7 +166,21 @@ cd rust && cargo codspeed build -p long-screen-bench --profile bench-native && c
 
 **CI 里怎么测。** CodSpeed 的 CPU 模拟（simulation）模式在模拟 CPU 上把每项只跑一次，结果不受共享 runner 负载影响，系统调用不计入；公开仓库上传结果不需要 token，fork 来的 PR 也能上传（[文档](https://codspeed.io/docs/integrations/ci/github-actions)）。墙钟（walltime）模式需要 CodSpeed 的专用机器（免费计划每月 600 分钟），目前没有用。
 
-**局限。** 这些是核心的原生构建：跑的是标量代码，不是浏览器实际加载的 WebAssembly SIMD128 路径，也不含多线程。浏览器里的解码（WebCodecs）、GPU 转换、IndexedDB 存储和整条管线的耗时仍要用 `scripts/benchmark-pipeline.ts` 在 Chrome/WebKit 里测。目前只有单个函数的基准；重建管线移到 Rust 之后，在 `rust/bench/benches/` 里加整条管线在每段窗口上的端到端基准（`kernels.rs` 开头留了 TODO）。
+**局限。** 这些是核心的原生构建：跑的是标量代码，不是浏览器实际加载的 WebAssembly SIMD128 路径，也不含多线程。浏览器里的解码（WebCodecs）、GPU 转换、IndexedDB 存储和整条管线的耗时仍要用 `scripts/benchmark-pipeline.ts` 在 Chrome/WebKit 里测；`pipeline.rs` 测的是原生驱动，不是网页。
+
+## 原生驱动与网页一致
+
+`rust/long-screen`（§十三第 7 步）要与网页逐行一致：同样的帧进两边，比较每一行持久化记录的指纹（`scripts/fingerprint-scenarios.ts` 的格式）。
+
+```sh
+deno run -A scripts/native-parity.ts export /tmp/scenarios          # 合成场景的帧（约 2 GB）
+cd rust && cargo run --release -p long-screen --example parity -- scenarios /tmp/scenarios ../native.json
+deno run -A scripts/compare-fingerprints.ts <网页指纹>.json native.json
+deno run -A scripts/native-parity.ts recording test_case/public_test_cases/test_3_hdr_desktop_vertical.mov web-test_3.json
+cargo run --release -p long-screen --example parity -- recording ../test_case/public_test_cases/test_3_hdr_desktop_vertical.mov native-test_3.json
+```
+
+录屏模式两边都用 ffmpeg 解码（`-fps_mode passthrough`、尺寸取 ffprobe、帧时间取排序后的包时间、PQ/HLG 经核心的 HDR 转换），与原生命令行用的系统解码器无关。`performance` 行的 `tileEncodes` 随网页渲染趟每 1.2 s 的墙钟落盘变化（网页自己连跑两次也不同），其余每一行都应相同。
 
 ## 仍未验证
 

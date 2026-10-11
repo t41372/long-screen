@@ -17,7 +17,13 @@ sha2 = "=0.11.0"
 [dev-dependencies]
 # CodSpeed's drop-in for divan: plain divan timing locally, CPU simulation under `cargo codspeed run` in CI.
 divan = { package = "codspeed-divan-compat", version = "=5.0.2" }
+# The native driver the pipeline benchmark runs end to end.
+long-screen = { path = "../long-screen", default-features = false }
 
 [[bench]]
 name = "kernels"
+harness = false
+
+[[bench]]
+name = "pipeline"
 harness = false

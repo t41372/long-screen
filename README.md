@@ -76,10 +76,22 @@ File / Blob (chunked random-access reads via the npm package mediabunny)
 
 Decoding is the only step that depends on browser APIs: `FrameSource` produces `RGBA`, not a canvas, for the passes that follow. Registration, layering, the pose graph, compositing, tile encode/decode, and other algorithms all live in the Wasm core compiled from `rust/core`; TypeScript is a thin shell around it (UI, Worker RPC, I/O, orchestration). Deno tests and the browser load the same core, so algorithm behavior verified in Deno is the same behavior you get in the browser. See the [architecture doc](docs/ARCHITECTURE.md) (in Chinese) for details (sections 11 and 12 are the current module-by-module ownership list and what's deliberately kept in TS); the history of the migration is recorded in [docs/history/2026-09-rust-migration-log.md](docs/history/2026-09-rust-migration-log.md) (finished, doesn't reflect current state).
 
+## Command line
+
+The same engine also runs natively, without a browser: `rust/long-screen` is a library (the driver a desktop app or a Python binding can share) and the `long-screen` command. Install it from source with Rust (rustup picks up the pinned toolchain):
+
+```sh
+cd rust && cargo install --path long-screen
+long-screen recording.mov -o print.png --json report.json
+```
+
+It writes the print as one PNG (fragments it could not place go next to it as `print-fragment-<n>.png`, or use `--out-dir` for every canvas), progress and warnings on stderr, and with `--json` a report of the diagnostics, canvases and timings; `--lang zh`, `--threads`, `--memory-mb` and `--help` for the rest. Exit codes: 0 complete, 3 partial result, 1 failed, 4 the video could not be opened. On macOS and Windows it decodes with the system decoder (AVFoundation, Media Foundation); on Linux, and for files the system decoder cannot read, it runs a user-installed `ffmpeg`/`ffprobe` (e.g. `sudo apt install ffmpeg`). Its output matches the web app's row for row on the same frames (`test-results/native-cli/`).
+
 ## Directory layout
 
 ```text
 rust/core       Rust core source; compiles into three builds: core.wasm / core.simd.wasm / core.threads.wasm
+rust/long-screen  Native driver library and the `long-screen` command line (decodes with rust/decode)
 src/core        TS shell around the core: registration, layering, pose graph, keyframes, compositing, rasterization, loading the core and picking its build (src/core/wasm/**)
 src/media       Container parsing (Input/BlobSource/EncodedPacketSink from the npm package mediabunny), ranged reads, WebCodecs decoding
 src/codec       TS orchestration layer for PNG encode/decode; chunk/CRC validation goes through the core

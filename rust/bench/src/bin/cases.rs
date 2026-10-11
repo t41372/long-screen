@@ -11,7 +11,8 @@
 //! `LONGSCREEN_CASES_URL=https://mirror/{file}` downloads from somewhere other than the release in cases.json.
 
 use long_screen_bench::{
-    cases_dir, fixture_path, fixtures_dir, manifest, manifest_path, sha256_file, Case, Manifest,
+    cases_dir, fixtures_dir, manifest, manifest_path, sha256_file, span_path, Case, Manifest, Span,
+    Window,
 };
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
@@ -115,14 +116,14 @@ fn download(m: &Manifest, case: &Case, path: &Path) -> Result<(), String> {
 
 /// Decodes `case`'s window into `out`: the frames exactly as decoded (same pixel format, planes tightly packed),
 /// counting every decoded frame because the recordings are variable frame rate.
-fn extract(case: &Case, video: &Path, out: &Path) -> Result<(), String> {
-    let (start, end) = (case.window.start, case.window.start + case.window.count - 1);
+fn extract(case: &Case, window: Window, video: &Path, out: &Path) -> Result<(), String> {
+    let (start, end) = (window.start, window.start + window.count - 1);
     let status = Command::new("ffmpeg")
         .args(["-nostdin", "-v", "error", "-y", "-i"])
         .arg(video)
         .args(["-map", "0:v:0", "-an", "-fps_mode", "passthrough", "-vf"])
         .arg(format!("select='between(n,{start},{end})'"))
-        .args(["-frames:v", &case.window.count.to_string()])
+        .args(["-frames:v", &window.count.to_string()])
         .args(["-pix_fmt", &case.pix_fmt, "-f", "rawvideo"])
         .arg(out)
         .status()
@@ -131,14 +132,22 @@ fn extract(case: &Case, video: &Path, out: &Path) -> Result<(), String> {
         return Err(format!("ffmpeg failed on {} ({status})", video.display()));
     }
     let size = std::fs::metadata(out).map_err(|e| e.to_string())?.len() as usize;
-    let expected = case.frame_bytes() * case.window.count as usize;
+    let expected = case.frame_bytes() * window.count as usize;
     if size != expected {
         return Err(format!(
             "{}: ffmpeg wrote {size} bytes, expected {expected} ({} frames)",
-            case.id, case.window.count
+            case.id, window.count
         ));
     }
     Ok(())
+}
+
+/// Every fixture a case has: its kernel window, and its pipeline window when it has one.
+fn spans(case: &Case) -> Vec<(Span, Window)> {
+    [Span::Kernels, Span::Pipeline]
+        .into_iter()
+        .filter_map(|s| case.span(s).map(|w| (s, w)))
+        .collect()
 }
 
 fn fixtures(write_hashes: bool) -> Result<(), String> {
@@ -146,33 +155,39 @@ fn fixtures(write_hashes: bool) -> Result<(), String> {
     std::fs::create_dir_all(fixtures_dir(&m)).map_err(|e| e.to_string())?;
     // A fixture already on disk with the pinned hash is reused without touching the recording, so a CI cache of
     // the fixtures needs no download at all.
-    let ready = |m: &Manifest, case: &Case| {
-        let path = fixture_path(m, case);
-        case.fixture_sha256.is_some()
-            && !write_hashes
-            && path.exists()
-            && sha256_file(&path).ok() == case.fixture_sha256
+    let ready = |m: &Manifest, case: &Case, span: Span| {
+        let path = span_path(m, case, span);
+        let pinned = case.span_sha256(span).cloned();
+        pinned.is_some() && !write_hashes && path.exists() && sha256_file(&path).ok() == pinned
     };
-    if m.cases.iter().any(|c| !ready(&m, c)) {
+    if m.cases
+        .iter()
+        .any(|c| spans(c).iter().any(|(s, _)| !ready(&m, c, *s)))
+    {
         verify(&m, true)?;
     }
     let mut mismatched = Vec::new();
     for i in 0..m.cases.len() {
         let case = m.cases[i].clone();
-        let path = fixture_path(&m, &case);
-        if !ready(&m, &case) {
-            extract(&case, &recording_path(&case), &path)?;
-        }
-        let hash = sha256_file(&path).map_err(|e| e.to_string())?;
-        println!("fixture  {hash}  {}", path.display());
-        match &case.fixture_sha256 {
-            _ if write_hashes => m.cases[i].fixture_sha256 = Some(hash),
-            Some(expected) if *expected == hash => {}
-            expected => mismatched.push(format!(
-                "{}: {hash}, expected {}",
-                case.id,
-                expected.as_deref().unwrap_or("(none recorded)")
-            )),
+        for (span, window) in spans(&case) {
+            let path = span_path(&m, &case, span);
+            if !ready(&m, &case, span) {
+                extract(&case, window, &recording_path(&case), &path)?;
+            }
+            let hash = sha256_file(&path).map_err(|e| e.to_string())?;
+            println!("fixture  {hash}  {}", path.display());
+            match case.span_sha256(span) {
+                _ if write_hashes => match span {
+                    Span::Kernels => m.cases[i].fixture_sha256 = Some(hash),
+                    Span::Pipeline => m.cases[i].pipeline_sha256 = Some(hash),
+                },
+                Some(expected) if *expected == hash => {}
+                expected => mismatched.push(format!(
+                    "{} {span:?}: {hash}, expected {}",
+                    case.id,
+                    expected.map_or("(none recorded)", |e| e.as_str())
+                )),
+            }
         }
     }
     if write_hashes {

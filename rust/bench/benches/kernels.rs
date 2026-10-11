@@ -8,8 +8,7 @@
 //! These are native builds of the core: they run its scalar code, not the WebAssembly SIMD128 paths, and say
 //! nothing about decoding, GPU conversion or storage in a browser (scripts/benchmark-pipeline.ts covers those).
 //!
-//! TODO(engine): once the reconstruction pipeline runs in Rust, add `benches/pipeline.rs` that runs the whole engine
-//! over each case's window (and a longer one under walltime), next to these kernels.
+//! `benches/pipeline.rs` runs the whole native pipeline over a longer window of two of the cases.
 
 use long_screen_bench::{load_fixture, manifest};
 use long_screen_core::compositor::{composite_tile, Observation, TileBuffers, QUALITY_BLOCK};
@@ -37,6 +36,9 @@ const TILE: usize = 512;
 const NOISE: f64 = 10.0;
 
 fn main() {
+    // The pipeline benchmark's native driver turns on the core's rayon pool for this crate's whole build; one thread
+    // keeps every kernel on the single-threaded path these benchmarks have always measured.
+    std::env::set_var("RAYON_NUM_THREADS", "1");
     divan::main();
 }
 

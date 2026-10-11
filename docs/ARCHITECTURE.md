@@ -311,7 +311,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `layers.rs` — `LayerLearner` 逐帧累加证据（行/列分歧、split/evidence/activity），冻结为 `tests/support/reference/layers.ts` 的字节对照基准。Rust 算法核心。
 - `track.rs` — 逐区域逐帧无状态跟踪判定（不确定度、重定位判定、attach/thin-overlap/loop-closure 判定、关键帧候选评分等），含 `odometry`/`reacquire`/`driftCorrection` 与关键帧候选评分的置信度 `exp()` 收尾，以及关键帧候选的排序/最强候选/对手歧义判定（`select_candidate`），见十二节。Rust 算法核心。
 - `voting.rs` — 位移展开一致性投票环：ring buffer、box-gray、interior、partners、compare、finalize，有状态 handle。Rust 算法核心。
-- `pool.rs` — 线程构建下把独立分块工作分发给共享内存 helper worker 的数据并行 `for`；非线程构建内联顺序执行。Rust 算法核心（并行基础设施）。
+- `pool.rs` — 线程构建下把独立分块工作分发给共享内存 helper worker 的数据并行 `for`；原生构建打开 `rayon` feature 时分给调用所在的 rayon 线程池；其余构建内联顺序执行。Rust 算法核心（并行基础设施）。
 - `geometry.rs` — 与 JS `Math.round`/`Math.floor` 精确对齐的取整/几何约定。Rust 算法核心（共享工具）。
 - `yuv.rs` — 平面/半平面 YUV → RGBA（libyuv 参考算法），供不支持 `copyTo` 直转 RGB 的浏览器（Safari）使用。Rust 算法核心。
 - `reveal/mod.rs` + `{stats,model,locate,blocks,run}.rs` — 揭示阶段（§七）：屏幕格统计（世界对齐取格）、覆盖物建模、逐帧定位与洁净等级、世界块共识/动态分量/写入决策、四遍的帧驱动与 `wanted` 规则；由引擎的 `RevealSession`（`rust/engine/src/reveal.rs`）驱动。Rust 算法核心。
@@ -353,6 +353,23 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `src/reveal.rs`（单测在 `src/reveal_tests.rs`）— `RevealSession`：揭示阶段（§七）。先要内存（`NeedMemory`：所有画布、层与三帧的估计，宿主拒绝则以 `REVEAL_SKIPPED` 结束），再要观察行（`NeedObservations`：只留本阶段覆盖的画布与层上的决定，盲帧经 `admitted` 判定，位姿按页面的 `Math.round` 取整），逐行把合成器的瓦片喂进参照（每块之后一个 `Checkpoint`），然后四遍：每遍给出 `Decode`（含 `wanted`），宿主把要读的帧写进会话自己的帧缓冲（最多三块：投票帧、它前一帧、正在写的帧）后逐帧 `push_frame`、`end_pass`；写入遍之前先要回退状态的内存，再按块取合成器像素；投票后的整块拷贝按出现顺序逐瓦片写进缓存，最后写延后块并给出每张画布的来源行（`Provenance`）与汇总。瓦片缺了就 `NeedTile`，驻留的就 touch，缓存看到的使用顺序与原来一致。Rust 引擎。
 - `src/reveal_host_tests.rs` — 原生宿主测试：页面在固定悬浮按钮下滚动，合成器把按钮烧进了画布；同步宿主只经公开 API、在四块的小缓存上跑完四遍，页面逐像素恢复，来源行指向后来的帧。Rust 引擎测试。
 - `catalog/zh.json`、`catalog/en.json` — `src/i18n` 的 `diag`、`progress` 两节的导出（`deno task export-catalog`）；`tests/unit/catalog-export.test.ts` 在它们与 TS 目录不一致时失败。生成文件。
+
+### rust/long-screen（原生驱动与命令行，§十三第 7 步）
+
+原生宿主：与 `src/pipeline/*` 同序、同样地驱动引擎的各个会话，持久化的每一行与网页逐行相同（键、字段顺序、`<run>` 之外的值都相同，见 `test-results/native-cli/`）。不在工作区的 `default-members` 里，只用 `-p long-screen` 构建。
+
+- `src/lib.rs` — 公开 API：`run(source, options, observer, control) -> Result<RunResult, Error>`、`Options`/`Settings`（网页 `Settings` 的默认值）、`Observer`（进度与诊断回调）、`Control`（跨线程的暂停与停止，在步与步之间检查）、`Progress`/`Diagnostic`；`--threads` 用 `rayon::ThreadPool::install`，不改全局线程池。顺序编排（启动诊断、六个阶段、失败处理、`performance` 行）对应 `src/pipeline/engine.ts`。原生宿主。
+- `src/context.rs` — `RunContext` 与 `Diagnostics` 的对应：项目行、诊断日志（`diagnostic/<序号>`、按代码计数与最高 severity）、进度节流、暂停/停止状态机（`stopped`/`partial`/`honourStop` 与网页一致）。日志行一律写 zh 文字（与网页逐字节相同），给观察者的是所选语言（默认 en）。原生宿主。
+- `src/scan.rs`、`src/solve.rs`、`src/render.rs`、`src/reveal.rs`、`src/present.rs` — 各阶段的宿主，逐个对应 `src/pipeline/scan.ts`、`solve/solve.ts`（含 `solve/diagnostics.ts` 的逐代码字段顺序）、`render.ts`（单帧前瞻、1.2 s 周期落盘）+ `src/core/compositor.ts`、`reveal.ts`、`presentation.ts` + `src/core/framing.ts` + `TileStore.buildPyramid`，也包括 `src/core/wasm/*.ts` 里决定行形状的解码（运动场的两种字段顺序、区域行的命名与字段顺序）。`scan-features/` 与 `keyframe/` 是求解结束就删的暂存，原生宿主只放在内存里，不进存储。揭示的 `NeedMemory` 原生一律回答“放得下”：网页那 128 MB 余量和 2 GB/4 GB 上限是 wasm 堆的限制，原生进程没有，所以网页会以 `REVEAL_SKIPPED` 跳过的超大运行，原生照样揭示。原生宿主。
+- `src/tiles.rs` — `TileStore` 的对应：瓦片缓存换出与落盘、PNG 编解码（`png` crate，与 `rust/wasm/src/png.rs` 相同的 `Compression::Fast` 设置，字节相同；这几行编码设置是有意的重复）。原生宿主。
+- `src/store.rs` — 行存储：按键排序的内存表（与 `MemoryKV` 的遍历顺序相同）；可设内存预算，超出后已编码的瓦片 PNG 写到临时目录。原生宿主。
+- `src/value.rs` — 行的值：保持字段插入顺序的 JS 值（类型化数组、Blob），`JSON.stringify` 的数字与字符串写法、JS 的 `toFixed`/`toLocaleString`，以及 `scripts/fingerprint-scenarios.ts` 的规范化与摘要（`RunResult::fingerprint`）。原生宿主。
+- `src/source.rs` — `FrameSource`：每一遍重新解码一次（与网页相同；整段缓存原生尺寸的帧对 3456×2234 的录屏每帧 31 MB，放不下），`sparse_frames` 让揭示阶段不转换它不读的帧。`VideoSource` 经 `rust/decode` 解码，YUV→RGBA 用核心的 `yuv::convert`，10 位 PQ/HLG 先经 `Frame::to_8bit` 取整成 8 位再走核心的 HDR 路径（高精度路径是以后的改进）；`RawSource` 回放现成的 RGBA 帧。原生宿主：I/O。
+- `src/wasm_math.rs` — 在可执行文件里用 `libm` crate 定义 `exp`/`pow`/`log`/`hypot`（及 f32 版本）：wasm 构建链接的就是这份 musl 实现（`compiler-builtins`），而系统 libm 在个别输入上差最后一位（实测一次运动置信度 0.054445016798489 对 0.05444501679848899），会一路传到位置与像素。原生宿主。
+- `src/output.rs` — `RunResult`：画布列表、主图（有呈现画布时取呈现画布）与片段、按瓦片带流式写任意尺寸的 PNG、行指纹。原生宿主：I/O。
+- `src/bin/long-screen.rs` — 命令行（`cli` feature，clap）：进度与警告写 stderr，`--json` 报告，退出码 0 完成、3 部分结果、1 失败、2 参数错误、4 打不开视频（含缺 ffmpeg 时 `rust/decode` 给的安装提示）、5 写不出文件。网页的完整结果包（ZIP、离线查看器）没有搬过来：它在 `src/export/` 的 TS 里，体量不小，留作以后的工作。
+- `examples/parity.rs` — 一致性测试：读 `scripts/native-parity.ts export` 导出的合成场景帧，或像 `scripts/native-parity.ts recording` 那样用 ffmpeg 解码录屏，输出与 `scripts/fingerprint-scenarios.ts` 同格式的指纹，用 `scripts/compare-fingerprints.ts` 比较。
+- `tests/driver.rs` — 原生端到端：在这里生成的纹理页面滚动 24 帧，先测失败（没有帧、瓦片尺寸非法、停止、中途变尺寸），再测结果（主图逐像素等于页面、PNG 输出、1 线程与 4 线程逐行相同）。
 
 ### src/pipeline（编排 + 尚未迁移的算法转发）
 
@@ -506,7 +523,7 @@ Rust 核心的完整迁移时间线（哪一轮做了什么、每一步的验证
 - `long-screen-engine`（`rust/engine`）：一次运行的状态机——scan、solve、render、reveal、framing、金字塔，以及诊断和持久化记录的类型。不做 I/O，不读时钟。
 - `long-screen-wasm`（`rust/wasm`）：cdylib，浏览器用的 `extern "C"` 导出（原来的 `rust/core/src/abi`），覆盖 core 和 engine；三种构建（scalar、SIMD、threads）都从它出。
 - `long-screen-decode`（`rust/decode`）：原生解码（macOS AVFoundation、Windows Media Foundation、其他平台调用用户自己安装的 ffmpeg）。
-- `long-screen-cli`（`rust/cli`，可执行文件名 `long-screen`）：命令行，组合 decode、engine 和文件输出。
+- `long-screen`（`rust/long-screen`，库名 `long_screen`，可执行文件名 `long-screen`）：原生驱动库（命令行、桌面版、Python 共用）加命令行（`cli` feature），组合 decode、engine 和文件输出。
 - `long-screen-py`（`rust/python`）：PyO3 绑定。
 - `long-screen-bench`（`rust/bench`）：基准测试，不发布。
 
@@ -518,7 +535,7 @@ Rust 核心的完整迁移时间线（哪一轮做了什么、每一步的验证
 - 一次就要很久的步骤（位姿图松弛、金字塔、reveal）拆成可以分段调用的形式（每次 N 轮迭代或 N 个 tile），暂停和停止在两段之间生效。
 - 时间节流（每 100 ms 报一次进度、每 1.2 s 落一次盘）是宿主的事。引擎只报告处理到哪一帧、哪一阶段。
 - WebGPU 灰度是网页外壳的加速选项：会话接受宿主已经算好的分析灰度图，没有就自己算。
-- 多线程：wasm 继续用 `pool.rs`；原生用 rayon（cargo feature），沿用“结果与线程数无关”的契约。
+- 多线程：wasm 继续用 `pool.rs`；原生用 rayon（`long-screen-core` 的 `rayon` feature，`pool::par_for` 在调用所在的 rayon 线程池里分块），沿用“结果与线程数无关”的契约：原生 1 线程与默认线程数的场景指纹逐行相同。
 
 ### 持久化记录
 
@@ -542,7 +559,7 @@ Rust 核心的完整迁移时间线（哪一轮做了什么、每一步的验证
 4. render（含 tile 缓存、换出与读回、时间冲突）。已完成。瓦片缓存（`rust/engine/src/tiles.rs`）与合成编排（`rust/engine/src/compositor.rs`）先迁入（`test-results/port-tiles/`）；随后渲染趟本身迁入 `rust/engine/src/render.rs` 的 `RenderSession`（放置解析与接回链、重复/固定区域捷径、一致性掩码与投票窗口、观察台账、画布元数据、瓦片预算诊断），TS 只剩解码循环与读写：场景指纹在三种构建上与迁移前逐行相同，真实录屏 A/B 的瓦片、台账、画布、时间记录与诊断行哈希相同（`test-results/port-render/`）。
 5. reveal（已完成，`test-results/port-reveal/`）。揭示阶段整个在 `rust/engine/src/reveal.rs` 的 `RevealSession`：哪些决定算数、内存检查与 `REVEAL_SKIPPED`、喂合成器瓦片、四遍的顺序与 `wanted`、投票后的整块拷贝、延后块、来源行与汇总；解码出的帧写进会话自己的帧缓冲（同扫描会话）。宿主 `src/pipeline/reveal.ts` 只剩读行、内存探测、解码循环、瓦片载入与存储、计时、进度、暂停与停止。原来 `src/core/wasm/reveal.ts` 里逐个调用核心的 `RevealRun` 与它的 `ls_reveal_*` 导出一并删除。场景指纹在三种构建上逐行相同（`performance` 行的瓦片编码、解码、换出次数也相同），真实录屏 A/B 的瓦片、瓦片索引、画布与来源行哈希及诊断计数相同。
 6. framing 与金字塔（已完成，`test-results/port-present/`）。呈现画布（`rust/engine/src/framing.rs` 的 `FramingSession`）与预览金字塔（`rust/engine/src/pyramid.rs` 的 `PyramidSession`）都是宿主逐步驱动的可续作业：呈现画布每个输出瓦片之前停一次，供宿主检查暂停与停止，金字塔每个父瓦片之后停一次，与原来的检查点一一对应；呈现画布的规划（周长与源瓦片映射，受瓦片上限约束）是一步算完，不再每 256 格停一次。`buildFramedCanvas` 与 `TileStore.buildPyramid` 保留原来的签名，成为宿主：参照帧的 PNG 解码、瓦片索引的读取、瓦片的载入与存储、`pyramid-todo/` 行和画布行都还在宿主，写入的键、字段顺序与时机不变；瓦片缓存看到的使用、换出、编码与解码次数也不变（`performance` 行逐字节相同）。场景指纹在三种构建上逐行相同，真实录屏 A/B 的瓦片、瓦片索引与画布行哈希及诊断计数相同。
-7. 原生驱动和命令行。
+7. 原生驱动和命令行（已完成，`test-results/native-cli/`）。`rust/long-screen` 是一个同步宿主（见十一节）：与网页同序驱动全部会话，行的键、字段顺序和值与网页相同，诊断用同一份目录格式化；`run()` 带进度与诊断回调、跨线程的暂停与停止、线程数和存储内存预算，结果按瓦片保存，可流式写出任意尺寸的 PNG。命令行 `long-screen` 在它上面。核心的 `pool.rs` 原生走 rayon。全部 24 个合成场景在原生驱动上与网页三种构建的指纹逐行相同（1 线程与默认线程数都是），test_1、test_3、test_6、test_7 上与网页（同样用 ffmpeg 解码的帧）逐行相同，只有 `performance` 行的 `tileEncodes` 随网页的墙钟落盘变化。要做到逐位相同，原生可执行文件里的 `exp`/`pow`/`log`/`hypot` 换成 wasm 构建所用的 musl 实现（`libm` crate，`src/wasm_math.rs`）。网页的结果包（ZIP、离线查看器）尚未搬到原生。
 8. TS 包（npm/jsr）与 Python 包。
 
 ### 每一步怎么验证

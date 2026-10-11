@@ -1,7 +1,10 @@
-//! Data-parallel `for` over independent chunks, run on helper Web Workers that share this module's memory.
+//! Data-parallel `for` over independent chunks, run on helper Web Workers that share this module's memory, or on
+//! rayon's thread pool in a native build.
 //!
-//! Only the threaded build (`target_feature = "atomics"`, shared imported memory) has helpers; every other
-//! build, and any call made while a job is already running, executes the chunks inline in index order. Kernels
+//! Only the threaded wasm build (`target_feature = "atomics"`, shared imported memory) and native builds with the
+//! `rayon` feature have helpers; every other build, and any wasm call made while a job is already running, executes
+//! the chunks inline in index order. Natively the helpers are the other threads of the rayon pool the call runs in
+//! (the global pool, or one a host entered with `ThreadPool::install`); a nested call joins that pool. Kernels
 //! are written so their output never depends on which thread ran a chunk or in what order: chunks write
 //! disjoint output ranges, and any reduction is kept per chunk and folded afterwards in chunk order.
 //!
@@ -143,7 +146,26 @@ mod imp {
     }
 }
 
-#[cfg(not(target_feature = "atomics"))]
+#[cfg(all(feature = "rayon", not(target_feature = "atomics")))]
+mod imp {
+    use rayon::prelude::*;
+
+    pub fn helpers() -> usize {
+        rayon::current_num_threads().saturating_sub(1)
+    }
+    pub fn par_for<F: Fn(usize) + Sync>(chunks: usize, body: &F) {
+        if chunks <= 1 {
+            (0..chunks).for_each(body);
+        } else {
+            (0..chunks).into_par_iter().for_each(body);
+        }
+    }
+    pub fn worker_loop() -> ! {
+        panic!("worker_loop is the threaded wasm build's; native helpers are rayon's threads")
+    }
+}
+
+#[cfg(all(not(feature = "rayon"), not(target_feature = "atomics")))]
 mod imp {
     pub fn helpers() -> usize {
         0

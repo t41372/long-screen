@@ -20,6 +20,7 @@ deno task lint           # deno fmt --check + deno lint + cargo fmt --check + cl
 deno task fmt            # deno fmt + cargo fmt (deno.json's fmt.include leaves out AGENTS.md and the hand-written static/)
 deno task coverage       # tests plus per-file line-coverage floors in scripts/coverage.ts
 deno task fingerprint out.json   # hash every persisted row of every synthetic scenario
+cd rust && cargo run --release -p long-screen -- video.mov -o print.png   # the native driver + CLI (rust/long-screen); parity with the web: scripts/native-parity.ts
 deno task bench          # core kernel benchmarks on the public test recordings (rust/bench); CodSpeed runs them on PRs
 deno task export-catalog # copy the diag/progress catalogues into rust/engine/catalog after changing those strings
 deno task icons          # redraw the PWA icons in static/icons from the favicon

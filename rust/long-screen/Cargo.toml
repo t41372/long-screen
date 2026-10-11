@@ -1,0 +1,41 @@
+[package]
+name = "long-screen"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+repository = "https://github.com/t41372/long-screen"
+description = "Long Screen as a native library and command line: a screen recording in, one big screenshot out"
+
+[lib]
+name = "long_screen"
+
+[[bin]]
+name = "long-screen"
+path = "src/bin/long-screen.rs"
+required-features = ["cli"]
+
+[features]
+default = ["cli"]
+# The `long-screen` command line (argument parsing). The library itself needs none of it.
+cli = ["dep:clap"]
+
+[dependencies]
+# Kernels run on rayon's thread pool (`pool::par_for`); results do not depend on the thread count.
+long-screen-core = { path = "../core", features = ["rayon"] }
+long-screen-engine = { path = "../engine" }
+long-screen-decode = { path = "../decode" }
+rayon = "=1.12.0"
+# The musl-derived math the wasm build links (compiler-builtins vendors this crate), so exp/pow/log/hypot round the
+# same way natively (src/wasm_math.rs).
+libm = "=0.2.16"
+# The tile codec, at the settings the web page encodes tiles with (rust/wasm/src/png.rs), so the bytes match.
+png = "=0.18.1"
+# Row fingerprints (the format scripts/fingerprint-scenarios.ts writes) and the JSON report.
+sha2 = "=0.11.0"
+# `float_roundtrip`: numbers read from JSON (the parity harness's frame times, ffprobe's) must be the exact doubles.
+serde_json = { version = "=1.0.152", features = ["preserve_order", "float_roundtrip"] }
+clap = { version = "=4.6.7", features = ["derive"], optional = true }
+
+[dev-dependencies]
+png = "=0.18.1"

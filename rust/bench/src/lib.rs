@@ -45,6 +45,39 @@ pub struct Case {
     pub window: Window,
     /// SHA-256 of the fixture this manifest's extractor version produces; `None` until recorded.
     pub fixture_sha256: Option<String>,
+    /// A longer window the whole native pipeline runs over (`benches/pipeline.rs`), for the cases that have one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline: Option<Window>,
+    /// SHA-256 of the pipeline window's fixture.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline_sha256: Option<String>,
+}
+
+/// Which of a case's windows a fixture holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Span {
+    /// `window`: the kernel benchmarks' three frames.
+    Kernels,
+    /// `pipeline`: the end-to-end benchmark's longer run.
+    Pipeline,
+}
+
+impl Case {
+    /// The window `span` names (`None` for a pipeline window the case does not have).
+    pub fn span(&self, span: Span) -> Option<Window> {
+        match span {
+            Span::Kernels => Some(self.window),
+            Span::Pipeline => self.pipeline,
+        }
+    }
+
+    /// The pinned hash of `span`'s fixture.
+    pub fn span_sha256(&self, span: Span) -> Option<&String> {
+        match span {
+            Span::Kernels => self.fixture_sha256.as_ref(),
+            Span::Pipeline => self.pipeline_sha256.as_ref(),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -93,7 +126,15 @@ pub fn fixtures_dir(manifest: &Manifest) -> PathBuf {
 }
 
 pub fn fixture_path(manifest: &Manifest, case: &Case) -> PathBuf {
-    fixtures_dir(manifest).join(format!("{}.yuv", case.id))
+    span_path(manifest, case, Span::Kernels)
+}
+
+/// The fixture file of one of a case's windows.
+pub fn span_path(manifest: &Manifest, case: &Case, span: Span) -> PathBuf {
+    match span {
+        Span::Kernels => fixtures_dir(manifest).join(format!("{}.yuv", case.id)),
+        Span::Pipeline => fixtures_dir(manifest).join(format!("{}-pipeline.yuv", case.id)),
+    }
 }
 
 pub fn sha256_file(path: &Path) -> std::io::Result<String> {
@@ -157,7 +198,15 @@ pub struct Fixture {
 }
 
 pub fn load_fixture(manifest: &Manifest, case: &Case) -> Fixture {
-    let path = fixture_path(manifest, case);
+    load_span(manifest, case, Span::Kernels)
+}
+
+/// The frames of one of a case's windows (see [`load_fixture`]).
+pub fn load_span(manifest: &Manifest, case: &Case, span: Span) -> Fixture {
+    let path = span_path(manifest, case, span);
+    let window = case
+        .span(span)
+        .unwrap_or_else(|| panic!("{}: no {span:?} window", case.id));
     let bytes = std::fs::read(&path).unwrap_or_else(|e| {
         panic!(
             "fixture {} is missing ({e}); run `cargo run -p long-screen-bench --bin cases -- fixtures` first",
@@ -167,7 +216,7 @@ pub fn load_fixture(manifest: &Manifest, case: &Case) -> Fixture {
     let size = case.frame_bytes();
     assert_eq!(
         bytes.len(),
-        size * case.window.count as usize,
+        size * window.count as usize,
         "{}: fixture size does not match its window",
         case.id
     );
@@ -230,6 +279,8 @@ mod tests {
             note: String::new(),
             window: Window { start: 0, count: 1 },
             fixture_sha256: None,
+            pipeline: None,
+            pipeline_sha256: None,
         };
         assert_eq!(case.frame_bytes(), 12);
         assert_eq!(case.signal_code(), 12);
