@@ -43,8 +43,8 @@ enum Policy {
 struct Args {
     /// The recording (MP4, MOV, WebM, … whatever the decoder reads).
     video: PathBuf,
-    /// Where to write the print (default: <video name>.png in the current directory). Fragments the run could not
-    /// place go next to it as <name>-fragment-<n>.png.
+    /// Where to write the print, the canvas the web page shows first (default: <video name>.png in the current
+    /// directory). Fragments the run could not place go next to it as <name>-fragment-<n>.png, in the page's order.
     #[arg(short, long, conflicts_with = "out_dir")]
     output: Option<PathBuf>,
     /// Write the print, its fragments and every other canvas into this directory instead.

@@ -91,6 +91,9 @@ fn fingerprint_entry(
         }
     }
     let (rows, project) = result.fingerprint();
+    let ids = |canvases: Vec<long_screen::CanvasInfo>| -> Vec<String> {
+        canvases.into_iter().map(|c| c.id).collect()
+    };
     serde_json::json!({
         "rows": rows,
         "events": "",
@@ -98,6 +101,9 @@ fn fingerprint_entry(
         "seconds": (started.elapsed().as_secs_f64() * 10.0).round() / 10.0,
         "status": result.status(),
         "frames": result.frames(),
+        // The canvases in the order the page lists them, for `scripts/native-parity.ts prints`.
+        "prints": ids(result.prints()),
+        "fragments": ids(result.fragments()),
     })
 }
 

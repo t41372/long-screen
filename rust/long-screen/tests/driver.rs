@@ -353,3 +353,29 @@ fn canvas_names_show_in_the_run_language_while_rows_keep_zh() {
         "rows that changed with the language: {differing:?}"
     );
 }
+
+#[test]
+fn the_print_is_the_canvas_the_page_shows_first_when_a_jump_leaves_a_fragment() {
+    // A short scroll, a jump to a part of the page that shares nothing with it, then a longer scroll there: the
+    // second stretch becomes a separate canvas with more observed pixels than the first.
+    let mut offsets: Vec<usize> = (0..8).map(|i| i * 23).collect();
+    offsets.extend((0..20).map(|i| 6000 + i * 23));
+    let mut source = Scroll::new(offsets);
+    let result = run(&mut source, &Options::default(), &mut (), &Control::new()).expect("a result");
+    let moving: Vec<_> = result
+        .canvases()
+        .into_iter()
+        .filter(|c| c.kind == "moving" && c.tile_count > 0 && c.attached_to.is_none())
+        .collect();
+    assert_eq!(moving.len(), 2, "{:?} {:?}", moving, codes(&result));
+    let (first, second) = (&moving[0], &moving[1]);
+    assert!(second.observed_pixels > first.observed_pixels);
+    // The page lists its canvases by observed pixels, so it shows the bigger stretch first and the other after it.
+    let prints = result.prints();
+    assert_eq!(result.print().as_ref(), prints.first());
+    assert_eq!(result.print().map(|p| p.id), Some(second.id.clone()));
+    assert_eq!(
+        result.fragments().iter().map(|c| &c.id).collect::<Vec<_>>(),
+        [&first.id]
+    );
+}

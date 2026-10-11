@@ -171,14 +171,15 @@ impl PyRunResult {
         Ok(list)
     }
 
-    /// The print: the framed presentation of the main canvas when there is one, else the main canvas; None when
-    /// nothing was reconstructed.
+    /// The print: the canvas the web page shows first (a framed presentation when the run framed one, else
+    /// reconstructed content, each kind by observed pixels, most first); None when nothing was reconstructed.
     #[getter]
     fn print(&self) -> Option<PyCanvas> {
         self.inner.print().map(|c| self.canvas(c))
     }
 
-    /// Separate fragments the run could not place on the print (moving canvases with pixels).
+    /// The reconstructed content other than the print's own, in the order the web page lists it: pieces the run
+    /// could not place on the print.
     #[getter]
     fn fragments(&self) -> Vec<PyCanvas> {
         self.inner

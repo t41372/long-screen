@@ -85,9 +85,12 @@ class Result:
     @property
     def diagnostics(self) -> list[Diagnostic]: ...
     @property
-    def print(self) -> Canvas | None: ...
+    def print(self) -> Canvas | None:
+        """The canvas the web page shows first: a framed presentation when the run framed one, else reconstructed
+        content, each kind by observed pixels, most first. None when nothing was reconstructed."""
     @property
-    def fragments(self) -> list[Canvas]: ...
+    def fragments(self) -> list[Canvas]:
+        """The reconstructed content other than the print's own, in the order the web page lists it."""
     @property
     def canvases(self) -> list[Canvas]: ...
     def save(self, path: str | os.PathLike[str]) -> None:

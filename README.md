@@ -71,7 +71,7 @@ cd rust && cargo install --path long-screen
 long-screen recording.mov -o print.png --json report.json
 ```
 
-It writes the print as one PNG (fragments it could not place go next to it as `print-fragment-<n>.png`, or use `--out-dir` for every canvas), progress and warnings on stderr, and with `--json` a report of the diagnostics, canvases and timings; `--lang zh`, `--threads`, `--memory-mb` and `--help` for the rest. Exit codes: 0 complete, 3 partial result, 1 the run failed, 4 the video could not be opened, 5 an output could not be written, 2 any other error.
+It writes the print, the canvas the web app shows first, as one PNG (fragments it could not place go next to it as `print-fragment-<n>.png` in the app's order, or use `--out-dir` for every canvas), progress and warnings on stderr, and with `--json` a report of the diagnostics, canvases and timings; `--lang zh`, `--threads`, `--memory-mb` and `--help` for the rest. Exit codes: 0 complete, 3 partial result, 1 the run failed, 4 the video could not be opened, 5 an output could not be written, 2 any other error.
 
 On macOS and Windows it decodes with the system decoder (AVFoundation, Media Foundation). On Linux, and for files the system decoder cannot read (WebM on macOS, for example), it runs a user-installed `ffmpeg` and `ffprobe` (e.g. `sudo apt install ffmpeg`); ffmpeg is not bundled. Its rows match the web app's row for row on the same frames (`scripts/native-parity.ts` checks this).
 

@@ -164,36 +164,29 @@ impl RunResult {
             .collect()
     }
 
-    /// The print: the framed presentation of the moving canvas with the most observed pixels when there is one,
-    /// else that canvas itself.
-    pub fn print(&self) -> Option<CanvasInfo> {
-        let canvases = self.canvases();
-        let main = canvases
-            .iter()
-            .filter(|c| c.kind == "moving" && c.attached_to.is_none() && c.tile_count > 0)
-            .max_by(|a, b| a.observed_pixels.total_cmp(&b.observed_pixels))?;
-        canvases
-            .iter()
-            .find(|c| c.presents.as_deref() == Some(&main.id))
-            .or(Some(main))
-            .cloned()
+    /// Every canvas worth a PNG, in the order the page lists them (its canvas menu, and `prints` in the npm package):
+    /// framed presentations first when the run framed them ([`crate::Framing::Context`]), then reconstructed
+    /// content, then screen-fixed interface, each by observed pixels, most first. A canvas without tiles (a fragment
+    /// that later evidence merged into another canvas holds none) is left out.
+    pub fn prints(&self) -> Vec<CanvasInfo> {
+        let framed = self
+            .project
+            .get("settings")
+            .and_then(Js::as_obj)
+            .and_then(|s| s.str("framing"))
+            == Some("context");
+        printable(self.canvases(), framed)
     }
 
-    /// Moving canvases with tiles other than the print's own: separate fragments the run could not place.
+    /// The print: the canvas the page shows first, the first of [`RunResult::prints`].
+    pub fn print(&self) -> Option<CanvasInfo> {
+        self.prints().into_iter().next()
+    }
+
+    /// The reconstructed content other than the print's own, in the page's order: separate fragments the run could
+    /// not place.
     pub fn fragments(&self) -> Vec<CanvasInfo> {
-        let print = self.print();
-        let main = print
-            .as_ref()
-            .map(|p| p.presents.clone().unwrap_or_else(|| p.id.clone()));
-        self.canvases()
-            .into_iter()
-            .filter(|c| {
-                c.kind == "moving"
-                    && c.attached_to.is_none()
-                    && c.tile_count > 0
-                    && Some(&c.id) != main.as_ref()
-            })
-            .collect()
+        fragments_of(&self.prints())
     }
 
     /// The level-0 tile `(x, y)` of `canvas` as `tile_size × tile_size` RGBA, if it was painted.
@@ -302,5 +295,177 @@ impl RunResult {
         }
         let project = fingerprint(&Js::Obj(self.project.clone()), &self.run_id);
         (rows, project)
+    }
+}
+
+/// The page's order (`printable` in src/package/index.ts; the canvas menu in src/ui/canvases.ts ranks the same way):
+/// canvases with tiles, not merged into another and with finite bounds, ranked presentation (only when `framed`),
+/// then moving, then fixed, and within a rank by observed pixels, most first. The sort is stable, so ties keep key
+/// order, as the page's `Array.prototype.sort` keeps the order its rows arrive in.
+fn printable(canvases: Vec<CanvasInfo>, framed: bool) -> Vec<CanvasInfo> {
+    let rank = |c: &CanvasInfo| match c.kind.as_str() {
+        "presentation" if framed => -1,
+        "fixed" => 1,
+        _ => 0,
+    };
+    let mut out: Vec<CanvasInfo> = canvases
+        .into_iter()
+        .filter(|c| {
+            c.tile_count > 0
+                && c.attached_to.is_none()
+                && c.bounds.width.is_finite()
+                && c.bounds.height.is_finite()
+        })
+        .collect();
+    // `b.observedPixels - a.observedPixels`: a NaN difference compares equal, as it does in the page's sort.
+    out.sort_by(|a, b| {
+        rank(a).cmp(&rank(b)).then_with(|| {
+            (b.observed_pixels - a.observed_pixels)
+                .partial_cmp(&0.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+    });
+    out
+}
+
+/// The moving canvases in `prints` other than the one the print shows.
+fn fragments_of(prints: &[CanvasInfo]) -> Vec<CanvasInfo> {
+    let main = prints
+        .first()
+        .map(|p| p.presents.clone().unwrap_or_else(|| p.id.clone()));
+    prints
+        .iter()
+        .filter(|c| c.kind == "moving" && Some(&c.id) != main.as_ref())
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn canvas(id: &str, kind: &str, observed: f64) -> CanvasInfo {
+        CanvasInfo {
+            id: id.into(),
+            layer: "body".into(),
+            name: id.into(),
+            kind: kind.into(),
+            bounds: Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            },
+            tile_count: 1,
+            observed_pixels: observed,
+            fragment: 0,
+            attached_to: None,
+            presents: None,
+        }
+    }
+
+    fn framed(id: &str, of: &str, observed: f64) -> CanvasInfo {
+        CanvasInfo {
+            presents: Some(of.into()),
+            ..canvas(id, "presentation", observed)
+        }
+    }
+
+    fn ids(canvases: &[CanvasInfo]) -> Vec<&str> {
+        canvases.iter().map(|c| c.id.as_str()).collect()
+    }
+
+    #[test]
+    fn a_framed_main_canvas_outranks_a_bigger_fragment_that_was_not_framed() {
+        // The main canvas was framed; the fragment, with more observed pixels, was not (framing found no reference
+        // for it, or skipped it as too sparse). The page shows the framed main canvas.
+        let rows = vec![
+            canvas("main", "moving", 100.0),
+            framed("main-framed", "main", 150.0),
+            CanvasInfo {
+                fragment: 1,
+                ..canvas("piece", "moving", 200.0)
+            },
+        ];
+        let prints = printable(rows, true);
+        assert_eq!(ids(&prints), ["main-framed", "piece", "main"]);
+        assert_eq!(ids(&fragments_of(&prints)), ["piece"]);
+    }
+
+    #[test]
+    fn presentations_rank_by_their_own_observed_pixels() {
+        // The framed views need not follow their sources' order: each frame adds its own chrome.
+        let rows = vec![
+            canvas("a", "moving", 100.0),
+            canvas("b", "moving", 200.0),
+            framed("a-framed", "a", 300.0),
+            framed("b-framed", "b", 250.0),
+        ];
+        let prints = printable(rows, true);
+        assert_eq!(ids(&prints), ["a-framed", "b-framed", "b", "a"]);
+        assert_eq!(ids(&fragments_of(&prints)), ["b"]);
+    }
+
+    #[test]
+    fn fragments_follow_observed_pixels_not_key_order() {
+        let rows = vec![
+            canvas("a", "moving", 300.0),
+            canvas("b", "moving", 10.0),
+            canvas("c", "moving", 20.0),
+        ];
+        let prints = printable(rows, false);
+        assert_eq!(ids(&prints), ["a", "c", "b"]);
+        assert_eq!(ids(&fragments_of(&prints)), ["c", "b"]);
+    }
+
+    #[test]
+    fn fixed_parts_come_last_and_empty_merged_or_unbounded_canvases_are_left_out() {
+        let rows = vec![
+            canvas("chrome", "fixed", 1e6),
+            canvas("page", "moving", 100.0),
+            CanvasInfo {
+                tile_count: 0,
+                attached_to: Some("page".into()),
+                ..canvas("merged", "moving", 500.0)
+            },
+            CanvasInfo {
+                tile_count: 0,
+                ..canvas("empty", "moving", 0.0)
+            },
+            CanvasInfo {
+                bounds: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: f64::NAN,
+                    height: 100.0,
+                },
+                ..canvas("unbounded", "moving", 900.0)
+            },
+        ];
+        assert_eq!(ids(&printable(rows, true)), ["page", "chrome"]);
+    }
+
+    #[test]
+    fn without_framing_a_presentation_ranks_with_the_content() {
+        // The npm package ranks a presentation first only under `framing: 'context'`.
+        let rows = vec![
+            canvas("page", "moving", 100.0),
+            framed("page-framed", "page", 50.0),
+        ];
+        assert_eq!(ids(&printable(rows, false)), ["page", "page-framed"]);
+    }
+
+    #[test]
+    fn ties_keep_key_order() {
+        let rows = vec![canvas("a", "moving", 100.0), canvas("b", "moving", 100.0)];
+        assert_eq!(ids(&printable(rows, false)), ["a", "b"]);
+    }
+
+    #[test]
+    fn only_fixed_interface_still_gives_a_print() {
+        // The page shows a fixed canvas when nothing moved; so does the print.
+        let prints = printable(vec![canvas("chrome", "fixed", 10.0)], true);
+        assert_eq!(ids(&prints), ["chrome"]);
+        assert!(fragments_of(&prints).is_empty());
     }
 }

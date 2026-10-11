@@ -44,7 +44,7 @@ Frames are never resampled: screen recordings are variable frame rate, and every
 - `diagnostics`: a list of dicts with `code`, `severity`, `message`, `action`, `frame`, `time`, `canvas`, `occurrences` and `params` (the diagnostic's other fields).
 - `save(path)`: the print as an RGBA PNG, written one band of tiles at a time, so memory stays small however long the print is.
 - `print_image()`: the print as a NumPy array. It is large: a 1320 × 12 000 print is 63 MB. Prefer `save()` when a file is what you need.
-- `print`, `fragments`, `canvases`: `Canvas` objects (`id`, `kind`, `width`, `height`, `bounds`, `save(path)`, `image()`).
+- `print` (the canvas the web app shows first), `fragments` (the rest of the reconstructed content, in the app's order), `canvases`: `Canvas` objects (`id`, `kind`, `width`, `height`, `bounds`, `save(path)`, `image()`).
 
 The engine runs with the GIL released. Ctrl-C stops a run at its next step and raises `KeyboardInterrupt`.
 
