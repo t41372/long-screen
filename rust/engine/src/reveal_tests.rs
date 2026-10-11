@@ -79,7 +79,9 @@ fn drive(
                 }
             }
             Step::NeedTile(key) => {
-                while cache.evict().is_some() {}
+                while let Some(id) = cache.victim() {
+                    cache.evict(id);
+                }
                 cache.insert(key.clone(), None).unwrap();
             }
             _ => {}

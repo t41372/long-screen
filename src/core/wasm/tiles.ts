@@ -75,9 +75,14 @@ export class TileCacheHandle {
     const [ptr, len] = this.key(canvas);
     return this.core.check(this.exports.ls_tiles_touch(this.handle, ptr, len, level, x, y), 'tilesTouch');
   }
-  /** Evicts the least recently used tile when the cache is full; returns its id, 0 when there is room. */
-  evict(): number {
-    return this.core.check(this.exports.ls_tiles_evict(this.handle), 'tilesEvict');
+  /** The tile to let go to make room for one more (the least recently used one while the cache is full), without
+   *  changing anything; 0 when there is room. Store it if it is dirty, then `evict()` it. */
+  victim(): number {
+    return this.core.check(this.exports.ls_tiles_victim(this.handle), 'tilesVictim');
+  }
+  /** Evicts a resident tile; its planes stay readable until `release()`. */
+  evict(id: number): void {
+    this.core.check(this.exports.ls_tiles_evict(this.handle, id), 'tilesEvict');
   }
   /** Frees an evicted tile's planes. */
   release(id: number): void {

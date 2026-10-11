@@ -12,8 +12,8 @@
 //!   allocated, through [`RevealSession::memory`]. A refusal ends the stage with `REVEAL_SKIPPED`.
 //! - [`Step::NeedObservations`]: every stored `observation/` row, in key order, through
 //!   [`RevealSession::observation`].
-//! - [`Step::NeedTile`]: a tile that is not resident (make room with [`TileCache::evict`], storing what is dirty, then
-//!   [`TileCache::insert`]).
+//! - [`Step::NeedTile`]: a tile that is not resident (make room with [`TileCache::victim`], storing what is dirty
+//!   before [`TileCache::evict`], then [`TileCache::insert`]).
 //! - [`Step::Checkpoint`]: one compositor tile went into the reference; check for pause and stop.
 //! - [`Step::Decode`]: decode the recording for one pass. For each decoded frame below the session's frame count, write
 //!   its RGBA into [`RevealSession::frame_buffer`] when `wanted` marks it (the pass reads no other frame's pixels),

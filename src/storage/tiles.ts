@@ -229,16 +229,18 @@ export class TileStore {
     }
     return await this.load(canvasId, x, y, level);
   }
-  /** Brings a tile the cache does not hold into it: evicts (storing what is dirty) until there is room, then loads
-   *  and decodes its stored copy, if any. The compositor calls this for each tile the engine asks for. */
+  /** Brings a tile the cache does not hold into it: evicts until there is room, then loads and decodes its stored
+   *  copy, if any. The compositor calls this for each tile the engine asks for. An evicted tile is stored, when it
+   *  is dirty, while the cache still holds it: a write that fails leaves it cached and dirty for a later flush. */
   async load(canvasId: string, x: number, y: number, level = 0): Promise<Tile> {
-    for (let id = this.engine.evict(); id; id = this.engine.evict()) {
+    for (let id = this.engine.victim(); id; id = this.engine.victim()) {
       const old = this.byId.get(id)!;
+      await this.save(old);
+      this.engine.evict(id);
       old.detach();
       this.engine.release(id);
       this.byId.delete(id);
       this.resident.delete(tileKey(old.canvasId, old.level, old.x, old.y));
-      await this.save(old);
     }
     const key = tileKey(canvasId, level, x, y), stored = await this.db.get<StoredTile>(`tile/${key}`);
     const pixels = stored ? await this.codec.decode(stored.blob, this.size) : undefined;

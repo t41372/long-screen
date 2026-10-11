@@ -118,7 +118,8 @@ impl Host {
                 RenderStep::NeedMeta(c) => s.provide_meta(&c, self.metas.get(&c).copied()),
                 RenderStep::NeedFrame(i) => s.frame_slot(i).copy_from_slice(&decoded[&i]),
                 RenderStep::NeedTile(key) => {
-                    while let Some(old) = self.cache.evict() {
+                    while let Some(id) = self.cache.victim() {
+                        let old = self.cache.evict(id).unwrap();
                         if old.dirty {
                             self.tiles.insert(old.key.clone(), stored(old));
                         }

@@ -122,20 +122,30 @@ pub extern "C" fn ls_tiles_touch(
     t.cache.touch(&k).map_or(0, |id| id as i32)
 }
 
-/// Evicts the least recently used tile when the cache is full. Returns its id (its planes stay readable until
-/// `ls_tiles_release`), 0 when there is room.
+/// The tile to let go to make room for one more (the least recently used one while the cache is full), without
+/// changing anything: the adapter stores it if it is dirty, then calls `ls_tiles_evict`. Returns its id, 0 when
+/// there is room.
 #[no_mangle]
-pub extern "C" fn ls_tiles_evict(handle: u32) -> i32 {
+pub extern "C" fn ls_tiles_victim(handle: u32) -> i32 {
     let Some(t) = tiles(handle) else {
         return STATUS_BAD_ARGUMENT;
     };
-    match t.cache.evict() {
+    t.cache.victim().map_or(0, |id| id as i32)
+}
+
+/// Evicts a resident tile; its planes stay readable until `ls_tiles_release`. `STATUS_NO_TILE` when it is not
+/// resident.
+#[no_mangle]
+pub extern "C" fn ls_tiles_evict(handle: u32, id: u32) -> i32 {
+    let Some(t) = tiles(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    match t.cache.evict(id) {
         Some(tile) => {
-            let id = tile.id();
             t.outgoing.insert(id, tile);
-            id as i32
+            STATUS_OK
         }
-        None => 0,
+        None => STATUS_NO_TILE,
     }
 }
 

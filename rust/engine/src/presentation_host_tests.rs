@@ -130,7 +130,8 @@ fn a_native_host_frames_a_canvas_and_builds_its_pyramid() {
             }
             Step::Next => {}
             Step::NeedTile(key) => {
-                while let Some(t) = cache.evict() {
+                while let Some(id) = cache.victim() {
+                    let t = cache.evict(id).unwrap();
                     if t.dirty {
                         cache.encoded();
                         store.put(t);

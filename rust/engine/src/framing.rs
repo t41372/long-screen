@@ -11,8 +11,8 @@
 //!
 //! The host answers what each [`FramingSession::step`] asks for: the reference frame ([`Step::NeedReference`]), the
 //! source canvas's level-0 tile index ([`Step::NeedIndex`], asked only once the perimeter alone fits the limit), and
-//! tiles that are not resident ([`Step::NeedTile`]: make room with [`TileCache::evict`], storing what is dirty, then
-//! [`TileCache::insert`]). [`Step::Next`] starts each output tile and is where the host checks for pause and stop;
+//! tiles that are not resident ([`Step::NeedTile`]: make room with [`TileCache::victim`], storing what is dirty
+//! before [`TileCache::evict`], then [`TileCache::insert`]). [`Step::Next`] starts each output tile and is where the host checks for pause and stop;
 //! [`Step::Save`] hands back an output tile that received pixels, for the host to store now. Per output tile the
 //! session takes the output tile first, then the source tiles under it, row by row, each touched in the cache or
 //! asked for, so the cache sees the same sequence of uses as it always has.
@@ -791,7 +791,8 @@ mod tests {
                     Step::Next => self.nexts += 1,
                     Step::NeedTile(key) => {
                         self.needs.push(key.clone());
-                        while let Some(t) = cache.evict() {
+                        while let Some(id) = cache.victim() {
+                            let t = cache.evict(id).unwrap();
                             if t.dirty {
                                 self.keep(t);
                             }

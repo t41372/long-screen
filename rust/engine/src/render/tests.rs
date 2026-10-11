@@ -164,7 +164,8 @@ impl Host {
                     s.frame_slot(i).copy_from_slice(&self.frames[&i]);
                 }
                 RenderStep::NeedTile(key) => {
-                    while let Some(t) = self.cache.evict() {
+                    while let Some(id) = self.cache.victim() {
+                        let t = self.cache.evict(id).unwrap();
                         self.tiles.insert(
                             t.key.clone(),
                             StoredTile {

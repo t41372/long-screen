@@ -3,7 +3,7 @@
 //!
 //! One placement is a resumable job. [`Compositor::begin`] plans it; each [`Compositor::step`] runs until it needs
 //! something the host must fetch — a tile that is not resident ([`Step::NeedTile`]: make room with
-//! [`TileCache::evict`], then [`TileCache::insert`] it) or a canvas's stored temporal records
+//! [`TileCache::victim`] and [`TileCache::evict`], then [`TileCache::insert`] it) or a canvas's stored temporal records
 //! ([`Step::NeedTemporal`]: [`Compositor::load_temporal`]) — and returns [`Step::Done`] with the placement's
 //! statistics and diagnostics once it has finished. The observed frame is passed to every step, never kept.
 //!

@@ -382,3 +382,51 @@ Deno.test('tiles: a tile evicted while a caller holds it keeps its planes, and a
   assertEquals([tiles.evictions, tiles.maxTiles], [evictions, limit]);
   await assertRejects(() => tiles.get('c', 0, 0));
 });
+Deno.test('tiles: a failed eviction write keeps the tile cached and dirty, and a later flush stores its latest pixels', async () => {
+  // Failure cases: the cache lets the tile go before its write succeeds (the pixels are lost, and the final flush
+  // a failed run makes has nothing to retry), counts an eviction that did not happen, or brings the new tile in
+  // anyway and grows past its limit.
+  let fail = false;
+  const inner = new MemoryKV();
+  const flaky: KV = {
+    get: (key) => inner.get(key),
+    put: (key, value) => inner.put(key, value),
+    delete: (key) => inner.delete(key),
+    deleteMany: (keys) => inner.deleteMany(keys),
+    scan: (prefix, options) => inner.scan(prefix, options),
+    putMany: (rows) => {
+      if (fail) {
+        fail = false;
+        return Promise.reject(new Error('write failed'));
+      }
+      return inner.putMany(rows);
+    },
+  };
+  const tiles = new TileStore(flaky, 16, 128);
+  tiles.maxTiles = 1;
+  const held = await tiles.get('c', 0, 0);
+  held.pixels[0] = 7;
+  held.coverage[0] = 1;
+  held.dirty = true;
+  fail = true;
+  await assertRejects(() => tiles.get('c', 1, 0), Error, 'write failed');
+  assert(tiles.isResident('c', 0, 0), 'the tile whose write failed is still cached');
+  assert(!tiles.isResident('c', 1, 0));
+  assertEquals(tiles.evictions, 0);
+  assertEquals(tiles.peakResidentTiles, 1);
+  assertEquals(await inner.get('tile/c/0/0_0'), undefined);
+  assert(held.dirty);
+  // The caller still holds the tile and keeps writing; the flush a failed run ends with stores what it holds now.
+  held.pixels[4] = 9;
+  held.dirty = true;
+  await tiles.flush();
+  assert(!held.dirty && held.existed);
+  const stored = (await inner.get<StoredTile>('tile/c/0/0_0'))!;
+  const pixels = await pngTileCodec.decode(stored.blob, 16);
+  assertEquals([pixels[0], pixels[4], stored.coverage[0]], [7, 9, 1]);
+  // With the write through, eviction goes ahead as before.
+  await tiles.get('c', 1, 0);
+  assertEquals(tiles.evictions, 1);
+  assert(!tiles.isResident('c', 0, 0));
+  await tiles.clear();
+});

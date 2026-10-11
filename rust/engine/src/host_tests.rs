@@ -48,7 +48,8 @@ impl Host {
         loop {
             match compositor.step(cache, frame, 1.0)? {
                 Step::NeedTile(key) => {
-                    while let Some(t) = cache.evict() {
+                    while let Some(id) = cache.victim() {
+                        let t = cache.evict(id).unwrap();
                         self.keep(t);
                     }
                     let stored = self.store.get(&key).cloned();
@@ -194,7 +195,8 @@ fn two_frames_paint_conflict_resolve_and_survive_eviction() {
         host.keep(t);
         cache.saved(id);
     }
-    while let Some(t) = cache.evict() {
+    while let Some(id) = cache.victim() {
+        let t = cache.evict(id).unwrap();
         host.keep(t);
     }
     for x in 0..2 {

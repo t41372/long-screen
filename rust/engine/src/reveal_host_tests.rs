@@ -80,7 +80,8 @@ impl Store {
 
 /// Makes room (storing what is dirty) and brings `key` in from the store.
 fn load(cache: &mut TileCache, store: &mut Store, key: TileKey, loads: &mut usize) {
-    while let Some(t) = cache.evict() {
+    while let Some(id) = cache.victim() {
+        let t = cache.evict(id).unwrap();
         if t.dirty {
             cache.encoded();
             store.put(&t);

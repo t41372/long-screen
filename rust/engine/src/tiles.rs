@@ -1,9 +1,10 @@
 //! The tile cache: every canvas tile the render, reveal and presentation passes paint, held in engine memory under
 //! a working-memory budget with least-recently-used eviction (docs/ARCHITECTURE.md §十 "瓦片缓存").
 //!
-//! The cache never touches storage. When a tile the caller asks for is not resident, the caller makes room with
-//! [`TileCache::evict`] (each evicted tile is handed back so the host can store it if it is dirty) and then
-//! supplies the tile's stored planes, or none for a tile that was never written, with [`TileCache::insert`]. Which
+//! The cache never touches storage. When a tile the caller asks for is not resident, the caller makes room: while
+//! [`TileCache::victim`] names a tile, it stores that tile if it is dirty and only then lets it go with
+//! [`TileCache::evict`], so a write that fails leaves the tile cached and dirty for a later flush. It then supplies
+//! the new tile's stored planes, or none for a tile that was never written, with [`TileCache::insert`]. Which
 //! tiles a flush must write comes from [`TileCache::dirty`]; the host encodes and stores them and reports each back
 //! with [`TileCache::saved`]. Tile pixels are stored raw: encoding them (PNG) is the host's business.
 //!
@@ -217,19 +218,20 @@ impl TileCache {
         Some(id)
     }
 
-    /// Makes room for one more tile: while the cache is full, the least recently used tile leaves it and is
-    /// returned, so the host can store it when it is dirty. Call until `None` before [`TileCache::insert`].
-    pub fn evict(&mut self) -> Option<Tile> {
-        if (self.tiles.len() as u64) < self.max_tiles || self.tiles.is_empty() {
+    /// The tile to let go to make room for one more: the least recently used one while the cache is full, `None`
+    /// when there is room. Changes nothing; the host stores the tile if it is dirty, then calls
+    /// [`TileCache::evict`]. Repeat until `None` before [`TileCache::insert`].
+    pub fn victim(&self) -> Option<u32> {
+        if (self.tiles.len() as u64) < self.max_tiles {
             return None;
         }
-        let id = self
-            .tiles
-            .values()
-            .min_by_key(|t| t.last_use)
-            .map(|t| t.id)
-            .unwrap();
-        let tile = self.tiles.remove(&id).unwrap();
+        self.tiles.values().min_by_key(|t| t.last_use).map(|t| t.id)
+    }
+
+    /// Removes a resident tile and counts the eviction, handing the tile back; `None` (and nothing counted) when
+    /// `id` is not resident.
+    pub fn evict(&mut self, id: u32) -> Option<Tile> {
+        let tile = self.tiles.remove(&id)?;
         self.by_key.remove(&tile.key);
         self.stats.evictions += 1;
         Some(tile)
@@ -403,23 +405,59 @@ mod tests {
     fn eviction_takes_the_least_recently_used_tile_and_only_when_full() {
         let mut cache = TileCache::new(16, 128.0).unwrap();
         cache.set_max_tiles(2);
-        assert!(cache.evict().is_none());
+        assert!(cache.victim().is_none());
         cache.insert(key(0), None).unwrap();
         cache.insert(key(1), None).unwrap();
         // Touching 0 makes 1 the oldest.
-        cache.touch(&key(0)).unwrap();
-        let out = cache.evict().unwrap();
+        let a = cache.touch(&key(0)).unwrap();
+        let b = cache.victim().unwrap();
+        let out = cache.evict(b).unwrap();
         assert_eq!(out.key, key(1));
-        assert!(cache.evict().is_none());
+        assert!(cache.victim().is_none());
         assert_eq!(cache.stats().evictions, 1);
         assert!(!cache.is_resident(&key(1)));
+        assert!(cache.get(a).is_some());
+    }
+
+    #[test]
+    fn naming_the_victim_changes_nothing() {
+        // Failure cases: choosing the victim already removes it (a host whose write then fails has lost the tile),
+        // counts an eviction, or reorders the cache so a second call names another tile.
+        let mut cache = TileCache::new(16, 128.0).unwrap();
+        cache.set_max_tiles(2);
+        let a = cache.insert(key(0), None).unwrap();
+        cache.insert(key(1), None).unwrap();
+        cache.mark_dirty(a, 1.0);
+        assert_eq!(cache.victim(), Some(a));
+        assert_eq!(cache.victim(), Some(a));
+        assert!(cache.is_resident(&key(0)));
+        assert!(cache.get(a).unwrap().dirty);
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache.stats().evictions, 0);
+        // The host stored it; now it goes.
+        cache.saved(a);
+        let out = cache.evict(a).unwrap();
+        assert!(!out.dirty && out.existed);
+        assert_eq!(cache.stats().evictions, 1);
+        assert_eq!(cache.victim(), None);
+    }
+
+    #[test]
+    fn evicting_a_tile_that_is_not_resident_does_nothing() {
+        let mut cache = TileCache::new(16, 128.0).unwrap();
+        cache.set_max_tiles(1);
+        let a = cache.insert(key(0), None).unwrap();
+        assert!(cache.evict(a + 1).is_none());
+        assert!(cache.evict(a).is_some());
+        assert!(cache.evict(a).is_none());
+        assert_eq!(cache.stats().evictions, 1);
     }
 
     #[test]
     fn eviction_with_an_empty_cache_and_a_zero_limit_stops() {
         let mut cache = TileCache::new(16, 128.0).unwrap();
         cache.set_max_tiles(0);
-        assert!(cache.evict().is_none());
+        assert!(cache.victim().is_none());
     }
 
     #[test]
@@ -478,7 +516,7 @@ mod tests {
         let mut cache = TileCache::new(16, 128.0).unwrap();
         cache.set_max_tiles(1);
         let a = cache.insert(key(0), None).unwrap();
-        let out = cache.evict().unwrap();
+        let out = cache.evict(cache.victim().unwrap()).unwrap();
         let b = cache.insert(key(0), None).unwrap();
         assert_ne!(a, b);
         assert_eq!(out.id(), a);

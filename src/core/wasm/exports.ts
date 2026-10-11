@@ -184,7 +184,8 @@ export interface CoreExports {
   ls_tiles_set_max(handle: number, max: number): number;
   ls_tiles_stats(handle: number, out: number): number;
   ls_tiles_touch(handle: number, canvas: number, canvasLen: number, level: number, x: number, y: number): number;
-  ls_tiles_evict(handle: number): number;
+  ls_tiles_victim(handle: number): number;
+  ls_tiles_evict(handle: number, id: number): number;
   ls_tiles_release(handle: number, id: number): void;
   ls_tiles_insert(handle: number, canvas: number, canvasLen: number, level: number, x: number, y: number, stored: number): number;
   ls_tiles_planes(handle: number, id: number, out: number): number;
