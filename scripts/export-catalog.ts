@@ -1,5 +1,6 @@
-/** Exports the `diag` and `progress` sections of the zh and en catalogues (src/i18n) to rust/engine/catalog/*.json,
- *  where the Rust engine embeds them (rust/engine/src/catalog.rs) to word its diagnostics exactly as the page does.
+/** Exports the `diag`, `progress` and `names` sections of the zh and en catalogues (src/i18n) to
+ *  rust/engine/catalog/*.json, where the Rust engine embeds them (rust/engine/src/catalog.rs) to word its diagnostics
+ *  exactly as the page does and to show region and canvas names in the run's language (src/i18n/names.ts).
  *
  *  Usage: deno task export-catalog          rewrite the JSON files
  *         deno task export-catalog --check  exit 1 if they are out of date (tests/unit/catalog-export.test.ts does the same)
@@ -12,7 +13,7 @@ import { zh } from '../src/i18n/zh/index.ts';
 import { en } from '../src/i18n/en/index.ts';
 
 type Tree = { [key: string]: string | Tree };
-export const CATALOG_SECTIONS = ['diag', 'progress'] as const;
+export const CATALOG_SECTIONS = ['diag', 'progress', 'names'] as const;
 export const CATALOG_DIR = fromFileUrl(new URL('../rust/engine/catalog/', import.meta.url));
 const PLURAL = /_(zero|one|two|few|many|other)$/;
 

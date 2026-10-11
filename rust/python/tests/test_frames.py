@@ -72,6 +72,23 @@ def test_diagnostics_are_dicts_in_the_chosen_language(scroll):
     assert en[0]["message"] != zh[0]["message"]
 
 
+def test_canvas_names_are_in_the_chosen_language(scroll):
+    frames, _ = scroll
+    en = run(frames)
+    zh = run(frames, lang="zh")
+    assert moving(en).name == "Content canvas 1"
+    assert moving(zh).name == "内容画布 1"
+    # Only what is shown follows the language: every stored row is the same.
+    en_rows, zh_rows = en._fingerprint()["rows"], zh._fingerprint()["rows"]
+    assert en_rows.keys() == zh_rows.keys()
+    differing = [
+        k
+        for k in en_rows
+        if en_rows[k] != zh_rows[k] and not k.endswith("/performance") and not k.startswith("project/")
+    ]
+    assert differing == []
+
+
 def test_progress_reaches_complete(scroll):
     frames, _ = scroll
     events = []

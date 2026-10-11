@@ -4,7 +4,7 @@
 
 use long_screen::source::{Frame, Frames, MediaInfo, SourceError};
 use long_screen::value::{Js, Obj};
-use long_screen::{run, Control, Error, FrameSource, Options};
+use long_screen::{run, Control, Error, FrameSource, Locale, Options};
 
 const W: usize = 640;
 const H: usize = 400;
@@ -301,4 +301,55 @@ fn spilled_tiles_read_back_as_the_same_rows() {
         "rows that changed when tiles spilled: {differing:?}"
     );
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn canvas_names_show_in_the_run_language_while_rows_keep_zh() {
+    let go = |locale| {
+        let mut source = Scroll::new(scroll_offsets());
+        let options = Options {
+            locale,
+            ..Options::default()
+        };
+        run(&mut source, &options, &mut (), &Control::new()).expect("a result")
+    };
+    let (en, zh) = (go(Locale::En), go(Locale::Zh));
+    let names = |r: &long_screen::RunResult| {
+        r.canvases()
+            .iter()
+            .map(|c| (c.name.clone(), r.display_name(c)))
+            .collect::<Vec<_>>()
+    };
+    let (en_names, zh_names) = (names(&en), names(&zh));
+    // The stored names are the zh vocabulary in both runs; only what is shown follows the language. (This page
+    // has no window chrome, so there is no framed presentation; the suffixes are covered in the engine's catalog.)
+    assert!(
+        en_names
+            .iter()
+            .any(|(stored, shown)| stored == "内容画布 1" && shown == "Content canvas 1"),
+        "{en_names:?}"
+    );
+    assert!(
+        zh_names.iter().all(|(stored, shown)| stored == shown),
+        "{zh_names:?}"
+    );
+    assert_eq!(
+        en_names.iter().map(|n| &n.0).collect::<Vec<_>>(),
+        zh_names.iter().map(|n| &n.0).collect::<Vec<_>>()
+    );
+    let print = en.print().expect("a print");
+    assert_eq!(en.display_name(&print), "Content canvas 1");
+    // Every persisted row is the same whatever the display language.
+    let (en_rows, _) = en.fingerprint();
+    let (zh_rows, _) = zh.fingerprint();
+    let differing: Vec<_> = en_rows
+        .iter()
+        .filter(|(k, v)| zh_rows.get(*k) != Some(v) && !k.ends_with("/performance"))
+        .map(|(k, _)| k.clone())
+        .collect();
+    assert_eq!(en_rows.len(), zh_rows.len());
+    assert!(
+        differing.is_empty(),
+        "rows that changed with the language: {differing:?}"
+    );
 }

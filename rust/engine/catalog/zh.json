@@ -194,5 +194,15 @@
     "duplicateReuse": "这一帧和前面完全一样，直接沿用位置。",
     "solveFrame": "给每一帧找准位置，并和看过的地方对上。",
     "optimizing": "回头校正整体位置，消除累积误差。"
+  },
+  "names": {
+    "fixed": "固定界面",
+    "divider": "固定分隔界面",
+    "contentCanvas": "内容画布 {{n}}",
+    "unassigned": "未指定区域 · 屏幕坐标观察",
+    "contentRegion": "内容区域 {{n}}",
+    "ignored": "主动忽略",
+    "fragment": "未定位片段 {{n}}",
+    "framed": "保留外框"
   }
 }

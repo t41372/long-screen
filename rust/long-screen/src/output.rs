@@ -7,6 +7,7 @@ use crate::tiles::decode_png;
 use crate::value::{fingerprint, read_rect, Js, Obj};
 use crate::Diagnostic;
 use long_screen_core::geometry::Rect;
+use long_screen_engine::catalog::{display_name, Locale};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
@@ -16,6 +17,8 @@ pub struct CanvasInfo {
     pub id: String,
     /// The region (layer) it belongs to.
     pub layer: String,
+    /// The stored name: the zh vocabulary the page persists (`内容画布 1`, `固定界面`, …) whatever the run's
+    /// language. [`RunResult::display_name`] gives it in the run's language.
     pub name: String,
     /// `moving` (reconstructed content), `fixed` (screen-fixed interface) or `presentation` (a framed view).
     pub kind: String,
@@ -65,6 +68,7 @@ pub struct RunResult {
     diagnostics: Vec<Diagnostic>,
     tile_size: usize,
     seconds: f64,
+    locale: Locale,
 }
 
 impl std::fmt::Debug for RunResult {
@@ -87,6 +91,7 @@ impl RunResult {
             store: ctx.store,
             project,
             seconds,
+            locale: ctx.locale,
         }
     }
 
@@ -127,6 +132,11 @@ impl RunResult {
     /// Every diagnostic, in emission order, in the run's display language.
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+
+    /// `canvas`'s name in the run's language (`Content canvas 1` in English), as the page shows it.
+    pub fn display_name(&self, canvas: &CanvasInfo) -> String {
+        display_name(self.locale, &canvas.name)
     }
 
     /// Every stored row.

@@ -47,7 +47,8 @@ class Canvas:
     @property
     def layer(self) -> str: ...
     @property
-    def name(self) -> str: ...
+    def name(self) -> str:
+        """The canvas's name in the run's language ("Content canvas 1" with lang="en"); `id` and `layer` are the stable identifiers."""
     @property
     def kind(self) -> Literal["moving", "fixed", "presentation"]: ...
     @property

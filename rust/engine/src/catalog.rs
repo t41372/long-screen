@@ -1,11 +1,12 @@
-//! The zh and en diagnostic and progress messages, and the formatter that fills in their `{{name}}` placeholders.
+//! The zh and en diagnostic and progress messages, and the formatter that fills in their `{{name}}` placeholders;
+//! also the display names of regions and canvases ([`display_name()`]).
 //!
-//! The catalogues are the `diag` and `progress` sections of `src/i18n/{zh,en}`, exported to `catalog/*.json` by
-//! `scripts/export-catalog.ts` (`deno task export-catalog`); `tests/unit/catalog-export.test.ts` fails when the
-//! checked-in JSON no longer matches the TypeScript. [`format()`] reproduces what the page's `t()` (i18next 26 with
-//! `escapeValue: false`) returns for the same key and values, so a diagnostic formatted natively reads exactly like
-//! the one the page persists. The export refuses catalogue features this formatter does not implement (nesting,
-//! formatters, unescaped placeholders, plural keys), so the two cannot drift apart silently.
+//! The catalogues are the `diag`, `progress` and `names` sections of `src/i18n/{zh,en}`, exported to
+//! `catalog/*.json` by `scripts/export-catalog.ts` (`deno task export-catalog`); `tests/unit/catalog-export.test.ts`
+//! fails when the checked-in JSON no longer matches the TypeScript. [`format()`] reproduces what the page's `t()`
+//! (i18next 26 with `escapeValue: false`) returns for the same key and values, so a diagnostic formatted natively
+//! reads exactly like the one the page persists. The export refuses catalogue features this formatter does not
+//! implement (nesting, formatters, unescaped placeholders, plural keys), so the two cannot drift apart silently.
 
 use serde_json::Value;
 use std::sync::OnceLock;
@@ -72,6 +73,62 @@ pub fn format(locale: Locale, key: &str, params: &[(&str, Param)]) -> String {
         key,
         params,
     )
+}
+
+/// A region or canvas name in `locale`, for display. Persisted names are a fixed zh vocabulary (`names` in the
+/// catalogue: 固定界面, 内容画布 N, …) whatever the display language, so rows and fingerprints do not depend on it;
+/// this translates one the way the page's `displayName` (src/i18n/names.ts) does: the base name, then an optional
+/// ` · 未定位片段 N` (unplaced fragment) suffix, then an optional ` · 保留外框` (framed) suffix, each on its own. A
+/// name outside the vocabulary is kept as stored, and zh returns every name unchanged.
+pub fn display_name(locale: Locale, name: &str) -> String {
+    if locale == Locale::Zh {
+        return name.to_string();
+    }
+    let canonical = |key: &str| {
+        lookup(Locale::Zh, &format!("names.{key}")).expect("the catalogue has the names section")
+    };
+    let mut suffixes = Vec::new();
+    let mut rest = name;
+    if let Some(base) = rest
+        .strip_suffix(canonical("framed"))
+        .and_then(|r| r.strip_suffix(NAME_SEPARATOR))
+    {
+        rest = base;
+        suffixes.push(format(locale, "names.framed", &[]));
+    }
+    if let Some((base, tail)) = rest.rsplit_once(NAME_SEPARATOR) {
+        if let Some(n) = numbered(canonical("fragment"), tail) {
+            rest = base;
+            suffixes.insert(0, format(locale, "names.fragment", &[("n", Param::Str(n))]));
+        }
+    }
+    let base = ["fixed", "divider", "unassigned", "ignored"]
+        .into_iter()
+        .find(|key| canonical(key) == rest)
+        .map(|key| format(locale, &format!("names.{key}"), &[]))
+        .or_else(|| {
+            ["contentCanvas", "contentRegion"]
+                .into_iter()
+                .find_map(|key| {
+                    numbered(canonical(key), rest)
+                        .map(|n| format(locale, &format!("names.{key}"), &[("n", Param::Str(n))]))
+                })
+        })
+        .unwrap_or_else(|| rest.to_string());
+    std::iter::once(base)
+        .chain(suffixes)
+        .collect::<Vec<_>>()
+        .join(NAME_SEPARATOR)
+}
+
+/// What joins a base name and its suffixes.
+const NAME_SEPARATOR: &str = " · ";
+
+/// The number in `name` if it is `template` (`内容画布 {{n}}`) with `{{n}}` replaced by one or more ASCII digits.
+fn numbered<'a>(template: &str, name: &'a str) -> Option<&'a str> {
+    let (before, after) = template.split_once("{{n}}")?;
+    let n = name.strip_prefix(before)?.strip_suffix(after)?;
+    (!n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).then_some(n)
 }
 
 fn find<'v>(root: &'v Value, key: &str) -> Option<&'v Value> {
@@ -339,5 +396,78 @@ mod tests {
             message,
             "瓦片缓存从预算允许的 12 块提高到 30 块（约 9 MB），以容纳一帧触及的全部瓦片。"
         );
+    }
+
+    // display_name mirrors src/i18n/names.ts::displayName. Ways it could go wrong: translating in zh (persisted
+    // names are zh already); missing one of the four fixed names or the two numbered ones; reading a numbered name
+    // whose number is not ASCII digits (JS `\d`) or is empty; translating the fragment and framed suffixes in the
+    // wrong order, or a suffix that is not at the end; dropping a name outside the vocabulary instead of keeping it;
+    // splitting the unassigned name, which contains the separator itself.
+    #[test]
+    fn names_stay_as_stored_in_zh() {
+        for name in [
+            "内容画布 1",
+            "内容画布 1 · 未定位片段 2 · 保留外框",
+            "固定界面",
+            "",
+        ] {
+            assert_eq!(display_name(Locale::Zh, name), name);
+        }
+    }
+
+    #[test]
+    fn the_vocabulary_reads_in_english() {
+        let cases = [
+            ("固定界面", "Fixed UI"),
+            ("固定分隔界面", "Fixed divider"),
+            (
+                "未指定区域 · 屏幕坐标观察",
+                "Unassigned area · screen-space observations",
+            ),
+            ("主动忽略", "Ignored"),
+            ("内容画布 1", "Content canvas 1"),
+            ("内容画布 12", "Content canvas 12"),
+            ("内容画布 01", "Content canvas 01"),
+            ("内容区域 3", "Content region 3"),
+            ("内容画布 1 · 保留外框", "Content canvas 1 · framed"),
+            (
+                "内容画布 2 · 未定位片段 3",
+                "Content canvas 2 · unplaced fragment 3",
+            ),
+            (
+                "内容画布 1 · 未定位片段 2 · 保留外框",
+                "Content canvas 1 · unplaced fragment 2 · framed",
+            ),
+            (
+                "未指定区域 · 屏幕坐标观察 · 未定位片段 1",
+                "Unassigned area · screen-space observations · unplaced fragment 1",
+            ),
+        ];
+        for (name, english) in cases {
+            assert_eq!(display_name(Locale::En, name), english, "{name}");
+        }
+    }
+
+    #[test]
+    fn names_outside_the_vocabulary_keep_what_they_can() {
+        let cases = [
+            ("Header", "Header"),
+            ("", ""),
+            ("内容画布 x", "内容画布 x"),
+            ("内容画布 ", "内容画布 "),
+            ("内容画布 ١", "内容画布 ١"),
+            ("内容画布 1 extra", "内容画布 1 extra"),
+            ("内容画布 1 · 未定位片段 x", "内容画布 1 · 未定位片段 x"),
+            // Suffixes are read from the end in a fixed order: fragment, then framed.
+            (
+                "内容画布 1 · 保留外框 · 未定位片段 2",
+                "内容画布 1 · 保留外框 · unplaced fragment 2",
+            ),
+            ("Header · 未定位片段 1", "Header · unplaced fragment 1"),
+            ("保留外框", "保留外框"),
+        ];
+        for (name, english) in cases {
+            assert_eq!(display_name(Locale::En, name), english, "{name}");
+        }
     }
 }

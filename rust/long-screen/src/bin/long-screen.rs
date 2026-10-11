@@ -201,7 +201,7 @@ fn report(
             Js::Obj(
                 Obj::new()
                     .with("id", c.id.as_str())
-                    .with("name", c.name.as_str())
+                    .with("name", result.display_name(c))
                     .with("kind", c.kind.as_str())
                     .with("bounds", long_screen::value::rect(c.bounds))
                     .with("tiles", c.tile_count)
@@ -359,7 +359,7 @@ fn main() -> ExitCode {
                             path.display(),
                             size.0,
                             size.1,
-                            canvas.name
+                            result.display_name(&canvas)
                         );
                     }
                     written.push((canvas, path, size));

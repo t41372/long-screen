@@ -194,5 +194,15 @@
     "duplicateReuse": "An identical observation reused the previous placement; the source frame and timestamp are retained.",
     "solveFrame": "Native-pixel refinement, historical relocalization, and 2D loop-closure constraints.",
     "optimizing": "Optimizing the on-disk pose graph, correcting loop-closure drift."
+  },
+  "names": {
+    "fixed": "Fixed UI",
+    "divider": "Fixed divider",
+    "contentCanvas": "Content canvas {{n}}",
+    "unassigned": "Unassigned area · screen-space observations",
+    "contentRegion": "Content region {{n}}",
+    "ignored": "Ignored",
+    "fragment": "unplaced fragment {{n}}",
+    "framed": "framed"
   }
 }

@@ -1,6 +1,6 @@
-// The Rust engine words its diagnostics from rust/engine/catalog/*.json, a copy of the diag and progress catalogue
-// sections. This fails when that copy no longer matches src/i18n, so a wording change cannot reach the page and miss
-// the native engine (or the reverse).
+// The Rust engine words its diagnostics and names canvases from rust/engine/catalog/*.json, a copy of the diag,
+// progress and names catalogue sections. This fails when that copy no longer matches src/i18n, so a wording change
+// cannot reach the page and miss the native engine (or the reverse).
 import { assertEquals } from '@std/assert';
 import { CATALOG_DIR, catalogJSON } from '../../scripts/export-catalog.ts';
 

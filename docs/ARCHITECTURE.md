@@ -347,7 +347,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `src/render/tests.rs` — 渲染会话的失败用例与顺序（缺元数据、缺节点、未知图层、不可放置的位姿、重复帧不解码、固定区域、前后帧的装入顺序、跨画布邻居、帧环复用、投票窗口、截断的投票、脏元数据顺序、接回、瓦片预算）。Rust 引擎（测试）。
 - `tests/render_host.rs` — 原生宿主测试：同步循环按单帧前瞻驱动渲染会话（只有一块瓦片的缓存，每块都换出再读回），核对台账、画布元数据与成品像素：屏幕固定的红条只留在第一帧在它下面画下的两行。Rust 引擎（测试）。
 - `tests/pose_graph_host.rs` — 原生宿主测试：把引擎给的写入存进有序表，中途停止松弛，再从表里重建位置图，核对两边一致。Rust 引擎（测试）。
-- `src/catalog.rs` — 内嵌的 zh/en 诊断与进度文案，以及与页面 `t()`（i18next，`escapeValue: false`）逐字一致的 `{{name}}` 插值和 JS 数字格式化。默认开启的 `catalog` feature；`rust/wasm` 关掉它（页面用自己的目录排版），serde_json 因此不进 .wasm。Rust 引擎。
+- `src/catalog.rs` — 内嵌的 zh/en 诊断与进度文案，以及与页面 `t()`（i18next，`escapeValue: false`）逐字一致的 `{{name}}` 插值和 JS 数字格式化；`display_name` 照 `src/i18n/names.ts::displayName` 把持久化的 zh 区域/画布名称译成显示语言（原生宿主的命令行输出、`--json` 报告和 Python 的 `Canvas.name` 用它，行里仍存 zh）。默认开启的 `catalog` feature；`rust/wasm` 关掉它（页面用自己的目录排版），serde_json 因此不进 .wasm。Rust 引擎。
 - `src/diagnostic.rs` — 结构化诊断 `Diagnostic`：code、severity、frame/time、数值参数，以及求解趟用到的可选画布、置信度、矩形和 `detail`（数、布尔、文字与按序字段的对象，诊断行原样存它），不带文字；`detail` 也可以是列表（渲染趟的冲突诊断把每个冲突矩形放进 `detail.regions`）。各遍共用。Rust 引擎。
 - `src/scan.rs`（单测在 `src/scan/tests.rs`）— 扫描趟 `ScanSession`：宿主把每帧写进会话自己的帧缓冲（最多三块：上一帧、长基线参照帧、正在写的帧，一帧只写一次、角色之间不拷贝），`is_duplicate`、`push`（可带宿主算好的 WebGPU 灰度图）返回 `scan/` 记录、`scan-features/` 紧凑特征行与逐帧诊断；首帧/重复帧/常态三个运动场分支、长基线重试（间隔 ≥4 帧）与超过 24 帧的参照帧重置、`informative_field`、喂图层学习器；`finish()` 建区域并给出区域形状诊断。还有 `estimate_motion`（静止帧对跳过匹配）。Rust 引擎。
 - `src/layers.rs` — `RegionLearner`：核心的逐帧累加器加最后一个有信息的原生帧（外观证据），`finish()` 出自动布局或手放布局（含未指定区域）；`label_atlas` 给原生宿主建标签平面。Rust 引擎。
@@ -356,7 +356,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `src/presentation_host_tests.rs` — 原生宿主测试：只经公开 API，先用 `FramingSession` 在三块的小缓存上做出呈现画布，再用 `PyramidSession` 给它建金字塔。Rust 引擎测试。
 - `src/reveal.rs`（单测在 `src/reveal_tests.rs`）— `RevealSession`：揭示阶段（§七）。先要内存（`NeedMemory`：所有画布、层与三帧的估计，宿主拒绝则以 `REVEAL_SKIPPED` 结束），再要观察行（`NeedObservations`：只留本阶段覆盖的画布与层上的决定，盲帧经 `admitted` 判定，位姿按页面的 `Math.round` 取整），逐行把合成器的瓦片喂进参照（每块之后一个 `Checkpoint`），然后四遍：每遍给出 `Decode`（含 `wanted`），宿主把要读的帧写进会话自己的帧缓冲（最多三块：投票帧、它前一帧、正在写的帧）后逐帧 `push_frame`、`end_pass`；写入遍之前先要回退状态的内存，再按块取合成器像素；投票后的整块拷贝按出现顺序逐瓦片写进缓存，最后写延后块并给出每张画布的来源行（`Provenance`）与汇总。瓦片缺了就 `NeedTile`，驻留的就 touch，缓存看到的使用顺序与原来一致。Rust 引擎。
 - `src/reveal_host_tests.rs` — 原生宿主测试：页面在固定悬浮按钮下滚动，合成器把按钮烧进了画布；同步宿主只经公开 API、在四块的小缓存上跑完四遍，页面逐像素恢复，来源行指向后来的帧。Rust 引擎测试。
-- `catalog/zh.json`、`catalog/en.json` — `src/i18n` 的 `diag`、`progress` 两节的导出（`deno task export-catalog`）；`tests/unit/catalog-export.test.ts` 在它们与 TS 目录不一致时失败。生成文件。
+- `catalog/zh.json`、`catalog/en.json` — `src/i18n` 的 `diag`、`progress`、`names` 三节的导出（`deno task export-catalog`）；`tests/unit/catalog-export.test.ts` 在它们与 TS 目录不一致时失败。生成文件。
 
 ### rust/long-screen（原生驱动与命令行，§十三第 7 步）
 
@@ -371,7 +371,7 @@ crates.io 发布：`long-screen-core`、`long-screen-engine`、`long-screen-deco
 - `src/store.rs` — 行存储：按键排序的内存表（与 `MemoryKV` 的遍历顺序相同）；可设内存预算，超出后已编码的瓦片 PNG 写到临时目录。原生宿主。
 - `src/value.rs` — 行的值：保持字段插入顺序的 JS 值（类型化数组、Blob），`JSON.stringify` 的数字与字符串写法、JS 的 `toFixed`/`toLocaleString`，以及 `scripts/fingerprint-scenarios.ts` 的规范化与摘要（`RunResult::fingerprint`）。原生宿主。
 - `src/source.rs` — `FrameSource`：每一遍重新解码一次（与网页相同；整段缓存原生尺寸的帧对 3456×2234 的录屏每帧 31 MB，放不下），`sparse_frames` 让揭示阶段不转换它不读的帧。`VideoSource` 经 `rust/decode` 解码，YUV→RGBA 用核心的 `yuv::convert`，10 位 PQ/HLG 先经 `Frame::to_8bit` 取整成 8 位再走核心的 HDR 路径（高精度路径是以后的改进）；`RawSource` 回放现成的 RGBA 帧。原生宿主：I/O。
-- `src/output.rs` — `RunResult`：画布列表、主图（有呈现画布时取呈现画布）与片段、按瓦片带逐行读出任意尺寸的画布（`read_rows`，PNG 和 Python 的 NumPy 数组都用它）、流式写 PNG、行指纹。原生宿主：I/O。
+- `src/output.rs` — `RunResult`：画布列表（`CanvasInfo.name` 是存下的 zh 名称，`display_name()` 给运行语言下的名称）、主图（有呈现画布时取呈现画布）与片段、按瓦片带逐行读出任意尺寸的画布（`read_rows`，PNG 和 Python 的 NumPy 数组都用它）、流式写 PNG、行指纹。原生宿主：I/O。
 - `src/bin/long-screen.rs` — 命令行（`cli` feature，clap）：进度与警告写 stderr，`--json` 报告，退出码 0 完成、3 部分结果、1 失败、2 参数错误、4 打不开视频（含缺 ffmpeg 时 `rust/decode` 给的安装提示）、5 写不出文件。网页的完整结果包（ZIP、离线查看器）没有搬过来：它在 `src/export/` 的 TS 里，体量不小，留作以后的工作。
 - `examples/parity.rs` — 一致性测试：读 `scripts/native-parity.ts export` 导出的合成场景帧，或像 `scripts/native-parity.ts recording` 那样用 ffmpeg 解码录屏，输出与 `scripts/fingerprint-scenarios.ts` 同格式的指纹，用 `scripts/compare-fingerprints.ts` 比较。
 - `tests/driver.rs` — 原生端到端：在这里生成的纹理页面滚动 24 帧，先测失败（没有帧、瓦片尺寸非法、停止、中途变尺寸），再测结果（主图逐像素等于页面、PNG 输出、1 线程与 4 线程逐行相同）。
@@ -433,7 +433,7 @@ PyO3 绑定（`long-screen-py`，cdylib，导入名 `long_screen._native`），�
 
 - `index.ts` — 本 JS 环境（页面、每个 worker、Deno 各一份）唯一的 i18next 实例与有类型的 `t()`；目录内联打包，同步初始化；默认 zh，从不读取 `navigator`。TS 外壳：UI。
 - `page.ts` — 仅页面：加载时选语言（已保存的选择 → 浏览器首选语言 → 英文，任何 zh-* 都选 zh）、按 `data-i18n*` 属性翻译静态页面、语言菜单保存选择并重新加载（打开中的项目在重新加载后重新打开）。检测本身不保存任何东西。TS 外壳：UI，兼 I/O（localStorage）。
-- `names.ts` — 持久化的 zh 区域/画布名称词表到界面语言的显示映射，及手动区域的规范名称。TS 外壳：UI。
+- `names.ts` — 持久化的 zh 区域/画布名称词表到界面语言的显示映射，及手动区域的规范名称；原生一侧的同一映射是 `rust/engine/src/catalog.rs::display_name`。TS 外壳：UI。
 - `catalog.ts`、`zh/*.ts`、`en/*.ts` — 目录。按显示位置分为 `page`（静态页面）、`ui`（页面脚本）、`pipeline`（worker 写出的诊断、进度、导出文本）；每个 en 分区的类型由对应的 zh 分区导出，缺键或多键是编译错误，`tests/unit/i18n.test.ts` 再检查插值变量一致、英文无汉字、静态页面引用的键都存在。TS 外壳（数据）。
 
 ### src/media（TS 外壳：浏览器 API / I/O）
@@ -496,7 +496,7 @@ PyO3 绑定（`long-screen-py`，cdylib，导入名 `long_screen._native`），�
 - `build.ts` / `build-core.sh` — 应用构建（bundle + dist 静态资源 + THIRD_PARTY_NOTICES + 写进 `sw.js` 的离线文件清单，并把构建所用的提交写进页脚：Cloudflare Pages 上取 `CF_PAGES_COMMIT_SHA`，本地取 git HEAD，工作区有改动时标 `-dirty`，两者都没有时页脚这一行保持隐藏，不让构建失败）与 Rust 核心三构建编译；后者是修改任何 `.rs` 后唯一允许的构建入口。
 - `build-package.ts` — `deno task build:package`：把 npm/JSR 包构建进 `dist-package/`（`index.js` + `index.d.ts`、应用的 `worker.js`、两个辅助 worker、三个核心构建、`package.json`、`jsr.json`、README、LICENSE、不含字体和徽标的 THIRD_PARTY_NOTICES）；包里的文件引用不是字面量 `new URL('./文件', import.meta.url)` 或指向不存在的文件时构建失败。
 - `fingerprint-scenarios.ts` / `compare-fingerprints.ts` — 24 个合成场景跑一遍并哈希每一条持久化记录；两份指纹逐行比较，任何差异退出码 1。
-- `export-catalog.ts` — 把 `src/i18n` 的 `diag`、`progress` 两节导出成 `rust/engine/catalog/*.json`（`deno task export-catalog`，`--check` 只检查）；遇到 Rust 格式化器不支持的写法（嵌套 `$t()`、格式化器、`{{- }}`、复数键）直接报错。
+- `export-catalog.ts` — 把 `src/i18n` 的 `diag`、`progress`、`names` 三节导出成 `rust/engine/catalog/*.json`（`deno task export-catalog`，`--check` 只检查）；遇到 Rust 格式化器不支持的写法（嵌套 `$t()`、格式化器、`{{- }}`、复数键）直接报错。
 - `compare-tiles.ts` — `benchmark-pipeline.ts --verify-tiles` 产出的逐瓦片指纹按字段比较，定位差异瓦片。
 - `benchmark-pipeline.ts` — 真实 Chrome（Playwright）下的端到端流水线基准，支持 `--baseline-root`/`--verify-tiles`；`--export-canvases` 另写出各画布 PNG 与局部真值检查要读的证据行，`--skip-core-build` 复用已构建的核心，`--no-profile` 不录 CPU profile。
 - `check-recording-oracles.py` — 真实录屏的局部真值检查：按 `docs/benchmarks/2026-10-03-recording-oracles.json` 里的世界矩形，把输出与 ffmpeg 独立解码的原生帧比较；完整时刻检查读 `reveal/<canvas>` 来源行；`--reference browser` 用与应用相同的矩阵和色度插值生成参照帧（docs/TESTING.md）。

@@ -262,9 +262,11 @@ impl PyCanvas {
         &self.info.layer
     }
 
+    /// The canvas's name in the run's language ("Content canvas 1" with lang="en"); `id` and `layer` are the
+    /// stable identifiers.
     #[getter]
-    fn name(&self) -> &str {
-        &self.info.name
+    fn name(&self) -> String {
+        self.result.display_name(&self.info)
     }
 
     /// "moving" (reconstructed content), "fixed" (screen-fixed interface) or "presentation" (a framed view).
