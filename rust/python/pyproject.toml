@@ -1,0 +1,43 @@
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "long-screen"
+description = "Turn a screen recording of a page explored along any path into one big screenshot"
+readme = "README.md"
+# abi3 wheels for CPython 3.11 and later: see the comment on pyo3 in Cargo.toml.
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Yi-Ting Chiu" }]
+keywords = ["screenshot", "screen recording", "stitching", "panorama", "long screenshot"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: MacOS",
+  "Operating System :: Microsoft :: Windows",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Rust",
+  "Topic :: Multimedia :: Graphics",
+  "Topic :: Multimedia :: Video",
+  "Typing :: Typed",
+]
+dependencies = ["numpy>=1.24"]
+# The version is the crate's (Cargo.toml).
+dynamic = ["version"]
+
+[project.urls]
+Homepage = "https://github.com/t41372/long-screen"
+Repository = "https://github.com/t41372/long-screen"
+Issues = "https://github.com/t41372/long-screen/issues"
+
+[tool.maturin]
+python-source = "python"
+module-name = "long_screen._native"
+
+[tool.ruff]
+line-length = 120

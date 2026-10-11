@@ -100,11 +100,26 @@ long-screen recording.mov -o print.png --json report.json
 
 It writes the print as one PNG (fragments it could not place go next to it as `print-fragment-<n>.png`, or use `--out-dir` for every canvas), progress and warnings on stderr, and with `--json` a report of the diagnostics, canvases and timings; `--lang zh`, `--threads`, `--memory-mb` and `--help` for the rest. Exit codes: 0 complete, 3 partial result, 1 failed, 4 the video could not be opened. On macOS and Windows it decodes with the system decoder (AVFoundation, Media Foundation); on Linux, and for files the system decoder cannot read, it runs a user-installed `ffmpeg`/`ffprobe` (e.g. `sudo apt install ffmpeg`). Its output matches the web app's row for row on the same frames (`test-results/native-cli/`).
 
+## Python
+
+`rust/python` wraps the native driver as a Python package, `long-screen` (CPython 3.11+, one abi3 wheel per platform, NumPy; not yet published). Build and test it with `deno task test:python` (needs [uv](https://docs.astral.sh/uv/)); `cd rust/python && maturin build --release` makes just the wheel.
+
+```python
+import long_screen
+
+result = long_screen.reconstruct("recording.mov", on_progress=lambda p: print(p.phase, p.fraction))
+result.save("print.png")  # fragments: result.fragments; NumPy: result.print_image()
+print(result.status, [d["code"] for d in result.diagnostics if d["severity"] != "info"])
+```
+
+It decodes the way the command line does (AVFoundation on macOS, Media Foundation on Windows, a user-installed ffmpeg on Linux), and `reconstruct_frames` takes frames you decoded yourself. The engine runs with the GIL released; Ctrl-C stops it at the next step. On macOS its rows are identical to the command line's and the web app's (`test-results/python-package/`). The package's own README (`rust/python/README.md`) has the API.
+
 ## Directory layout
 
 ```text
 rust/core       Rust core source; compiles into three builds: core.wasm / core.simd.wasm / core.threads.wasm
 rust/long-screen  Native driver library and the `long-screen` command line (decodes with rust/decode)
+rust/python     The Python package (PyO3 + maturin) over rust/long-screen
 src/core        TS shell around the core: registration, layering, pose graph, keyframes, compositing, rasterization, loading the core and picking its build (src/core/wasm/**)
 src/media       Container parsing (Input/BlobSource/EncodedPacketSink from the npm package mediabunny), ranged reads, WebCodecs decoding
 src/codec       TS orchestration layer for PNG encode/decode; chunk/CRC validation goes through the core

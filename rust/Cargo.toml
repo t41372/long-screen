@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["core", "engine", "wasm", "decode", "bench", "long-screen"]
+members = ["core", "engine", "wasm", "decode", "bench", "long-screen", "python"]
 # Plain `cargo` commands (`cargo test --lib`, the wasm clippy runs in `deno task lint`) cover the crates that build for
 # wasm32: the core, the engine and the wasm exports. scripts/build-core.sh names the wasm crate with `-p`; native-only
 # crates (decode, bench, long-screen) are built by name with `-p` too.

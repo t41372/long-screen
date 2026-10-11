@@ -19,3 +19,6 @@ test-results/
 test_case/
 node_modules/
 .DS_Store
+# Python package (rust/python): bytecode and pytest cache
+__pycache__/
+.pytest_cache/

@@ -1,0 +1,23 @@
+[package]
+name = "long-screen-py"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT"
+repository = "https://github.com/t41372/long-screen"
+description = "Python bindings for Long Screen: a screen recording in, one big screenshot out"
+
+[lib]
+# The extension module Python imports as `long_screen._native`; the package around it is python/long_screen.
+name = "_native"
+crate-type = ["cdylib"]
+
+[dependencies]
+long-screen = { path = "../long-screen", default-features = false }
+long-screen-decode = { path = "../decode" }
+# abi3-py311: one wheel per platform for CPython 3.11 and later. 3.11 is the first stable ABI with the buffer
+# protocol, which hands NumPy frames to the engine without going through NumPy's C API.
+pyo3 = { version = "=0.29.2", features = ["abi3-py311"] }
+# meta.json of the parity hook (`_fingerprint_raw`); the same pin and features as rust/long-screen, so frame times
+# read back as the exact doubles.
+serde_json = { version = "=1.0.152", features = ["preserve_order", "float_roundtrip"] }

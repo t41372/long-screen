@@ -365,11 +365,22 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `src/store.rs` — 行存储：按键排序的内存表（与 `MemoryKV` 的遍历顺序相同）；可设内存预算，超出后已编码的瓦片 PNG 写到临时目录。原生宿主。
 - `src/value.rs` — 行的值：保持字段插入顺序的 JS 值（类型化数组、Blob），`JSON.stringify` 的数字与字符串写法、JS 的 `toFixed`/`toLocaleString`，以及 `scripts/fingerprint-scenarios.ts` 的规范化与摘要（`RunResult::fingerprint`）。原生宿主。
 - `src/source.rs` — `FrameSource`：每一遍重新解码一次（与网页相同；整段缓存原生尺寸的帧对 3456×2234 的录屏每帧 31 MB，放不下），`sparse_frames` 让揭示阶段不转换它不读的帧。`VideoSource` 经 `rust/decode` 解码，YUV→RGBA 用核心的 `yuv::convert`，10 位 PQ/HLG 先经 `Frame::to_8bit` 取整成 8 位再走核心的 HDR 路径（高精度路径是以后的改进）；`RawSource` 回放现成的 RGBA 帧。原生宿主：I/O。
-- `src/wasm_math.rs` — 在可执行文件里用 `libm` crate 定义 `exp`/`pow`/`log`/`hypot`（及 f32 版本）：wasm 构建链接的就是这份 musl 实现（`compiler-builtins`），而系统 libm 在个别输入上差最后一位（实测一次运动置信度 0.054445016798489 对 0.05444501679848899），会一路传到位置与像素。原生宿主。
-- `src/output.rs` — `RunResult`：画布列表、主图（有呈现画布时取呈现画布）与片段、按瓦片带流式写任意尺寸的 PNG、行指纹。原生宿主：I/O。
+- `src/wasm_math.rs` — 在可执行文件里用 `libm` crate 定义 `exp`/`pow`/`log`/`hypot`（及 f32 版本）：wasm 构建链接的就是这份 musl 实现（`compiler-builtins`），而系统 libm 在个别输入上差最后一位（实测一次运动置信度 0.054445016798489 对 0.05444501679848899），会一路传到位置与像素。原生宿主。 Python 扩展模块（cdylib）里同样生效：macOS 上这些符号定义在扩展模块自己的 `.so` 里、不从 libSystem 导入，全部合成场景与 test_3、test_7 的每一行都与可执行文件相同（`test-results/python-package/`）；Linux（ELF 的符号可被抢先绑定）和 Windows 没有测过。
+- `src/output.rs` — `RunResult`：画布列表、主图（有呈现画布时取呈现画布）与片段、按瓦片带逐行读出任意尺寸的画布（`read_rows`，PNG 和 Python 的 NumPy 数组都用它）、流式写 PNG、行指纹。原生宿主：I/O。
 - `src/bin/long-screen.rs` — 命令行（`cli` feature，clap）：进度与警告写 stderr，`--json` 报告，退出码 0 完成、3 部分结果、1 失败、2 参数错误、4 打不开视频（含缺 ffmpeg 时 `rust/decode` 给的安装提示）、5 写不出文件。网页的完整结果包（ZIP、离线查看器）没有搬过来：它在 `src/export/` 的 TS 里，体量不小，留作以后的工作。
 - `examples/parity.rs` — 一致性测试：读 `scripts/native-parity.ts export` 导出的合成场景帧，或像 `scripts/native-parity.ts recording` 那样用 ffmpeg 解码录屏，输出与 `scripts/fingerprint-scenarios.ts` 同格式的指纹，用 `scripts/compare-fingerprints.ts` 比较。
 - `tests/driver.rs` — 原生端到端：在这里生成的纹理页面滚动 24 帧，先测失败（没有帧、瓦片尺寸非法、停止、中途变尺寸），再测结果（主图逐像素等于页面、PNG 输出、1 线程与 4 线程逐行相同）。
+
+### rust/python（Python 包，§十三第 8 步）
+
+PyO3 绑定（`long-screen-py`，cdylib，导入名 `long_screen._native`），只有胶水代码：把 Python 参数换成 `rust/long-screen` 的 `Options` 和帧源，释放 GIL 调 `long_screen::run`，再把结果的画布交成 PNG 文件或 NumPy 数组。PyPI 发行名 `long-screen`（2026-10-10 无人占用），abi3 轮子支持 CPython 3.11 起：3.11 是缓冲区协议进入稳定 ABI 的第一个版本，帧可以不经 NumPy 的 C API 直接交给引擎；3.10 在 2026 年 10 月停止维护。用 maturin 构建（`pyproject.toml`），不在工作区的 `default-members` 里。
+
+- `src/lib.rs` — 模块、`reconstruct(path, …)`、异常（`LongScreenError`、`DecoderError`、`DecoderMissingError`、`RunFailedError`）与 `Progress`。进度回调和 Ctrl-C 检查都在 `Observer::progress` 里重新拿 GIL：回调返回 `False` 经 `Control::stop` 停下并保留已完成的部分；回调抛出的异常与 Ctrl-C 也先停下运行，等它在下一步收尾后再抛出。绑定层：Python。
+- `src/frames.rs` — `reconstruct_frames(frames, width=, height=, …)`：可重复迭代的对象（列表等）每一遍重新读一次，每帧拿一次 GIL、经缓冲区协议复制；一次性的迭代器（生成器）先写进临时文件，再按 `RawSource` 读。帧的时长取下一帧时间戳之差（与 `VideoSource` 相同）。`_fingerprint_raw` 是测试钩子：像 `examples/parity.rs` 那样跑一个导出的合成场景，给出行指纹。绑定层：Python。
+- `src/result.rs` — `Result`（status、diagnostics 字典、`save`、`print_image`、`print`/`fragments`/`canvases`）与 `Canvas`（`save`、`image`）；`_fingerprint()` 是测试钩子。绑定层：Python。
+- `python/long_screen/` — 包本身：`__init__.py` 重新导出扩展模块，`_native.pyi` 类型存根，`py.typed`。
+- `tests/` — pytest：合成页面上的 `reconstruct_frames`（主图逐像素等于页面、生成器与列表逐行相同、线程数无关、各种坏帧）、停止（回调返回 `False`、回调抛异常、真实的 SIGINT）、test_3 和 test_7 上与 `long-screen` 命令行的 PNG 像素哈希与字节相同、打不开视频的几种错误。`parity_scenarios.py`、`parity_recording.py` 与 `examples/fingerprint.rs` 用来量扩展模块与可执行文件、网页的逐行一致性。`deno task test:python`（`scripts/test-python.sh`）构建轮子、装进新的虚拟环境再跑。
+- `README.md` — PyPI 上的说明（英文）。`.github/workflows/python.yml` 在 `py-v<版本>` 标签上构建 macOS（arm64、x86_64）、Linux（manylinux x86_64、aarch64）、Windows 的轮子和 sdist，经可信发布（trusted publishing）上传 PyPI。Linux 轮子运行时要用户自己装 ffmpeg；Windows 用系统的 Media Foundation。
 
 ### src/pipeline（编排 + 尚未迁移的算法转发）
 
@@ -575,7 +586,7 @@ Rust 核心的完整迁移时间线（哪一轮做了什么、每一步的验证
 5. reveal（已完成，`test-results/port-reveal/`）。揭示阶段整个在 `rust/engine/src/reveal.rs` 的 `RevealSession`：哪些决定算数、内存检查与 `REVEAL_SKIPPED`、喂合成器瓦片、四遍的顺序与 `wanted`、投票后的整块拷贝、延后块、来源行与汇总；解码出的帧写进会话自己的帧缓冲（同扫描会话）。宿主 `src/pipeline/reveal.ts` 只剩读行、内存探测、解码循环、瓦片载入与存储、计时、进度、暂停与停止。原来 `src/core/wasm/reveal.ts` 里逐个调用核心的 `RevealRun` 与它的 `ls_reveal_*` 导出一并删除。场景指纹在三种构建上逐行相同（`performance` 行的瓦片编码、解码、换出次数也相同），真实录屏 A/B 的瓦片、瓦片索引、画布与来源行哈希及诊断计数相同。
 6. framing 与金字塔（已完成，`test-results/port-present/`）。呈现画布（`rust/engine/src/framing.rs` 的 `FramingSession`）与预览金字塔（`rust/engine/src/pyramid.rs` 的 `PyramidSession`）都是宿主逐步驱动的可续作业：呈现画布每个输出瓦片之前停一次，供宿主检查暂停与停止，金字塔每个父瓦片之后停一次，与原来的检查点一一对应；呈现画布的规划（周长与源瓦片映射，受瓦片上限约束）是一步算完，不再每 256 格停一次。`buildFramedCanvas` 与 `TileStore.buildPyramid` 保留原来的签名，成为宿主：参照帧的 PNG 解码、瓦片索引的读取、瓦片的载入与存储、`pyramid-todo/` 行和画布行都还在宿主，写入的键、字段顺序与时机不变；瓦片缓存看到的使用、换出、编码与解码次数也不变（`performance` 行逐字节相同）。场景指纹在三种构建上逐行相同，真实录屏 A/B 的瓦片、瓦片索引与画布行哈希及诊断计数相同。
 7. 原生驱动和命令行（已完成，`test-results/native-cli/`）。`rust/long-screen` 是一个同步宿主（见十一节）：与网页同序驱动全部会话，行的键、字段顺序和值与网页相同，诊断用同一份目录格式化；`run()` 带进度与诊断回调、跨线程的暂停与停止、线程数和存储内存预算，结果按瓦片保存，可流式写出任意尺寸的 PNG。命令行 `long-screen` 在它上面。核心的 `pool.rs` 原生走 rayon。全部 24 个合成场景在原生驱动上与网页三种构建的指纹逐行相同（1 线程与默认线程数都是），test_1、test_3、test_6、test_7 上与网页（同样用 ffmpeg 解码的帧）逐行相同，只有 `performance` 行的 `tileEncodes` 随网页的墙钟落盘变化。要做到逐位相同，原生可执行文件里的 `exp`/`pow`/`log`/`hypot` 换成 wasm 构建所用的 musl 实现（`libm` crate，`src/wasm_math.rs`）。网页的结果包（ZIP、离线查看器）尚未搬到原生。
-8. TS 包（npm/jsr）与 Python 包。TS 包已完成（`src/package/`，见§十一；`test-results/ts-package/`），还没有发布：npm 名 `long-screen` 在 2026-10-10 无人占用，JSR 的 scope 由维护者决定（`jsr.json` 暂用 `@long-screen/long-screen`）。
+8. TS 包（npm/jsr）与 Python 包。TS 包已完成（`src/package/`，见§十一；`test-results/ts-package/`），还没有发布：npm 名 `long-screen` 在 2026-10-10 无人占用，JSR 的 scope 由维护者决定（`jsr.json` 暂用 `@long-screen/long-screen`）。Python 包已完成（`rust/python`，见§十一；`test-results/python-package/`），也还没有发布：PyPI 名 `long-screen` 在 2026-10-10 无人占用，发布要维护者在 PyPI 上建项目并配置可信发布者。
 
 ### 每一步怎么验证
 
