@@ -21,9 +21,12 @@
 //! of them, so the host keeps flushing tiles and temporal records exactly as before. It reads no clock: `now` comes
 //! with every step and only stamps the tiles it writes.
 //!
-//! Frames enter the ring only when a placement first needs them, and a slot is reused by the frame that entered it
-//! longest ago, exactly as the page's resident frame ring did; a placement keeps the slot it was given, not the
-//! frame index, so the ring behaves byte for byte as it did before the pass moved here.
+//! Frames enter the ring only when a placement first needs them, and a new frame takes the slot filled longest ago
+//! among those holding none of the frame in progress and its two neighbours. A placement keeps the slots it was
+//! given while it loads the frames it still lacks, so a slot one of them holds must not be reused. After two frames
+//! that paint nothing, the next frame t loads itself before frame t−1; reusing plainly the slot filled longest ago
+//! then put frame t+2 into frame t's slot while frame t+1 still compared against it, so frame t+1's mask read frame
+//! t+2's pixels in frame t's place.
 
 use crate::engine::attachments::{render_shift, resolve_target, Attachment, Attachments};
 use crate::engine::compositor::{
@@ -294,8 +297,8 @@ struct Slot {
     used: u64,
 }
 
-/// Resident frames keyed by frame index; the slot filled longest ago is reused first, and reading a frame does not
-/// change that order.
+/// Resident frames keyed by frame index. A new frame takes the slot filled longest ago that holds none of the frames
+/// the frame in progress compares (see [`FrameRing::fill`]); reading a frame does not change that order.
 struct FrameRing {
     slots: Vec<Slot>,
     tick: u64,
@@ -315,7 +318,11 @@ impl FrameRing {
         self.slots.iter().position(|s| s.index == index)
     }
 
-    fn fill(&mut self, index: i64) -> usize {
+    /// The slot frame `index` goes into. While a frame is being composited, `keep` is the first and last frame it
+    /// compares (its previous and next): a slot holding one of those is never reused, because a placement reads
+    /// the slots it was given after loading the frames it still lacks. With three slots and three such frames,
+    /// a frame that is not resident always leaves a slot outside `keep`.
+    fn fill(&mut self, index: i64, keep: Option<(i64, i64)>) -> usize {
         if let Some(slot) = self.get(index) {
             return slot;
         }
@@ -327,13 +334,13 @@ impl FrameRing {
             });
             self.slots.len() - 1
         } else {
-            let mut best = 0;
-            for (i, s) in self.slots.iter().enumerate() {
-                if s.used < self.slots[best].used {
-                    best = i;
-                }
-            }
-            best
+            let kept = |s: &Slot| keep.is_some_and(|(a, b)| (a..=b).contains(&s.index));
+            let oldest = |free: bool| {
+                (0..self.slots.len())
+                    .filter(|&i| !free || !kept(&self.slots[i]))
+                    .min_by_key(|&i| self.slots[i].used)
+            };
+            oldest(true).or_else(|| oldest(false)).unwrap()
         };
         self.tick += 1;
         let s = &mut self.slots[slot];
@@ -628,9 +635,13 @@ impl RenderSession {
     }
 
     /// The ring slot frame `index` goes into, for the host to write its RGBA after [`RenderStep::NeedFrame`]. The
-    /// slot that frame entered longest ago is reused.
+    /// slot filled longest ago is reused, but never one holding the frame in progress or either of its neighbours.
     pub fn frame_slot(&mut self, index: u32) -> &mut [u8] {
-        let slot = self.ring.fill(index as i64);
+        let keep = self.job.as_ref().map(|j| {
+            let at = j.input.index as i64;
+            (at - 1, at + 1)
+        });
+        let slot = self.ring.fill(index as i64, keep);
         &mut self.ring.slots[slot].pixels
     }
 
@@ -856,6 +867,12 @@ impl RenderSession {
                     }
                 }
             }
+            // Loading the next frame left the previous frame's slot alone (see `FrameRing::fill`).
+            debug_assert!(neighbours.iter().enumerate().all(|(side, n)| {
+                n.as_ref().is_none_or(|n| {
+                    self.ring.slots[n.slot.unwrap()].index == index as i64 + 2 * side as i64 - 1
+                })
+            }));
             let region = &self.regions[region_at];
             let own = vote(job.votes[0].as_deref(), &region.id)?;
             let mut sides: [Option<Neighbour>; 2] = [None, None];
@@ -924,6 +941,7 @@ impl RenderSession {
                 })?;
             paint.begun = true;
         }
+        debug_assert_eq!(self.ring.slots[current].index, index as i64);
         let frame = Frame {
             rgba: &self.ring.slots[current].pixels,
             width: self.width,

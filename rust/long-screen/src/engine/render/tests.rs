@@ -445,19 +445,94 @@ fn a_disagreeing_neighbour_on_the_same_canvas_marks_pixels_provisional() {
     assert_eq!(s.meta("c").unwrap().provisional_pixels, (W * H) as f64);
 }
 
+/// A frame of a page whose columns all differ by far more than the decode noise, scrolled `pose` pixels: screen
+/// column `x` shows world column `x + pose`.
+fn scrolled(pose: usize) -> Vec<u8> {
+    let mut rgba = vec![255; W * H * 4];
+    for y in 0..H {
+        for x in 0..W {
+            let v = ((x + pose) * 40 % 256) as u8;
+            rgba[(y * W + x) * 4..][..3].copy_from_slice(&[v, v, v]);
+        }
+    }
+    rgba
+}
+
 #[test]
-fn the_ring_reuses_the_slot_filled_longest_ago_even_if_a_placement_still_holds_it() {
-    let mut ring = FrameRing::new(4);
-    // Frame 5 entered before frame 4 (a current frame uploaded before its previous one).
-    let five = ring.fill(5);
-    let four = ring.fill(4);
-    let six = ring.fill(6);
-    assert_eq!(ring.fill(5), five, "a held frame is not re-entered");
-    let seven = ring.fill(7);
-    assert_eq!(seven, five, "frame 5 entered first, so its slot goes first");
-    assert_ne!(seven, four);
-    assert_ne!(seven, six);
-    assert_eq!(ring.get(5), None);
+fn after_two_frames_that_paint_nothing_the_lookahead_does_not_overwrite_the_previous_frame() {
+    // Frames 1 and 2 repeat frame 0 and paint nothing, so frame 3 loads itself, then frame 2, then frame 4, and
+    // frame 3's pixels are the ones that entered the ring first when frame 4 loads frame 5.
+    //
+    // Frame 4 is frame 3 with its top row three levels brighter (within the decode noise) and a higher confidence,
+    // so the compositor repaints the top blocks and consults the mask there. Frame 5 has scrolled one pixel on: at
+    // its own pose it agrees with frame 4, but read where frame 3 belongs it disagrees everywhere. Compared against
+    // the right frames, frame 4 is consistent and nothing turns provisional; compared against frame 5's pixels in
+    // frame 3's place, every pixel is inconsistent and those that reproduce the stored ones are condemned.
+    let mut s = RenderSession::new(RenderConfig {
+        width: W,
+        height: H,
+        factor: 1,
+        noise: 10.0,
+        regions: moving_only(),
+        attachments: Vec::new(),
+    });
+    let mut host = Host::new(graph(&[("n", "c", 0.0)]), vec![1; W * H]);
+    host.metas.insert("c".into(), meta());
+    for i in 0..4 {
+        host.frames.insert(i, scrolled(0));
+    }
+    let mut four = scrolled(0);
+    for px in four[..W * 4].chunks_mut(4) {
+        for c in &mut px[..3] {
+            *c += 3;
+        }
+    }
+    host.frames.insert(4, four);
+    host.frames.insert(5, scrolled(1));
+    let at = |x: f64, confidence: f64| {
+        plan(vec![PlanPlacement {
+            confidence,
+            ..place("m", "c", "n", x)
+        }])
+    };
+    let repeat = || FramePlan {
+        duplicate: true,
+        ..at(0.0, 0.75)
+    };
+    let plans = [
+        at(0.0, 0.75),
+        repeat(),
+        repeat(),
+        at(0.0, 0.75),
+        at(0.0, 0.95),
+        at(1.0, 0.75),
+    ];
+    for i in 0..5usize {
+        let frame = FrameInput {
+            has_prev: i > 0,
+            prev_plan: i.checked_sub(1).map(|p| plans[p].clone()),
+            has_next: true,
+            next_plan: Some(plans[i + 1].clone()),
+            ..input(i as u32, plans[i].clone())
+        };
+        host.frame(&mut s, frame).unwrap();
+        assert_eq!(
+            s.meta("c").unwrap().provisional_pixels,
+            0.0,
+            "frame {i} was compared against the wrong frame's pixels"
+        );
+    }
+    let frames: Vec<&str> = host
+        .asked
+        .iter()
+        .filter(|a| a.starts_with("frame"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        frames,
+        vec!["frame 0", "frame 1", "frame 3", "frame 2", "frame 4", "frame 5"],
+        "each frame enters the ring once, current before previous before next"
+    );
 }
 
 #[test]

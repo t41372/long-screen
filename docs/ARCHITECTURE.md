@@ -92,7 +92,7 @@ WebCodecs 支持查询在启动前完成。按展示顺序消费输出、处理 
 
 ### 世界一致性掩码与瞬态像素
 
-不随页面移动的屏幕坐标覆盖物（悬浮按钮、滚动条、鼠标指针、toast）如果被直接按世界坐标写入，会把自己烧录进移动画布——它们在屏幕上位置不变，但对应的世界坐标每帧都在变。渲染阶段用单帧前瞻消除这类烧录：`src/pipeline/render.ts` 的 `RenderPass` 把解码提前一帧缓冲（`pending`/`pendingPrev`），使合成第 t 帧时，第 t−1 帧的原生像素已经在手，第 t+1 帧也已解码完毕。对每个未跳过的移动区域观察，引擎的渲染会话（`rust/long-screen/src/engine/render.rs::RenderSession`，调用 Rust `consistency_mask`；`src/pipeline/consistency.ts` 的 `consistencyMask()` 是同一内核的独立入口，供 parity 测试与基准用）按屏幕像素比较"这一帧在世界坐标 W = 屏幕坐标 + pose(t) 处的内容"与"相邻帧（t−1、t+1）在同一世界坐标处的内容"——只在相邻帧对同一层的位置解析到同一张画布、且换算出的相邻帧屏幕坐标落在该帧和该区域的归属掩码内时才比较；比较用精确 RGB 相等作为快速路径，否则用平均绝对差 ≤ **本片源声明的解码噪声**（`MediaInfo.noise`，`Engine.noise` getter）判定一致。
+不随页面移动的屏幕坐标覆盖物（悬浮按钮、滚动条、鼠标指针、toast）如果被直接按世界坐标写入，会把自己烧录进移动画布——它们在屏幕上位置不变，但对应的世界坐标每帧都在变。渲染阶段用单帧前瞻消除这类烧录：`src/pipeline/render.ts` 的 `RenderPass` 把解码提前一帧缓冲（`pending`/`pendingPrev`），使合成第 t 帧时，第 t−1 帧的原生像素已经在手，第 t+1 帧也已解码完毕。对每个未跳过的移动区域观察，引擎的渲染会话（`rust/long-screen/src/engine/render.rs::RenderSession`，调用 Rust `consistency_mask`；`src/pipeline/consistency.ts` 的 `consistencyMask()` 是同一内核的独立入口，供 parity 测试与基准用）按屏幕像素比较"这一帧在世界坐标 W = 屏幕坐标 + pose(t) 处的内容"与"相邻帧（t−1、t+1）在同一世界坐标处的内容"——只在相邻帧对同一层的位置解析到同一张画布、且换算出的相邻帧屏幕坐标落在该帧和该区域的归属掩码内时才比较；比较用精确 RGB 相等作为快速路径，否则用平均绝对差 ≤ **本片源声明的解码噪声**（`MediaInfo.noise`，`Engine.noise` getter）判定一致。三帧像素放在会话自己的三槽帧环里，一帧只在某次放置第一次用到时装入；装新帧时只复用不属于正在合成的这一帧及其前后帧的槽，因为一次放置先拿到当前帧和前一帧的槽，再去装还缺的后一帧（§十）。
 
 **比较容差是片源的属性，不是算法的常数。** 同一个世界像素在两帧里到底"一不一样"，取决于这些帧是怎么来的：H.264/VP9 的锐边振铃与 4:2:0 色度重建会让单个通道差出好几级，这与本项目做什么无关，所以解码视频（`PreciseSource`/`CompatibilitySource`）声明 `DECODED_VIDEO_NOISE = 10`，与一直以来的阈值完全相同；而合成场景与内置 demo（`ScenarioSource`/`DemoSource`）的像素是无损产生的，声明 0，于是**逐像素精确比较**。这不是把阈值调松或调紧，而是不再让无损片源替压缩视频的余量买单：一个画在 `[251,250,246]` 页面上的 `[255,255,255]` 悬浮按钮图标，平均 |ΔRGB| 只有 6，在 ≤10 的容差下与页面完全等同——`chrome-everything` 约 2,880 个、`dynamic` 全部 262 个残留污染像素就是这么来的，改用片源自己的噪声后它们才第一次被看见并修复。下面投票的阈值由同一个旋钮导出，整条流水线只有这一个可调量；本次运行用的是哪个值会写进 `MODEL_ASSUMPTIONS` 诊断的 `detail.noise`，因为"精确比较过"和"允许了 10 级余量"是两种不同的证据，事后从像素本身看不出来。
 
@@ -210,6 +210,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - **降级判据必须是逐位相同，不是容差。** ≤10 的容差会连「确实不同但接近」一起抓进来，而那正是块级冲突逻辑负责的事（§七，`tests/unit/compositor.test.ts` 两侧都有断言）。
 - **`MediaInfo.noise` 只是片源的属性。** 不要把它变成设置项、按场景的覆写或相似度阈值。世界一致性掩码的每一次比较、以及 `Ring.tau`，都从它导出（§七）。
 - **一致性投票的几条构造缺一不可**：`Ring.radius = f` 随分析因子缩放；只在内点格比较（`RegionSlot.interior`）；参照帧「最近两个 + 最远一个 + 分段内挑比较次数最少者」；结算是比例阈值而非字面全票；结论是三态而非一份位图；`Ring::box_gray` 在 f>1 时区域掩码 + 边缘复制、在 f=1 时完全关闭。每一条都对应一次实测的假阳性或漏报，推导见 §七。
+- **渲染会话的帧环装新帧时，不复用正在合成的这一帧和它前后帧所在的槽**（`rust/long-screen/src/engine/render.rs::FrameRing::fill`）。只按「最早装入的槽先复用」时，连续两帧什么都不画（重复帧）之后，下一帧 t 先装自己、再装 t−1，于是第 t+1 帧装 t+2 时正好挤掉 t 的槽，掩码把 t+2 的像素当成 t 来比较。合成场景 `traversal`、`fling`、`vfr`、`fixture` 共五次，公开录屏 test_2 中 571 次；修正后 test_2 末尾约两万两千个被两帧拼坏的文字像素恢复清楚，同一张画布上另有一个 16×16 块改留了头像图片加载前的白色占位——那是这块第一次完整出现时的样子，稳定策略本来就保留它，原先是错误的掩码碰巧把那几帧判成了不一致（`test-results/frame-ring-fix/`）。
 - **`consistencyMask()` 的「唯一邻居例外」只在该像素恰好有一个可比较邻居时适用。** 放宽到两个邻居实测让 `chrome-everything` 从 4.2k 涨到 27k（§七）。
 
 ### 揭示
@@ -345,8 +346,8 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `src/engine/attachments.rs` — 片段接回行 `Attachment` 与沿接回链的 `resolve_target`/`attachment_shift`，以及渲染用的 `render_shift`（每一环的位移加上锚点节点此后在位置图松弛里移动的量）。Rust 引擎。
 - `src/engine/solve/tests.rs`、`tests/engine_solve_host.rs` — 求解会话的失败用例（顺序错的调用、重复帧捷径、回访续步与丢失的行、里程计/漂移控制给出的非有限或越界位姿、被拒的接回与薄重叠改正、救回的一步、投票环收尾；经测试缝替换核心的判定）与原生宿主测试（同步循环只经公开 API 求解一段来回滚动并松弛位置图）。Rust 引擎（测试）。
 - `src/engine/keyframes.rs` — `KeyframeIndex`：每层每词的关键帧倒排表、按词投票取候选、每层一次的检索预算告警（`RELOCALIZATION_BUDGET`）与 `Retrieval::admits`；关键帧行本身由宿主存取。Rust 引擎。
-- `src/engine/render.rs` — `RenderSession`：渲染趟。每帧 `begin`（这一帧及前后帧的 plan、`wanted_votes` 点名的一致性记录）→ 反复 `step` → `Done`（观察台账行）；要宿主提供的东西用 `NeedMeta`（`canvas/` 行）、`NeedFrame`（帧像素，写进三槽帧环）、`NeedTile`/`NeedTemporal`（合成器的需要，原样转出）。会话持有放置解析（位置图改正 + 接回链）、重复帧与固定区域未变的捷径、三槽帧环（槽按首次装入的先后复用，与原来的常驻帧环逐字节同一规则）、一致性掩码与四槽投票窗口、画布元数据（脏的按首次变更顺序交给宿主落盘）、瓦片预算配置（`configure_tiles`），诊断是共用的结构化 `Diagnostic`（不带文字；合成器自己的 `CompositorDiagnostic` 在这里换成它）。不持有瓦片缓存、合成器和位置图，每一步借用。Rust 引擎。
-- `src/engine/render/tests.rs` — 渲染会话的失败用例与顺序（缺元数据、缺节点、未知图层、不可放置的位姿、重复帧不解码、固定区域、前后帧的装入顺序、跨画布邻居、帧环复用、投票窗口、截断的投票、脏元数据顺序、接回、瓦片预算）。Rust 引擎（测试）。
+- `src/engine/render.rs` — `RenderSession`：渲染趟。每帧 `begin`（这一帧及前后帧的 plan、`wanted_votes` 点名的一致性记录）→ 反复 `step` → `Done`（观察台账行）；要宿主提供的东西用 `NeedMeta`（`canvas/` 行）、`NeedFrame`（帧像素，写进三槽帧环）、`NeedTile`/`NeedTemporal`（合成器的需要，原样转出）。会话持有放置解析（位置图改正 + 接回链）、重复帧与固定区域未变的捷径、三槽帧环（槽按首次装入的先后复用，但不复用正在合成的这一帧及其前后帧所在的槽）、一致性掩码与四槽投票窗口、画布元数据（脏的按首次变更顺序交给宿主落盘）、瓦片预算配置（`configure_tiles`），诊断是共用的结构化 `Diagnostic`（不带文字；合成器自己的 `CompositorDiagnostic` 在这里换成它）。不持有瓦片缓存、合成器和位置图，每一步借用。Rust 引擎。
+- `src/engine/render/tests.rs` — 渲染会话的失败用例与顺序（缺元数据、缺节点、未知图层、不可放置的位姿、重复帧不解码、固定区域、前后帧的装入顺序、跨画布邻居、连续两帧不画之后前瞻帧不挤掉前一帧、投票窗口、截断的投票、脏元数据顺序、接回、瓦片预算）。Rust 引擎（测试）。
 - `tests/engine_render_host.rs` — 原生宿主测试：同步循环按单帧前瞻驱动渲染会话（只有一块瓦片的缓存，每块都换出再读回），核对台账、画布元数据与成品像素：屏幕固定的红条只留在第一帧在它下面画下的两行。Rust 引擎（测试）。
 - `tests/engine_pose_graph_host.rs` — 原生宿主测试：把引擎给的写入存进有序表，中途停止松弛，再从表里重建位置图，核对两边一致。Rust 引擎（测试）。
 - `src/engine/catalog.rs` — 内嵌的 zh/en 诊断与进度文案，以及与页面 `t()`（i18next，`escapeValue: false`）逐字一致的 `{{name}}` 插值和 JS 数字格式化；`display_name` 照 `src/i18n/names.ts::displayName` 把持久化的 zh 区域/画布名称译成显示语言（原生宿主的命令行输出、`--json` 报告和 Python 的 `Canvas.name` 用它，行里仍存 zh）。`catalog` feature（默认开启）；`rust/wasm` 不开它（页面用自己的目录排版），serde_json 因此不进 .wasm。Rust 引擎。
