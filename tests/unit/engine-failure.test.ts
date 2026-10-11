@@ -607,7 +607,7 @@ Deno.test('engine: PROCESSING_ERROR is journaled (survives into diagnostic/ rows
 // The solve pass's pose recovery (NONFINITE_POSE, a rejected attachment or thin-overlap correction) runs inside the
 // engine's solve session; rust/engine/src/solve/tests.rs drives it through test seams that replace the core's
 // decisions.
-// render.ts's own isValidPose() guard, over a plan/ row read back from storage rather than one this same run's
+// The render session's own pose guard (rust/engine/src/render.rs, `is_valid_pose`), over a plan/ row read back from storage rather than one this same run's
 // solve pass just wrote in-process (a foreign writer, bit rot, a future engine version — or simply a row solve.ts
 // validated correctly at write time that is then read back unvalidated, which is exactly what happened here: at
 // a136135, poisoning a plan/ row's x to Infinity this same way — confirmed manually with
@@ -655,6 +655,78 @@ Deno.test('engine render: a plan/ placement read back with an out-of-range pose 
       );
     }
   }
+});
+// The render session fails a frame whose placement (or a neighbour's) names a pose-graph node the graph does not
+// hold; the host turns that into ANALYSIS_PREFIX_ONLY and keeps the frames already rendered. Frame 2 reads plan 3 as
+// its lookahead neighbour, so poisoning plan 3 stops the pass after frames 0 and 1.
+Deno.test('engine render: a placement whose pose-graph node is missing stops render at the committed prefix', async () => {
+  const db = new MemoryKV();
+  const poisoning: KV = {
+    put: (k, v) => db.put(k, v),
+    delete: (k) => db.delete(k),
+    deleteMany: (k) => db.deleteMany(k),
+    scan: (p, o) => db.scan(p, o),
+    putMany: (r) => db.putMany(r),
+    get: async <T>(key: string) => {
+      const value = await db.get<T>(key);
+      if (key.endsWith(`/plan/${pad(3)}`) && value) {
+        const plan = value as unknown as FramePlan;
+        return { ...plan, placements: plan.placements.map((p) => ({ ...p, node: 'missing' })) } as unknown as T;
+      }
+      return value;
+    },
+  };
+  const diagnostics: Diagnostic[] = [];
+  const project = await makeEngine(poisoning, new ScenarioSource(buildScenario('vertical')), {}, (d) => diagnostics.push(d)).run();
+  assertEquals(project.status, 'partial');
+  const failure = diagnostics.find((d) => d.code === 'ANALYSIS_PREFIX_ONLY');
+  assert(failure, JSON.stringify(diagnostics.map((d) => d.code)));
+  assertEquals(failure.detail, { pass: 'render', frames: 2 });
+  assert(failure.message.includes('Missing pose for frame rendering.'), failure.message);
+  assertEquals(project.renderedFrames, 2);
+  assertEquals((await db.scan(`run/${project.id}/observation/`, { limit: 10 })).length, 2);
+});
+// The render pass decodes one frame ahead: a decode failure while looking ahead still composites the frame already
+// buffered (with no successor) before reporting, so the rendered prefix ends right before the failed frame.
+Deno.test('engine render: a decode failure on the render pass composites the buffered frame, then reports DECODE_PREFIX_ONLY', async () => {
+  const source = faultySource(new ScenarioSource(buildScenario('traversal')), { pass: 3, frameIndex: 10, kind: 'decode' });
+  const diagnostics: Diagnostic[] = [];
+  const project = await makeEngine(new MemoryKV(), source, {}, (d) => diagnostics.push(d)).run();
+  assertEquals(project.status, 'partial');
+  const decode = diagnostics.filter((d) => d.code === 'DECODE_PREFIX_ONLY');
+  assertEquals(decode.map((d) => d.detail), [{ pass: 'render', frames: 10 }]);
+  assertEquals(project.renderedFrames, 10);
+});
+// A frame the render session cannot take before anything was rendered leaves nothing to keep: the run fails.
+Deno.test('engine render: an unusable first frame on the render pass fails the run', async () => {
+  const source = faultySource(new ScenarioSource(buildScenario('traversal')), { pass: 3, frameIndex: 0, kind: 'corrupt' });
+  const project = await makeEngine(new MemoryKV(), source, {}).run();
+  assertEquals(project.status, 'error');
+  assertEquals(project.renderedFrames, 0);
+});
+// An observation batch the store refuses mid-pass is a storage failure: PERSISTENCE_PREFIX_ONLY naming the render
+// pass, and the pass stops writing instead of retrying.
+Deno.test('engine render: an observation batch the store refuses mid-pass yields PERSISTENCE_PREFIX_ONLY and stops writing', async () => {
+  const db = new MemoryKV();
+  let refused = 0;
+  const flaky: KV = {
+    get: (key) => db.get(key),
+    put: (key, value) => db.put(key, value),
+    delete: (key) => db.delete(key),
+    deleteMany: (keys) => db.deleteMany(keys),
+    scan: (prefix, options) => db.scan(prefix, options),
+    putMany: (rows) =>
+      rows.some((row) => row.key.includes('/observation/')) ? (refused++, Promise.reject(new Error('quota exceeded'))) : db.putMany(rows),
+  };
+  const diagnostics: Diagnostic[] = [];
+  const project = await makeEngine(flaky, syntheticSource(40), {}, (d) => diagnostics.push(d)).run();
+  assertEquals(project.status, 'partial');
+  const failure = diagnostics.find((d) => d.code === 'PERSISTENCE_PREFIX_ONLY');
+  assert(failure, JSON.stringify(diagnostics.map((d) => d.code)));
+  assertEquals((failure.detail as { pass: string }).pass, 'render');
+  assert(!diagnostics.some((d) => d.code === 'ANALYSIS_PREFIX_ONLY'));
+  assertEquals(refused, 1, 'one refused batch, no retry');
+  assert(project.renderedFrames > 0 && project.renderedFrames < 40, String(project.renderedFrames));
 });
 // The store keeps only the print on screen: the worker sweeps everything else on load, on Clear and before each print.
 Deno.test('storage: sweepProjects keeps one project and deletes the rest, orphaned run rows and old history rows too', async () => {

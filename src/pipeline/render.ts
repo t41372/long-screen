@@ -1,95 +1,41 @@
-// Shell around the render pass: placement resolution, fixed-region duplicate paint detection, consistency mask
-// consultation and compositing, observation ledger, periodic flush of tiles/metas/diagnostics. The one-frame
-// lookahead loop mirrors scan()'s and solve()'s decode-loop shape but is NOT the same skeleton: on a decode
-// failure or natural end it composites the already-buffered frame (with no successor) BEFORE reporting or
-// breaking, an ordering specific to this pass's lookahead and preserved exactly here.
-import type { Attachment, CanvasMeta, FrameImage, FramePlan, Placement, Region, RGBA } from '../types.ts';
+// Host of the render pass. The pass itself — placement resolution through the pose graph and the attachment chain,
+// the duplicate and fixed-region shortcuts, the world-consistency mask against the ±1 frames and solve's voting
+// records, compositing, the observation ledger and the canvas metadata it updates — is the engine's
+// `RenderSession` (rust/engine/src/render.rs). This file decodes, reads what the session asks for from storage
+// (plans, voting records, canvas rows, tiles, temporal rows), writes what it produces on the same cadence as
+// before, formats its diagnostics, and reports progress. The one-frame lookahead loop mirrors scan()'s and
+// solve()'s decode-loop shape but is NOT the same skeleton: on a decode failure or natural end it composites the
+// already-buffered frame (with no successor) BEFORE reporting or breaking, an ordering specific to this pass's
+// lookahead and preserved exactly here.
+import type { Attachment, CanvasMeta, FrameImage, FramePlan, Rect, RGBA } from '../types.ts';
 import { iterate } from '../storage/db.ts';
 import { PoseGraph } from '../core/pose-graph.ts';
 import { Compositor } from '../core/compositor.ts';
 import { pad } from '../core/math.ts';
-import { core, type FrameRing, type Resident, type ResidentFrame } from '../core/wasm.ts';
+import { core, type EngineDiagnostic, type RenderMeta, type RenderSessionHandle } from '../core/wasm.ts';
 import { releaseUnlessHeld } from '../media/pool.ts';
-import { attachedRenderShift, resolveTarget as resolveAttachmentTarget } from './attachments.ts';
-import { consistencyMask, type ConsistencyRecord } from './consistency.ts';
+import type { ConsistencyRecord } from './consistency.ts';
 import { t } from '../i18n/index.ts';
 import { prefixOnly, type RunContext, StorageError } from './context.ts';
-import { isValidPose } from './solve/track.ts';
-/** One placement's ledger row: what canvas it targeted, its final render-time placement, and either its pixel
- * contribution (addedPixels/conflictPixels/uncertainPixels) or which shortcut skipped painting it. */
-interface RenderDecision {
-  canvasId: string;
-  placement: Placement;
-  addedPixels: number;
-  conflictPixels: number;
-  uncertainPixels: number;
-  skipped?: boolean;
-  reusedExactObservation?: boolean;
+
+/** The CanvasMeta fields the session changes, as it takes them in. */
+function renderMeta(meta: CanvasMeta): RenderMeta {
+  const { bounds, tileCount, observedPixels, uncertainPixels, conflictPixels, provisionalPixels, lastTime } = meta;
+  return { bounds, tileCount, observedPixels, uncertainPixels, conflictPixels, provisionalPixels, lastTime };
 }
-/** Rolling window over solve()'s per-frame voting verdicts. Each rendered frame needs its own record plus its two
- * ±1 neighbours', and consecutive frames overlap by two, so a four-slot window turns three reads per frame into
- * one. A missing record (the common case for a frame no region had anything to say about) is cached as
- * `undefined` just like a present one, so it is not re-read either. */
-class VotingWindow {
-  private readonly window: { index: number; record: ConsistencyRecord | undefined }[] = [];
-  constructor(private readonly ctx: RunContext) {}
-  async get(index: number): Promise<ConsistencyRecord | undefined> {
-    const hit = this.window.find((e) => e.index === index);
-    if (hit) {
-      return hit.record;
-    }
-    const record = index < 0 ? undefined : await this.ctx.store.get<ConsistencyRecord>(`consistency/${pad(index)}`);
-    this.window.push({ index, record });
-    if (this.window.length > 4) {
-      this.window.shift();
-    }
-    return record;
-  }
-}
-/** CanvasMeta held in RAM for the whole pass instead of `store.put` once per placement per frame: `dirty` tracks
- * which ones changed since the last flush, which happens alongside the existing ~1.2s tile flush (and once more
- * at the end of the pass), not on every placement. Progress events still carry the live (in-memory) meta, so a
- * caller polling mid-run never sees more than that same ~1.2s of lag. */
-class CanvasMetaCache {
-  private readonly metas = new Map<string, CanvasMeta>();
-  private readonly dirty = new Set<string>();
-  constructor(private readonly ctx: RunContext) {}
-  async get(canvasId: string): Promise<CanvasMeta | undefined> {
-    let meta = this.metas.get(canvasId);
-    if (meta) return meta;
-    meta = await this.ctx.store.get<CanvasMeta>(`canvas/${canvasId}`);
-    if (meta) this.metas.set(canvasId, meta);
-    return meta;
-  }
-  markDirty(canvasId: string): void {
-    this.dirty.add(canvasId);
-  }
-  async flush(): Promise<void> {
-    if (!this.dirty.size) return;
-    const ids = [...this.dirty];
-    await this.ctx.storagePutMany(ids.map((id) => ({ key: `canvas/${id}`, value: this.metas.get(id) })));
-    for (const id of ids) this.dirty.delete(id);
-  }
-}
+
 /** Per-pass state, as fields rather than closed-over locals; the small methods below are the pass's sub-steps.
  * See the file header for the one-frame-lookahead ordering `run()` must preserve exactly. */
 export class RenderPass {
   private graph!: PoseGraph;
   private compositor!: Compositor;
-  private regionMap!: Map<string, Region>;
-  private readonly attachments = new Map<string, Attachment>();
-  // Core-resident render state: each decoded native frame enters core memory once (three slots: previous,
-  // current, lookahead), and the consistency mask is produced and consumed inside the core. Freed in this pass's
-  // `run()` finally; Engine `run()`'s finally covers exits before that (a `setup()` throw) and the atlas itself.
-  // The atlas label plane is NOT allocated here — it is `ctx.atlas!.resident`, already core-resident since
-  // scan() built the atlas, borrowed (not uploaded) below and released once with the atlas, by Engine.
-  private frames!: FrameRing;
-  private residentLabels!: Resident;
-  private residentMask!: Resident;
-  private fixedPixels!: Map<string, Resident>;
-  private readonly previousPlacements = new Map<string, Placement>();
-  private readonly votingWindow: VotingWindow;
-  private readonly metaCache: CanvasMetaCache;
+  private session!: RenderSessionHandle;
+  /** Stored canvas rows the session asked for. The session holds the fields it changes; they are written back into
+   * these objects for the progress event's canvas each frame and for every changed canvas at each flush, so the
+   * rest of each row (and its key order) is what solve stored. */
+  private readonly metas = new Map<string, CanvasMeta>();
+  /** The run's counters as they stood when the pass began; the session reports its own cumulative ones. */
+  private base!: { skippedPaints: number; tiles: number; observedPixels: number };
   // Per-frame observation ledger rows, batched like the scan/plan rows instead of one transaction each.
   private readonly pendingObservations: { key: string; value: unknown }[] = [];
   private lastFlush!: number;
@@ -99,10 +45,10 @@ export class RenderPass {
   // Set by processFrame() once a stop request was honoured or the solved prefix has been fully rendered, so
   // run()'s loop can break WITHOUT decoding one further (wasted) lookahead frame first.
   private stop = false;
-  // One-frame lookahead: `pending` is the most recently decoded frame not yet composited, held back so
-  // consistencyMask() can compare its content against BOTH the frame before it (`pendingPrev`, already decoded)
-  // and the frame after it (decoded one step ahead of compositing — see run()). The last buffered frame is
-  // flushed with no successor once decoding ends (see memory-stats.json for the extra native RGBA frame this
+  // One-frame lookahead: `pending` is the most recently decoded frame not yet composited, held back so the
+  // session's consistency mask can compare its content against BOTH the frame before it (`pendingPrev`, already
+  // decoded) and the frame after it (decoded one step ahead of compositing — see run()). The last buffered frame
+  // is flushed with no successor once decoding ends (see memory-stats.json for the extra native RGBA frame this
   // holds).
   private pending: FrameImage | undefined;
   private pendingPrev: RGBA | undefined;
@@ -110,149 +56,75 @@ export class RenderPass {
   // deterministic branch instead of a wall-clock race under `deno test --parallel`.
   constructor(private readonly ctx: RunContext, private readonly now: () => number = () => performance.now()) {
     // No ctx-mutating or fallible work here: `render()` runs phase/status/persist() BEFORE constructing this
-    // pass, so a persist() failure at the very start of the run never leaves a compositor/frame-ring/mask
-    // allocated that nothing would go on to free (see setup(), which does the rest in the original order).
-    this.votingWindow = new VotingWindow(ctx);
-    this.metaCache = new CanvasMetaCache(ctx);
+    // pass, so a persist() failure at the very start of the run never leaves a compositor or session allocated
+    // that nothing would go on to free (see setup(), which does the rest in the original order).
   }
-  /** Builds the graph/compositor/region-map and core-resident render state, loads attachments, and configures the
-   * tile-cache memory budget (render buffers one extra decoded native RGBA frame — the one-frame lookahead
-   * consistencyMask() compares against, see docs/ARCHITECTURE.md §七 — so the working-memory reservation grows by
-   * one more native frame than scan()'s), raising it if the tiles one frame paints would not otherwise fit. */
+  /** Builds the graph, the compositor and the session (with the run's regions and attachments), and has the session
+   * configure the tile-cache memory budget (render buffers one extra decoded native RGBA frame — the one-frame
+   * lookahead the consistency mask compares against, see docs/ARCHITECTURE.md §七 — so the working-memory
+   * reservation grows by one more native frame than scan()'s), raising it if the tiles one frame paints would not
+   * otherwise fit. */
   private async setup(): Promise<void> {
-    this.graph = new PoseGraph(this.ctx.store);
-    this.compositor = new Compositor(
-      this.ctx.store,
-      this.ctx.tiles,
-      this.ctx.project.settings.temporalPolicy,
-      (d) => this.ctx.diagnostics.emit(d),
-      this.ctx.atlas!,
-    );
-    this.regionMap = new Map(this.ctx.regions.map((r) => [r.id, r]));
-    for await (const { value } of iterate<Attachment>(this.ctx.store, 'attach/')) {
-      this.attachments.set(value.id, value);
-    }
-    const { width: frameW, height: frameH } = this.ctx.source.info;
-    this.frames = this.ctx.frames = core().frameRing(3, frameW, frameH);
-    this.residentLabels = this.ctx.atlas!.resident;
-    this.residentMask = this.ctx.residentMask = core().alloc(frameW * frameH);
-    this.fixedPixels = this.ctx.fixedPixels;
+    const ctx = this.ctx, atlas = ctx.atlas!;
+    this.graph = new PoseGraph(ctx.store);
+    this.compositor = new Compositor(ctx.store, ctx.tiles, ctx.project.settings.temporalPolicy, (d) => ctx.diagnostics.emit(d), atlas);
+    const attachments: Attachment[] = [];
+    for await (const { value } of iterate<Attachment>(ctx.store, 'attach/')) attachments.push(value);
+    this.session = core().renderSession({
+      width: ctx.source.info.width,
+      height: ctx.source.info.height,
+      factor: ctx.factor,
+      noise: ctx.noise,
+      regions: ctx.regions.map((r) => {
+        const code = atlas.code(r);
+        return { id: r.id, kind: r.kind, rect: r.rect, code, ownedPixels: atlas.count(code) };
+      }),
+      attachments,
+    });
+    this.base = { skippedPaints: ctx.skippedPaints, tiles: ctx.project.tiles, observedPixels: ctx.project.observedPixels };
     this.lastFlush = this.now();
-    const fixedBytes = this.ctx.regions.filter((r) => r.kind === 'fixed').reduce(
-      (n, r) => n + Math.ceil(r.rect.width) * Math.ceil(r.rect.height) * 4,
-      0,
-    );
-    this.ctx.tiles.configureBudget(
-      this.ctx.project.settings.memoryMB,
-      this.ctx.source.info.width * this.ctx.source.info.height * 5 + fixedBytes + 8 * 1024 * 1024 +
-        this.ctx.source.info.width * this.ctx.source.info.height * 4,
-    );
-    const raisedTiles = this.ctx.tiles.ensureFootprint(this.ctx.regions.filter((r) => r.kind !== 'ignore').map((r) => r.rect));
-    if (raisedTiles) {
-      await this.ctx.diagnostics.emit({
+    const raised = this.session.configureTiles(ctx.tiles.engine, ctx.project.settings.memoryMB);
+    if (raised) {
+      const { from, to, mb } = raised.params;
+      await ctx.diagnostics.emit({
         code: 'MEMORY_BUDGET_RAISED',
         severity: 'info',
-        message: t('diag.MEMORY_BUDGET_RAISED.message', {
-          from: this.ctx.tiles.maxTiles - raisedTiles,
-          to: this.ctx.tiles.maxTiles,
-          mb: Math.round(this.ctx.tiles.maxTiles * this.ctx.tiles.size * this.ctx.tiles.size * 4.3 / 1024 / 1024),
-        }),
+        message: t('diag.MEMORY_BUDGET_RAISED.message', { from, to, mb }),
         action: t('diag.MEMORY_BUDGET_RAISED.action'),
-        detail: { budgetMB: this.ctx.project.settings.memoryMB, tiles: this.ctx.tiles.maxTiles, raisedBy: raisedTiles },
+        detail: raised.detail as Record<string, number>,
       });
     }
   }
-  /** Resolves a raw (odometry-space) Placement into its final render-time pose and canvas: pose-graph correction,
-   * attachment-shift, and the attachment chain walk. Shared by the current frame's own placements and by the
-   * one-frame-lookahead neighbour placements consistencyMask() compares against — both need exactly the
-   * resolution render() already does, just at a different frame index. */
-  private async resolvePlacement(raw: Placement, frameIndex: number): Promise<{ x: number; y: number; canvasId: string }> {
-    const correction = await this.graph.correction(raw.node, frameIndex),
-      shift = await attachedRenderShift(this.attachments, this.graph, raw.canvasId),
-      canvasId = resolveAttachmentTarget(this.attachments, raw.canvasId);
-    // Keep the optimized pose in the graph/render ledger. Compositor and consistencyMask() each resolve this
-    // same floating-point pose independently, matching the raster coordinates without discarding subpixel
-    // diagnostics or making a rounded placement part of the render-time state.
-    return { x: raw.x + correction.x + shift.x, y: raw.y + correction.y + shift.y, canvasId };
+  /** Formats one of the session's diagnostics as the journal row the pass has always written. */
+  private async report(d: EngineDiagnostic): Promise<void> {
+    const { frame, time, region, canvasId: canvas } = d as Required<EngineDiagnostic>;
+    if (d.code === 'NONFINITE_POSE') {
+      await this.ctx.diagnostics.emit({
+        code: 'NONFINITE_POSE',
+        severity: 'error',
+        time,
+        frame,
+        canvasId: canvas,
+        message: t('diag.NONFINITE_POSE.message'),
+      });
+    } else if (d.code === 'INCOMPLETE_TEMPORAL_PATCH') {
+      await this.compositor.report({ kind: 'incomplete', frame, time, region }, canvas);
+    } else {
+      const { confidence } = d as Required<EngineDiagnostic>, { regions } = d.detail as { regions: Rect[] };
+      await this.compositor.report({ kind: 'conflict', frame, time, region, confidence, regions, conflicts: d.params.conflicts }, canvas);
+    }
   }
-  /** Fixed-region duplicate-paint detection: compares this frame's pixels within the region's rect against the
-   * core-resident copy saved from the last time this region actually painted, replacing that copy in place.
-   * Called only when the plan-level duplicate shortcut did not already establish `unchanged`. */
-  private paintFixedRegion(region: Region, image: RGBA, frameIndex: number): boolean {
-    const rect = region.rect, rw = Math.ceil(rect.width), rh = Math.ceil(rect.height), code = this.ctx.atlas!.code(region);
-    const old = this.fixedPixels.get(region.id), saved = old || core().alloc(rw * rh * 4);
-    this.fixedPixels.set(region.id, saved);
-    const changed = core().fixedUpdate(
-      saved,
-      this.frames.upload(frameIndex, image),
-      this.residentLabels,
-      Math.floor(rect.x),
-      Math.floor(rect.y),
-      rw,
-      rh,
-      code,
-    );
-    return !!old && !changed;
+  /** The stored canvas row with the session's current values written into it. */
+  private liveMeta(canvasId: string, values = this.session.meta(canvasId)): CanvasMeta | undefined {
+    const meta = this.metas.get(canvasId);
+    if (meta && values) Object.assign(meta, values);
+    return meta;
   }
-  /** World-consistency mask (docs/ARCHITECTURE.md §七) neighbour assembly for a `moving` region: resolves the
-   * ±1-frame neighbour placements for this same layer (when the neighbour frame exists and had a non-skipped
-   * placement for it) and hands consistencyMask() their images, poses, occlusions and voting verdicts alongside
-   * this frame's own. Fixed regions and duplicate-shortcut placements never reach here (see consistencyMask's doc
-   * comment): a screen-fixed overlay occupies a different world position every frame, so it never agrees with a
-   * neighbour sampled at the SAME world position and ends up provisional instead of burned permanently in. */
-  private async maskFor(
-    frame: FrameImage,
-    prevImage: RGBA | undefined,
-    nextImage: RGBA | undefined,
-    prevPlan: FramePlan | undefined,
-    nextPlan: FramePlan | undefined,
-    votingRecord: ConsistencyRecord | undefined,
-    prevVoting: ConsistencyRecord | undefined,
-    nextVoting: ConsistencyRecord | undefined,
-    region: Region,
-    code: number,
-    p: Placement & { canvasId: string },
-    current: ResidentFrame,
-  ): Promise<Uint8Array | Resident | undefined> {
-    const prevRaw = prevImage ? prevPlan?.placements.find((pl) => pl.layer === p.layer && !pl.skip) : undefined;
-    const nextRaw = nextImage ? nextPlan?.placements.find((pl) => pl.layer === p.layer && !pl.skip) : undefined;
-    // Same guard as this frame's own placement (above): a neighbour's plan/ row is read back from storage the
-    // same way, so it needs the same check before its pose reaches consistencyMask() — an invalid one is
-    // treated as "no neighbour this side" rather than skipping the whole call.
-    const prevResolvedRaw = prevRaw ? await this.resolvePlacement(prevRaw, frame.index - 1) : undefined;
-    const nextResolvedRaw = nextRaw ? await this.resolvePlacement(nextRaw, frame.index + 1) : undefined;
-    const prevResolved = prevResolvedRaw && isValidPose(prevResolvedRaw) ? prevResolvedRaw : undefined;
-    const nextResolved = nextResolvedRaw && isValidPose(nextResolvedRaw) ? nextResolvedRaw : undefined;
-    return consistencyMask(
-      current,
-      this.residentLabels,
-      region,
-      code,
-      p,
-      p.canvasId,
-      {
-        prev: prevResolved
-          ? {
-            image: this.frames.upload(frame.index - 1, prevImage!),
-            ...prevResolved,
-            occlusions: prevRaw?.occlusions,
-            voting: prevVoting?.[region.id],
-          }
-          : undefined,
-        next: nextResolved
-          ? {
-            image: this.frames.upload(frame.index + 1, nextImage!),
-            ...nextResolved,
-            occlusions: nextRaw?.occlusions,
-            voting: nextVoting?.[region.id],
-          }
-          : undefined,
-        voting: votingRecord?.[region.id],
-        factor: this.ctx.factor,
-        noise: this.ctx.noise,
-        output: this.residentMask,
-      },
-    );
+  /** Stores every canvas row the session changed since the last flush, in first-changed order. */
+  private async flushMetas(): Promise<void> {
+    const dirty = this.session.dirtyMetas();
+    if (!dirty.length) return;
+    await this.ctx.storagePutMany(dirty.map(({ canvas, meta }) => ({ key: `canvas/${canvas}`, value: this.liveMeta(canvas, meta) })));
   }
   /** Periodic checkpoint: tiles/compositor/diagnostics/metas flush together every ~1.2s (plus once more at the
    * very end of the pass), not per placement — only tiles untouched since the previous checkpoint are written,
@@ -264,131 +136,77 @@ export class RenderPass {
       await this.ctx.tiles.flush(settledBefore);
       await this.compositor.flush();
       await this.ctx.diagnostics.flush();
-      await this.metaCache.flush();
+      await this.flushMetas();
       if (this.pendingObservations.length) {
         await this.ctx.commitRows(this.pendingObservations);
       }
     }
   }
-  /** One plan placement: the duplicate/fixed-region-unchanged shortcut, or a full consistency-mask-and-composite
-   * paint. Returns its ledger row and, when it painted (or shortcut-skipped) a `moving` region, that region's
-   * meta — the candidate for `processFrame`'s `latest` (the progress event's canvas), which `moving`-check mirrors
-   * the original inline `latest = region.kind === 'moving' ? meta : latest` exactly: a non-moving placement
-   * leaves whatever `latest` already was untouched, never clears it. */
-  private async applyPlacement(
-    placement: Placement,
+  /** Runs one frame through the session, answering what it asks for, until it hands back the frame's observation
+   * row; returns that row and the canvas of the frame's last moving-region placement. */
+  private async composite(
     frame: FrameImage,
-    image: RGBA,
+    plan: FramePlan,
     prevImage: RGBA | undefined,
     nextImage: RGBA | undefined,
-    prevPlan: FramePlan | undefined,
-    nextPlan: FramePlan | undefined,
-    votingRecord: ConsistencyRecord | undefined,
-    prevVoting: ConsistencyRecord | undefined,
-    nextVoting: ConsistencyRecord | undefined,
-    planDuplicate: boolean,
-  ): Promise<{ decision: RenderDecision; movingMeta: CanvasMeta | undefined }> {
-    if (placement.skip) {
-      return {
-        decision: { canvasId: placement.canvasId, placement, addedPixels: 0, conflictPixels: 0, uncertainPixels: 0, skipped: true },
-        movingMeta: undefined,
-      };
+  ): Promise<{ observation: unknown; latest: CanvasMeta | undefined }> {
+    const ctx = this.ctx, session = this.session;
+    const prevPlan = prevImage ? await ctx.store.get<FramePlan>(`plan/${pad(frame.index - 1)}`) : undefined;
+    const nextPlan = nextImage ? await ctx.store.get<FramePlan>(`plan/${pad(frame.index + 1)}`) : undefined;
+    // solve()'s displacement-spread voting verdicts for this frame AND for the two frames the ±1-frame check
+    // compares it against: the mask asks a disagreeing neighbour whether voting found IT clean at that world
+    // position before letting it condemn this frame. The session keeps the last few frames' records, so it asks
+    // for one new row per frame, not three.
+    const votes = [];
+    for (const index of session.wantedVotes(frame.index, !!prevImage, !!nextImage)) {
+      votes.push({ index, record: await ctx.store.get<ConsistencyRecord>(`consistency/${pad(index)}`) });
     }
-    const resolved = await this.resolvePlacement(placement, frame.index);
-    const p = { ...placement, ...resolved };
-    // Defense in depth: the solve pass validates every pose it writes (region-step.ts's recoverNonfinitePose),
-    // so a plan/ row from THIS engine never carries one outside the canvas-addressable range. This pass reads
-    // plan/ back from storage rather than receiving it in-process, so a corrupted or foreign-written row is
-    // still possible; compositor.add()'s tile loop is sized directly from `p.x`/`p.y` and is not itself bounded,
-    // so an invalid pose is skipped here rather than handed to it.
-    if (!isValidPose(p)) {
-      await this.ctx.diagnostics.emit({
-        code: 'NONFINITE_POSE',
-        severity: 'error',
-        time: p.time,
-        frame: frame.index,
-        canvasId: p.canvasId,
-        message: t('diag.NONFINITE_POSE.message'),
-      });
-      return {
-        // Never carry the invalid x/y into the persisted observation/ row itself — zeroed, same as
-        // region-step.ts's recoverNonfinitePose resets state.pose, rather than the coordinate that triggered this.
-        decision: {
-          canvasId: p.canvasId,
-          placement: { ...p, x: 0, y: 0 },
-          addedPixels: 0,
-          conflictPixels: 0,
-          uncertainPixels: 0,
-          skipped: true,
-        },
-        movingMeta: undefined,
-      };
-    }
-    const meta = await this.metaCache.get(p.canvasId);
-    if (!meta) {
-      throw new Error('Canvas metadata is missing.');
-    }
-    const region = this.regionMap.get(p.layer)!;
-    const last = this.previousPlacements.get(p.layer);
-    let unchanged = planDuplicate && !!last && last.canvasId === p.canvasId && last.x === p.x && last.y === p.y;
-    if (region.kind === 'fixed' && !unchanged) {
-      // The saved copy lives in the core; pixels the region does not own are never compared or written.
-      unchanged = this.paintFixedRegion(region, image, frame.index);
-    }
-    this.previousPlacements.set(p.layer, p);
-    if (unchanged) {
-      this.ctx.skippedPaints++;
-      meta.lastTime = p.time;
-      this.metaCache.markDirty(p.canvasId);
-      return {
-        decision: {
-          canvasId: p.canvasId,
-          placement: p,
-          addedPixels: 0,
-          conflictPixels: 0,
-          uncertainPixels: 0,
-          reusedExactObservation: true,
-        },
-        movingMeta: region.kind === 'moving' ? meta : undefined,
-      };
-    }
-    let consistent: Uint8Array | Resident | undefined;
-    const current = this.frames.upload(frame.index, image);
-    if (region.kind === 'moving') {
-      const code = this.ctx.atlas!.code(region);
-      consistent = await this.maskFor(
-        frame,
-        prevImage,
-        nextImage,
-        prevPlan,
-        nextPlan,
-        votingRecord,
-        prevVoting,
-        nextVoting,
-        region,
-        code,
-        p,
-        current,
+    session.begin({ index: frame.index, time: frame.time, plan, hasPrev: !!prevImage, prevPlan, hasNext: !!nextImage, nextPlan, votes });
+    const graph = await this.graph.engine();
+    for (;;) {
+      const { events, counters, need } = session.step(
+        this.compositor.engine,
+        ctx.tiles.engine,
+        graph,
+        ctx.atlas!.resident,
+        performance.now(),
       );
+      ctx.skippedPaints = this.base.skippedPaints + counters.skippedPaints;
+      ctx.project.tiles = this.base.tiles + counters.tiles;
+      ctx.project.observedPixels = this.base.observedPixels + counters.observedPixels;
+      for (const e of events) await this.report(e);
+      switch (need.kind) {
+        case 'done':
+          return { observation: need.observation, latest: need.latest === undefined ? undefined : this.liveMeta(need.latest) };
+        case 'error':
+          throw new Error(need.message);
+        case 'meta': {
+          const meta = await ctx.store.get<CanvasMeta>(`canvas/${need.canvas}`);
+          if (meta) this.metas.set(need.canvas, meta);
+          session.provideMeta(need.canvas, meta && renderMeta(meta));
+          break;
+        }
+        case 'frame': {
+          const image = need.index === frame.index ? frame.image : need.index < frame.index ? prevImage! : nextImage!;
+          const { width, height } = ctx.source.info;
+          if (image.width !== width || image.height !== height) {
+            throw new Error(`CORE_BAD_ARGUMENT: frame ${image.width}×${image.height} does not fit a ${width}×${height} ring.`);
+          }
+          session.provideFrame(need.index, image.data);
+          break;
+        }
+        case 'tile':
+          await ctx.tiles.load(need.canvas, need.x, need.y);
+          break;
+        case 'temporal':
+          await this.compositor.loadTemporal(need.canvas);
+          break;
+      }
     }
-    const stats = await this.compositor.add(image, region, p, frame.index, meta, consistent, current);
-    this.ctx.project.tiles += stats.tiles;
-    this.ctx.project.observedPixels += stats.added;
-    this.metaCache.markDirty(p.canvasId);
-    return {
-      decision: {
-        canvasId: p.canvasId,
-        placement: p,
-        addedPixels: stats.added,
-        conflictPixels: stats.conflicts,
-        uncertainPixels: stats.uncertain,
-      },
-      movingMeta: region.kind === 'moving' ? meta : undefined,
-    };
   }
-  /** One decoded frame's worth of work: resolve its plan's placements, paint or skip each, composite the
-   * observation, persist the ledger row, and report progress. Sets `this.stop` (never breaks itself — run()'s
-   * loop owns the decode order) once a stop was honoured or the solved prefix is fully rendered. */
+  /** One decoded frame's worth of work: composite its plan's placements through the session, persist the ledger
+   * row, and report progress. Sets `this.stop` (never breaks itself — run()'s loop owns the decode order) once a
+   * stop was honoured or the solved prefix is fully rendered. */
   private async processFrame(frame: FrameImage, prevImage: RGBA | undefined, nextImage: RGBA | undefined): Promise<void> {
     try {
       const plan = await this.ctx.store.get<FramePlan>(`plan/${pad(frame.index)}`);
@@ -406,40 +224,9 @@ export class RenderPass {
         this.stop = true;
         return;
       }
-      const image = frame.image;
-      const prevPlan = prevImage ? await this.ctx.store.get<FramePlan>(`plan/${pad(frame.index - 1)}`) : undefined;
-      const nextPlan = nextImage ? await this.ctx.store.get<FramePlan>(`plan/${pad(frame.index + 1)}`) : undefined;
-      // solve()'s displacement-spread voting verdicts for this frame AND for the two frames the ±1-frame check
-      // compares it against: consistencyMask() asks a disagreeing neighbour whether voting found IT clean at
-      // that world position before letting it condemn this frame (see its truth table). Reads go through
-      // votingWindow, which keeps the last few frames' records so the three lookups per frame cost one store
-      // read per frame, not three.
-      const votingRecord = await this.votingWindow.get(frame.index),
-        prevVoting = prevImage ? await this.votingWindow.get(frame.index - 1) : undefined,
-        nextVoting = nextImage ? await this.votingWindow.get(frame.index + 1) : undefined;
-      let latest: CanvasMeta | undefined;
-      const decisions: RenderDecision[] = [];
-      for (const placement of plan.placements) {
-        const { decision, movingMeta } = await this.applyPlacement(
-          placement,
-          frame,
-          image,
-          prevImage,
-          nextImage,
-          prevPlan,
-          nextPlan,
-          votingRecord,
-          prevVoting,
-          nextVoting,
-          !!plan.duplicate,
-        );
-        decisions.push(decision);
-        if (movingMeta) {
-          latest = movingMeta;
-        }
-      }
+      const { observation, latest } = await this.composite(frame, plan, prevImage, nextImage);
       // Every decoded observation has a durable placement and a pixel contribution ledger.
-      this.pendingObservations.push({ key: `observation/${pad(frame.index)}`, value: { frame: frame.index, time: frame.time, decisions } });
+      this.pendingObservations.push({ key: `observation/${pad(frame.index)}`, value: observation });
       if (this.pendingObservations.length >= 32) {
         await this.ctx.commitRows(this.pendingObservations);
       }
@@ -461,6 +248,7 @@ export class RenderPass {
         this.stop = true;
       }
     } catch (error) {
+      this.session.cancel(this.compositor.engine);
       if (!this.ctx.project.renderedFrames) {
         throw error;
       }
@@ -540,7 +328,7 @@ export class RenderPass {
       try {
         await it.return(undefined);
       } catch { /* already unwinding */ }
-      this.ctx.releaseResidentRenderState(this.compositor);
+      this.compositor.dispose();
       // Best-effort: committed tiles and in-memory metas should not be stranded even when the loop exited through
       // a storage failure; a repeat failure here is swallowed rather than masking the original error.
       try {
@@ -555,7 +343,7 @@ export class RenderPass {
       try {
         if (!this.storageFailed) {
           await this.compositor.flush();
-          await this.metaCache.flush();
+          await this.flushMetas();
         }
       } catch (error) {
         this.storageFailed = true;
@@ -564,9 +352,10 @@ export class RenderPass {
           await this.ctx.diagnostics.emit(prefixOnly('PERSISTENCE_PREFIX_ONLY', 'render', this.ctx.project.renderedFrames, error));
         } catch { /* the journal write itself failed too; the run is already marked partial. */ }
       } finally {
-        // The engine's compositor and pose graph end with the pass, after the last temporal flush.
+        // The engine's compositor, pose graph and render session end with the pass, after the last flushes.
         this.compositor?.free();
         this.graph?.free();
+        this.session?.free();
       }
     }
   }
@@ -590,14 +379,22 @@ export class RenderPass {
   /** Runs the rest of the pass: setup (graph/compositor/attachments/budget), the lookahead decode loop, then
    * the trailing commits. Phase/status/persist already happened in `render()`, before this pass was built. */
   async execute(): Promise<void> {
-    await this.setup();
+    try {
+      await this.setup();
+    } catch (error) {
+      // run()'s finally never runs: release what setup() already built.
+      this.compositor?.free();
+      this.graph?.free();
+      this.session?.free();
+      throw error;
+    }
     await this.run();
     await this.finish();
   }
 }
 export async function render(ctx: RunContext): Promise<void> {
   // Phase/status/persist happen BEFORE the pass is constructed: if persist() fails here, nothing (compositor,
-  // frame ring, resident mask) has been allocated yet for RenderPass's own finally to free — Engine's own
+  // render session) has been allocated yet for RenderPass's own finally to free — Engine's own
   // cleanup is enough, exactly as it was before this pass had a constructor at all.
   ctx.phase = 'rendering';
   ctx.project.status = 'rendering';

@@ -15,6 +15,7 @@ import {
 } from '../../src/storage/tiles.ts';
 import { Diagnostics } from '../../src/storage/diagnostics.ts';
 import { encodeRGBA } from '../../src/codec/png.ts';
+import { core } from '../../src/core/wasm.ts';
 import type { CanvasMeta, Diagnostic } from '../../src/types.ts';
 Deno.test('MemoryKV: sorted scans with prefix, after, limit and reverse; namespaces isolate prefixes; deletePrefix is scoped', async () => {
   const base = new MemoryKV(), a = new Namespace(base, 'a/'), b = new Namespace(base, 'b/');
@@ -322,9 +323,24 @@ Deno.test('diagnostics: flush() keeps pending rows queued (not lost) when the un
 });
 // Moved from takeover.test.ts (redistributed by subject: TileStore budget/eviction belongs with storage).
 Deno.test('takeover: render cache rebalance avoids a viewport-sized cyclic eviction trap without an unbounded cache', async () => {
-  const tiles = new TileStore(new MemoryKV(), 512, 128), before = tiles.maxTiles;
-  tiles.configureBudget(128, 3456 * 2234 * 5 + 16 * 1024 * 1024);
-  assert(tiles.maxTiles > before);
+  // The render session sizes the cache: a 3456×2234 pass leaves only a few tiles of a 64 MB budget, so the limit is
+  // raised to the 8 × 6 tiles (+ 2) one frame-sized region paints, and no further.
+  const tiles = new TileStore(new MemoryKV(), 512, 64);
+  const session = core().renderSession({
+    width: 3456,
+    height: 2234,
+    factor: 1,
+    noise: 0,
+    regions: [{ id: 'page', kind: 'moving', rect: { x: 0, y: 0, width: 3456, height: 2234 }, code: 1, ownedPixels: 3456 * 2234 }],
+    attachments: [],
+  });
+  try {
+    const raised = session.configureTiles(tiles.engine, 64);
+    assertEquals(raised?.code, 'MEMORY_BUDGET_RAISED');
+  } finally {
+    session.free();
+  }
+  assertEquals(tiles.maxTiles, 8 * 6 + 2);
   for (let i = 0; i < tiles.maxTiles + 3; i++) await tiles.get('c', i, 0);
   assertEquals(tiles.peakResidentTiles, tiles.maxTiles);
   assertEquals(tiles.evictions, 3);

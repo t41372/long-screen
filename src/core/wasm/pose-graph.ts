@@ -87,7 +87,7 @@ export class PoseGraphState {
   );
   private readonly freeGuard = new FreeGuard();
   private readonly token = {};
-  constructor(private readonly core: Core, private readonly exports: CoreExports, private readonly handle: number) {
+  constructor(private readonly core: Core, private readonly exports: CoreExports, readonly handle: number) {
     PoseGraphState.registry.register(this, { exports, handle }, this.token);
   }
   private check(status: number, what: string): number {

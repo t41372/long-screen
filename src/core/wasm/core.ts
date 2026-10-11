@@ -30,6 +30,7 @@ import { estimateMotion as scanEstimateMotion, type ScanSession, scanSession as 
 import { poseGraph as poseGraphFactory, type PoseGraphState } from './pose-graph.ts';
 import { keyframeIndex as keyframeIndexFactory, type KeyframeIndexState } from './keyframes.ts';
 import { type SolveRegionInput, solveSession as solveSessionFactory, type SolveSessionState } from './solve.ts';
+import { renderSession as renderSessionFactory, type RenderSessionConfig, type RenderSessionHandle } from './render.ts';
 import {
   frameCoordinate as frameCoordinateImpl,
   type FrameLayout,
@@ -323,20 +324,6 @@ export class Core {
     resident.write(bytes);
     return resident;
   }
-  /** Refreshes a fixed region's resident saved pixels (`rw × rh` RGBA from `(x0, y0)`) from a resident frame and
-   *  labels; true when a pixel the region owns changed. */
-  fixedUpdate(
-    saved: Resident,
-    frame: ResidentFrame,
-    labels: Resident,
-    x0: number,
-    y0: number,
-    rw: number,
-    rh: number,
-    code: number,
-  ): boolean {
-    return raster.fixedUpdate(this, saved, frame, labels, x0, y0, rw, rh, code);
-  }
   /** One resident native frame buffer (uninitialised), e.g. a reference copy another slot is copied into. */
   frame(width: number, height: number): ResidentFrame {
     return new ResidentFrame(this.exports, allocOrThrow(this.exports, width * height * 4, 'resident frame'), width, height);
@@ -373,10 +360,6 @@ export class Core {
 
   consistencyMask(input: ConsistencyMaskInput): Uint8Array<ArrayBuffer> {
     return consistency.consistencyMask(this, input);
-  }
-  /** Same kernel, written into a resident buffer so the compositor can consume it without a round trip. */
-  consistencyMaskInto(input: ConsistencyMaskInput, output: Resident): void {
-    consistency.consistencyMaskInto(this, input, output);
   }
   pngFilterSub(rgba: Uint8Array, width: number, height: number): Uint8Array<ArrayBuffer> {
     return png.pngFilterSub(this, rgba, width, height);
@@ -485,8 +468,12 @@ export class Core {
   ): SolveSessionState {
     return solveSessionFactory(this, this.exports, options);
   }
+  /** The render pass of one run (`long_screen_engine::render::RenderSession`); the pass frees it at its end. */
+  renderSession(config: RenderSessionConfig): RenderSessionHandle {
+    return renderSessionFactory(this, this.exports, config);
+  }
 
-  /** Per-region, per-frame tracking verdicts for `src/pipeline/solve/track.ts`: stateless, one small call each. */
+  /** Per-region, per-frame tracking verdicts: stateless, one small call each. */
   trackUncertainty(confidence: number, ambiguous: boolean, weakStep: boolean): boolean {
     return track.uncertainty(this.exports, confidence, ambiguous, weakStep);
   }

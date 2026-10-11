@@ -6,18 +6,6 @@ export interface CoreExports {
   ls_alloc(size: number): number;
   ls_pool_helpers(): number;
   ls_layout(which: number): number;
-  ls_fixed_update(
-    saved: number,
-    rgba: number,
-    labels: number,
-    width: number,
-    height: number,
-    x0: number,
-    y0: number,
-    rw: number,
-    rh: number,
-    code: number,
-  ): number;
   ls_frame_to_rgba(
     src: number,
     srcLen: number,
@@ -192,8 +180,6 @@ export interface CoreExports {
   ): number;
   ls_tiles_new(size: number, memoryMB: number): number;
   ls_tiles_free(handle: number): void;
-  ls_tiles_configure_budget(handle: number, memoryMB: number, reserved: number): number;
-  ls_tiles_ensure_footprint(handle: number, areas: number, count: number): number;
   ls_tiles_max(handle: number): number;
   ls_tiles_set_max(handle: number, max: number): number;
   ls_tiles_stats(handle: number, out: number): number;
@@ -351,6 +337,18 @@ export interface CoreExports {
   ls_regions_read_masks(handle: number, out: number): number;
   ls_regions_read_cells(handle: number, out: number): number;
   ls_regions_label_atlas(regions: number, count: number, width: number, height: number, labelsOut: number, countsOut: number): number;
+  ls_render_new(input: number, len: number): number;
+  ls_render_free(handle: number): void;
+  ls_render_take(handle: number, out: number, len: number): number;
+  ls_render_configure_tiles(handle: number, tiles: number, memoryMB: number): number;
+  ls_render_wanted_votes(handle: number, index: number, hasPrev: number, hasNext: number): number;
+  ls_render_begin(handle: number, input: number, len: number): number;
+  ls_render_step(handle: number, compositor: number, tiles: number, graph: number, labels: number, labelsLen: number, now: number): number;
+  ls_render_provide_meta(handle: number, input: number, len: number): number;
+  ls_render_frame_slot(handle: number, index: number, out: number): number;
+  ls_render_cancel(handle: number, compositor: number): void;
+  ls_render_meta(handle: number, input: number, len: number): number;
+  ls_render_dirty_metas(handle: number): number;
   ls_pose_graph_new(): number;
   ls_pose_graph_free(handle: number): void;
   ls_pose_graph_take(handle: number, out: number, len: number): number;

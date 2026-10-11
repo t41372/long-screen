@@ -2,8 +2,8 @@
 //! `src/core/wasm/diagnostic.ts`: u32 count, then per diagnostic the code (u32 length + UTF-8), u32 severity
 //! (0 info, 1 warning, 2 error), u32 has-frame, u32 frame, u32 has-time, f64 time, u32 parameter count, and per
 //! parameter its name (u32 length + UTF-8) and f64 value; then u32 has-canvas [+ str], u32 has-confidence [+ f64],
-//! u32 has-region [+ 4 × f64], u32 has-detail [+ value]. A value is u8 0 + f64, u8 1 + u8 flag, u8 2 + str, or u8 3 +
-//! u32 field count and per field its name and value.
+//! u32 has-region [+ 4 × f64], u32 has-detail [+ value]. A value is u8 0 + f64, u8 1 + u8 flag, u8 2 + str, u8 3 +
+//! u32 field count and per field its name and value, or u8 4 + u32 item count and the items.
 
 use crate::bytes::Out;
 use long_screen_engine::diagnostic::{Diagnostic, Severity, Value};
@@ -75,6 +75,13 @@ fn write_value(w: &mut Out, v: &Value) {
             for (name, value) in fields {
                 w.str(name);
                 write_value(w, value);
+            }
+        }
+        Value::List(items) => {
+            w.u8(4);
+            w.u32(items.len() as u32);
+            for item in items {
+                write_value(w, item);
             }
         }
     }

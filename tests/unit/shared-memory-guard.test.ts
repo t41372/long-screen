@@ -90,3 +90,14 @@ Deno.test('shared-memory guard: a resident buffer uploaded to the core hands bac
     resident.free();
   }
 });
+// The reveal pass asks the core before a large allocation. A size the core cannot represent is refused without
+// touching linear memory, and asking for nothing is always fine.
+Deno.test('core: canAllocate refuses unrepresentable sizes without growing memory', () => {
+  const c = core(), before = c.exports.memory.buffer.byteLength;
+  assertEquals(c.canAllocate(0), true);
+  assertEquals(c.canAllocate(-1), true);
+  assertEquals(c.canAllocate(2 ** 32), false);
+  assertEquals(c.canAllocate(Number.NaN), false);
+  assertEquals(c.exports.memory.buffer.byteLength, before, 'refusing a size must not grow memory');
+  assertEquals(c.canAllocate(1024), true);
+});

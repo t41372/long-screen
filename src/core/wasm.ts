@@ -36,5 +36,14 @@ export type { CompositorEvent, CompositorHandle, CompositorStats } from './wasm/
 export { COMPOSITOR_DISPOSED, COMPOSITOR_OUTSIDE_CANVAS } from './wasm/compositor.ts';
 export { type StoredPlanes, TILE_PLANES, type TileCacheHandle, type TileCacheStats, type TilePlanes } from './wasm/tiles.ts';
 export type { TemporalRow } from './wasm/temporal.ts';
+export type {
+  RenderDecision,
+  RenderMeta,
+  RenderNeed,
+  RenderObservation,
+  RenderSessionConfig,
+  RenderSessionHandle,
+  RenderStepResult,
+} from './wasm/render.ts';
 export type { ConsistencyMaskInput, ConsistencyNeighbourInput, ConsistencyVoteInput } from './wasm/consistency.ts';
 export { core, coreBuild, coreLoaded, type CorePlan, loadCore, loadPlannedCore, planCore, simdSupported } from './wasm/loader.ts';

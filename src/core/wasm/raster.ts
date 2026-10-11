@@ -33,27 +33,6 @@ export function halveRGBA(core: Core, image: RGBA): RGBA {
   core.check(core.exports.ls_halve_rgba(input, image.width, image.height, output), 'halveRGBA');
   return { width, height, data: new Uint8ClampedArray(core.readBytes(output, width * height * 4).buffer) };
 }
-/** Refreshes a fixed region's resident saved pixels (`rw × rh` RGBA from `(x0, y0)`) from a resident frame and
- *  labels; true when a pixel the region owns changed. */
-export function fixedUpdate(
-  core: Core,
-  saved: { ptr: number; length: number },
-  frame: ResidentFrame,
-  labels: { ptr: number; length: number },
-  x0: number,
-  y0: number,
-  rw: number,
-  rh: number,
-  code: number,
-): boolean {
-  if (saved.length !== rw * rh * 4 || labels.length !== frame.width * frame.height) {
-    throw new Error('CORE_BAD_ARGUMENT: fixed region buffers do not match.');
-  }
-  return core.check(
-    core.exports.ls_fixed_update(saved.ptr, frame.ptr, labels.ptr, frame.width, frame.height, x0, y0, rw, rh, code),
-    'fixedUpdate',
-  ) === 1;
-}
 export function meanDifference(core: Core, a: Gray, b: Gray): number {
   if (a.width !== b.width || a.height !== b.height) return 255;
   const [pa, pb] = core.scratch([a.data.byteLength, b.data.byteLength]);

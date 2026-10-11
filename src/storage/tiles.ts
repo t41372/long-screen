@@ -217,19 +217,6 @@ export class TileStore {
     releaseCache.unregister(this);
     this.engine.free();
   }
-  /** Rebalance the same working-memory budget between passes. Rendering no longer holds solve-reference frames. */
-  configureBudget(memoryMB: number, reservedBytes: number): void {
-    this.engine.configureBudget(memoryMB, reservedBytes);
-  }
-  /** Raises the cache limit to at least what one frame paints: the footprint of each of its `areas` (every region
-   *  it places, each on its own canvas). An LRU cache smaller than the set a frame touches turns each frame into a
-   *  full miss cycle (measured: 13,800 decodes / 29,220 encodes over 935 frames at 3456×2234 with a 38-tile limit;
-   *  7,733 decodes over the 170 frames of c.mov, which paint five regions, under a floor of 50 sized for one
-   *  frame-sized canvas, and 383 under the 91 its regions add up to), so the budget yields here; returns the tiles
-   *  added, 0 if none. */
-  ensureFootprint(areas: { width: number; height: number }[]): number {
-    return this.engine.ensureFootprint(areas);
-  }
   /** Checks residency without touching LRU order; callers can schedule hits before cold loads. */
   isResident(canvasId: string, x: number, y: number, level = 0): boolean {
     return this.resident.has(tileKey(canvasId, level, x, y));

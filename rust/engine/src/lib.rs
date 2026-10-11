@@ -20,6 +20,7 @@ pub mod keyframes;
 pub mod layers;
 pub mod pose_graph;
 pub mod pyramid;
+pub mod render;
 pub mod scan;
 pub mod solve;
 pub mod tiles;

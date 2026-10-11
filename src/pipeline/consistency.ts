@@ -41,8 +41,6 @@ export interface ConsistencyOptions {
   prev?: ConsistencyNeighbour;
   next?: ConsistencyNeighbour;
   voting?: ConsistencyVote;
-  /** When given, the mask is written into this resident buffer instead of allocating a new Uint8Array. */
-  output?: Resident;
 }
 /** World-consistency mask for one moving-region placement (docs/ARCHITECTURE.md §七): per screen pixel inside
  *  `region.rect`, decides whether the content this observation shows there can be trusted as page content at
@@ -105,7 +103,7 @@ export function consistencyMask(
   pose: Point,
   canvasId: string,
   options: ConsistencyOptions,
-): Uint8Array | Resident {
+): Uint8Array {
   // The mask itself is computed by the Rust core (rust/core/src/consistency.rs); this keeps the
   // canvas-identity gate (a neighbour only counts when its placement resolved to the same canvas) here.
   const neighbour = (n: ConsistencyNeighbour | undefined) =>
@@ -122,7 +120,5 @@ export function consistencyMask(
     factor: options.factor,
     noise: options.noise,
   };
-  if (!options.output) return core().consistencyMask(input);
-  core().consistencyMaskInto(input, options.output);
-  return options.output;
+  return core().consistencyMask(input);
 }

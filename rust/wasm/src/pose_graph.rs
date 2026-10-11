@@ -37,6 +37,11 @@ fn handles() -> &'static mut HandleTable<Session> {
     unsafe { &mut *std::ptr::addr_of_mut!(HANDLES) }
 }
 
+/// The graph behind a handle, for the render session to read corrections from (`render.rs`).
+pub(crate) fn graph(handle: u32) -> Option<&'static PoseGraph> {
+    handles().get(handle).map(|s| &s.graph)
+}
+
 pub(crate) fn status(error: PoseGraphError) -> i32 {
     match error {
         PoseGraphError::MissingPrevious => STATUS_MISSING_PREVIOUS,

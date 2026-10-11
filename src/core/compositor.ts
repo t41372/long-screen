@@ -1,10 +1,11 @@
 import type { CanvasMeta, Diagnostic, Placement, Region, RGBA } from '../types.ts';
 import type { KV } from '../storage/db.ts';
 import { iterate } from '../storage/db.ts';
-import { QUALITY_BLOCK, type TileStore } from '../storage/tiles.ts';
+import type { TileStore } from '../storage/tiles.ts';
 import {
   COMPOSITOR_DISPOSED,
   COMPOSITOR_OUTSIDE_CANVAS,
+  type CompositorEvent,
   type CompositorHandle,
   type CompositorStats,
   core,
@@ -19,11 +20,6 @@ import { t } from '../i18n/index.ts';
  *  `TemporalRow` (rust/core/src/temporal.rs's `TemporalRecord`) plus the canvas it belongs to. */
 type TemporalRegion = TemporalRow & { canvasId: string };
 
-/** How far a placed (world-space) rect can reach: 2^25 blocks of `QUALITY_BLOCK` native pixels on either side of
- *  the origin (`long_screen_engine::compositor::CANVAS_PIXEL_BOUND`, which refuses a placement beyond it).
- *  `solve/track.ts`'s `isValidPose`/`POSE_BOUND` and `render.ts`'s own guard both derive their bound from this
- *  constant rather than each picking their own — see `POSE_BOUND`'s doc comment for why theirs is smaller. */
-export const CANVAS_PIXEL_BOUND = (1 << 25) * QUALITY_BLOCK;
 export type CompositeStats = CompositorStats;
 
 const releaseCompositor = new FinalizationRegistry((engine: CompositorHandle) => engine.free());
@@ -33,7 +29,8 @@ const releaseCompositor = new FinalizationRegistry((engine: CompositorHandle) =>
  *  records. This wrapper is its host: it brings in the tiles and stored temporal records a placement asks for,
  *  writes the records it changed, and formats the diagnostics it raises. */
 export class Compositor {
-  private readonly engine: CompositorHandle;
+  /** The engine's compositor; the render session drives it directly. */
+  readonly engine: CompositorHandle;
   constructor(
     private db: KV,
     readonly tiles: TileStore,
@@ -78,6 +75,46 @@ export class Compositor {
     releaseCompositor.unregister(this);
     this.engine.free();
   }
+  /** Seeds the engine's temporal index of `canvasId` from its stored `temporal/` rows (the engine asked for them). */
+  async loadTemporal(canvasId: string): Promise<void> {
+    const rows: TemporalRow[] = [];
+    for await (const { value } of iterate<TemporalRegion>(this.db, `temporal/${canvasId}/`)) rows.push(value);
+    this.engine.loadTemporal(canvasId, rows);
+  }
+  /** Formats and emits one diagnostic of the engine's for a placement on `canvasId`. */
+  async report(e: CompositorEvent, canvasId: string): Promise<void> {
+    if (e.kind === 'incomplete') {
+      await this.emit({
+        code: 'INCOMPLETE_TEMPORAL_PATCH',
+        severity: 'warning',
+        canvasId,
+        frame: e.frame,
+        time: e.time,
+        region: e.region,
+        message: t('diag.INCOMPLETE_TEMPORAL_PATCH.message'),
+        action: t('diag.INCOMPLETE_TEMPORAL_PATCH.action'),
+      });
+    } else {
+      // One journal row per frame and canvas, not per component: `region` is the largest component (so "locate"
+      // lands on one conflict), `detail.regions` every component, `count` how many; the message gives the
+      // conflicting pixels detected before patching.
+      await this.emit({
+        code: 'TEMPORAL_OR_ALIGNMENT_CONFLICT',
+        severity: 'warning',
+        time: e.time,
+        frame: e.frame,
+        canvasId,
+        region: e.region,
+        confidence: e.confidence,
+        count: e.regions.length,
+        detail: { regions: e.regions },
+        message: t('diag.TEMPORAL_OR_ALIGNMENT_CONFLICT.message', { conflicts: e.conflicts.toLocaleString() }),
+        action: this.policy === 'stable'
+          ? t('diag.TEMPORAL_OR_ALIGNMENT_CONFLICT.actionStable')
+          : t('diag.TEMPORAL_OR_ALIGNMENT_CONFLICT.actionRolling'),
+      });
+    }
+  }
   /** `consistent`, when given, is a per-native-pixel (image-sized, one byte per pixel, indexed like `labels`) world-consistency
    *  mask computed by the render pass's one-frame lookahead: 0 means this pixel's placement here could be checked against a
    *  neighbouring frame and disagreed with every such check (CONSISTENT-BY-DEFAULT and genuinely-consistent pixels are both
@@ -113,7 +150,7 @@ export class Compositor {
       uncertain: !!p.uncertain,
       occlusions: p.occlusions,
     }, { image: residentFrame ?? image, labels: this.atlas.resident, consistent });
-    // Defense in depth, not the graceful path (that is render.ts's own isValidPose check before this call).
+    // Defense in depth, not the graceful path (that is the render session's own pose check before it gets here).
     if (status === COMPOSITOR_OUTSIDE_CANVAS) {
       throw new Error(`Placement (${p.x}, ${p.y}) puts region ${region.id} outside the addressable canvas.`);
     }
@@ -127,9 +164,7 @@ export class Compositor {
         if (step.kind === 'tile') {
           await this.tiles.load(p.canvasId, step.x, step.y);
         } else if (step.kind === 'temporal') {
-          const rows: TemporalRow[] = [];
-          for await (const { value } of iterate<TemporalRegion>(this.db, `temporal/${p.canvasId}/`)) rows.push(value);
-          this.engine.loadTemporal(p.canvasId, rows);
+          await this.loadTemporal(p.canvasId);
         } else {
           ({ stats, diagnostics: events } = step);
           break;
@@ -139,39 +174,7 @@ export class Compositor {
       this.engine.cancel();
       throw error;
     }
-    for (const e of events) {
-      if (e.kind === 'incomplete') {
-        await this.emit({
-          code: 'INCOMPLETE_TEMPORAL_PATCH',
-          severity: 'warning',
-          canvasId: p.canvasId,
-          frame: e.frame,
-          time: e.time,
-          region: e.region,
-          message: t('diag.INCOMPLETE_TEMPORAL_PATCH.message'),
-          action: t('diag.INCOMPLETE_TEMPORAL_PATCH.action'),
-        });
-      } else {
-        // One journal row per frame and canvas, not per component: `region` is the largest component (so "locate"
-        // lands on one conflict), `detail.regions` every component, `count` how many; the message gives the
-        // conflicting pixels detected before patching.
-        await this.emit({
-          code: 'TEMPORAL_OR_ALIGNMENT_CONFLICT',
-          severity: 'warning',
-          time: e.time,
-          frame: e.frame,
-          canvasId: p.canvasId,
-          region: e.region,
-          confidence: e.confidence,
-          count: e.regions.length,
-          detail: { regions: e.regions },
-          message: t('diag.TEMPORAL_OR_ALIGNMENT_CONFLICT.message', { conflicts: e.conflicts.toLocaleString() }),
-          action: this.policy === 'stable'
-            ? t('diag.TEMPORAL_OR_ALIGNMENT_CONFLICT.actionStable')
-            : t('diag.TEMPORAL_OR_ALIGNMENT_CONFLICT.actionRolling'),
-        });
-      }
-    }
+    for (const e of events) await this.report(e, p.canvasId);
     meta.bounds = union(meta.bounds, stats!.bounds);
     meta.observedPixels += stats!.added;
     meta.uncertainPixels += stats!.uncertain;

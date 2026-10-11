@@ -2,6 +2,7 @@
 //! records them (`attach/<id>` rows) and follows the chains to compare a keyframe's raw canvas and pose with the
 //! canvas it is observed at today; the render pass walks the same chains.
 
+use crate::pose_graph::{PoseGraph, PoseGraphError};
 use std::collections::{HashMap, HashSet};
 
 /// One `attach/<id>` row: every placement on `id` maps onto `target`, shifted by `(dx, dy)`.
@@ -47,6 +48,28 @@ pub fn attachment_shift<'a>(attachments: &'a Attachments, mut id: &'a str) -> (f
     (x, y)
 }
 
+/// The render-time shift from `id` through its chain: each link's measured offset plus how far its anchor node has
+/// since moved under graph relaxation (as of the attach frame), so an attached fragment follows a target that a
+/// later loop closure moved. Summed link by link as `shift += dx + correction`.
+pub fn render_shift<'a>(
+    attachments: &'a Attachments,
+    mut id: &'a str,
+    graph: &PoseGraph,
+) -> Result<(f64, f64), PoseGraphError> {
+    let (mut x, mut y) = (0.0, 0.0);
+    let mut seen = HashSet::new();
+    while let Some(a) = attachments.get(id) {
+        if !seen.insert(id) {
+            break;
+        }
+        let (cx, cy) = graph.correction(&a.node, a.frame as f64)?;
+        x += a.dx + cx;
+        y += a.dy + cy;
+        id = &a.target;
+    }
+    Ok((x, y))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,6 +104,40 @@ mod tests {
         assert_eq!(resolve_target(&map, "a"), "c");
         assert_eq!(attachment_shift(&map, "a"), (11.0, 22.0));
         assert_eq!(resolve_target(&map, "b"), "c");
+    }
+
+    #[test]
+    fn the_render_shift_adds_how_far_each_anchor_node_moved() {
+        use crate::pose_graph::PoseNode;
+        let node = |id: &str, moved: f64| PoseNode {
+            id: id.into(),
+            canvas_id: "t".into(),
+            frame: 0,
+            x: moved,
+            y: 0.0,
+            original_x: 0.0,
+            original_y: 0.0,
+            pinned: false,
+            next: None,
+        };
+        let mut map: Attachments = [attach("a", "b", 1.0, 2.0), attach("b", "c", 10.0, 20.0)]
+            .into_iter()
+            .collect();
+        map.get_mut("a").unwrap().node = "na".into();
+        map.get_mut("b").unwrap().node = "nb".into();
+        let mut g = PoseGraph::new();
+        g.hydrate_node(node("na", 3.0));
+        g.hydrate_node(node("nb", 0.5));
+        assert_eq!(
+            render_shift(&map, "a", &g),
+            Ok((1.0 + 3.0 + (10.0 + 0.5), 22.0))
+        );
+        assert_eq!(render_shift(&map, "c", &g), Ok((0.0, 0.0)));
+        g = PoseGraph::new();
+        assert_eq!(
+            render_shift(&map, "a", &g),
+            Err(PoseGraphError::MissingPose)
+        );
     }
 
     #[test]

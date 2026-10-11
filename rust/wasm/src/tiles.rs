@@ -70,37 +70,6 @@ pub extern "C" fn ls_tiles_free(handle: u32) {
 }
 
 #[no_mangle]
-pub extern "C" fn ls_tiles_configure_budget(handle: u32, memory_mb: f64, reserved: f64) -> i32 {
-    let Some(t) = tiles(handle) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    t.cache.configure_budget(memory_mb, reserved);
-    STATUS_OK
-}
-
-/// `areas` holds `count` (f64 width, f64 height) pairs. Returns the tiles added, −1 on a bad argument.
-#[no_mangle]
-pub extern "C" fn ls_tiles_ensure_footprint(handle: u32, areas: u32, count: u32) -> f64 {
-    let Some(t) = tiles(handle) else {
-        return -1.0;
-    };
-    // SAFETY: adapter-owned buffer, bounds checked.
-    let Some(bytes) = (unsafe { slice(areas, count as usize * 16) }) else {
-        return -1.0;
-    };
-    let areas: Vec<(f64, f64)> = bytes
-        .chunks_exact(16)
-        .map(|c| {
-            (
-                f64::from_le_bytes(c[0..8].try_into().unwrap()),
-                f64::from_le_bytes(c[8..16].try_into().unwrap()),
-            )
-        })
-        .collect();
-    t.cache.ensure_footprint(&areas) as f64
-}
-
-#[no_mangle]
 pub extern "C" fn ls_tiles_max(handle: u32) -> f64 {
     tiles(handle).map_or(-1.0, |t| t.cache.max_tiles() as f64)
 }

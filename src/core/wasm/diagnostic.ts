@@ -52,6 +52,8 @@ function readValue(r: ByteReader): unknown {
       return r.u8() !== 0;
     case 2:
       return r.str();
+    case 4:
+      return Array.from({ length: r.u32() }, () => readValue(r));
     default: {
       const o: Record<string, unknown> = {};
       for (let n = r.u32(); n > 0; n--) {

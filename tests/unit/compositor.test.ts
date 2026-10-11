@@ -845,7 +845,7 @@ Deno.test('compositor: a fresh id that collides with a DELETED id is appended an
   assertEquals(rows.find((r) => r.value.id === '0000000001')!.value.rect, { x: 9 * B, y: 0, width: B, height: B });
 });
 Deno.test("compositor: dispose() before the trailing flush() (render.ts's actual order) persists identical rows to flush() alone", async () => {
-  // src/pipeline/render.ts calls `ctx.releaseResidentRenderState()` (-> `Compositor.dispose()`) in its `finally`
+  // src/pipeline/render.ts calls `Compositor.dispose()` in its `finally`
   // BEFORE its own trailing `await this.compositor.flush()`. The Rust-resident temporal-index handle is freed by
   // dispose(), so flush() must still produce the exact same persisted rows either way — dispose() drains each
   // canvas's pending dirty/deleted rows into a JS-side stash first (see `Compositor.dispose()`'s doc comment).

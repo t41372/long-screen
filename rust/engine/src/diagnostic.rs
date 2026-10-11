@@ -24,19 +24,30 @@ impl Severity {
     }
 }
 
-/// A `detail` payload: numbers, flags, text and objects whose fields keep the order they are listed in.
+/// A `detail` payload: numbers, flags, text, objects whose fields keep the order they are listed in, and lists.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Number(f64),
     Bool(bool),
     Text(String),
     Object(Vec<(&'static str, Value)>),
+    List(Vec<Value>),
 }
 
 impl Value {
     /// `{ x, y }`.
     pub fn point(x: f64, y: f64) -> Value {
         Value::Object(vec![("x", Value::Number(x)), ("y", Value::Number(y))])
+    }
+
+    /// `{ x, y, width, height }`.
+    pub fn rect(r: Rect) -> Value {
+        Value::Object(vec![
+            ("x", Value::Number(r.x)),
+            ("y", Value::Number(r.y)),
+            ("width", Value::Number(r.width)),
+            ("height", Value::Number(r.height)),
+        ])
     }
 }
 

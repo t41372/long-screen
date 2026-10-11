@@ -11,7 +11,7 @@ import { TileStore } from '../storage/tiles.ts';
 import { projectKey } from '../storage/projects.ts';
 import type { RegionAtlas } from '../core/layers.ts';
 import { analysisFactor } from '../core/raster.ts';
-import type { FrameRing, Resident, ResidentFrame, ResidentGray, ScanSession, VotingRing } from '../core/wasm.ts';
+import type { ResidentFrame, ScanSession } from '../core/wasm.ts';
 import { AnalysisComputer } from '../core/compute.ts';
 import { DECODED_VIDEO_NOISE } from '../media/source.ts';
 import { t } from '../i18n/index.ts';
@@ -82,28 +82,8 @@ export class RunContext {
    *  means the voting ring's partner selection (rust/core/src/voting.rs `Ring::partners`) has stopped sharing comparisons fairly. */
   consistencyVotedLayers = 0;
   consistencyThinLayers = 0;
-  /** Core-resident voting ring of the running solve pass; released in run()'s finally on every exit path. */
-  voting?: VotingRing;
-  /** Core-resident render state (frame ring, consistency mask); released with the render pass. The atlas label
-   *  plane is NOT here: it is `atlas.resident`, shared read-only by solve/render/compositor, owned by the atlas
-   *  itself and released once with it (see `atlas` below), not per-pass. */
-  frames?: FrameRing;
-  residentMask?: Resident;
   /** Core-resident scan session (frames, layer learning) of the scan pass; released by the pass, or run()'s finally. */
   scan?: ScanSession;
-  /** Core-resident full-resolution luma plane of the solve pass. */
-  nativePlane?: ResidentGray;
-  /** Core-resident last-seen pixels of each fixed region during rendering (duplicate-paint detection). */
-  fixedPixels = new Map<string, Resident>();
-  releaseResidentRenderState(compositor?: { dispose(): void }): void {
-    compositor?.dispose();
-    this.frames?.free();
-    this.residentMask?.free();
-    this.nativePlane?.free();
-    this.frames = this.residentMask = this.nativePlane = undefined;
-    for (const saved of this.fixedPixels.values()) saved.free();
-    this.fixedPixels.clear();
-  }
   pauseWaiters: (() => void)[] = [];
   processed = 0;
   regions: Region[] = [];

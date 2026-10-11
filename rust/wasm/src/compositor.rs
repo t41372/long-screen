@@ -58,6 +58,11 @@ fn compositor(handle: u32) -> Option<&'static mut CompositorState> {
     unsafe { (*std::ptr::addr_of_mut!(COMPOSITORS)).get(handle) }
 }
 
+/// The engine compositor behind a handle, for the render session to drive (`render.rs`).
+pub(crate) fn engine_compositor(handle: u32) -> Option<&'static mut Compositor> {
+    compositor(handle).map(|s| &mut s.compositor)
+}
+
 fn status(e: CompositeError) -> i32 {
     match e {
         CompositeError::FrameSize => STATUS_FRAME_SIZE,

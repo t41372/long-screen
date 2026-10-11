@@ -88,6 +88,10 @@ export class PoseGraph {
       if (!finished) state.optimizeCancel();
     }
   }
+  /** The engine's graph, read back from the store on first use; the render session reads corrections from it. */
+  engine(): Promise<PoseGraphState> {
+    return this.hydrate();
+  }
   async correction(id: string, frame: number): Promise<Point> {
     return (await this.hydrate()).correction(id, frame);
   }

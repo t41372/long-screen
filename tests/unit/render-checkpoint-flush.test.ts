@@ -22,9 +22,15 @@ function makePass(): { pass: RenderPass; clock: { value: number }; calls: string
     store: { get: async () => undefined },
   } as unknown as RunContext;
   const pass = new RenderPass(fakeCtx, () => clock.value);
-  const internal = pass as unknown as { lastFlush: number; compositor: { flush(): Promise<void> } };
+  const internal = pass as unknown as {
+    lastFlush: number;
+    compositor: { flush(): Promise<void> };
+    session: { dirtyMetas(): unknown[] };
+  };
   internal.lastFlush = 0;
   internal.compositor = { flush: async () => void calls.push('compositor') };
+  // No canvas changed: the metadata flush asks the session and writes nothing.
+  internal.session = { dirtyMetas: () => (calls.push('metas'), []) };
   return { pass, clock, calls };
 }
 
@@ -44,7 +50,7 @@ Deno.test('render checkpointFlush: at the 1200ms gate flushes tiles/compositor/d
   const { pass, clock, calls } = makePass();
   clock.value = 1200;
   await flush(pass);
-  assertEquals(calls, ['tiles', 'compositor', 'diagnostics']);
+  assertEquals(calls, ['tiles', 'compositor', 'diagnostics', 'metas']);
   assertEquals((pass as unknown as { lastFlush: number }).lastFlush, 1200);
 });
 
@@ -54,6 +60,6 @@ Deno.test('render checkpointFlush: pending observations are committed when the g
   pending.push({ key: 'observation/000000', value: { frame: 0 } });
   clock.value = 1200;
   await flush(pass);
-  assertEquals(calls, ['tiles', 'compositor', 'diagnostics', 'commitRows']);
+  assertEquals(calls, ['tiles', 'compositor', 'diagnostics', 'metas', 'commitRows']);
   assertEquals(pending.length, 0);
 });

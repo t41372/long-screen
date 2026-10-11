@@ -8,13 +8,12 @@
 //   solve/solve.ts   the solve pass's host: drives the engine's solve session (rust/engine/src/solve/) frame by
 //                     frame, stores the rows it hands back, relaxes the pose graph, deletes the scratch. Shell.
 //   solve/diagnostics.ts  the session's structured diagnostics as journal rows. Shell.
-//   solve/track.ts   POSE_BOUND/isValidPose, which render.ts mirrors. Shell.
-//   render.ts        the render pass (placement resolution, consistency-mask consultation, compositing,
-//                     observation ledger). Shell.
+//   render.ts        the render pass's host: drives the engine's render session (rust/engine/src/render.rs)
+//                     frame by frame with the one-frame lookahead, reads what it asks for, stores what it hands
+//                     back. Shell.
 //   presentation.ts  run()'s framing and pyramid stages. Shell.
 //   consistency.ts   the exported pure consistencyMask() and its ConsistencyBox/Vote/Record types. Shell
 //                     around a Rust-core call (rust/core/src/consistency.rs).
-//   attachments.ts   render()'s walk of the fragment-attachment chain (resolveTarget/attachedRenderShift). Shell.
 // Public surface kept importable from this file: `Engine` (constructor signature, run(), setPaused(), stop(),
 // `stopRequested` (tests set it), `project`, `store`, `tiles`, `diagnostics`, `factor`, `refineRadius`, `noise`)
 // and `EngineEvents`.
@@ -240,8 +239,6 @@ export class Engine {
    *  stage it stopped or failed at, exactly once. */
   private releaseRunState(): void {
     const ctx = this.ctx;
-    ctx.voting?.free();
-    ctx.voting = undefined;
     ctx.scan?.free();
     ctx.scan = undefined;
     // The atlas's label plane is read (never re-uploaded) by solve()/render()/Compositor, so it is released
@@ -249,7 +246,6 @@ export class Engine {
     // pass touched `atlas.resident`.
     ctx.atlas?.dispose();
     ctx.atlas = undefined;
-    ctx.releaseResidentRenderState();
     ctx.tiles.free();
     ctx.computer.dispose();
     ctx.source.dispose();

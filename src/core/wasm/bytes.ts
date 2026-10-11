@@ -53,6 +53,12 @@ export class ByteWriter {
     this.view.setFloat64(at, v, true);
     return this;
   }
+  /** Raw bytes, no length prefix. */
+  raw(v: Uint8Array): this {
+    const at = this.reserve(v.length);
+    this.bytes.set(v, at);
+    return this;
+  }
   str(v: string): this {
     const utf8 = encoder.encode(v);
     this.u32(utf8.length);

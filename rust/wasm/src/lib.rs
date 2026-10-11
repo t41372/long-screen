@@ -26,7 +26,8 @@
 //!      their own meaning: the engine state objects (`ls_pose_graph_*`, see `pose_graph.rs` for its
 //!      missing-node statuses; `ls_keyframe_index_retrieve`; the solve session `ls_solve_*`, whose pose-graph
 //!      failures use the same missing-node statuses; `ls_pyramid_step`; `ls_framing_step`, whose −2 is a tile
-//!      asked for and not inserted).
+//!      asked for and not inserted; `ls_render_*`, whose step reports a failed frame as a result record carrying
+//!      the message rather than as a status).
 
 mod bytes;
 mod chrome;
@@ -44,6 +45,7 @@ mod pose_graph;
 mod pyramid;
 mod raster;
 mod regions;
+mod render;
 mod reveal;
 mod scan;
 mod solve;

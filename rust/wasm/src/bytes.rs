@@ -39,6 +39,10 @@ impl<'a> Cursor<'a> {
             .map(|b| f64::from_le_bytes(b.try_into().unwrap()))
     }
 
+    pub(crate) fn bytes(&mut self, n: usize) -> Option<&'a [u8]> {
+        self.take(n)
+    }
+
     pub(crate) fn str(&mut self) -> Option<&'a str> {
         let n = self.u32()? as usize;
         std::str::from_utf8(self.take(n)?).ok()

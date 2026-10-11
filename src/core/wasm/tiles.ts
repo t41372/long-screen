@@ -53,18 +53,6 @@ export class TileCacheHandle {
     this.core.writeBytes(ptr, bytes);
     return [ptr, bytes.length, ...rest];
   }
-  configureBudget(memoryMB: number, reservedBytes: number): void {
-    this.core.check(this.exports.ls_tiles_configure_budget(this.handle, memoryMB, reservedBytes), 'tilesConfigureBudget');
-  }
-  ensureFootprint(areas: { width: number; height: number }[]): number {
-    const [ptr] = this.core.scratch([Math.max(16, areas.length * 16)]);
-    const view = new DataView(this.exports.memory.buffer);
-    areas.forEach((a, i) => {
-      view.setFloat64(ptr + i * 16, a.width, true);
-      view.setFloat64(ptr + i * 16 + 8, a.height, true);
-    });
-    return this.core.check(this.exports.ls_tiles_ensure_footprint(this.handle, ptr, areas.length), 'tilesEnsureFootprint');
-  }
   get maxTiles(): number {
     return this.core.check(this.exports.ls_tiles_max(this.handle), 'tilesMax');
   }

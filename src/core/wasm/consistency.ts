@@ -36,13 +36,6 @@ export function consistencyMask(core: Core, input: ConsistencyMaskInput): Uint8A
   const output = runConsistencyMask(core, input);
   return core.readBytes(output, width * height);
 }
-/** Same kernel, written into a resident buffer so the compositor can consume it without a round trip. */
-export function consistencyMaskInto(core: Core, input: ConsistencyMaskInput, output: Resident): void {
-  if (output.length !== input.image.width * input.image.height) {
-    throw new Error('CORE_BAD_ARGUMENT: mask buffer does not match the frame.');
-  }
-  runConsistencyMask(core, input, output);
-}
 /** Plans arena space in one shot for every JS-side input (resident inputs stay in place) plus a transient output
  *  when no resident one is given, and runs the kernel. Returns the output pointer. */
 function runConsistencyMask(core: Core, input: ConsistencyMaskInput, resident?: Resident): number {
