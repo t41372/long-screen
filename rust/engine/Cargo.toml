@@ -2,9 +2,16 @@
 name = "long-screen-engine"
 version = "0.1.0"
 edition = "2021"
-publish = false
+rust-version = "1.94"
 license = "MIT"
+repository = "https://github.com/t41372/long-screen"
+homepage = "https://github.com/t41372/long-screen"
 description = "Long Screen's run state machine: the scan, solve, render and presentation passes, driven step by step by a host"
+readme = "README.md"
+keywords = ["screenshot", "stitching", "panorama", "screen-recording", "state-machine"]
+categories = ["computer-vision", "multimedia::images", "wasm"]
+# Published (crates-v<version> tags, .github/workflows/release-crates.yml): the build embeds catalog/*.json.
+include = ["Cargo.toml", "README.md", "LICENSE", "src/**/*.rs", "catalog/*.json"]
 
 [features]
 # The embedded zh/en message catalogue and its formatter (`catalog`). Native hosts format diagnostics with it; the web
@@ -13,6 +20,8 @@ default = ["catalog"]
 catalog = ["dep:serde_json"]
 
 [dependencies]
-long-screen-core = { path = "../core" }
+# Pinned exactly, like every dependency between the published crates: results depend on the core and the engine
+# coming from the same release.
+long-screen-core = { path = "../core", version = "=0.1.0" }
 # Parses the embedded zh/en message catalogues (catalog/*.json, exported from src/i18n by scripts/export-catalog.ts).
 serde_json = { version = "=1.0.152", optional = true }

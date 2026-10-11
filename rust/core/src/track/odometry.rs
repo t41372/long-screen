@@ -26,7 +26,7 @@ pub struct ContentChange {
     pub blocks: u32,
 }
 
-/// A step the plain native error rejected but [`rescuable`] measured as unambiguous: what `Tracked` would have
+/// A step the plain native error rejected but `rescuable` measured as unambiguous: what `Tracked` would have
 /// carried. The caller takes it only where the frame would otherwise start a new fragment (after re-acquiring the
 /// anchor and relocalising have both failed), so every frame those already place stays as it was.
 pub struct Rescue {

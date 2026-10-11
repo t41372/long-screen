@@ -10,7 +10,7 @@
 //!    attenuated copy of the page (veils), whatever page content scrolls beneath them.
 //! 2. [`model`]: those cells become overlay objects with an appearance template. [`locate`] finds each object
 //!    again in every frame (it may move, bounce or fade) and turns the result into a per-cell cleanliness tier.
-//! 3. [`select`]: every canvas pixel keeps the value the cleanest observations agree on (a tolerant majority, so
+//! 3. Selection ([`blocks`]): every canvas pixel keeps the value the cleanest observations agree on (a tolerant majority, so
 //!    one clean sighting beats any number of covered ones and a passing cursor is outvoted). A second pass then
 //!    takes whole 16×16 blocks from the latest fully clean frame that agrees, and gives each dynamic component
 //!    (content that really changes over time) a single frame, so neither codec phase nor time is mixed.

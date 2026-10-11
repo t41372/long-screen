@@ -2,10 +2,16 @@
 name = "long-screen"
 version = "0.1.0"
 edition = "2021"
-publish = false
+rust-version = "1.94"
 license = "MIT"
 repository = "https://github.com/t41372/long-screen"
+homepage = "https://github.com/t41372/long-screen"
 description = "Long Screen as a native library and command line: a screen recording in, one big screenshot out"
+readme = "README.md"
+keywords = ["screenshot", "screen-recording", "stitching", "panorama", "long-screenshot"]
+categories = ["command-line-utilities", "multimedia::video", "multimedia::images", "computer-vision"]
+# Published (crates-v<version> tags, .github/workflows/release-crates.yml): only what the build and the crate page need.
+include = ["Cargo.toml", "README.md", "LICENSE", "src/**/*.rs"]
 
 [lib]
 name = "long_screen"
@@ -21,10 +27,12 @@ default = ["cli"]
 cli = ["dep:clap"]
 
 [dependencies]
+# The other published crates, pinned exactly: results depend on the core, the engine and this driver coming from the
+# same release (.github/workflows/release-crates.yml checks the pins against the tag).
 # Kernels run on rayon's thread pool (`pool::par_for`); results do not depend on the thread count.
-long-screen-core = { path = "../core", features = ["rayon"] }
-long-screen-engine = { path = "../engine" }
-long-screen-decode = { path = "../decode" }
+long-screen-core = { path = "../core", version = "=0.1.0", features = ["rayon"] }
+long-screen-engine = { path = "../engine", version = "=0.1.0" }
+long-screen-decode = { path = "../decode", version = "=0.1.0" }
 rayon = "=1.12.0"
 # The musl-derived math the wasm build links (compiler-builtins vendors this crate), so exp/pow/log/hypot round the
 # same way natively (src/wasm_math.rs).

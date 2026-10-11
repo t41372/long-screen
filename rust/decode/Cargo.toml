@@ -2,9 +2,16 @@
 name = "long-screen-decode"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.94"
 license = "MIT"
-publish = false
+repository = "https://github.com/t41372/long-screen"
+homepage = "https://github.com/t41372/long-screen"
 description = "Native video decoding for Long Screen: system decoders (AVFoundation, Media Foundation) or a user-installed ffmpeg"
+readme = "README.md"
+keywords = ["video", "decoder", "avfoundation", "media-foundation", "ffmpeg"]
+categories = ["multimedia::video"]
+# Published (crates-v<version> tags, .github/workflows/release-crates.yml): only what the build and the crate page need.
+include = ["Cargo.toml", "README.md", "LICENSE", "src/**/*.rs"]
 
 [dependencies]
 # ffprobe's JSON output (the ffmpeg backend's metadata).

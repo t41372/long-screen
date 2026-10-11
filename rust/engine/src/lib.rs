@@ -9,6 +9,10 @@
 //!
 //! Diagnostics carry a code and parameters, never text. [`catalog`] turns them into the same zh or en sentence the
 //! web page shows, from the catalogues exported out of `src/i18n`.
+//!
+//! This crate is an implementation layer, used by the `long-screen` driver and the web page's WebAssembly; most Rust
+//! users want the `long-screen` crate, which drives every pass in order. Its API follows what those hosts need and
+//! may change between minor versions.
 
 pub mod attachments;
 #[cfg(feature = "catalog")]
@@ -25,6 +29,11 @@ pub mod reveal;
 pub mod scan;
 pub mod solve;
 pub mod tiles;
+
+// The crate README's examples, compiled and run by `cargo test --doc`.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
 
 #[cfg(test)]
 mod host_tests;

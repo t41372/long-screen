@@ -42,6 +42,11 @@ mod tiles;
 pub mod value;
 mod wasm_math;
 
+// The crate README's examples, compiled by `cargo test --doc`.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
+
 use context::{t, Ctx};
 pub use long_screen_engine::catalog::Locale;
 pub use output::{CanvasInfo, RunResult};

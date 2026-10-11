@@ -19,6 +19,11 @@ mod ffmpeg;
 #[cfg(windows)]
 mod mf;
 
+// The crate README's examples, compiled by `cargo test --doc`.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
+
 /// Which decoder reads the file.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backend {

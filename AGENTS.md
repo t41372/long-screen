@@ -85,6 +85,7 @@ In this repository:
 ## Git and deployment
 
 - Pushing `main` deploys to production: Cloudflare Pages' Git integration runs `bash scripts/pages-build.sh` and publishes `dist/`. Push only when the owner says so. Keep the host on Pages, add no Worker code or deploy test gate, and leave Deno unpinned unless the owner decides otherwise.
+- Pushing a `crates-v<version>` tag publishes the four Rust crates to crates.io (`.github/workflows/release-crates.yml`) and a `py-v<version>` tag publishes the Python package to PyPI; neither deploys the web app. Tag only when the owner says so.
 - `static/_headers` must match `RESPONSE_HEADERS` in `main.ts` (COOP/COEP/CORP and `no-cache`), and hosts must send them on 304 responses too.
 - History on `main` is linear: no merge commits, and a few thematic commits per batch. Fold a fix for something earlier in the same unpushed series into that commit, and verify each rebuilt commit. Messages have a conventional subject and a body saying what changed and why, with no agent, session or round labels. Never rewrite pushed history.
 - Other sessions may be working in sibling worktrees and branches. Leave branches, worktrees and commits you did not create alone.

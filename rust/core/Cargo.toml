@@ -2,10 +2,16 @@
 name = "long-screen-core"
 version = "0.1.0"
 edition = "2021"
-publish = false
+rust-version = "1.94"
 license = "MIT"
 repository = "https://github.com/t41372/long-screen"
-description = "Long Screen's reconstruction algorithms: motion, layers, tracking, compositing and presentation kernels"
+homepage = "https://github.com/t41372/long-screen"
+description = "Long Screen's reconstruction algorithms (motion, layers, tracking, compositing, presentation); the implementation layer under the long-screen crate"
+readme = "README.md"
+keywords = ["screenshot", "stitching", "panorama", "motion-estimation", "screen-recording"]
+categories = ["computer-vision", "multimedia::images", "wasm"]
+# Published (crates-v<version> tags, .github/workflows/release-crates.yml): only what the build and the crate page need.
+include = ["Cargo.toml", "README.md", "LICENSE", "src/**/*.rs"]
 
 [features]
 # Native hosts (rust/long-screen) run `pool::par_for` chunks on rayon's thread pool. Never enabled for wasm: the

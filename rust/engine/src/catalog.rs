@@ -2,7 +2,7 @@
 //!
 //! The catalogues are the `diag` and `progress` sections of `src/i18n/{zh,en}`, exported to `catalog/*.json` by
 //! `scripts/export-catalog.ts` (`deno task export-catalog`); `tests/unit/catalog-export.test.ts` fails when the
-//! checked-in JSON no longer matches the TypeScript. [`format`] reproduces what the page's `t()` (i18next 26 with
+//! checked-in JSON no longer matches the TypeScript. [`format()`] reproduces what the page's `t()` (i18next 26 with
 //! `escapeValue: false`) returns for the same key and values, so a diagnostic formatted natively reads exactly like
 //! the one the page persists. The export refuses catalogue features this formatter does not implement (nesting,
 //! formatters, unescaped placeholders, plural keys), so the two cannot drift apart silently.
