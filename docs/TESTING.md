@@ -68,6 +68,8 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 头less 运行 + Playwr
 
 `tests/browser/pwa.test.ts` 覆盖装成 PWA 的应用：在 Chrome 和 WebKit 里，service worker 要把构建清单里的每个文件存进同一个 `long-screen-<哈希>` 缓存；有网时受它控制的页面仍从网络加载（服务器改了页面，刷新后要看到）；服务器关掉（等于断网）后刷新，页面、worker 和核心都从缓存来，跨源隔离和有网时一样，示例录屏能跑完，期间没有任何网络请求失败（转换 worker 起不来时应用会悄悄改在主线程转换，所以只看「跑完了」证明不了缓存齐全）；换一个 `sw.js` 后新构建的缓存先和旧的并存，旧页面全关掉后只剩新的。Chrome 一侧还用 DevTools 协议确认页面可安装、manifest 无错误。页眉的安装键：Chromium 收到安装提示才出现、按下只问一次、装好后消失；WebKit 按 Mac、iPhone、iPad（报成 Mac 的触屏）各显示对应的步骤，已经以装好的 App 打开时不显示。产物：`test-results/pwa-{chromium,webkit}.json` 和同名前缀的截图。Playwright WebKit 的持久化上下文里 Cache API 存不进任何东西（`put()` 正常返回，`keys()` 始终为空），所以 WebKit 的离线测试用临时上下文；Chrome 用持久化上下文，因为隐身上下文永远不提供安装。
 
+`tests/browser/package.test.ts` 覆盖 npm/JSR 包：先 `scripts/build-package.ts` 构建 `dist-package/`，再像第三方网站那样用它（`tests/package/consumer.html` 用 import map 引入 `long-screen`，不碰项目源码）。在 Chrome 和 WebKit 里各跑三次示例录屏：跨源隔离的页面（必须加载 threads 构建）、去掉 COOP/COEP 的页面（必须是 simd 构建）、用 `deno bundle` 把使用者脚本打成一个文件并把包里的文件复制到旁边（esbuild 的用法）。每次的 PNG 都要与应用自己在同一浏览器里导出的逐字节相同，帧数相同，跑完和 `cancel()` 之后都不能留下 `long-screen-package-*` 数据库；`cancel()` 要以 `AbortError` 拒绝。还用 `deno check` 检查使用者的 TypeScript 能通过 `index.js` 的 `@ts-self-types` 读到发布的类型。所有运行（应用的和包的）都设 `compute: 'cpu'`：默认的 `auto` 在第一帧比较 WebGPU 和 CPU 转换的耗时，取快的一个，两者的 YUV→RGB 结果略有不同，所以应用自己跑两次也可能得到不同的 PNG（开发中实测过一次：一次包的运行选了 WebGPU，PNG 哈希就和应用的不同），比较的就成了这场计时竞赛而不是包。产物：`test-results/ts-package/package-e2e.json`（哈希、耗时、核心构建、诊断计数）和每次运行的截图。
+
 `tests/browser/planes.test.ts` 覆盖揭示阶段的平面直转：在 Chrome 和 WebKit 里，转进常驻帧槽的像素必须与平面转换器的 RGBA 逐字节相同；新运行的第一帧（平面路径还没通过首帧比对）不能以平面交出；走浏览器自己 `copyTo(RGBA)` 的运行永远拿不到平面；同时持有几帧的平面时缓冲池不能复用其中任何一块；没被要的帧不带像素。
 
 ### 编码差异如何处理

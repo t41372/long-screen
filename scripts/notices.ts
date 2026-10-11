@@ -430,15 +430,21 @@ function renderSection(title: string, emptyNote: string, entries: NoticeEntry[])
 
 /** Builds the full THIRD_PARTY_NOTICES.txt text for a build whose JS bundle entry points are `jsEntries` (paths
  *  relative to `root`, matching scripts/build.ts's own `entries` list for that build — a production build that
- *  drops testkit.js should pass the same trimmed list it bundles). */
-export async function generateNotices(root: string, jsEntries: readonly string[]): Promise<string> {
-  const [rust, js, fonts] = await Promise.all([rustNotices(root), jsNotices(root, jsEntries), fontNotices(root)]);
+ *  drops testkit.js should pass the same trimmed list it bundles). `page: false` is the npm package
+ *  (scripts/build-package.ts): it ships no page, so no fonts and no logos. */
+export async function generateNotices(root: string, jsEntries: readonly string[], options: { page?: boolean } = {}): Promise<string> {
+  const page = options.page ?? true;
+  const [rust, js, fonts] = await Promise.all([rustNotices(root), jsNotices(root, jsEntries), page ? fontNotices(root) : []]);
   return [
     'Long Screen — Third-Party Notices',
     '',
-    'This file is generated at build time (scripts/notices.ts, called from scripts/build.ts) from the actual',
+    page
+      ? 'This file is generated at build time (scripts/notices.ts, called from scripts/build.ts) from the actual'
+      : 'This file is generated at build time (scripts/notices.ts, called from scripts/build-package.ts) from the actual',
     "dependency graph — `cargo metadata`/`cargo-about` for the page's Rust crate (rust/wasm) and `deno info`'s module graph for the",
-    'bundled JS assets — not hand-maintained. Regenerate it by rebuilding (`deno task build` / `deno task build:prod`).',
+    page
+      ? 'bundled JS assets — not hand-maintained. Regenerate it by rebuilding (`deno task build` / `deno task build:prod`).'
+      : 'bundled JS files — not hand-maintained. Regenerate it by rebuilding (`deno task build:package`).',
     '',
     renderSection(
       'Rust crates compiled into the WebAssembly core',
@@ -451,8 +457,7 @@ export async function generateNotices(root: string, jsEntries: readonly string[]
         "time) — every module in the bundle is this project's own src/**.",
       js,
     ),
-    renderSection('Fonts shipped in fonts/', 'No font files are shipped.', fonts),
-    LOGO_NOTICES,
+    ...(page ? [renderSection('Fonts shipped in fonts/', 'No font files are shipped.', fonts), LOGO_NOTICES] : []),
   ].join('\n');
 }
 

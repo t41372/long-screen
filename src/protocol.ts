@@ -117,6 +117,15 @@ export interface LocaleMessage {
   locale: Locale;
 }
 
+/** Which IndexedDB database the worker keeps its rows in, posted before any command. The app never sends it and
+ *  uses its one database (`long-screen-local`); the npm package (src/package/) gives each call a database of its
+ *  own, named with `PACKAGE_DB_PREFIX`, and deletes it when the call is done. */
+export interface StorageMessage {
+  type: 'storage';
+  name: string;
+}
+export const PACKAGE_DB_PREFIX = 'long-screen-package-';
+
 /** The page answers a worker `frame-request` on this same channel, by posted `type` rather than `event`. */
 export type FrameResponse =
   | { type: 'frame-response'; id: number; bitmap: ImageBitmap; coded?: boolean }

@@ -56,6 +56,19 @@ Automatic mode keeps moving content and fixed UI separate; multiple independent 
 
 It writes to a user-chosen file when possible; if that API isn't supported, it writes a temporary file via OPFS and then downloads it. When there's no disk write path available, it fails explicitly rather than falling back to assembling the entire output in RAM.
 
+## Use it in your own page
+
+The same reconstruction ships as a package for other web pages (not yet published; `deno task build:package` builds it into `dist-package/`):
+
+```js
+import { reconstruct } from 'long-screen';
+
+const run = reconstruct(file, { locale: 'en', onProgress: (p) => console.log(p.phase, p.fraction) });
+const { status, prints, diagnostics } = await run.result; // prints[i].png is a native-size PNG Blob
+```
+
+It runs the app's worker and Wasm core unchanged, in a Worker next to `index.js`; `run.pause()`, `resume()`, `stop()` and `cancel()` control it. Each call keeps its working rows in an IndexedDB database of its own and deletes it before `result` settles. Vite and webpack pick up the worker and Wasm files by themselves; without a bundler, serve the package folder from your own origin. A cross-origin-isolated page (COOP/COEP, see Deployment) runs the threaded core, any other page the single-thread one, with the same result. The package's own README (`src/package/README.md`) has the details.
+
 ## Deployment
 
 The `dist/` produced by `deno task build:prod` is a static site — upload it to any static host that respects a `_headers` file (Cloudflare Pages, Netlify; `static/_headers` is copied as-is and sets the COOP/COEP/CORP response headers needed for the threaded build, plus a caching policy). Keep the service worker `sw.js` next to `index.html`, where the build puts it, so its scope covers the whole app; the `no-cache` policy applies to it like everything else. GitHub Pages is no longer the recommended host: it can't set custom response headers, which means the page isn't cross-origin isolated and the Wasm core falls back to the single-threaded build (it still runs, just without thread acceleration). **The host must send all three headers on 304 responses too**, not only on 200: the dev server (`deno task start`) reattaches them to every response, but static hosts don't necessarily behave consistently here — a 304 missing the CORP header once broke the download flow in WebKit private browsing (see the commit history entry "dev server re-applies COOP/COEP/CORP to every response"); whether the `_headers` file itself applies to 304s varies by host, so verify on the real host when deploying (check a repeated request with `If-None-Match` in the browser devtools to confirm the 304 response also carries all three headers).
@@ -100,11 +113,13 @@ src/storage     IndexedDB / in-memory KV, tiles, diagnostics
 src/synthetic   Synthetic scenes, renderer, ground-truth validator (used by the tests)
 src/export      ZIP64 (via the npm package client-zip), PNG paging, offline viewer
 src/ui          UI and tile viewer
+src/package     The npm/JSR package's entry: reconstruct() driving the app's worker from another page
 scripts         Build (build.ts/build-core.sh), benchmarks, fingerprinting, sample generation, and other tooling scripts
 static          COOP/COEP `_headers`, dev harness page, and other static assets
 tests/unit      Pure Deno unit tests, scenario end-to-end tests, TS↔Rust byte-level parity checks under `tests/unit/parity/`
 tests/support   Test core loader, scenario ground-truth validation, frozen parity reference implementations (tests/support/reference/)
 tests/browser   Playwright driving real Chrome + WebKit
+tests/package   A third-party page using the built package (driven by tests/browser/package.test.ts)
 ```
 
 ## License

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>long-screen package consumer</title>
+    <!-- What a page without a bundler writes: the package folder served from its own origin, named by an import map. -->
+    <script type="importmap">
+    { "imports": { "long-screen": "/dist-package/index.js" } }
+    </script>
+    <style>
+    body {
+      font: 14px system-ui, sans-serif;
+      margin: 16px;
+    }
+    img {
+      max-width: 100%;
+      border: 1px solid #ccc;
+      background: repeating-conic-gradient(#eee 0 25%, #fff 0 50%) 0 0 / 16px 16px;
+    }
+    </style>
+  </head>
+  <body>
+    <h1>long-screen consumer</h1>
+    <p id="status">Loading…</p>
+    <img id="print" alt="">
+    <script type="module" src="./consumer.js"></script>
+  </body>
+</html>

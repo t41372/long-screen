@@ -97,8 +97,9 @@ export class Database implements KV {
    *  bytes plus MIME type and handed back as Blobs, so callers never see the difference. Such a session keeps
    *  IndexedDB in memory and discards it when the window closes. */
   private constructor(private db: IDBDatabase, readonly storesBlobs: boolean) {}
-  static async open(): Promise<Database> {
-    const request = indexedDB.open('long-screen-local', 1);
+  /** `name` is the app's one database by default; the npm package (src/package/) gives each call its own. */
+  static async open(name = 'long-screen-local'): Promise<Database> {
+    const request = indexedDB.open(name, 1);
     request.onupgradeneeded = () => request.result.createObjectStore('records', { keyPath: 'key' });
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
       request.onsuccess = () => resolve(request.result);

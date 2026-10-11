@@ -11,7 +11,15 @@ import { clampCrop, coversCanvas, CROP_PREFIX } from './export/crop.ts';
 import { core, coreLoaded, loadPlannedCore, planCore } from './core/wasm.ts';
 import { tileKey } from './storage/tiles.ts';
 import type { StoredTile } from './storage/tiles.ts';
-import { type Capabilities, type CommandName, type Commands, type FrameResponse, type LocaleMessage, PRINT_LOCK } from './protocol.ts';
+import {
+  type Capabilities,
+  type CommandName,
+  type Commands,
+  type FrameResponse,
+  type LocaleMessage,
+  PRINT_LOCK,
+  type StorageMessage,
+} from './protocol.ts';
 import { isLocale, setLocale } from './i18n/index.ts';
 const scope = globalThis as unknown as {
   postMessage: (message: unknown, transfer?: Transferable[]) => void;
@@ -311,7 +319,16 @@ async function dispatch(type: CommandName, payload: Commands[CommandName]['req']
   return handlers[type](payload as any, database);
 }
 scope.onmessage = (event) => {
-  const m = event.data as FrameResponse | LocaleMessage | { id: number; type: CommandName; payload?: Record<string, unknown> };
+  const m = event.data as FrameResponse | LocaleMessage | StorageMessage | {
+    id: number;
+    type: CommandName;
+    payload?: Record<string, unknown>;
+  };
+  if (m.type === 'storage') {
+    // Sent before any command; once a command has opened a database, the worker keeps that one.
+    if (!database) database = Database.open(m.name);
+    return;
+  }
   if (m.type === 'locale') {
     if (isLocale(m.locale)) setLocale(m.locale);
     return;

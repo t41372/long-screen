@@ -97,7 +97,7 @@ const FLOORS: [RegExp, number][] = [
   [/^core\/wasm\/framing\.ts$/, 99],
   [/^core\/wasm\/keyframes\.ts$/, 100],
   [/^core\/wasm\/layers\.ts$/, 96],
-  [/^core\/wasm\/loader\.ts$/, 37],
+  [/^core\/wasm\/loader\.ts$/, 60],
   [/^core\/wasm\/marshal\.ts$/, 100],
   [/^core\/wasm\/memory\.ts$/, 91],
   [/^core\/wasm\/motion\.ts$/, 98],
@@ -244,6 +244,11 @@ const BROWSER_ONLY = [
   'media/gpu-convert.ts',
   'core/helper.ts',
   'protocol.ts',
+  // The worker RPC client: it drives a Worker, which only the page bundles start (tests/browser/ui.test.ts).
+  'rpc-client.ts',
+  // The npm package's page-side entry, which drives a Worker too, and its types-only declarations
+  // (tests/browser/package.test.ts).
+  'package/*',
   // Page-only language detection (reads navigator/localStorage; imported only by the page bundles) and a types-only module.
   'i18n/page.ts',
   'i18n/catalog.ts',

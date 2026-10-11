@@ -249,7 +249,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `wasm.ts` — 桶文件，把 `src/core/wasm/*` 的每个导出重新导出给三十多个调用方（现测 31 个，数字随新文件漂移，不必追求精确；用 `grep -rl "from '.*core/wasm\.ts'"` 之类的命令重新数），保留 `import { core } from './wasm.ts'` 这条旧路径。绑定层。
 - `wasm/core.ts` — `Core`：加载/持有 Wasm 实例（含可选的线程池）、`core().x(...)` 的统一入口，把每个内核调用委派给对应域模块。绑定层。
 - `wasm/exports.ts` — `rust/wasm/src/*.rs` 导出的 `extern "C"` 签名类型、内存布局常量、状态码约定。绑定层。
-- `wasm/loader.ts` — `planCore()`：按 SIMD128/threads/crossOriginIsolated 能力选择 scalar/simd/threads 三种构建之一并加载为 `active` 单例。绑定层，兼 TS 外壳（浏览器能力探测）。
+- `wasm/loader.ts` — `planCore()`：按 SIMD128/threads/crossOriginIsolated 能力选择 scalar/simd/threads 三种构建之一并加载为 `active` 单例。每个构建的地址由 `coreURL()` 各写一个字面量 `new URL('./core….wasm', import.meta.url)`，不拼文件名，打包器（npm 包的使用者）才认得出来。绑定层，兼 TS 外壳（浏览器能力探测）。
 - `wasm/marshal.ts` — 每个域模块写入核心内存的公共封送原语（`writeRect` 等）。绑定层。
 - `wasm/memory.ts` — 核心内存所有权：bump arena 的规划、`Resident`/`ResidentFrame`/`ResidentGray`/`FrameRing` 等跨调用常驻句柄。绑定层。
 - `wasm/raster.ts` — 像素格式转换与逐像素光栅内核封送（镜像 `rust/wasm/src/raster.rs`）。绑定层。
@@ -388,7 +388,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `main.ts` — 启动：按依赖顺序建立每个功能模块、把 worker 事件路由给它们、少量无状态的监听器（帮助对话框、对话框关闭、查看器缩放）。UI。
 - `state.ts` — 多个功能模块共读写的字段集合；其余状态私有于各自模块。UI。
 - `dom.ts` — DOM 查找、toast、打印机上的进度条（`setProgress`：填充、写出来的百分比和 progressbar 的 aria 值，运行与导出共用）、纯格式化小工具。UI。
-- `rpc.ts` — 有类型 worker RPC 客户端：请求/响应、`WorkerEvent` 订阅、compatibility 模式的帧请求桥接。UI，兼 worker RPC。
+- `rpc.ts` — 页面唯一的 worker 和它的 RPC 客户端（`src/rpc-client.ts`），外加 compatibility 模式的帧请求桥接。UI，兼 worker RPC。
 - `run.ts` — 重建运行生命周期：启动（设置 + 能力预检）、忙态、`resetView`/`updateProject`、页面加载时恢复浏览器保留的上一张结果（`restore`）、把各阶段的进度折算成整体进度交给 `setProgress`。UI。
 - `canvases.ts` — 画布选择器：项目画布列表获取、排序/标注、切换查看器画布；`mergeCanvas` 处理实时进度事件的增量更新。UI。
 - `viewer.ts` — `TiledViewer`：瓦片查看器的绘制、缩放、缓存。UI。
@@ -400,6 +400,18 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `video.ts` — 原生 `<video>` seek 原语与页面上的几个 `<video>` 元素，供 source-file.ts/diagnostics.ts/compatibility 帧请求桥接共用。UI，兼浏览器 API。
 - `install.ts` — 安装成 PWA：页面加载完后注册 `sw.js`；页眉的「安装到本地」键只在能装、又还没以装好的 App 打开时出现：Chromium 收到 `beforeinstallprompt` 后按键弹浏览器自己的安装框，iPhone/iPad 与 Mac Safari 没有安装 API，按键打开分步说明；Firefox 和 file:// 便携版不显示。UI，兼浏览器 API。
 - `flight.ts` — 崩溃记录器：把重建的最后已知状态写入 localStorage，页面被杀或崩溃后下次加载上报一次并清除。UI，兼 I/O（localStorage）。
+
+### src/package（TS 外壳：npm/JSR 包）
+
+让别的网页也能跑重建（§十三第 8 步的 TS 部分）。包就是应用自己的 worker、三个核心构建和两个辅助 worker，原样打包，外加一个在页面这一侧驱动它们的入口；没有任何算法，也不复制引擎逻辑。
+
+- `index.ts` — 入口 `reconstruct(source, options)`：每次调用新建一个 worker（`new URL('./worker.js', import.meta.url)`），先发 `locale` 和 `storage` 消息，再用应用同一套命令跑完（`start` → 等 `finished` → 翻页读 `canvases`、`diagnostics` → 每张可用画布 `export` 成单张 PNG），返回 `{ result, pause, resume, stop, cancel }`。画布的筛选和排序与应用画布菜单一致（呈现画布在前，再移动内容、固定部分，各按观察像素数），已经接回别处的片段不导出。worker 写进 OPFS 的临时 PNG 先读进内存再删掉，因为条目删除后原来的 `File` 就读不了了。TS 外壳：编排。
+- `types.ts` — 公开类型，只有声明、不 import 任何东西，构建时原样当作 `index.d.ts` 发布；`index.ts` 在编译期检查它们与 worker 实际发出的诊断、进度和 `reconstruct` 的签名一致。TS 外壳（类型定义）。
+- `README.md` — 包自己的说明（英文）：安装、示例、文件怎么服务、跨源隔离、许可。
+
+存储：库不沿用应用「保留最近一张 24 小时」的规则。那条规则是给有界面的应用防刷新和崩溃的，库没有可以恢复到的界面。每次调用用自己的 IndexedDB 数据库（`long-screen-package-<uuid>`，`protocol.ts` 的 `PACKAGE_DB_PREFIX`），`result` 落定之前删掉，成功、出错、`cancel()` 都一样；这样 worker 在 `start` 时的清扫也碰不到同源的应用自己的数据库。调用期间持有 Web Lock `long-screen-package:<库名>`；页面中途关掉留下的库，由同源下一次调用删掉（没有锁持有的才删）。不用内存 KV：长录屏的中间记录可能有几百 MB，应用正是为此才把它们放进 IndexedDB。
+
+打包路线：不用 `@deno/dnt`。dnt 把模块树逐文件转成 npm 模块，处理不了 worker 必须是单个自足文件、以及 worker 按 `new URL('./x', import.meta.url)` 去取的那些同级文件（三个 `.wasm`、`core-helper.js`、`convert-worker.js`）。`scripts/build-package.ts` 沿用应用构建的 `deno bundle`，产出一个扁平目录，npm 和 JSR 发布同一个目录。所有文件引用都是字面量 `new URL('./文件', import.meta.url)`，Vite 和 webpack 会自己发出这些文件（用 Vite 8.3.4、webpack 5.111.1 构建的使用者页面在 Chrome 和 WebKit 里跑通过，PNG 与应用的相同）；为此 `loader.ts` 给每个核心构建写了自己的字面量（`coreURL`）。esbuild 和 `deno bundle` 不处理这种 URL，要把包里的 `*.js`、`*.wasm` 复制到打包结果旁边；Vite 开发服务器要 `optimizeDeps.exclude`。
 
 ### src/i18n（TS 外壳：界面语言）
 
@@ -434,7 +446,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `export/png.ts` — 从磁盘瓦片流式产出原生分辨率行，未观察像素透明。TS 外壳：I/O。
 - `export/crop.ts` — 裁切矩形的整像素换算：画布导出覆盖的整像素范围、把用户的矩形取整并夹进画布（什么都不剩就拒绝）、判断是否等于整张；`exportCanvas` 的单图/分页按它取范围，worker 存 `crop/<canvas>` 行之前也用它校验。只有矩形算术，不碰像素。TS 外壳：I/O 参数。
 - `export/offline.ts` — 生成自包含 `file://` 离线查看器 HTML。TS 外壳：I/O（静态资源生成）。
-- `storage/db.ts` — `KV`/`Row`/`Database`/`MemoryKV`/`Namespace` 等存储抽象与遍历/前缀删除工具。TS 外壳：I/O。
+- `storage/db.ts` — `KV`/`Row`/`Database`/`MemoryKV`/`Namespace` 等存储抽象与遍历/前缀删除工具。`Database.open()` 默认打开应用唯一的 `long-screen-local`，npm 包的每次调用传入自己的库名。TS 外壳：I/O。
 - `storage/tiles.ts` — `TileStore`：引擎瓦片缓存（`rust/engine/src/tiles.rs`）的宿主——读回并解码引擎要的瓦片、把换出与 flush 的瓦片编码成 PNG 写进 `tile/`、`tile-index/` 行；`get()` 交出的瓦片是核心内存的视图（每次读取都重新取，换出后自动换成一份 JS 拷贝）；`saveResident(id)` 存下引擎会话按缓存 id 交回的瓦片；`buildPyramid()` 是引擎金字塔会话（`rust/engine/src/pyramid.rs`）的宿主：读它要的 `tile-index/` 与子瓦片行、写它交回的父瓦片行和每层后的画布行、维护 `pyramid-todo/` 行。TS 外壳：I/O。
 - `storage/diagnostics.ts` — 诊断事件的存储形态、按代码取最高严重级别。TS 外壳：I/O。
 - `storage/projects.ts` — 项目键布局（`project/`、`run/<id>/`，以及旧版写过的 `project-index/`）的唯一入口：删除一个项目，以及 `sweepProjects` 只保留屏幕上那张结果、删掉其余一切（应用不保留历史）。TS 外壳：I/O。
@@ -446,8 +458,9 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 ### 顶层与其它（src/*.ts）
 
 - `types.ts` — 跨模块共享的纯数据类型（`Gray`/`RGBA`/`Region`/`CanvasMeta` 等），无逻辑。TS 外壳（类型定义）。
-- `protocol.ts` — 页面↔worker 类型化协议：冻结的命令名字符串 + 每个命令的载荷/回复类型。TS 外壳：worker RPC。
-- `worker.ts` — worker 入口：接线 `Engine`、存储、项目生命周期、媒体源选择到 `protocol.ts` 的命令处理器。TS 外壳：worker RPC + 编排。
+- `protocol.ts` — 页面↔worker 类型化协议：冻结的命令名字符串 + 每个命令的载荷/回复类型，以及命令之前发的 `locale`、`storage` 两条消息（`storage` 只有 npm 包发，指定这次调用自己的数据库）。TS 外壳：worker RPC。
+- `rpc-client.ts` — 一个 worker 的有类型 RPC 客户端：按 id 配对的请求/回复、`WorkerEvent` 订阅、worker 死掉时拒绝所有未回复的请求。应用页面用一个（`ui/rpc.ts`），npm 包每次调用用一个。TS 外壳：worker RPC。
+- `worker.ts` — worker 入口：接线 `Engine`、存储、项目生命周期、媒体源选择到 `protocol.ts` 的命令处理器。应用和 npm 包用的是同一个 worker。TS 外壳：worker RPC + 编排。
 - `device-check.ts` — 独立页面（不随主应用加载）：报告本机/本浏览器的核心能力与 GPU 路径成本。TS 外壳：编排（诊断工具）。
 - `sw.ts` — service worker（构建成站点根目录的 `sw.js`，作用域是整个应用），让装好的 App 断网也能打开、能跑。网络优先：有网时每个请求照旧走网络并重新验证（`_headers` 的 `no-cache`），推到 main 的新版本下次打开就到；网络失败或 4 秒内没回响应头时才用缓存。缓存一次存一整个构建：`scripts/build.ts` 把运行要用的全部文件清单和内容哈希写进 `sw.js`，安装时按哈希存进 `long-screen-<哈希>`，激活时删掉旧构建的缓存；不调用 `skipWaiting()`/`clients.claim()`，已打开的页面一直用加载它的那个构建。要整个关掉：把 `install.ts` 的注册换成注销已有注册（`navigator.serviceWorker.getRegistrations()` 逐个 `unregister()`），有网的访客下次打开就生效；万一是 service worker 本身坏了、页面打不开，再把 `sw.ts` 换成只做清理的版本（`install` 里 `skipWaiting()`，`activate` 里删掉 `long-screen-*` 缓存后 `registration.unregister()`，不处理 `fetch`），浏览器打开页面时会比对 `sw.js`，换上它就自行清理。TS 外壳：浏览器 I/O。
 - `testkit.ts` — 浏览器测试用：把 `Engine`/`Database`/`PoseGraph`/`RegionAtlas`/`TileStore` 等挂到 `window` 上给 Playwright 用，不随应用加载。TS 外壳（测试基础设施）。
@@ -458,12 +471,14 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `tests/unit/parity/*.test.ts` — 每个已迁移 Rust 域与其冻结 TS oracle 的 byte-exact 对照（`chrome`/`compositor`/`framing`/`kernels`/`layers`/`motion`/`pose-graph`/`pyramid`/`regions`/`track`/`voting`），oracle 源在 `tests/support/reference/*.ts`。
 - `tests/support/reference/*.ts` — 冻结的、迁移前 TS 实现快照，只作对照基准，不参与生产路径。
 - `tests/support/{core,run,scenario-check,parity-fixtures,pixel-fixtures}.ts` — 测试基础设施：加载工作区 Wasm 构建、跑一次场景到 KV、场景目录自检、parity/像素测试用的固定输入。
-- `tests/browser/*.test.ts` — Playwright 驱动的真实 Chrome/WebKit 集成测试（`ui`/`export-ui`/`flight`/`private`/`compatibility`/`device-check`/`compute`/`decode`/`planar`/`gpu-convert`/`reconstruct`/`pwa`），覆盖解码、Worker、IndexedDB、OPFS、界面等核心之外的部分。`tests/browser/support.ts` 不是测试文件，是上述用例共用的测试基础设施（启动/连接被测页面等）。
+- `tests/browser/*.test.ts` — Playwright 驱动的真实 Chrome/WebKit 集成测试（`ui`/`export-ui`/`flight`/`private`/`compatibility`/`device-check`/`compute`/`decode`/`planar`/`gpu-convert`/`reconstruct`/`pwa`/`package`），覆盖解码、Worker、IndexedDB、OPFS、界面等核心之外的部分。`tests/browser/support.ts` 不是测试文件，是上述用例共用的测试基础设施（启动/连接被测页面等）。
+- `tests/package/consumer.{html,js}` — 用构建好的 npm 包的第三方页面（import map 指向 `dist-package/index.js`），由 `tests/browser/package.test.ts` 驱动：跨源隔离、不隔离和 `deno bundle` 打包后三种方式在 Chrome 与 WebKit 里重建示例录屏，PNG 必须与应用自己导出的逐字节相同（产物 `test-results/ts-package/`）。
 - `tests/fixtures/*` — 确定性编码/解码测试固件（mp4/mov/webm 样本、`truth.json`、`world.png`），多数由 `scripts/make-fixtures.ts` 生成。
 
 ### scripts/ 工具
 
 - `build.ts` / `build-core.sh` — 应用构建（bundle + dist 静态资源 + THIRD_PARTY_NOTICES + 写进 `sw.js` 的离线文件清单，并把构建所用的提交写进页脚：Cloudflare Pages 上取 `CF_PAGES_COMMIT_SHA`，本地取 git HEAD，工作区有改动时标 `-dirty`，两者都没有时页脚这一行保持隐藏，不让构建失败）与 Rust 核心三构建编译；后者是修改任何 `.rs` 后唯一允许的构建入口。
+- `build-package.ts` — `deno task build:package`：把 npm/JSR 包构建进 `dist-package/`（`index.js` + `index.d.ts`、应用的 `worker.js`、两个辅助 worker、三个核心构建、`package.json`、`jsr.json`、README、LICENSE、不含字体和徽标的 THIRD_PARTY_NOTICES）；包里的文件引用不是字面量 `new URL('./文件', import.meta.url)` 或指向不存在的文件时构建失败。
 - `fingerprint-scenarios.ts` / `compare-fingerprints.ts` — 24 个合成场景跑一遍并哈希每一条持久化记录；两份指纹逐行比较，任何差异退出码 1。
 - `export-catalog.ts` — 把 `src/i18n` 的 `diag`、`progress` 两节导出成 `rust/engine/catalog/*.json`（`deno task export-catalog`，`--check` 只检查）；遇到 Rust 格式化器不支持的写法（嵌套 `$t()`、格式化器、`{{- }}`、复数键）直接报错。
 - `compare-tiles.ts` — `benchmark-pipeline.ts --verify-tiles` 产出的逐瓦片指纹按字段比较，定位差异瓦片。
@@ -560,7 +575,7 @@ Rust 核心的完整迁移时间线（哪一轮做了什么、每一步的验证
 5. reveal（已完成，`test-results/port-reveal/`）。揭示阶段整个在 `rust/engine/src/reveal.rs` 的 `RevealSession`：哪些决定算数、内存检查与 `REVEAL_SKIPPED`、喂合成器瓦片、四遍的顺序与 `wanted`、投票后的整块拷贝、延后块、来源行与汇总；解码出的帧写进会话自己的帧缓冲（同扫描会话）。宿主 `src/pipeline/reveal.ts` 只剩读行、内存探测、解码循环、瓦片载入与存储、计时、进度、暂停与停止。原来 `src/core/wasm/reveal.ts` 里逐个调用核心的 `RevealRun` 与它的 `ls_reveal_*` 导出一并删除。场景指纹在三种构建上逐行相同（`performance` 行的瓦片编码、解码、换出次数也相同），真实录屏 A/B 的瓦片、瓦片索引、画布与来源行哈希及诊断计数相同。
 6. framing 与金字塔（已完成，`test-results/port-present/`）。呈现画布（`rust/engine/src/framing.rs` 的 `FramingSession`）与预览金字塔（`rust/engine/src/pyramid.rs` 的 `PyramidSession`）都是宿主逐步驱动的可续作业：呈现画布每个输出瓦片之前停一次，供宿主检查暂停与停止，金字塔每个父瓦片之后停一次，与原来的检查点一一对应；呈现画布的规划（周长与源瓦片映射，受瓦片上限约束）是一步算完，不再每 256 格停一次。`buildFramedCanvas` 与 `TileStore.buildPyramid` 保留原来的签名，成为宿主：参照帧的 PNG 解码、瓦片索引的读取、瓦片的载入与存储、`pyramid-todo/` 行和画布行都还在宿主，写入的键、字段顺序与时机不变；瓦片缓存看到的使用、换出、编码与解码次数也不变（`performance` 行逐字节相同）。场景指纹在三种构建上逐行相同，真实录屏 A/B 的瓦片、瓦片索引与画布行哈希及诊断计数相同。
 7. 原生驱动和命令行（已完成，`test-results/native-cli/`）。`rust/long-screen` 是一个同步宿主（见十一节）：与网页同序驱动全部会话，行的键、字段顺序和值与网页相同，诊断用同一份目录格式化；`run()` 带进度与诊断回调、跨线程的暂停与停止、线程数和存储内存预算，结果按瓦片保存，可流式写出任意尺寸的 PNG。命令行 `long-screen` 在它上面。核心的 `pool.rs` 原生走 rayon。全部 24 个合成场景在原生驱动上与网页三种构建的指纹逐行相同（1 线程与默认线程数都是），test_1、test_3、test_6、test_7 上与网页（同样用 ffmpeg 解码的帧）逐行相同，只有 `performance` 行的 `tileEncodes` 随网页的墙钟落盘变化。要做到逐位相同，原生可执行文件里的 `exp`/`pow`/`log`/`hypot` 换成 wasm 构建所用的 musl 实现（`libm` crate，`src/wasm_math.rs`）。网页的结果包（ZIP、离线查看器）尚未搬到原生。
-8. TS 包（npm/jsr）与 Python 包。
+8. TS 包（npm/jsr）与 Python 包。TS 包已完成（`src/package/`，见§十一；`test-results/ts-package/`），还没有发布：npm 名 `long-screen` 在 2026-10-10 无人占用，JSR 的 scope 由维护者决定（`jsr.json` 暂用 `@long-screen/long-screen`）。
 
 ### 每一步怎么验证
 

@@ -25,12 +25,25 @@ export interface CorePlan {
   helpers: number;
   reason: string;
 }
-export function planCore(base: string | URL = import.meta.url): CorePlan {
+/** Where each build sits: next to this module's bundle. Each file has its own string-literal `new URL(...,
+ *  import.meta.url)`, never a computed name, because that literal form is what bundlers (Vite, webpack)
+ *  recognise as an asset reference and emit; the npm package (src/package/) relies on it. */
+export function coreURL(variant: CorePlan['variant']): URL {
+  switch (variant) {
+    case 'threads':
+      return new URL('./core.threads.wasm', import.meta.url);
+    case 'simd':
+      return new URL('./core.simd.wasm', import.meta.url);
+    default:
+      return new URL('./core.wasm', import.meta.url);
+  }
+}
+export function planCore(): CorePlan {
   const simd = simdSupported();
   const g = globalThis as { crossOriginIsolated?: boolean; navigator?: { hardwareConcurrency?: number } };
   const cores = g.navigator?.hardwareConcurrency || 1;
   const single = (reason: string): CorePlan => ({
-    url: new URL(simd ? './core.simd.wasm' : './core.wasm', base),
+    url: coreURL(simd ? 'simd' : 'scalar'),
     variant: simd ? 'simd' : 'scalar',
     helpers: 0,
     reason,
@@ -44,7 +57,7 @@ export function planCore(base: string | URL = import.meta.url): CorePlan {
   // The calling thread computes too; cap the pool where dispatch and memory bandwidth stop paying.
   const helpers = Math.min(cores - 1, 7);
   return {
-    url: new URL('./core.threads.wasm', base),
+    url: coreURL('threads'),
     variant: 'threads',
     helpers,
     reason: `${helpers + 1} threads (${cores} logical CPUs)`,
@@ -58,7 +71,7 @@ export async function loadPlannedCore(plan: CorePlan, helperURL: URL): Promise<C
       await loadCore(fetch(plan.url), { helpers: plan.helpers, helperURL });
       return loadedPlan = plan;
     } catch (error) {
-      const fallback = new URL('./core.simd.wasm', plan.url);
+      const fallback = coreURL('simd');
       await loadCore(fetch(fallback));
       return loadedPlan = {
         url: fallback,
