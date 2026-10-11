@@ -173,6 +173,9 @@ export const pageSections = {
       feedbackHeading: '反馈与源码',
       feedbackBody:
         'Long Screen 是 MIT 协议的开源项目，源码在 <a href="https://github.com/t41372/long-screen" target="_blank" rel="noopener">GitHub</a>。遇到 bug 或结果不对，欢迎<a class="report-link" href="https://github.com/t41372/long-screen/issues/new" target="_blank" rel="noopener">提一个 issue</a>，会预填浏览器信息和日志里的警告代码。觉得好用的话，给项目点个星对我们帮助很大。',
+      toolsHeading: '网页之外',
+      toolsBody:
+        '这个网页背后的引擎也能单独拿来用：有<a href="https://github.com/t41372/long-screen#command-line" target="_blank" rel="noopener">命令行工具</a>、<a href="https://github.com/t41372/long-screen#rust-library" target="_blank" rel="noopener">Rust 库</a>和 <a href="https://github.com/t41372/long-screen#python-package" target="_blank" rel="noopener">Python 包</a>，也有给其他网页调用的 <a href="https://github.com/t41372/long-screen#typescript-package" target="_blank" rel="noopener">TypeScript 包</a>，同样只在本机处理录屏。安装和用法见 README。',
       licenseHeading: '开源授权',
       licenseBody:
         'Long Screen 自身的代码用 MIT 协议：可以免费使用、复制、修改、再发布，也可以商用或放进闭源产品，只要在副本里保留版权声明和<a href="https://github.com/t41372/long-screen/blob/main/LICENSE" target="_blank" rel="noopener">协议原文</a>；软件按现状提供，不附带任何担保。Wasm 核心与前端资源中打包的第三方依赖及其许可，以及页面上 Rust、WebAssembly、GitHub 标志的出处与授权，见 <a href="./THIRD_PARTY_NOTICES.txt" target="_blank" rel="noopener">开源授权说明</a>（构建时生成）。',
