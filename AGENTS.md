@@ -20,12 +20,14 @@ deno task lint           # deno fmt --check + deno lint + cargo fmt --check + cl
 deno task fmt            # deno fmt + cargo fmt (deno.json's fmt.include leaves out AGENTS.md and the hand-written static/)
 deno task coverage       # tests plus per-file line-coverage floors in scripts/coverage.ts
 deno task fingerprint out.json   # hash every persisted row of every synthetic scenario
+deno task bench          # core kernel benchmarks on the public test recordings (rust/bench); CodSpeed runs them on PRs
 ```
 
 - One Deno test file: `deno test --allow-read --allow-write --allow-env tests/unit/motion.test.ts --filter "<name>"`. It loads the core from `rust/target/`, so run `deno task build:core` after changing Rust. `LONGSCREEN_CORE=scalar|threads` picks another core build (default simd) and `LONGSCREEN_THREADS` sets the helper count.
 - One Rust test: `cd rust && cargo test --lib <name>`. A bare `cargo build` uses the scalar flags from `rust/.cargo/config.toml` and does not produce the three builds the app loads.
 - One browser file: `deno test --allow-all tests/browser/ui.test.ts`. The full browser suite takes a few minutes; `docs/TESTING.md` lists the tests known to fail.
 - A/B against another checkout: `deno run -A scripts/fingerprint-scenarios.ts b.json --root ../other`, then `deno run -A scripts/compare-fingerprints.ts a.json b.json`.
+- Benchmarks: `rust/bench` is a native workspace member outside `default-members`, so plain `cargo` commands in `rust/` still mean the core; name it with `-p long-screen-bench` and use the `bench-native` profile. `LONGSCREEN_CASES=<dir>` reads the public recordings from a local directory instead of downloading them. These benches run the core's scalar code natively, so browser-side timing still comes from `scripts/benchmark-pipeline.ts`.
 
 ## Architecture
 

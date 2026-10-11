@@ -1,0 +1,179 @@
+{
+  "release": {
+    "repository": "t41372/long-screen",
+    "tag": "test-cases-v1",
+    "url": "https://github.com/t41372/long-screen/releases/download/test-cases-v1/{file}"
+  },
+  "provenance": "Screen recordings made by the repository owner for Long Screen on 2026-10-10 and published by them as test material. They show nothing private and nothing under third-party copyright: one shows a photograph the owner took, test_4 shows the Mona Lisa (public domain).",
+  "extractor": 1,
+  "cases": [
+    {
+      "id": "test_1",
+      "file": "test_1_sdr_desktop_basic_anypath.mov",
+      "bytes": 73216794,
+      "sha256": "fc55470d613bbb57571922c0e70e078a56b1ff23ee7f905759e44a38a0ae455c",
+      "codec": "h264",
+      "width": 3456,
+      "height": 2234,
+      "pix_fmt": "yuv420p",
+      "range": "tv",
+      "matrix": "bt709",
+      "transfer": "bt709",
+      "primaries": "bt709",
+      "frames": 875,
+      "note": "SDR desktop recording, page moved along an arbitrary path",
+      "window": {
+        "start": 218,
+        "count": 3
+      },
+      "fixture_sha256": "69688245534780e6960b9ce0f2bcf4fa8a667d1d81003da36f517a1ab1ba0206"
+    },
+    {
+      "id": "test_2",
+      "file": "test_2_sdr_desktop_gpt_scroll_with_floating.mov",
+      "bytes": 116686108,
+      "sha256": "34a83046a736672da1f413abddd4ae1924b174b71a04ef5dc60b1390f5f3f594",
+      "codec": "h264",
+      "width": 3456,
+      "height": 2234,
+      "pix_fmt": "yuv420p",
+      "range": "tv",
+      "matrix": "bt709",
+      "transfer": "bt709",
+      "primaries": "bt709",
+      "frames": 1258,
+      "note": "SDR desktop recording, a chat page scrolled under floating controls",
+      "window": {
+        "start": 314,
+        "count": 3
+      },
+      "fixture_sha256": "48a89926651bc752ad3bc364e5b4f3d257a6944d424e034bbddcf425d93e33af"
+    },
+    {
+      "id": "test_3",
+      "file": "test_3_hdr_desktop_vertical.mov",
+      "bytes": 19265498,
+      "sha256": "8b714872c73daaed89fedcbc52330608f89b3c6d7d66e0d68320d170d54c0b3b",
+      "codec": "hevc",
+      "width": 780,
+      "height": 1404,
+      "pix_fmt": "yuv420p10le",
+      "range": "tv",
+      "matrix": "bt2020nc",
+      "transfer": "smpte2084",
+      "primaries": "bt2020",
+      "frames": 1242,
+      "note": "HDR (PQ) desktop recording of a narrow window, scrolled vertically",
+      "window": {
+        "start": 310,
+        "count": 3
+      },
+      "fixture_sha256": "2a44314f6670138452b4098e0355a360a8d35c46ee4f2d5dbd2d299a8a59bbda"
+    },
+    {
+      "id": "test_4",
+      "file": "test_4_hdr_monalisa.mov",
+      "bytes": 170647210,
+      "sha256": "4495d0c4a00613f7321c2c9508a89590c313b1ca26922f3a54ac683599ebcb6b",
+      "codec": "hevc",
+      "width": 3456,
+      "height": 2234,
+      "pix_fmt": "yuv420p10le",
+      "range": "tv",
+      "matrix": "bt2020nc",
+      "transfer": "smpte2084",
+      "primaries": "bt2020",
+      "frames": 1876,
+      "note": "HDR (PQ) desktop recording panning over the Mona Lisa (public domain)",
+      "window": {
+        "start": 470,
+        "count": 3
+      },
+      "fixture_sha256": "1bdf20b94d1e8999a30ef4bc6675e79a54504c577b789ab7026a19f99d80b1af"
+    },
+    {
+      "id": "test_5",
+      "file": "test_5_hdr_image.mov",
+      "bytes": 94699296,
+      "sha256": "fe2c1838c492ab704c85c5d83d153712648fb77577d85f16ac8265a2343c76bb",
+      "codec": "hevc",
+      "width": 2912,
+      "height": 2078,
+      "pix_fmt": "yuv420p10le",
+      "range": "tv",
+      "matrix": "bt2020nc",
+      "transfer": "smpte2084",
+      "primaries": "bt2020",
+      "frames": 1851,
+      "note": "HDR (PQ) desktop recording panning over an image",
+      "window": {
+        "start": 462,
+        "count": 3
+      },
+      "fixture_sha256": "66a93dd227a478c65d62914f2f32f7884527b27088c7b97acc150457a605c632"
+    },
+    {
+      "id": "test_6",
+      "file": "test_6_iphone_safari.MP4",
+      "bytes": 5175455,
+      "sha256": "4d4e9237fadcd29f19daf917c5490ce3a21ec8df376548bed9c1212314a6ba85",
+      "codec": "hevc",
+      "width": 1320,
+      "height": 2868,
+      "pix_fmt": "yuv420p10le",
+      "range": "tv",
+      "matrix": "bt2020nc",
+      "transfer": "smpte2084",
+      "primaries": "bt2020",
+      "frames": 335,
+      "note": "HDR (PQ) iPhone recording of Safari",
+      "window": {
+        "start": 83,
+        "count": 3
+      },
+      "fixture_sha256": "9c8c2840791f78893a0536f897eb599039640c3a3eb43f0ee1de8ed9e8da09f5"
+    },
+    {
+      "id": "test_7",
+      "file": "test_7_iphone_chatgpt.MP4",
+      "bytes": 11207684,
+      "sha256": "c0bf64652f6a1b6572e9bd9dada1d3f6e85347751d6023c162b6345be8b6e2a4",
+      "codec": "hevc",
+      "width": 1320,
+      "height": 2868,
+      "pix_fmt": "yuv420p10le",
+      "range": "tv",
+      "matrix": "bt2020nc",
+      "transfer": "smpte2084",
+      "primaries": "bt2020",
+      "frames": 405,
+      "note": "HDR (PQ) iPhone recording of a chat app",
+      "window": {
+        "start": 104,
+        "count": 3
+      },
+      "fixture_sha256": "b5da43740d9998bcadb00e77df730044f54fc9a7c8e9f43f8b03fbfc123aee63"
+    },
+    {
+      "id": "test_8",
+      "file": "test_8_iphone_signal.MP4",
+      "bytes": 20725314,
+      "sha256": "e3031599f74a6fe5f815af792b7a437141c37fd616c3b88a8d760fcae008dc47",
+      "codec": "hevc",
+      "width": 1320,
+      "height": 2868,
+      "pix_fmt": "yuv420p10le",
+      "range": "tv",
+      "matrix": "bt2020nc",
+      "transfer": "smpte2084",
+      "primaries": "bt2020",
+      "frames": 598,
+      "note": "HDR (PQ) iPhone recording of a messaging app",
+      "window": {
+        "start": 149,
+        "count": 3
+      },
+      "fixture_sha256": "6d2b983ddec34d3656c5b304676ef70d7888e5900faf5847b041f8e0effbcf33"
+    }
+  ]
+}

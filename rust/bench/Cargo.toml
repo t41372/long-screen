@@ -1,0 +1,23 @@
+[package]
+name = "long-screen-bench"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Benchmarks of the Long Screen core on the public test recordings, run on CodSpeed"
+
+[dependencies]
+long-screen-core = { path = "../core" }
+# The same encoder and settings as the core's tile export (rust/core/src/abi/png.rs), which this crate cannot call
+# through its wasm-pointer ABI.
+png = "=0.18.1"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.152"
+sha2 = "=0.11.0"
+
+[dev-dependencies]
+# CodSpeed's drop-in for divan: plain divan timing locally, CPU simulation under `cargo codspeed run` in CI.
+divan = { package = "codspeed-divan-compat", version = "=5.0.2" }
+
+[[bench]]
+name = "kernels"
+harness = false

@@ -1,0 +1,62 @@
+# Core kernel benchmarks (rust/bench) on the public test recordings, measured by CodSpeed's CPU simulation on every
+# pull request and on main (main's runs are the baseline pull requests are compared with). Deploys do not depend on it:
+# production still builds on Cloudflare Pages. See docs/TESTING.md, section "性能基准（CodSpeed）".
+name: CodSpeed
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# No `permissions` block: CodSpeed accepts uploads from public repositories without a token, including pull requests
+# from forks (https://codspeed.io/docs/integrations/ci/github-actions).
+
+jobs:
+  benchmarks:
+    name: Core kernels
+    runs-on: ubuntu-24.04
+    env:
+      # Outside rust/target so the Rust cache below neither stores nor prunes them.
+      LONGSCREEN_FIXTURES: ${{ github.workspace }}/.bench-fixtures
+    steps:
+      - uses: actions/checkout@v5
+
+      # Keyed on the manifest, which pins every recording, window and fixture hash: a hit needs no download.
+      - name: Restore fixtures
+        id: fixtures
+        uses: actions/cache@v4
+        with:
+          path: .bench-fixtures
+          key: bench-fixtures-${{ hashFiles('rust/bench/cases.json') }}
+
+      - name: Install ffmpeg
+        if: steps.fixtures.outputs.cache-hit != 'true'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg
+
+      - name: Install the pinned Rust toolchain
+        working-directory: rust
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+
+      - name: Install cargo-codspeed
+        working-directory: rust
+        run: cargo install cargo-codspeed --locked --version 5.0.2
+
+      - name: Fetch the recordings and decode the fixtures
+        working-directory: rust
+        run: cargo run --locked -p long-screen-bench --bin cases -- fixtures
+
+      - name: Build the benchmarks
+        working-directory: rust
+        run: cargo codspeed build --locked -p long-screen-bench --profile bench-native -m simulation
+
+      - name: Run the benchmarks
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: simulation
+          working-directory: rust
+          run: cargo codspeed run -p long-screen-bench
