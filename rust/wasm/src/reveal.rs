@@ -1,550 +1,314 @@
-//! Reveal-run handles (`long_screen_core::reveal::run`): overlay-aware block selection after the compositor. The adapter
-//! feeds decoded frames (resident) and per-frame moving-layer decisions, drains block copies, and writes the
-//! deferred blocks at the end.
+//! The engine's reveal session (`long_screen_engine::reveal::RevealSession`, mirrored by `src/core/wasm/reveal.ts`):
+//! overlay-aware block selection after the compositor, driven by `src/pipeline/reveal.ts` over the tile cache
+//! (`tiles.rs`).
+//!
+//! `ls_reveal_new` takes a `bytes.rs` record: u32 width, u32 height, f64 noise, u32 tile size, u32 frames; u32 layer
+//! count, each str id, rect (4 × f64), u32 atlas code; u32 canvas count, each str id, bounds (4 × f64). It returns a
+//! handle (error convention 4); a layer with an empty pixel span or a code above 255 is a bad argument.
+//!
+//! `ls_reveal_observation` takes one stored `observation/` row: u32 frame, u32 decision count, each str canvas,
+//! str layer, f64 x, f64 y, u8 skip, u8 skipped, u32 occlusion count, each rect (4 × f64).
+//!
+//! `ls_reveal_step` returns its result's length (error convention 6; −2 when a tile asked for was not inserted) and
+//! leaves it in the handle for `ls_reveal_take`. The result is a `bytes.rs` record: u8 kind, then
+//!   0 need memory: f64 bytes, u8 stage (0 canvases, 1 fallback)
+//!   1 need observations; 2 need tile: str canvas, u32 level, i32 x, i32 y; 3 checkpoint
+//!   4 decode: u8 pass (0 learn, 1 agree, 2 relearn, 3 write), u32 frame count, one u8 (0/1) per frame
+//!   5 next frame; 6 pass done: u8 pass
+//!   7 provenance: str canvas, i32 gx, i32 gy, u32 bw, u32 bh, then bw × bh i32
+//!   8 done, nothing to reveal; 9 done, skipped: one diagnostic (`diagnostic.rs`)
+//!   10 done, revealed: six u32 counters (objects, components, coherent, component, provisional and fallback blocks)
 
-use crate::memory::{slice, slice_mut, HandleTable};
+use crate::bytes::{Cursor, Out};
+use crate::diagnostic::write_diagnostic;
+use crate::memory::{slice, HandleTable};
+use crate::tiles::tiles;
 use crate::{STATUS_BAD_ARGUMENT, STATUS_OK};
-use long_screen_core::reveal::blocks::Deferred;
-use long_screen_core::reveal::run::{canvas_bytes, layer_bytes, Decision, Pass, Reveal};
-use long_screen_core::reveal::CanvasView;
+use long_screen_core::geometry::Rect;
+use long_screen_engine::reveal::{
+    MemoryStage, ObservedDecision, Outcome, Pass, RevealCanvas, RevealError, RevealLayer,
+    RevealSession, Step,
+};
 
-/// Decision descriptor: layer u32, canvas u32, x i32, y i32, occlusion count u32, occlusion pointer u32
-/// (each occlusion: x, y, width, height as i32).
-pub const REVEAL_DECISION_BYTES: usize = 24;
-/// Block-write record: canvas u32, gx i32, gy i32, sx i32, sy i32, frame u32, kind u32.
-pub const REVEAL_WRITE_BYTES: usize = 28;
-/// Provenance header: gx i32, gy i32, bw u32, bh u32; then bw × bh i32 sources.
-pub const REVEAL_PROVENANCE_HEADER_BYTES: usize = 16;
-/// Deferred-block record: gx i32, gy i32, frame u32, kind u32, then 16×16 RGBA (alpha 0 keeps the canvas pixel).
-pub const REVEAL_DEFERRED_BYTES: usize = 16 + 16 * 16 * 4;
+/// `ls_reveal_step` was called after `NeedTile` without the tile being inserted.
+pub const STATUS_NOT_PROVIDED: i32 = -2;
 
-struct RevealHandle {
-    run: Reveal,
-    deferred: Vec<Deferred>,
+struct Session {
+    session: RevealSession,
+    out: Vec<u8>,
 }
 
-static mut REVEAL: HandleTable<RevealHandle> = HandleTable::new();
+static mut REVEALS: HandleTable<Session> = HandleTable::new();
 
-fn handles() -> &'static mut HandleTable<RevealHandle> {
-    // SAFETY: only the main instance touches REVEAL, and only through these exported entry points.
-    unsafe { &mut *std::ptr::addr_of_mut!(REVEAL) }
+fn reveals() -> &'static mut HandleTable<Session> {
+    // SAFETY: only the main instance touches REVEALS, and only through these exported entry points — no pool helper
+    // thread reaches this module.
+    unsafe { &mut *std::ptr::addr_of_mut!(REVEALS) }
 }
 
-fn get(handle: u32) -> Option<&'static mut RevealHandle> {
-    handles().get(handle)
+fn status(error: RevealError) -> i32 {
+    match error {
+        RevealError::NotProvided => STATUS_NOT_PROVIDED,
+        RevealError::Unexpected | RevealError::BadLayer | RevealError::BadLabels => {
+            STATUS_BAD_ARGUMENT
+        }
+    }
 }
 
-#[inline]
-fn i32_at(b: &[u8], o: usize) -> i32 {
-    i32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]])
+fn read_rect(c: &mut Cursor) -> Option<Rect> {
+    Some(Rect {
+        x: c.f64()?,
+        y: c.f64()?,
+        width: c.f64()?,
+        height: c.f64()?,
+    })
 }
 
-/// A handle (> 0) or `STATUS_BAD_ARGUMENT`.
+fn pass_code(pass: Pass) -> u8 {
+    match pass {
+        Pass::Learn => 0,
+        Pass::Agree => 1,
+        Pass::Relearn => 2,
+        Pass::Write => 3,
+    }
+}
+
+/// The atlas label plane at `ptr` (0 = none), `len` bytes.
+fn labels(ptr: u32, len: usize) -> Option<Option<&'static [u8]>> {
+    if ptr == 0 {
+        return Some(None);
+    }
+    // SAFETY: an adapter-owned resident plane, bounds checked.
+    unsafe { slice(ptr, len) }.map(Some)
+}
+
 #[no_mangle]
-pub extern "C" fn ls_reveal_new(width: u32, height: u32, noise: f64) -> i32 {
-    if width == 0 || height == 0 || !noise.is_finite() || noise < 0.0 {
+pub extern "C" fn ls_reveal_new(input: u32, len: u32) -> i32 {
+    // SAFETY: adapter-owned buffer, bounds checked.
+    let Some(bytes) = (unsafe { slice(input, len as usize) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let mut c = Cursor::new(bytes);
+    let parsed = (|| {
+        let (width, height) = (c.u32()? as usize, c.u32()? as usize);
+        let noise = c.f64()?;
+        let (size, frames) = (c.u32()? as usize, c.u32()?);
+        let mut layers = Vec::new();
+        for _ in 0..c.u32()? {
+            let id = c.str()?.to_string();
+            let rect = read_rect(&mut c)?;
+            layers.push(RevealLayer {
+                id,
+                rect,
+                code: c.u32()?,
+            });
+        }
+        let mut canvases = Vec::new();
+        for _ in 0..c.u32()? {
+            let id = c.str()?.to_string();
+            canvases.push(RevealCanvas {
+                id,
+                bounds: read_rect(&mut c)?,
+            });
+        }
+        Some((width, height, noise, size, frames, layers, canvases))
+    })();
+    let Some((width, height, noise, size, frames, layers, canvases)) = parsed else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    if width == 0 || height == 0 || !noise.is_finite() || noise < 0.0 || size == 0 {
         return STATUS_BAD_ARGUMENT;
     }
-    handles().insert(RevealHandle {
-        run: Reveal::new(width as usize, height as usize, noise),
-        deferred: Vec::new(),
-    })
+    match RevealSession::new(width, height, noise, size, frames, layers, canvases) {
+        Ok(session) => reveals().insert(Session {
+            session,
+            out: Vec::new(),
+        }),
+        Err(e) => status(e),
+    }
 }
 
 #[no_mangle]
 pub extern "C" fn ls_reveal_free(handle: u32) {
-    handles().free(handle);
+    reveals().free(handle);
 }
 
-/// Adds a moving layer (screen rectangle and atlas code, 0 = owns its rectangle). Returns its slot.
+/// The answer to a memory step: `fits` 1 or 0, and the core's size in bytes.
 #[no_mangle]
-pub extern "C" fn ls_reveal_layer(
-    handle: u32,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-    code: u32,
-) -> i32 {
-    let Some(h) = get(handle) else {
+pub extern "C" fn ls_reveal_memory(handle: u32, fits: u32, core_bytes: f64) -> i32 {
+    let Some(s) = reveals().get(handle) else {
         return STATUS_BAD_ARGUMENT;
     };
-    if width == 0 || height == 0 || code > 255 {
-        return STATUS_BAD_ARGUMENT;
+    match s.session.memory(fits != 0, core_bytes) {
+        Ok(()) => STATUS_OK,
+        Err(e) => status(e),
     }
-    h.run.add_layer(
-        x as i64,
-        y as i64,
-        width as usize,
-        height as usize,
-        code as u8,
-    ) as i32
 }
 
-/// Adds a moving canvas (world bounds). Returns its slot.
+/// One stored observation row (see the module documentation).
 #[no_mangle]
-pub extern "C" fn ls_reveal_canvas(handle: u32, x: i32, y: i32, width: u32, height: u32) -> i32 {
-    let Some(h) = get(handle) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    h.run
-        .add_canvas(x as i64, y as i64, width as usize, height as usize) as i32
-}
-
-/// Adds a tile of the compositor's canvas (RGBA and LSB-first coverage bits, world origin) to its reference.
-#[no_mangle]
-#[allow(clippy::too_many_arguments)]
-pub extern "C" fn ls_reveal_ingest(
-    handle: u32,
-    canvas: u32,
-    x: i32,
-    y: i32,
-    width: u32,
-    height: u32,
-    rgba: u32,
-    coverage: u32,
-) -> i32 {
-    let Some(h) = get(handle) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let n = width as usize * height as usize;
-    // SAFETY: adapter-owned buffers, bounds checked.
-    let (Some(rgba), Some(coverage)) = (unsafe { slice(rgba, n * 4) }, unsafe {
-        slice(coverage, n.div_ceil(8))
-    }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    if canvas as usize >= h.run.canvases.len() {
-        return STATUS_BAD_ARGUMENT;
-    }
-    h.run.ingest(
-        canvas as usize,
-        &CanvasView {
-            x: x as i64,
-            y: y as i64,
-            width: width as usize,
-            height: height as usize,
-            rgba,
-            coverage,
-        },
-    );
-    STATUS_OK
-}
-
-/// Starts pass 0 (learn), 1 (agree), 2 (relearn) or 3 (write).
-/// Core memory a reveal canvas of `width × height` holds, its write pass's fallback state aside
-/// (`reveal::run::canvas_bytes`).
-#[no_mangle]
-pub extern "C" fn ls_reveal_canvas_bytes(width: u32, height: u32) -> f64 {
-    canvas_bytes(width as usize, height as usize) as f64
-}
-
-/// Core memory a reveal layer of `width × height` holds (`reveal::run::layer_bytes`).
-#[no_mangle]
-pub extern "C" fn ls_reveal_layer_bytes(width: u32, height: u32) -> f64 {
-    layer_bytes(width as usize, height as usize) as f64
-}
-
-/// The write pass's fallback state at most, once the agree pass has run (`Reveal::fallback_bytes`); -1 for a bad
-/// handle.
-#[no_mangle]
-pub extern "C" fn ls_reveal_fallback_bytes(handle: u32) -> f64 {
-    get(handle).map_or(-1.0, |h| h.run.fallback_bytes() as f64)
-}
-
-#[no_mangle]
-pub extern "C" fn ls_reveal_begin(handle: u32, pass: u32) -> i32 {
-    let Some(h) = get(handle) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let pass = match pass {
-        0 => Pass::Learn,
-        1 => Pass::Agree,
-        2 => Pass::Relearn,
-        3 => Pass::Write,
-        _ => return STATUS_BAD_ARGUMENT,
-    };
-    h.run.begin(pass);
-    STATUS_OK
-}
-
-/// Fallback blocks of `canvas` as (gx, gy) i32 pairs written to `out` (up to `max`); returns the total count.
-#[no_mangle]
-pub extern "C" fn ls_reveal_fallbacks(handle: u32, canvas: u32, out: u32, max: u32) -> i32 {
-    let Some(h) = get(handle) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    if canvas as usize >= h.run.canvases.len() {
-        return STATUS_BAD_ARGUMENT;
-    }
-    let blocks = h.run.fallback_blocks(canvas as usize);
-    let n = blocks.len().min(max as usize);
-    // SAFETY: adapter-owned output.
-    let Some(dst) = (unsafe { slice_mut(out, n * 8) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    for (k, (gx, gy)) in blocks.iter().take(n).enumerate() {
-        dst[k * 8..k * 8 + 4].copy_from_slice(&(*gx as i32).to_le_bytes());
-        dst[k * 8 + 4..k * 8 + 8].copy_from_slice(&(*gy as i32).to_le_bytes());
-    }
-    blocks.len() as i32
-}
-
-/// The compositor's 16×16 RGBA for fallback block (gx, gy) of `canvas`.
-#[no_mangle]
-pub extern "C" fn ls_reveal_set_main(handle: u32, canvas: u32, gx: i32, gy: i32, rgba: u32) -> i32 {
-    let Some(h) = get(handle) else {
+pub extern "C" fn ls_reveal_observation(handle: u32, input: u32, len: u32) -> i32 {
+    let Some(s) = reveals().get(handle) else {
         return STATUS_BAD_ARGUMENT;
     };
     // SAFETY: adapter-owned buffer, bounds checked.
-    let Some(rgba) = (unsafe { slice(rgba, 16 * 16 * 4) }) else {
+    let Some(bytes) = (unsafe { slice(input, len as usize) }) else {
         return STATUS_BAD_ARGUMENT;
     };
-    if canvas as usize >= h.run.canvases.len() {
-        return STATUS_BAD_ARGUMENT;
-    }
-    h.run.set_main(canvas as usize, gx as i64, gy as i64, rgba);
-    STATUS_OK
-}
-
-/// # Safety
-/// `ptr` points at `count × REVEAL_DECISION_BYTES` bytes whose occlusion pointers cover what they declare.
-unsafe fn read_decisions(run: &Reveal, ptr: u32, count: u32) -> Option<Vec<Decision>> {
-    let bytes = slice(ptr, count as usize * REVEAL_DECISION_BYTES)?;
-    let mut out = Vec::with_capacity(count as usize);
-    for c in bytes.chunks_exact(REVEAL_DECISION_BYTES) {
-        let (layer, canvas) = (i32_at(c, 0) as usize, i32_at(c, 4) as usize);
-        if layer >= run.layers.len() || canvas >= run.canvases.len() {
-            return None;
-        }
-        let n = i32_at(c, 16) as usize;
-        let occ = slice(i32_at(c, 20) as u32, n * 16)?;
-        let occlusions = occ
-            .chunks_exact(16)
-            .map(|o| {
-                (
-                    i32_at(o, 0) as i64,
-                    i32_at(o, 4) as i64,
-                    i32_at(o, 8) as i64,
-                    i32_at(o, 12) as i64,
-                )
-            })
-            .collect();
-        out.push(Decision {
-            layer,
-            canvas,
-            x: i32_at(c, 8) as i64,
-            y: i32_at(c, 12) as i64,
-            occlusions,
-        });
-    }
-    Some(out)
-}
-
-/// One decoded frame: `current` (and `prev`, `prev2`, 0 = absent) are width × height RGBA, `labels` the atlas
-/// label plane (0 = none), `decisions` this frame's moving-layer placements.
-#[no_mangle]
-#[allow(clippy::too_many_arguments)]
-pub extern "C" fn ls_reveal_frame(
-    handle: u32,
-    index: u32,
-    current: u32,
-    prev: u32,
-    prev2: u32,
-    labels: u32,
-    decisions: u32,
-    count: u32,
-) -> i32 {
-    let Some(h) = get(handle) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let n = h.run.width * h.run.height;
-    // SAFETY: adapter-owned resident buffers, bounds checked.
-    let optional = |p: u32, len: usize| {
-        if p == 0 {
-            Some(None)
-        } else {
-            unsafe { slice(p, len) }.map(Some)
-        }
-    };
-    let (Some(current), Some(prev), Some(prev2), Some(labels)) = (
-        optional(current, n * 4),
-        optional(prev, n * 4),
-        optional(prev2, n * 4),
-        optional(labels, n),
-    ) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    // SAFETY: as above.
-    let Some(decisions) = (unsafe { read_decisions(&h.run, decisions, count) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    h.run.frame(index, current, prev, prev2, labels, &decisions);
-    STATUS_OK
-}
-
-/// Ends a selection pass: open runs vote with `last` (the final frame) and `before` (the one ahead of it, 0 = none).
-#[no_mangle]
-pub extern "C" fn ls_reveal_end(handle: u32, last: u32, before: u32, labels: u32) -> i32 {
-    let Some(h) = get(handle) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let n = h.run.width * h.run.height;
-    let optional = |p: u32, len: usize| {
-        if p == 0 {
-            Some(None)
-        } else {
-            unsafe { slice(p, len) }.map(Some)
-        }
-    };
-    // SAFETY: adapter-owned resident buffers, bounds checked.
-    let (Some(last), Some(before), Some(labels)) = (
-        optional(last, n * 4),
-        optional(before, n * 4),
-        optional(labels, n),
-    ) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    h.run.end(last, before, labels);
-    STATUS_OK
-}
-
-/// Drains up to `max` pending block writes into `out`; returns how many were written (0 when none remain).
-#[no_mangle]
-pub extern "C" fn ls_reveal_writes(handle: u32, out: u32, max: u32) -> i32 {
-    let Some(h) = get(handle) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let n = h.run.writes.len().min(max as usize);
-    // SAFETY: adapter-owned output.
-    let Some(dst) = (unsafe { slice_mut(out, n * REVEAL_WRITE_BYTES) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    for (k, w) in h.run.writes.drain(..n).enumerate() {
-        let o = &mut dst[k * REVEAL_WRITE_BYTES..(k + 1) * REVEAL_WRITE_BYTES];
-        for (i, v) in [
-            w.canvas as i32,
-            w.gx as i32,
-            w.gy as i32,
-            w.sx as i32,
-            w.sy as i32,
-            w.frame as i32,
-            w.kind as i32,
-        ]
-        .iter()
-        .enumerate()
-        {
-            o[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
-        }
-    }
-    n as i32
-}
-
-/// Computes the deferred blocks of `canvas`; returns their count (read them with `ls_reveal_deferred`).
-#[no_mangle]
-pub extern "C" fn ls_reveal_finish(handle: u32, canvas: u32) -> i32 {
-    let Some(h) = get(handle) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    if canvas as usize >= h.run.canvases.len() {
-        return STATUS_BAD_ARGUMENT;
-    }
-    h.deferred = h.run.finish(canvas as usize);
-    h.deferred.len() as i32
-}
-
-/// Deferred block `k` of the last `ls_reveal_finish` into `out` (`REVEAL_DEFERRED_BYTES`).
-#[no_mangle]
-pub extern "C" fn ls_reveal_deferred(handle: u32, k: u32, out: u32) -> i32 {
-    let Some(h) = get(handle) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let Some(d) = h.deferred.get(k as usize) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    // SAFETY: adapter-owned output.
-    let Some(dst) = (unsafe { slice_mut(out, REVEAL_DEFERRED_BYTES) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    for (i, v) in [d.gx as i32, d.gy as i32, d.frame as i32, d.kind as i32]
-        .iter()
-        .enumerate()
-    {
-        dst[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
-    }
-    dst[16..].copy_from_slice(&d.rgba[..]);
-    STATUS_OK
-}
-
-/// Six u32 counters: overlay objects, dynamic components, coherent, component, provisional and fallback blocks.
-#[no_mangle]
-pub extern "C" fn ls_reveal_summary(handle: u32, out: u32) -> i32 {
-    let Some(h) = get(handle) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    // SAFETY: adapter-owned output.
-    let Some(dst) = (unsafe { slice_mut(out, 24) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let s = h.run.summary();
-    for (i, v) in [
-        s.objects,
-        s.components,
-        s.coherent,
-        s.component_blocks,
-        s.provisional,
-        s.fallback,
-    ]
-    .iter()
-    .enumerate()
-    {
-        dst[i * 4..i * 4 + 4].copy_from_slice(&(*v as u32).to_le_bytes());
-    }
-    STATUS_OK
-}
-
-/// Where each block of `canvas` now takes its pixels from (`long_screen_core::reveal::blocks::Output::sources`), for the blocks
-/// the last [`ls_reveal_finish`] of that canvas returned: the header then one i32 per block, row-major. Returns the
-/// block count; with `out` 0 only the count. 0 when the canvas has no output.
-#[no_mangle]
-pub extern "C" fn ls_reveal_provenance(handle: u32, canvas: u32, out: u32, max: u32) -> i32 {
-    let Some(h) = get(handle) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    if canvas as usize >= h.run.canvases.len() {
-        return STATUS_BAD_ARGUMENT;
-    }
-    let Some((gx, gy, bw, bh, sources)) = h.run.provenance(canvas as usize, &h.deferred) else {
-        return 0;
-    };
-    if out == 0 {
-        return sources.len() as i32;
-    }
-    if (max as usize) < sources.len() {
-        return STATUS_BAD_ARGUMENT;
-    }
-    // SAFETY: adapter-owned output of the header plus `max` sources.
-    let Some(dst) = (unsafe { slice_mut(out, REVEAL_PROVENANCE_HEADER_BYTES + sources.len() * 4) })
-    else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    for (i, v) in [gx as i32, gy as i32, bw as i32, bh as i32]
-        .iter()
-        .enumerate()
-    {
-        dst[i * 4..i * 4 + 4].copy_from_slice(&v.to_le_bytes());
-    }
-    for (i, v) in sources.iter().enumerate() {
-        let o = REVEAL_PROVENANCE_HEADER_BYTES + i * 4;
-        dst[o..o + 4].copy_from_slice(&v.to_le_bytes());
-    }
-    sources.len() as i32
-}
-
-/// Every frame's decisions from `counts[i]` (u32, frame `i`'s decision count) and `decisions` (all frames' decision
-/// descriptors in order, occlusions ignored), or `None` when a pointer, layer or canvas is out of range.
-fn read_plans(
-    run: &Reveal,
-    frames: u32,
-    counts: u32,
-    decisions: u32,
-) -> Option<Vec<Vec<Decision>>> {
-    let n = frames as usize;
-    // SAFETY: adapter-owned input.
-    let counts = unsafe { slice(counts, n * 4) }?;
-    let total: usize = (0..n).map(|i| i32_at(counts, i * 4) as usize).sum();
-    // SAFETY: adapter-owned descriptors.
-    let raw = unsafe { slice(decisions, total * REVEAL_DECISION_BYTES) }?;
-    let mut plans = Vec::with_capacity(n);
-    let mut at = 0;
-    for i in 0..n {
-        let mut ds = Vec::new();
-        for _ in 0..i32_at(counts, i * 4) {
-            let o = at * REVEAL_DECISION_BYTES;
-            let (layer, canvas) = (i32_at(raw, o) as usize, i32_at(raw, o + 4) as usize);
-            if layer >= run.layers.len() || canvas >= run.canvases.len() {
-                return None;
+    let mut c = Cursor::new(bytes);
+    let parsed = (|| {
+        let frame = c.u32()?;
+        let mut decisions = Vec::new();
+        for _ in 0..c.u32()? {
+            let canvas = c.str()?.to_string();
+            let layer = c.str()?.to_string();
+            let (x, y) = (c.f64()?, c.f64()?);
+            let (skip, skipped) = (c.bool()?, c.bool()?);
+            let mut occlusions = Vec::new();
+            for _ in 0..c.u32()? {
+                occlusions.push(read_rect(&mut c)?);
             }
-            ds.push(Decision {
-                layer,
+            decisions.push(ObservedDecision {
                 canvas,
-                x: i32_at(raw, o + 8) as i64,
-                y: i32_at(raw, o + 12) as i64,
-                occlusions: Vec::new(),
+                layer,
+                x,
+                y,
+                skip,
+                skipped,
+                occlusions,
             });
-            at += 1;
         }
-        plans.push(ds);
+        Some((frame, decisions))
+    })();
+    let Some((frame, decisions)) = parsed else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    match s.session.observation(frame, &decisions) {
+        Ok(()) => STATUS_OK,
+        Err(e) => status(e),
     }
-    Some(plans)
 }
 
-/// Which of `frames` decoded frames the current pass reads pixels of (`long_screen_core::reveal::run::Reveal::wanted`), one byte
-/// (0/1) per frame into `out`. `counts` and `decisions` as in [`read_plans`].
+/// Pointer to the `width × height × 4`-byte buffer the next wanted frame's RGBA goes into (0 out of turn or on a bad
+/// handle). It stays valid until the session is freed; memory growth does not move it.
 #[no_mangle]
-pub extern "C" fn ls_reveal_wanted(
-    handle: u32,
-    frames: u32,
-    counts: u32,
-    decisions: u32,
-    out: u32,
-) -> i32 {
-    let Some(h) = get(handle) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let Some(plans) = read_plans(&h.run, frames, counts, decisions) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    // SAFETY: adapter-owned output.
-    let Some(out) = (unsafe { slice_mut(out, frames as usize) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    for (o, w) in out.iter_mut().zip(h.run.wanted(&plans)) {
-        *o = w as u8;
+pub extern "C" fn ls_reveal_frame(handle: u32) -> u32 {
+    match reveals().get(handle).map(|s| s.session.frame_buffer()) {
+        Some(Ok(buffer)) => buffer.as_mut_ptr() as u32,
+        _ => 0,
     }
-    STATUS_OK
 }
 
-/// Which decisions the passes use (`long_screen_core::reveal::run::admitted`): `blind` holds one byte (0/1) per decision, in the
-/// order of `decisions`, and `out` receives one byte (0/1) per decision. `counts` and `decisions` as in
-/// [`read_plans`].
+/// Frame `index` was decoded (its pixels in the frame buffer when it was wanted); `labels` is the atlas label plane
+/// of `label_len` bytes (0 = none).
 #[no_mangle]
-pub extern "C" fn ls_reveal_admitted(
-    handle: u32,
-    frames: u32,
-    counts: u32,
-    decisions: u32,
-    blind: u32,
-    out: u32,
-) -> i32 {
-    let Some(h) = get(handle) else {
+pub extern "C" fn ls_reveal_push(handle: u32, index: u32, labels_ptr: u32, label_len: u32) -> i32 {
+    let Some(s) = reveals().get(handle) else {
         return STATUS_BAD_ARGUMENT;
     };
-    let Some(plans) = read_plans(&h.run, frames, counts, decisions) else {
+    let Some(labels) = labels(labels_ptr, label_len as usize) else {
         return STATUS_BAD_ARGUMENT;
     };
-    let total: usize = plans.iter().map(Vec::len).sum();
-    // SAFETY: adapter-owned input and output.
-    let (Some(blind), Some(out)) = (unsafe { slice(blind, total) }, unsafe {
-        slice_mut(out, total)
-    }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let mut flags = blind.iter();
-    let plans: Vec<Vec<(Decision, bool)>> = plans
-        .into_iter()
-        .map(|ds| {
-            ds.into_iter()
-                .map(|d| (d, *flags.next().unwrap() != 0))
-                .collect()
-        })
-        .collect();
-    for (o, a) in out.iter_mut().zip(
-        long_screen_core::reveal::run::admitted(&plans)
-            .into_iter()
-            .flatten(),
-    ) {
-        *o = a as u8;
+    match s.session.push_frame(index, labels) {
+        Ok(()) => STATUS_OK,
+        Err(e) => status(e),
     }
-    STATUS_OK
+}
+
+/// The decode for the pass is over.
+#[no_mangle]
+pub extern "C" fn ls_reveal_end(handle: u32, labels_ptr: u32, label_len: u32) -> i32 {
+    let Some(s) = reveals().get(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let Some(labels) = labels(labels_ptr, label_len as usize) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    match s.session.end_pass(labels) {
+        Ok(()) => STATUS_OK,
+        Err(e) => status(e),
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn ls_reveal_step(handle: u32, tiles_handle: u32, now: f64) -> i32 {
+    let (Some(s), Some(t)) = (reveals().get(handle), tiles(tiles_handle)) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let step = match s.session.step(&mut t.cache, now) {
+        Ok(step) => step,
+        Err(e) => return status(e),
+    };
+    let mut w = Out::default();
+    match step {
+        Step::NeedMemory { bytes, stage } => {
+            w.u8(0);
+            w.f64(bytes);
+            w.u8(match stage {
+                MemoryStage::Canvases => 0,
+                MemoryStage::Fallback => 1,
+            });
+        }
+        Step::NeedObservations => w.u8(1),
+        Step::NeedTile(key) => {
+            w.u8(2);
+            w.str(&key.canvas);
+            w.u32(key.level);
+            w.i32(key.x);
+            w.i32(key.y);
+        }
+        Step::Checkpoint => w.u8(3),
+        Step::Decode { pass, wanted } => {
+            w.u8(4);
+            w.u8(pass_code(pass));
+            w.u32(wanted.len() as u32);
+            for want in wanted {
+                w.bool(want);
+            }
+        }
+        Step::NextFrame => w.u8(5),
+        Step::PassDone(pass) => {
+            w.u8(6);
+            w.u8(pass_code(pass));
+        }
+        Step::Provenance(p) => {
+            w.u8(7);
+            w.str(&p.canvas);
+            w.i32(p.gx as i32);
+            w.i32(p.gy as i32);
+            w.u32(p.bw as u32);
+            w.u32(p.bh as u32);
+            for v in p.source {
+                w.i32(v);
+            }
+        }
+        Step::Done(Outcome::Nothing) => w.u8(8),
+        Step::Done(Outcome::Skipped(d)) => {
+            w.u8(9);
+            write_diagnostic(&mut w, &d);
+        }
+        Step::Done(Outcome::Revealed(summary)) => {
+            w.u8(10);
+            for v in [
+                summary.objects,
+                summary.components,
+                summary.coherent_blocks,
+                summary.component_blocks,
+                summary.provisional_blocks,
+                summary.fallback_blocks,
+            ] {
+                w.u32(v);
+            }
+        }
+    }
+    s.out = w.0;
+    s.out.len() as i32
+}
+
+#[no_mangle]
+pub extern "C" fn ls_reveal_take(handle: u32, out: u32, len: u32) -> i32 {
+    let Some(s) = reveals().get(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    crate::bytes::take(&mut s.out, out, len)
 }

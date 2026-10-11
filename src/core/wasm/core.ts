@@ -24,7 +24,7 @@ import * as tilesDomain from './tiles.ts';
 import type { TileCacheHandle } from './tiles.ts';
 import { learner as learnerFactory, type LearnerHandle } from './layers.ts';
 import { type VotingRing, votingRing as votingRingFactory } from './voting.ts';
-import { type RevealRun, revealRun as revealRunFactory } from './reveal.ts';
+import { type RevealInput, revealSession as revealSessionFactory, type RevealSessionHandle } from './reveal.ts';
 import { type FinishAccumulators, finishRegions as finishRegionsImpl, labelAtlasResident as labelAtlasResidentImpl } from './regions.ts';
 import { estimateMotion as scanEstimateMotion, type ScanSession, scanSession as scanSessionFactory } from './scan.ts';
 import { poseGraph as poseGraphFactory, type PoseGraphState } from './pose-graph.ts';
@@ -236,9 +236,9 @@ export class Core {
     return votingRingFactory(this, this.exports, regions, options);
   }
 
-  /** Overlay-aware block selection over frames of `width × height` (rust/core/src/reveal/). */
-  revealRun(width: number, height: number, noise: number): RevealRun {
-    return revealRunFactory(this, this.exports, width, height, noise);
+  /** The engine's reveal session (`long_screen_engine::reveal`) that `src/pipeline/reveal.ts` drives; the caller frees it. */
+  revealSession(input: RevealInput): RevealSessionHandle {
+    return revealSessionFactory(this, this.exports, input);
   }
 
   grayscale(rgba: Uint8ClampedArray, width: number, height: number): Gray {

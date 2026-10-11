@@ -21,6 +21,7 @@ pub mod layers;
 pub mod pose_graph;
 pub mod pyramid;
 pub mod render;
+pub mod reveal;
 pub mod scan;
 pub mod solve;
 pub mod tiles;
@@ -29,3 +30,5 @@ pub mod tiles;
 mod host_tests;
 #[cfg(test)]
 mod presentation_host_tests;
+#[cfg(test)]
+mod reveal_host_tests;
