@@ -43,10 +43,17 @@ Deno.test('core parity: motion hypotheses, audits, refinement and per-cell field
     for (const roi of [undefined, { x: 10.5, y: 7, width: w / 2, height: h / 2 }]) {
       for (const [tx, ty] of [[dx, dy], [dx + 1, dy - 2], [0, 0]]) {
         sameNumber(core.verifyTranslation(a, b, tx, ty, roi), motionReference.verifyTranslation(a, b, tx, ty, roi), 'verify');
-        for (const tolerant of [false, true]) {
-          const audit = core.auditTranslation(a, b, tx, ty, roi, tolerant),
-            ref = motionReference.auditTranslation(a, b, tx, ty, roi, tolerant);
-          for (const key of Object.keys(ref) as (keyof typeof ref)[]) sameNumber(audit[key], ref[key], `audit.${key} at ${tx},${ty}`);
+        const audit = core.auditTranslation(a, b, tx, ty, roi, false),
+          ref = motionReference.auditTranslation(a, b, tx, ty, roi, false);
+        for (const key of Object.keys(ref) as (keyof typeof ref)[]) sameNumber(audit[key], ref[key], `audit.${key} at ${tx},${ty}`);
+        // Coarse audits now filter sampling-phase noise; their counts intentionally differ from the frozen
+        // unfiltered oracle. Check the known translation instead (fractional phases are covered in Rust track/odometry.rs).
+        const coarse = core.auditTranslation(a, b, tx, ty, roi, true);
+        if (tx === dx && ty === dy) {
+          assertEquals([coarse.error, coarse.mismatch, coarse.agreement], [0, 0, 1]);
+          assert(coarse.samples > 0);
+        } else {
+          assert(coarse.error > 0, 'a wrong offset must not agree exactly with the textured page');
         }
         assertEquals(
           core.refineTranslation(a, b, { x: tx + .4, y: ty - .4 }, roi, 2),
@@ -160,7 +167,7 @@ Deno.test('core parity: motion hypotheses, audits, refinement and per-cell field
       core.grayscaleInto(frame, plane);
       assertEquals(plane.bytes(), native.data);
       const residentPatches = core.extractPatches(plane, region, fb.slice(0, 40), 1);
-      assertEquals(residentPatches, motionReference.extractPatches(native, region, fb.slice(0, 40), 1));
+      assertEquals(residentPatches, patches);
       for (const guess of [{ x: -dx + .2, y: -dy }, { x: 5, y: -5 }]) {
         assertEquals(core.refinePatches(patches, plane, region, guess, 3), core.refinePatches(patches, native, region, guess, 3));
       }

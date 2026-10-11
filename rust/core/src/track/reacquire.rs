@@ -6,7 +6,8 @@
 use crate::features::{match_features, Feature};
 use crate::geometry::{js_hypot, Rect};
 use crate::motion::{
-    refine_patches, translation_hypotheses, Gray, MatchPoints, Motion, Patch, Point,
+    refine_patches, refine_spatial_patches, translation_hypotheses, Gray, MatchPoints, Motion,
+    Patch, Point,
 };
 
 /// `track.ts::reacquire`'s hypothesis-generation half: `matchFeatures` + `translationHypotheses`
@@ -38,14 +39,15 @@ pub fn reacquire_hypotheses(anchor_features: &[Feature], own_features: &[Feature
 }
 
 /// `track.ts::reacquire`'s output; `confidence` is the fully computed
-/// `top.m.confidence.max(0.05) * exp(-top.n.error / 20) * (ambiguous ? 0.6 : 1)`, using `libm::exp` (the same
-/// code on every engine — see `odometry.rs`'s `OdometryEstimate.confidence` doc comment for why this
+/// `top.m.confidence.max(0.05) * exp(-error / 20) * (ambiguous ? 0.6 : 1)`, using the unweighted native residual
+/// and `libm::exp` (the same code on every engine — see `odometry.rs`'s `OdometryEstimate.confidence` doc comment for why this
 /// is no longer finished by the TS caller with `Math.exp`).
 pub struct ReacquireEstimate {
     pub x: i32,
     pub y: i32,
     pub ambiguous: bool,
     pub confidence: f64,
+    /// Ordinary native residual at the selected offset; spatial weighting only selects the motion.
     pub error: f64,
 }
 
@@ -66,7 +68,7 @@ pub fn reacquire_refine(
         .iter()
         .take(4)
         .map(|m| {
-            let n = refine_patches(
+            let n = refine_spatial_patches(
                 patches,
                 native,
                 rect,
@@ -94,19 +96,31 @@ pub fn reacquire_refine(
         return None;
     }
     let ambiguous = top_m.ambiguous;
+    // Area weights choose the motion, not the source quality. Keep the ordinary texture residual for
+    // confidence, or adding unsampled space would change which frame the compositor prefers.
+    let error = refine_patches(
+        patches,
+        native,
+        rect,
+        Point {
+            x: top_n.x as f64,
+            y: top_n.y as f64,
+        },
+        0,
+    )
+    .error;
     // `f64::max(0.05)` returns `0.05` for a NaN `confidence` where `Math.max(.05, NaN)` returns `NaN` (see
     // odometry.rs's `OdometryEstimate.confidence` doc comment for the same difference and why it is kept) —
     // never observed in practice, since `top_m.confidence` comes from `translation_hypotheses`, which never
     // produces NaN.
-    let confidence = top_m.confidence.max(0.05)
-        * libm::exp(-top_n.error / 20.0)
-        * if ambiguous { 0.6 } else { 1.0 };
+    let confidence =
+        top_m.confidence.max(0.05) * libm::exp(-error / 20.0) * if ambiguous { 0.6 } else { 1.0 };
     Some(ReacquireEstimate {
         x: top_n.x,
         y: top_n.y,
         ambiguous,
         confidence,
-        error: top_n.error,
+        error,
     })
 }
 
@@ -145,5 +159,171 @@ pub fn drift_correction(
         })
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Dense fixed controls must not outvote sparse page texture merely by supplying more patches.
+    // The same observations with no page movement must still re-acquire the stationary anchor.
+    #[test]
+    fn reacquisition_balances_clustered_controls_against_the_page() {
+        let (w, h, step, size) = (256, 960, 96, 16);
+        let page = |x: usize, y: usize| 180 + ((x * 37 + y * 71 + x * y * 13) % 64) as u8;
+        let frame = |dy: usize| {
+            let mut data = vec![0; w * h];
+            for y in 0..h {
+                for x in 0..w {
+                    data[y * w + x] = if !(64..h - 64).contains(&y) {
+                        64 + ((x * 43 + y * 29 + x * y * 17) % 128) as u8
+                    } else {
+                        page(x, y + dy)
+                    };
+                }
+            }
+            data
+        };
+        let anchor = frame(0);
+        let current = frame(step);
+        let mut origins: Vec<_> = [16, h - 32]
+            .into_iter()
+            .flat_map(|y| (0..8).map(move |i| (8 + i * 30, y)))
+            .collect();
+        origins.extend([200, 400, 600, 800].map(|y| (120, y)));
+        let data: Vec<Vec<u8>> = origins
+            .iter()
+            .map(|&(x, y)| {
+                (0..size)
+                    .flat_map(|py| {
+                        anchor[(y + py) * w + x..(y + py) * w + x + size]
+                            .iter()
+                            .copied()
+                    })
+                    .collect()
+            })
+            .collect();
+        let patches: Vec<_> = origins
+            .iter()
+            .zip(&data)
+            .map(|(&(x, y), data)| Patch {
+                x: x as i32,
+                y: y as i32,
+                size,
+                data,
+            })
+            .collect();
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: w as f64,
+            height: h as f64,
+        };
+        let models: Vec<_> = [step, 0]
+            .map(|dy| Motion {
+                x: 0.0,
+                y: dy as f64,
+                support: 30,
+                unique: 30,
+                confidence: 1.0,
+                error: 0.0,
+                ambiguous: false,
+            })
+            .into();
+        for (pixels, expected) in [(&current, step), (&anchor, 0)] {
+            let found = reacquire_refine(
+                &models,
+                &patches,
+                Gray {
+                    width: w,
+                    height: h,
+                    data: pixels,
+                },
+                rect,
+                1.0,
+                3,
+            )
+            .expect("one globally supported anchor");
+            assert_eq!((found.x, found.y), (0, expected as i32));
+        }
+    }
+    // Extending the pane beyond the sampled patches must not change their source quality.
+    // Area weights establish motion support; the same native residual still means the same quality.
+    #[test]
+    fn anchor_quality_does_not_depend_on_unsampled_pane_extent() {
+        let (w, h, size) = (160, 320, 32);
+        let reference: Vec<u8> = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                32 + ((x * 13 + y * 31 + x * y * 17) % 128) as u8
+            })
+            .collect();
+        let origins = [(16, 16), (96, 112)];
+        let data: Vec<Vec<u8>> = origins
+            .iter()
+            .map(|&(x, y)| {
+                (0..size)
+                    .flat_map(|dy| {
+                        reference[(y + dy) * w + x..(y + dy) * w + x + size]
+                            .iter()
+                            .copied()
+                    })
+                    .collect()
+            })
+            .collect();
+        let patches: Vec<_> = origins
+            .iter()
+            .zip(&data)
+            .map(|(&(x, y), data)| Patch {
+                x: x as i32,
+                y: y as i32,
+                size,
+                data,
+            })
+            .collect();
+        let mut current = reference.clone();
+        for y in 112..112 + size {
+            for x in 96..96 + size {
+                current[y * w + x] += 8;
+            }
+        }
+        let models = [Motion {
+            x: 0.0,
+            y: 0.0,
+            support: 30,
+            unique: 30,
+            confidence: 1.0,
+            error: 0.0,
+            ambiguous: false,
+        }];
+        let estimates: Vec<_> = [160, 320]
+            .into_iter()
+            .map(|height| {
+                reacquire_refine(
+                    &models,
+                    &patches,
+                    Gray {
+                        width: w,
+                        height: h,
+                        data: &current,
+                    },
+                    Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: w as f64,
+                        height: height as f64,
+                    },
+                    1.0,
+                    3,
+                )
+                .unwrap()
+            })
+            .collect();
+        for estimate in &estimates {
+            assert_eq!((estimate.x, estimate.y), (0, 0));
+        }
+        assert_eq!(estimates[0].confidence, estimates[1].confidence);
+        assert_eq!(estimates[0].error, 4.0); // One equally sized patch differs by eight, the other is exact.
     }
 }

@@ -230,6 +230,20 @@ pub fn audit_translation(
     roi: Option<Rect>,
     tolerant: bool,
 ) -> Audit {
+    // Box-downsampled frames sample a translated edge at different subpixel phases. Comparing the nearest
+    // unsmoothed value can reject the correct translation before native refinement gets to measure it.
+    let (texture_a, texture_b) = (a, b);
+    let filtered = tolerant.then(|| {
+        let mut aa = vec![0; a.data.len()];
+        let mut bb = vec![0; b.data.len()];
+        crate::features::smooth(a.data, a.width, a.height, &mut aa);
+        crate::features::smooth(b.data, b.width, b.height, &mut bb);
+        (aa, bb)
+    });
+    let (a, b) = match &filtered {
+        Some((aa, bb)) => (Gray { data: aa, ..a }, Gray { data: bb, ..b }),
+        None => (a, b),
+    };
     let r = roi.unwrap_or(Rect {
         x: 0.0,
         y: 0.0,
@@ -265,7 +279,9 @@ pub fn audit_translation(
         while x < x1 {
             let i = (y as i64 * bwid + x as i64) as usize;
             let j = ((y as i64 + dyi) * awid + x as i64 + dxi) as usize;
-            let (ad, bd) = (a.data, b.data);
+            // Filtering removes phase error, not evidence: a faint thin edge can fall below the
+            // gradient gate after smoothing even though its original contrast is sufficient.
+            let (ad, bd) = (texture_a.data, texture_b.data);
             let gb = (bd[i + 1] as i32 - bd[i - 1] as i32).abs()
                 + (bd[i + b.width] as i32 - bd[i - b.width] as i32).abs();
             let ga = (ad[j + 1] as i32 - ad[j - 1] as i32).abs()
@@ -274,6 +290,21 @@ pub fn audit_translation(
                 x += 2.0;
                 continue;
             }
+            // Keep border evidence, but never borrow pixels from another pane for the blur.
+            let filtered_here = tolerant
+                && x >= r.x + 2.0
+                && x + dx >= r.x + 2.0
+                && y >= r.y + 2.0
+                && y + dy >= r.y + 2.0
+                && x < r.x + r.width - 2.0
+                && x + dx < r.x + r.width - 2.0
+                && y < r.y + r.height - 2.0
+                && y + dy < r.y + r.height - 2.0;
+            let (ad, bd) = if filtered_here {
+                (a.data, b.data)
+            } else {
+                (texture_a.data, texture_b.data)
+            };
             let mut difference = (ad[j] as i32 - bd[i] as i32).abs();
             if tolerant {
                 difference = difference
@@ -1043,6 +1074,49 @@ pub fn refine_patches(
     guess: Point,
     radius: i32,
 ) -> NativeRefinement {
+    refine_weighted_patches(patches, native, region, guess, radius, &[])
+}
+
+/// Re-acquisition must represent the whole pane: many patches on one fixed control are not many
+/// independent votes for its motion. Weight each patch by its nearest-neighbour cell's area, sampled
+/// at the patch scale. Drift refinement keeps its original texture-weighted residual.
+pub fn refine_spatial_patches(
+    patches: &[Patch<'_>],
+    native: Gray<'_>,
+    region: Rect,
+    guess: Point,
+    radius: i32,
+) -> NativeRefinement {
+    let mut weights = vec![0.0; patches.len()];
+    if let Some(first) = patches.first() {
+        let step = first.size;
+        for y in (step / 2..js_round(region.height) as usize).step_by(step) {
+            for x in (step / 2..js_round(region.width) as usize).step_by(step) {
+                let nearest = patches
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, p)| {
+                        let dx = x as i64 - p.x as i64 - p.size as i64 / 2;
+                        let dy = y as i64 - p.y as i64 - p.size as i64 / 2;
+                        dx * dx + dy * dy
+                    })
+                    .unwrap()
+                    .0;
+                weights[nearest] += 1.0;
+            }
+        }
+    }
+    refine_weighted_patches(patches, native, region, guess, radius, &weights)
+}
+
+fn refine_weighted_patches(
+    patches: &[Patch<'_>],
+    native: Gray<'_>,
+    region: Rect,
+    guess: Point,
+    radius: i32,
+    weights: &[f64],
+) -> NativeRefinement {
     let (rx, ry, rw, rh) = (
         js_round(region.x),
         js_round(region.y),
@@ -1069,8 +1143,9 @@ pub fn refine_patches(
     }
     let mut samples = 0u32;
     let mut cost = |dx: i32, dy: i32| -> f64 {
-        let (mut error, mut n) = (0f64, 0u32);
-        for p in patches {
+        let (mut error, mut n, mut weight_sum) = (0f64, 0u32, 0f64);
+        for (i, p) in patches.iter().enumerate() {
+            let weight = weights.get(i).copied().unwrap_or(1.0);
             let (cx, cy) = (p.x - dx, p.y - dy);
             if cx < 0 || cy < 0 || cx + p.size as i32 > rw || cy + p.size as i32 > rh {
                 continue;
@@ -1081,12 +1156,14 @@ pub fn refine_patches(
                 let row_p = py * p.size;
                 let mut px = 0usize;
                 while px < p.size {
-                    error += (90.0f64).min(
-                        (native.data[(row_a + px as i64) as usize] as i32
-                            - p.data[row_p + px] as i32)
-                            .abs() as f64,
-                    );
+                    error += weight
+                        * (90.0f64).min(
+                            (native.data[(row_a + px as i64) as usize] as i32
+                                - p.data[row_p + px] as i32)
+                                .abs() as f64,
+                        );
                     n += 1;
+                    weight_sum += weight;
                     px += 2;
                 }
                 py += 2;
@@ -1094,7 +1171,7 @@ pub fn refine_patches(
         }
         samples = samples.max(n);
         if n >= 64 {
-            error / n as f64
+            error / weight_sum
         } else {
             f64::INFINITY
         }
@@ -1274,6 +1351,66 @@ pub fn resample_gray(g: Gray<'_>, scale: f64) -> (usize, usize, Vec<u8>) {
 mod tests {
     use super::*;
     use crate::features::{extract_features, match_features};
+
+    // Phase filtering must not erase the evidence that a faint, narrow line is textured.
+    // Its unfiltered gradient clears the texture gate; its blurred gradient does not.
+    #[test]
+    fn tolerant_audit_keeps_faint_narrow_texture_samples() {
+        let (w, h) = (128, 128);
+        let pixels = |offset: usize| {
+            (0..w * h)
+                .map(|i| if (i % w + offset) % 16 == 8 { 45 } else { 20 })
+                .collect::<Vec<u8>>()
+        };
+        let a = pixels(0);
+        let b = pixels(3);
+        let audit = audit_translation(
+            Gray {
+                width: w,
+                height: h,
+                data: &a,
+            },
+            Gray {
+                width: w,
+                height: h,
+                data: &b,
+            },
+            3.0,
+            0.0,
+            None,
+            true,
+        );
+        assert!(audit.samples >= 24);
+        assert_eq!(audit.error, 0.0);
+        assert_eq!(audit.agreement, 1.0);
+    }
+
+    // Valid texture at the pane boundary remains evidence even when the smoothing kernel would
+    // reach outside the pane. Compare those samples without filtering instead of discarding them.
+    #[test]
+    fn tolerant_audit_preserves_texture_at_the_pane_boundary() {
+        let (w, h) = (128, 128);
+        let mut pixels = vec![20; w * h];
+        for y in 0..h {
+            pixels[y * w + 111] = 80;
+        }
+        let gray = Gray {
+            width: w,
+            height: h,
+            data: &pixels,
+        };
+        let roi = Some(Rect {
+            x: 16.0,
+            y: 16.0,
+            width: 96.0,
+            height: 96.0,
+        });
+        let raw = audit_translation(gray, gray, 0.0, 0.0, roi, false);
+        let tolerant = audit_translation(gray, gray, 0.0, 0.0, roi, true);
+        assert!(raw.samples >= 24);
+        assert_eq!(tolerant.samples, raw.samples);
+        assert_eq!(tolerant.error, 0.0);
+    }
 
     fn texture(width: usize, height: usize, seed: u32) -> Vec<u8> {
         let mut rng = Rng::new(seed | 1);

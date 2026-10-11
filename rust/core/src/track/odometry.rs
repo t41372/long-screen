@@ -295,7 +295,10 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
         }
         y += 7.0;
     }
-    let decision = if difference / (samples.max(1) as f64) > 5.0 {
+    // Blank space can dominate the mean difference of a sparse page. It cannot overrule a measured,
+    // nonzero step: keep that step on the lost/reacquisition path where the caller can use its rescue.
+    let moved = rescue.as_ref().is_some_and(|r| r.delta != (0.0, 0.0));
+    let decision = if moved || difference / (samples.max(1) as f64) > 5.0 {
         OdometryDecision::Lost
     } else {
         OdometryDecision::Static
@@ -351,5 +354,106 @@ mod tests {
         assert!(!rescuable(&n(14.33, 2.8, 20.0)));
         assert!(!rescuable(&n(f64::INFINITY, 2.8, f64::INFINITY)));
         assert!(!rescuable(&n(51.8, 39.1, 54.0)));
+    }
+    // The phase/fixed-toolbar regression lives here because the engine consumes Rescue in Rust;
+    // the legacy standalone Wasm odometry call no longer exposes it.
+    #[test]
+    fn sparse_text_motion_survives_analysis_phase_and_fixed_chrome() {
+        use super::{odometry, OdometryDecision, OdometryInputs};
+        use crate::features::extract_features;
+        use crate::geometry::Rect;
+        use crate::motion::Gray;
+        use crate::raster::{downscale_gray, downscaled_size};
+        let (width, height) = (400, 900);
+        let page = |offset: usize, toolbar: usize| {
+            let mut data = vec![0; width * height * 4];
+            for y in 0..height {
+                for x in 0..width {
+                    let world_y = y + offset;
+                    let (line, yy, word, xx) = (world_y / 140, world_y % 140, x / 60, x % 60);
+                    let mut value = 248;
+                    if (40..58).contains(&yy) && xx > 8 && xx < 38 {
+                        let ink = ((line * 193 + word * 73 + xx / 3 * 19) >> ((yy - 40) / 3)) & 1;
+                        if ink != 0 {
+                            value = 45;
+                        }
+                    }
+                    if y < toolbar && x > 40 && x < 360 {
+                        value = if (x * 13 + y * 73 + x * y % 79) % 47 < 23 {
+                            20
+                        } else {
+                            240
+                        };
+                    }
+                    data[(y * width + x) * 4..(y * width + x) * 4 + 4]
+                        .copy_from_slice(&[value, value, value, 255]);
+                }
+            }
+            data
+        };
+        for f in [2usize, 3, 4, 5] {
+            for toolbar in [32, 96] {
+                let previous = page(0, toolbar);
+                let current = page(67, toolbar);
+                let (w, h) = downscaled_size(width, height, f);
+                let mut a = vec![0; w * h];
+                let mut b = vec![0; w * h];
+                downscale_gray(&previous, width, height, f, &mut a);
+                downscale_gray(&current, width, height, f, &mut b);
+                let previous_features = extract_features(&a, w, h, 480, None);
+                let own_features = extract_features(&b, w, h, 480, None);
+                let rect = Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: width as f64,
+                    height: height as f64,
+                };
+                let result = odometry(OdometryInputs {
+                    f: f as f64,
+                    radius: 3.max(f.div_ceil(2) as i32 + 1),
+                    mask: None,
+                    roi: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: w as f64,
+                        height: h as f64,
+                    },
+                    rect,
+                    region: None,
+                    image_width: width as f64,
+                    image_height: height as f64,
+                    previous: &previous,
+                    current: &current,
+                    previous_gray: Gray {
+                        width: w,
+                        height: h,
+                        data: &a,
+                    },
+                    g: Gray {
+                        width: w,
+                        height: h,
+                        data: &b,
+                    },
+                    velocity: (0.0, 0.0),
+                    previous_features: &previous_features,
+                    own_features: &own_features,
+                    confidence: 1.0,
+                });
+                assert_ne!(
+                    result.decision,
+                    OdometryDecision::Static,
+                    "factor {f}, toolbar {toolbar}"
+                );
+                let delta = if result.decision == OdometryDecision::Tracked {
+                    result.delta
+                } else {
+                    result
+                        .rescue
+                        .expect("measured motion must remain rescuable")
+                        .delta
+                };
+                assert_eq!(delta, (0.0, 67.0), "factor {f}, toolbar {toolbar}");
+            }
+        }
     }
 }
