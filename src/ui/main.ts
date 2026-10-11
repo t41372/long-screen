@@ -18,6 +18,7 @@ import { createExport } from './export.ts';
 import { createCrop } from './crop.ts';
 import { flightEnd, flightProgress, takeInterruptedFlight } from './flight.ts';
 import { MEMORY_EXPORT_LIMIT } from '../export/target.ts';
+import { wireInstall } from './install.ts';
 
 translatePage();
 const state = createState();
@@ -110,6 +111,7 @@ addEventListener('keydown', (e) => {
 $<HTMLInputElement>('quality-toggle').onchange = (e) => viewer.setQuality((e.target as HTMLInputElement).checked);
 wireLanguageSelect($<HTMLSelectElement>('language-select'), (message) => toast(message, true));
 $('help-btn').onclick = () => $<HTMLDialogElement>('help-dialog').showModal();
+wireInstall();
 for (const el of document.querySelectorAll<HTMLElement>('[data-close]')) {
   el.onclick = () => {
     $<HTMLDialogElement>(el.dataset.close!).close();

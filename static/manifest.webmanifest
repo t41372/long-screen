@@ -1,0 +1,16 @@
+{
+  "id": "./",
+  "name": "Long Screen",
+  "short_name": "Long Screen",
+  "description": "Turn a screen recording of a page explored along any path into one big screenshot, entirely on this device.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f6efe4",
+  "theme_color": "#f6efe4",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

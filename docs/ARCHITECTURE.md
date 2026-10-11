@@ -365,6 +365,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `regions.ts` — 手动区域编辑对话框：在首帧上绘制 fixed/ignore/moving 矩形，写入 `state.manualRegions`。UI。
 - `source-file.ts` — 选择源录屏：文件输入/拖放、按文件头拦下不是 MP4/MOV/WebM/MKV 的文件并给出指引（`media/sniff.ts`）、探测 RPC（含原生播放器回退）、内容指纹（供 diagnostics.ts 校验重开文件与项目来源一致）。UI，兼浏览器 API（File）。
 - `video.ts` — 原生 `<video>` seek 原语与页面上的几个 `<video>` 元素，供 source-file.ts/diagnostics.ts/compatibility 帧请求桥接共用。UI，兼浏览器 API。
+- `install.ts` — 安装成 PWA：页面加载完后注册 `sw.js`；页眉的「安装到本地」键只在能装、又还没以装好的 App 打开时出现：Chromium 收到 `beforeinstallprompt` 后按键弹浏览器自己的安装框，iPhone/iPad 与 Mac Safari 没有安装 API，按键打开分步说明；Firefox 和 file:// 便携版不显示。UI，兼浏览器 API。
 - `flight.ts` — 崩溃记录器：把重建的最后已知状态写入 localStorage，页面被杀或崩溃后下次加载上报一次并清除。UI，兼 I/O（localStorage）。
 
 ### src/i18n（TS 外壳：界面语言）
@@ -415,6 +416,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `protocol.ts` — 页面↔worker 类型化协议：冻结的命令名字符串 + 每个命令的载荷/回复类型。TS 外壳：worker RPC。
 - `worker.ts` — worker 入口：接线 `Engine`、存储、项目生命周期、媒体源选择到 `protocol.ts` 的命令处理器。TS 外壳：worker RPC + 编排。
 - `device-check.ts` — 独立页面（不随主应用加载）：报告本机/本浏览器的核心能力与 GPU 路径成本。TS 外壳：编排（诊断工具）。
+- `sw.ts` — service worker（构建成站点根目录的 `sw.js`，作用域是整个应用），让装好的 App 断网也能打开、能跑。网络优先：有网时每个请求照旧走网络并重新验证（`_headers` 的 `no-cache`），推到 main 的新版本下次打开就到；网络失败或 4 秒内没回响应头时才用缓存。缓存一次存一整个构建：`scripts/build.ts` 把运行要用的全部文件清单和内容哈希写进 `sw.js`，安装时按哈希存进 `long-screen-<哈希>`，激活时删掉旧构建的缓存；不调用 `skipWaiting()`/`clients.claim()`，已打开的页面一直用加载它的那个构建。要整个关掉：把 `install.ts` 的注册换成注销已有注册（`navigator.serviceWorker.getRegistrations()` 逐个 `unregister()`），有网的访客下次打开就生效；万一是 service worker 本身坏了、页面打不开，再把 `sw.ts` 换成只做清理的版本（`install` 里 `skipWaiting()`，`activate` 里删掉 `long-screen-*` 缓存后 `registration.unregister()`，不处理 `fetch`），浏览器打开页面时会比对 `sw.js`，换上它就自行清理。TS 外壳：浏览器 I/O。
 - `testkit.ts` — 浏览器测试用：把 `Engine`/`Database`/`PoseGraph`/`RegionAtlas`/`TileStore` 等挂到 `window` 上给 Playwright 用，不随应用加载。TS 外壳（测试基础设施）。
 
 ### 测试布局
@@ -423,12 +425,12 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `tests/unit/parity/*.test.ts` — 每个已迁移 Rust 域与其冻结 TS oracle 的 byte-exact 对照（`chrome`/`compositor`/`framing`/`kernels`/`layers`/`motion`/`pose-graph`/`pyramid`/`regions`/`track`/`voting`），oracle 源在 `tests/support/reference/*.ts`。
 - `tests/support/reference/*.ts` — 冻结的、迁移前 TS 实现快照，只作对照基准，不参与生产路径。
 - `tests/support/{core,run,scenario-check,parity-fixtures,pixel-fixtures}.ts` — 测试基础设施：加载工作区 Wasm 构建、跑一次场景到 KV、场景目录自检、parity/像素测试用的固定输入。
-- `tests/browser/*.test.ts` — Playwright 驱动的真实 Chrome/WebKit 集成测试（`ui`/`export-ui`/`flight`/`private`/`compatibility`/`device-check`/`compute`/`decode`/`planar`/`gpu-convert`/`reconstruct`），覆盖解码、Worker、IndexedDB、OPFS、界面等核心之外的部分。`tests/browser/support.ts` 不是测试文件，是上述用例共用的测试基础设施（启动/连接被测页面等）。
+- `tests/browser/*.test.ts` — Playwright 驱动的真实 Chrome/WebKit 集成测试（`ui`/`export-ui`/`flight`/`private`/`compatibility`/`device-check`/`compute`/`decode`/`planar`/`gpu-convert`/`reconstruct`/`pwa`），覆盖解码、Worker、IndexedDB、OPFS、界面等核心之外的部分。`tests/browser/support.ts` 不是测试文件，是上述用例共用的测试基础设施（启动/连接被测页面等）。
 - `tests/fixtures/*` — 确定性编码/解码测试固件（mp4/mov/webm 样本、`truth.json`、`world.png`），多数由 `scripts/make-fixtures.ts` 生成。
 
 ### scripts/ 工具
 
-- `build.ts` / `build-core.sh` — 应用构建（bundle + dist 静态资源 + THIRD_PARTY_NOTICES，并把构建所用的提交写进页脚：Cloudflare Pages 上取 `CF_PAGES_COMMIT_SHA`，本地取 git HEAD，工作区有改动时标 `-dirty`，两者都没有时页脚这一行保持隐藏，不让构建失败）与 Rust 核心三构建编译；后者是修改任何 `.rs` 后唯一允许的构建入口。
+- `build.ts` / `build-core.sh` — 应用构建（bundle + dist 静态资源 + THIRD_PARTY_NOTICES + 写进 `sw.js` 的离线文件清单，并把构建所用的提交写进页脚：Cloudflare Pages 上取 `CF_PAGES_COMMIT_SHA`，本地取 git HEAD，工作区有改动时标 `-dirty`，两者都没有时页脚这一行保持隐藏，不让构建失败）与 Rust 核心三构建编译；后者是修改任何 `.rs` 后唯一允许的构建入口。
 - `fingerprint-scenarios.ts` / `compare-fingerprints.ts` — 24 个合成场景跑一遍并哈希每一条持久化记录；两份指纹逐行比较，任何差异退出码 1。
 - `export-catalog.ts` — 把 `src/i18n` 的 `diag`、`progress` 两节导出成 `rust/engine/catalog/*.json`（`deno task export-catalog`，`--check` 只检查）；遇到 Rust 格式化器不支持的写法（嵌套 `$t()`、格式化器、`{{- }}`、复数键）直接报错。
 - `compare-tiles.ts` — `benchmark-pipeline.ts --verify-tiles` 产出的逐瓦片指纹按字段比较，定位差异瓦片。

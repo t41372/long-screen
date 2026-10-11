@@ -18,6 +18,20 @@ export const pageSections: Catalog<typeof zh> = {
       helpLabel: 'Help and capabilities',
       star: 'Star on GitHub',
       starLabel: 'Star on GitHub (opens in a new tab)',
+      install: 'Install app',
+      installTitle: 'Install Long Screen on this device (PWA): it opens like an app and works offline',
+    },
+    install: {
+      title: 'Install on this device',
+      intro:
+        'Long Screen can be installed as a PWA (web app): it opens from your Home Screen or Dock in its own window and works without a connection. Recordings are still processed only on this device.',
+      iosShare: 'Tap the Share button in your browser. In Safari it sits in the bottom toolbar or under ⋯.',
+      iosAdd: 'Scroll down to Add to Home Screen.',
+      iosConfirm: 'Tap Add.',
+      iosInApp: 'If this page opened inside another app, such as WeChat or LINE, switch to Safari first.',
+      macFile: 'In the menu bar at the top of the screen, choose File → Add to Dock.',
+      macConfirm: 'Click Add.',
+      offline: 'After installing, open it once while online; from then on it works offline.',
     },
     hero: {
       heading: 'Turn a screen recording<br>into <span class="hl">one big screenshot</span>.',

@@ -189,6 +189,10 @@ let page = html;
 page = replaceOnce(page, '<link rel="stylesheet" href="./style.css">', `<style>${css}</style>`);
 page = replaceOnce(page, 'href="./icon.svg"', `href="data:image/svg+xml;base64,${encodeBase64(icon)}"`);
 page = replaceOnce(page, 'href="./"', 'href=""', 'the brand link href="./"');
+// Installing as a PWA needs a manifest and a service worker, neither of which works from file:// (src/ui/install.ts
+// keeps the install key hidden there), so the links that point at them go.
+page = replaceOnce(page, '\n    <link rel="manifest" href="./manifest.webmanifest">', '');
+page = replaceOnce(page, '\n    <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">', '');
 // What the page cannot tell a user on its own: a browser this build does not support (WebKit cannot read the picked
 // file from file://, see the module doc comment; Firefox is untested), and an app that never started. main.ts
 // publishes `window.longScreen` as the last step of its synchronous start-up, so a main.js that loaded but threw

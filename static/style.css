@@ -232,7 +232,7 @@ button:disabled {
   color: var(--faint);
 }
 /* Left: who we are and the privacy promise (a status, not a control). Right, in order of use: the app's own
-   action (past prints), the page utilities (help, language) and, in the corner, the link that leaves for GitHub.
+   action (install, when offered), the page utilities (help, language) and, in the corner, the link that leaves for GitHub.
    Groups are 16px apart, keys within a group 8px; every key is 36px tall. */
 .header-left {
   display: flex;
@@ -298,6 +298,36 @@ button:disabled {
   50% {
     transform: rotate(-20deg) scale(1.3);
   }
+}
+/* Install: hidden until src/ui/install.ts knows this browser can install the app (and it is not installed yet). A
+   key of the header itself, not of the right-hand cluster, so on a phone it fits on the brand's row instead of
+   pushing the cluster onto a third; the auto margin keeps it on the right, 16px before the cluster when they share
+   a row. */
+.install-btn {
+  gap: 7px;
+  height: 36px;
+  margin-left: auto;
+  padding: 0 10px 0 9px;
+}
+.install-mark {
+  flex: none;
+}
+.install-btn:hover .install-mark {
+  animation: drop .45s var(--spring);
+}
+@keyframes drop {
+  50% {
+    transform: translateY(2.5px);
+  }
+}
+.pwa-tag {
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: var(--blue);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: .5px;
+  line-height: 1.2;
 }
 
 /* ---------- page grid ---------- */
@@ -1874,6 +1904,53 @@ dialog::backdrop {
 .help-copy a {
   font-weight: 800;
   color: var(--ink);
+}
+/* The install steps for browsers with no install prompt of their own (Safari): numbered like the page's how-to. */
+.install-steps {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 10px;
+  padding: 0;
+  list-style: none;
+  counter-reset: install;
+}
+.install-steps li {
+  counter-increment: install;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px 10px 10px;
+  border-radius: 12px;
+  background: var(--white);
+  box-shadow: 3px 4px 0 #3d353014, inset 0 0 0 1.5px #3d35300f;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+.install-steps li::before {
+  content: counter(install);
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 26px;
+  clip-path: var(--hexagon);
+  background: linear-gradient(160deg, var(--body-hi) 0 50%, var(--body-lo) 50%);
+  color: var(--white);
+  font-size: 13.5px;
+  font-weight: 800;
+}
+.install-steps li > span {
+  flex: 1;
+}
+.install-glyph {
+  flex: none;
+  color: #2a7bd4;
+}
+.help-copy .install-note {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.7;
 }
 .quiet {
   padding: 6px 10px;

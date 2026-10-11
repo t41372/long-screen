@@ -17,8 +17,9 @@
  *  `--out <dir>` (relative to the repo root, default `dist`) builds somewhere else instead: tests/browser builds and
  *  serves dist-test/, and `deno task build:portable` builds its production input into dist-portable/.site, so
  *  neither replaces the dist/ that `deno task start` serves and `deno task build:prod` leaves for a deploy. */
-import { copy, ensureDir } from '@std/fs';
-import { fromFileUrl, isAbsolute, join, normalize } from '@std/path';
+import { copy, ensureDir, walk } from '@std/fs';
+import { encodeHex } from '@std/encoding/hex';
+import { fromFileUrl, isAbsolute, join, normalize, relative } from '@std/path';
 import { generateNotices } from './notices.ts';
 const root = fromFileUrl(new URL('..', import.meta.url));
 // Test-only artefacts that ship under a default dist/: testkit.js exposes internals for tests/browser's Playwright
@@ -34,6 +35,8 @@ const entries: [string, string][] = [
   ['src/core/helper.ts', 'assets/core-helper.js'],
   ['src/media/convert-worker.ts', 'assets/convert-worker.js'],
   ['src/device-check.ts', 'assets/device-check.js'],
+  // At the root, not under assets/: a service worker's scope is the directory it is served from.
+  ['src/sw.ts', 'sw.js'],
 ];
 const minify = production || Deno.args.includes('--minify');
 const skipCore = Deno.args.includes('--skip-core');
@@ -121,7 +124,9 @@ try {
   // Cheap enough to grep for on every build instead of trusting the two lists never to drift apart. Scans balanced
   // parens rather than a single regex so a ternary first argument (src/core/wasm/loader.ts's
   // `simdSupported() ? './core.simd.wasm' : './core.wasm'`) is still found, not just a bare string literal.
-  const emitted = new Set([...entries, ...CORE_WASM].map(([, output]) => output.slice('assets/'.length)));
+  const emitted = new Set(
+    [...entries, ...CORE_WASM].filter(([, output]) => output.startsWith('assets/')).map(([, output]) => output.slice('assets/'.length)),
+  );
   const missing: string[] = [];
   let checked = 0;
   for await (const entry of walkTs(join(root, 'src'))) {
@@ -167,6 +172,9 @@ try {
   const notices = await generateNotices(root, entries.map(([input]) => input));
   await Deno.writeTextFile(join(staging, 'THIRD_PARTY_NOTICES.txt'), notices);
   console.log(`THIRD_PARTY_NOTICES.txt → ${outName}/THIRD_PARTY_NOTICES.txt (${(notices.length / 1024).toFixed(1)} KB)`);
+  const precache = await precacheList(staging);
+  await Deno.writeTextFile(join(staging, 'sw.js'), injectPrecache(await Deno.readTextFile(join(staging, 'sw.js')), precache));
+  console.log(`sw.js precaches ${precache.files.length} file(s) for offline use as build ${precache.version}.`);
   // Swap the finished build in. Everything above ran against `staging`; the output directory keeps serving the
   // previous build until this point, so a bundling failure above never leaves it deleted or half-written.
   await Deno.remove(outDir, { recursive: true }).catch(() => {});
@@ -224,6 +232,31 @@ function stampCommit(page: string, commit: { label: string; full: string } | und
     link,
     `<a id="build-commit" href="https://github.com/t41372/long-screen/commit/${commit.full}" ${attrs}>${commit.label}</a>`,
   );
+}
+/** Files the installed app needs offline (src/sw.ts), as paths relative to the build root (the worker's scope), plus a hash of their
+ *  contents that names the build's cache. Everything in the build except what a run never loads: the service worker
+ *  itself, the host's `_headers`, source maps, the test harness, and the device check page, a diagnostic tool that
+ *  is opened on purpose. index.html is listed as '', the URL Cloudflare Pages serves it at. */
+async function precacheList(dir: string): Promise<{ version: string; files: string[] }> {
+  const skip = new Set(['sw.js', '_headers', 'harness.html', 'assets/testkit.js', 'device-check.html', 'assets/device-check.js']);
+  const files: [string, string][] = [];
+  for await (const entry of walk(dir, { includeDirs: false })) {
+    const path = relative(dir, entry.path).replaceAll('\\', '/');
+    if (skip.has(path) || path.endsWith('.map')) continue;
+    files.push([path === 'index.html' ? '' : path, encodeHex(await crypto.subtle.digest('SHA-256', await Deno.readFile(entry.path)))]);
+  }
+  files.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
+  const listing = new TextEncoder().encode(files.map(([path, hash]) => `${hash}  ${path}\n`).join(''));
+  return { version: encodeHex(await crypto.subtle.digest('SHA-256', listing)).slice(0, 16), files: files.map(([path]) => path) };
+}
+/** Writes `precache` into the bundled service worker in place of its `'__LONG_SCREEN_PRECACHE__'` placeholder (as a
+ *  string literal of the JSON, which `JSON.parse` in src/sw.ts reads back), whichever quotes the bundler gave it. */
+function injectPrecache(sw: string, precache: { version: string; files: string[] }): string {
+  const placeholder = /(["'])__LONG_SCREEN_PRECACHE__\1/g;
+  if ((sw.match(placeholder) ?? []).length !== 1) {
+    throw new Error('sw.js: the __LONG_SCREEN_PRECACHE__ placeholder is missing or duplicated.');
+  }
+  return sw.replace(placeholder, () => JSON.stringify(JSON.stringify(precache)));
 }
 /** Every `./<name>.js`/`./<name>.wasm` string literal inside each `new URL(...)` call in `text`, wherever it sits
  *  in the argument list (a bare second argument, or one arm of a ternary first argument). Scans balanced parens

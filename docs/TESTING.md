@@ -66,6 +66,8 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 头less 运行 + Playwr
 
 `tests/browser/gpu-convert.test.ts` 覆盖 WebGPU 帧转换：真实解码帧和奇数尺寸的手工帧（I420/NV12、BT.709/BT.601、有限/全范围）与 Chrome 自己的 `copyTo(RGBA)` 的差距，BT.2020、旋转、没有 WebGPU、没有适配器、「仅 CPU」、首帧不一致、GPU 实测更慢时都不能走 GPU，选定 GPU 后设备丢失要让运行失败而不是换路，停在半路的一趟与下一趟逐字节相同，以及发货的 worker 转换链。Playwright 的 WebKit 没有 WebGPU，那一侧只验证干净地回退到平面转换。
 
+`tests/browser/pwa.test.ts` 覆盖装成 PWA 的应用：在 Chrome 和 WebKit 里，service worker 要把构建清单里的每个文件存进同一个 `long-screen-<哈希>` 缓存；有网时受它控制的页面仍从网络加载（服务器改了页面，刷新后要看到）；服务器关掉（等于断网）后刷新，页面、worker 和核心都从缓存来，跨源隔离和有网时一样，示例录屏能跑完，期间没有任何网络请求失败（转换 worker 起不来时应用会悄悄改在主线程转换，所以只看「跑完了」证明不了缓存齐全）；换一个 `sw.js` 后新构建的缓存先和旧的并存，旧页面全关掉后只剩新的。Chrome 一侧还用 DevTools 协议确认页面可安装、manifest 无错误。页眉的安装键：Chromium 收到安装提示才出现、按下只问一次、装好后消失；WebKit 按 Mac、iPhone、iPad（报成 Mac 的触屏）各显示对应的步骤，已经以装好的 App 打开时不显示。产物：`test-results/pwa-{chromium,webkit}.json` 和同名前缀的截图。Playwright WebKit 的持久化上下文里 Cache API 存不进任何东西（`put()` 正常返回，`keys()` 始终为空），所以 WebKit 的离线测试用临时上下文；Chrome 用持久化上下文，因为隐身上下文永远不提供安装。
+
 `tests/browser/planes.test.ts` 覆盖揭示阶段的平面直转：在 Chrome 和 WebKit 里，转进常驻帧槽的像素必须与平面转换器的 RGBA 逐字节相同；新运行的第一帧（平面路径还没通过首帧比对）不能以平面交出；走浏览器自己 `copyTo(RGBA)` 的运行永远拿不到平面；同时持有几帧的平面时缓冲池不能复用其中任何一块；没被要的帧不带像素。
 
 ### 编码差异如何处理

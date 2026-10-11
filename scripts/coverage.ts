@@ -236,6 +236,8 @@ const BROWSER_ONLY = [
   'worker.ts',
   'testkit.ts',
   'device-check.ts',
+  // The service worker: tests/browser/pwa.test.ts installs it and loads the app through it offline.
+  'sw.ts',
   'media/convert-worker.ts',
   // Need a <video> element and VideoFrame, which Deno has neither of: compatibility mode's captures
   // (tests/browser/formats.test.ts, compatibility.test.ts) and the worker's WebGPU converter (gpu-convert.test.ts).
