@@ -35,6 +35,10 @@ fn norm(m: &FieldMotion) -> f64 {
 
 /// A field carries real evidence only once some model moved more than analysis jitter and is reasonably well
 /// matched; per-frame and long-baseline evidence are both held to this bar.
+/// Mean change over a column's sampled rows, in analysis grey levels, above which the column moved in that frame
+/// (`Learner::col_moving`). Still content changes by less on a decoded recording; moving content by far more.
+pub const MOVING_COLUMN: f64 = 1.0;
+
 pub fn informative(field: &Field<'_>) -> bool {
     !field.unknown
         && field.difference >= 0.2
@@ -59,6 +63,10 @@ pub struct Learner {
     pub informative_frames: u32,
     pub row_change: Vec<f64>,
     pub col_change: Vec<f64>,
+    /// Informative frames in which the column moved: its mean change over the sampled rows exceeded
+    /// `MOVING_COLUMN`. Unlike `col_change`, a few frames of large change (the whole window bouncing at the end of a
+    /// page) do not outweigh many frames of none.
+    pub col_moving: Vec<f64>,
     pub col_mean: Vec<f64>,
     pub col_gain: Vec<f64>,
     pub horizontal_gain: Vec<f64>,
@@ -92,6 +100,7 @@ impl Learner {
             informative_frames: 0,
             row_change: vec![0.0; height],
             col_change: vec![0.0; width],
+            col_moving: vec![0.0; width],
             col_mean: vec![0.0; width],
             col_gain: vec![0.0; cols],
             horizontal_gain: vec![0.0; rows],
@@ -152,6 +161,9 @@ impl Learner {
         }
         for x in 0..width {
             self.col_change[x] += change[x] / n as f64;
+            if change[x] / n as f64 > MOVING_COLUMN {
+                self.col_moving[x] += 1.0;
+            }
             self.col_mean[x] += mean[x] / n as f64;
         }
         let models = field.motions.len();

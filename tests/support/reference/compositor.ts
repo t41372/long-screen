@@ -1,3 +1,4 @@
+// Diagnostics advanced with production: one TEMPORAL_OR_ALIGNMENT_CONFLICT per frame and canvas (src/core/compositor.ts).
 /** FROZEN pre-migration Compositor (parity oracle for rust/core/src/compositor.rs). Not used by production code. */
 import type { CanvasMeta, Diagnostic, Placement, Rect, Region, RGBA } from '../../../src/types.ts';
 import type { KV } from '../../../src/storage/db.ts';
@@ -312,6 +313,7 @@ export class ReferenceCompositor {
       });
       const components = this.components(new Set(orderedConflictBlocks), B);
       let patchedPixels = 0, patchedTiles = 0, patchedConflictPixels = 0, patchedProvisional = 0;
+      const conflicted: Rect[] = [];
       for (const component of components) {
         const result = await this.resolveTemporal(image, region, p, frame, component.bounds, component.blocks, world, consistent);
         patchedPixels += result.added;
@@ -321,24 +323,24 @@ export class ReferenceCompositor {
         // (see PatchResult.conflictPixels): every pixel this patch rewrote, not only the ones that differed.
         patchedConflictPixels += result.conflictPixels;
         patchedProvisional += result.provisionalPixels;
-        // stats.conflicts is the running frame-wide total (accumulated across every conflicting component
-        // this frame, not just this one), so the message says so explicitly instead of implying it is this
-        // component's own count; `region` below still names this one component.
-        await this.emit({
-          code: 'TEMPORAL_OR_ALIGNMENT_CONFLICT',
-          severity: 'warning',
-          time: p.time,
-          frame,
-          canvasId: p.canvasId,
-          region: component.bounds,
-          confidence: p.confidence,
-          message:
-            `本帧对齐后的重叠区域共有 ${stats.conflicts.toLocaleString()} 个明显不同的像素；此区域是其中一个冲突分量。可能是动画、内容更新、重排或配准残差。`,
-          action: this.policy === 'stable'
-            ? '已尽量冻结单一时刻的完整冲突区域；查看橙色诊断和原视频时间点。'
-            : '仅在完整可见时用同一帧更新整块冲突区域；并非全页面同一时刻。',
-        });
+        conflicted.push(component.bounds);
       }
+      await this.emit({
+        code: 'TEMPORAL_OR_ALIGNMENT_CONFLICT',
+        severity: 'warning',
+        time: p.time,
+        frame,
+        canvasId: p.canvasId,
+        region: conflicted.reduce((a, b) => b.width * b.height > a.width * a.height ? b : a),
+        confidence: p.confidence,
+        count: conflicted.length,
+        detail: { regions: conflicted },
+        message:
+          `本帧对齐后的重叠区域共有 ${stats.conflicts.toLocaleString()} 个明显不同的像素；此区域是其中一个冲突分量。可能是动画、内容更新、重排或配准残差。`,
+        action: this.policy === 'stable'
+          ? '已尽量冻结单一时刻的完整冲突区域；查看橙色诊断和原视频时间点。'
+          : '仅在完整可见时用同一帧更新整块冲突区域；并非全页面同一时刻。',
+      });
       stats.added += patchedPixels;
       stats.tiles += patchedTiles;
       stats.conflicts += patchedConflictPixels;

@@ -19,10 +19,12 @@ export interface AppState {
   capabilities?: Capabilities;
   /** Counts run.resetView() calls: a reply that arrives after the print was replaced or cleared can tell. */
   resets: number;
+  /** The crop box is up (src/ui/crop.ts): exports wait until it is applied or cancelled. */
+  cropping: boolean;
 }
 
 export function createState(): AppState {
-  return { canvases: [], busy: false, nativeReady: false, manualRegions: [], resets: 0 };
+  return { canvases: [], busy: false, nativeReady: false, manualRegions: [], resets: 0, cropping: false };
 }
 
 /** The one place every control whose disabled state depends only on `state.busy` plus one other current-value
@@ -35,10 +37,13 @@ export function syncControls(state: AppState, viewer: TiledViewer): void {
   $<HTMLButtonElement>('demo-cta').disabled = busy;
   $<HTMLButtonElement>('clear-btn').disabled = busy;
   $<HTMLButtonElement>('regions-btn').disabled = busy || !state.firstBitmap;
-  $<HTMLButtonElement>('export-project').disabled = busy || !state.project?.renderedFrames;
-  $<HTMLButtonElement>('export-png').disabled = busy || !viewer.current?.tileCount;
-  $<HTMLButtonElement>('export-sheets').disabled = busy || !viewer.current?.tileCount;
-  $<HTMLButtonElement>('copy-png').disabled = busy || !viewer.current?.tileCount;
+  // While the crop box is up the exports wait: they take the kept crop, not the one still being dragged.
+  const cropping = state.cropping;
+  $<HTMLButtonElement>('export-png').disabled = busy || cropping || !viewer.current?.tileCount;
+  $<HTMLButtonElement>('export-sheets').disabled = busy || cropping || !viewer.current?.tileCount;
+  $<HTMLButtonElement>('copy-png').disabled = busy || cropping || !viewer.current?.tileCount;
+  $<HTMLButtonElement>('export-project').disabled = busy || cropping || !state.project?.renderedFrames;
+  $<HTMLButtonElement>('crop-btn').disabled = busy || !viewer.current?.tileCount;
   // Switching language reloads the page, which would kill a running reconstruction or export.
   $<HTMLSelectElement>('language-select').disabled = busy;
 }

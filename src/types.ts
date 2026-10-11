@@ -112,6 +112,19 @@ export interface MediaInfo {
   noise?: number;
   /** Decoder-time anomalies (skipped or reordered observations). Collected during decoding and surfaced as diagnostics, never swallowed. */
   notices?: MediaNotice[];
+  /** The colour the container declares for the video track (its `colr`/Colour element), when it declares one. Decoded
+   *  frames carry their own tags, but WebKit tags an HDR frame as sRGB, so this is what says a recording is HDR. */
+  colour?: VideoColorSpaceInit;
+}
+/** How a source's frames are being turned into RGBA, as far as the converter knows after the first frame. */
+export interface ConversionReport {
+  /** `FrameConverter.describe()`. */
+  method: string;
+  /** Milliseconds per frame of the chosen conversion, measured on the first frame, where the converter measures it. */
+  ms?: number;
+  /** For an HDR recording: its transfer; whether the conversion was checked against the frame's coded values (false
+   *  means the browser's own colours were kept); and the share of the first frame's pixels above SDR white. */
+  hdr?: { transfer: 'pq' | 'hlg'; verified: boolean; aboveShare?: number };
 }
 export interface MediaNotice {
   code: string;
@@ -218,7 +231,7 @@ export interface Project {
   error?: string;
   decodedBytes?: number;
   /** Storage layout version. 2: scan-time features live under scan-features/<frame> as compact typed arrays
-   * (not inline on ScanRecord), and keyframe/word/scan-features rows are deleted once solve() finishes with them. */
+   * (not inline on ScanRecord), and keyframe/ and scan-features/ rows are deleted once solve() finishes with them. */
   schema?: number;
 }
 export interface Progress {
@@ -237,9 +250,59 @@ export interface FrameImage {
   duration: number;
   index: number;
 }
+/** A decoded frame in its own YUV layout, as `VideoFrame.copyTo` wrote it, with what converting it needs: the core's
+ *  format and matrix codes (rust/core/src/yuv.rs). `release()` returns the buffer to the source's pool. */
+export interface FramePlanes {
+  data: Uint8Array;
+  layout: { offset: number; stride: number }[];
+  format: number;
+  matrix: number;
+  width: number;
+  height: number;
+  release(): void;
+}
+/** A frame handed out as planes instead of RGBA (`FrameSource.sparseFrames` with `planes`). */
+export interface PlanarFrame {
+  planes: FramePlanes;
+  image?: undefined;
+  time: number;
+  duration: number;
+  index: number;
+}
+/** A decoded frame a caller declined (`FrameSource.sparseFrames`): decoded, because later frames depend on it, but
+ *  never converted to RGBA. */
+export interface SkippedFrame {
+  image?: undefined;
+  time: number;
+  duration: number;
+  index: number;
+}
+/** Where one decode of the source spent its time, as the consumer saw it (benchmark diagnostics). */
+export interface SourceStats {
+  /** Frames handed out, with or without pixels. */
+  frames: number;
+  /** Frames handed out with pixels. */
+  converted: number;
+  /** Waiting for the decoder to produce the next frame. */
+  decodeMS: number;
+  /** Waiting for a frame's conversion to RGBA (only the part not already overlapped by a prefetch). */
+  convertMS: number;
+}
 export interface FrameSource {
   info: MediaInfo;
+  /** The latest decode's timing, replaced (not reset in place) when the next decode starts. */
+  readonly stats?: SourceStats;
   frames(): AsyncGenerator<FrameImage>;
+  /** Like `frames()`, but frames `want` declines are yielded without pixels, which saves converting them. With
+   *  `planes`, a frame the run converts on the CPU from its YUV planes comes as those planes, for a caller that converts
+   *  them straight into core memory (the same conversion, minus two copies of the RGBA); other frames still come as
+   *  RGBA. Optional: a source without it is read with `frames()`. */
+  sparseFrames?(
+    want: (index: number) => boolean,
+    options?: { planes?: boolean },
+  ): AsyncGenerator<FrameImage | SkippedFrame | PlanarFrame>;
+  /** How decoded frames are being converted, once one has been (decoding sources only). */
+  conversionReport?(): ConversionReport | undefined;
   dispose(): void;
 }
 export interface TilePayload {

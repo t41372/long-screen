@@ -50,6 +50,8 @@ Automatic mode keeps moving content and fixed UI separate; multiple independent 
 
 **Current canvas PNG / paged export**: if the size fits, it's streamed and encoded directly to PNG; if it exceeds the compatible size, multiple native-size PNGs are output, with world coordinates and a 32px overlap noted. It never silently downscales.
 
+**Crop**: once a print is composed, Crop puts a box over it to drag or type; the PNG, the paged export and the copy then take only that part of the canvas, still at native size. The crop is kept with the print (a reload keeps it) and Whole print undoes it. The full project ZIP is never cropped.
+
 It writes to a user-chosen file when possible; if that API isn't supported, it writes a temporary file via OPFS and then downloads it. When there's no disk write path available, it fails explicitly rather than falling back to assembling the entire output in RAM.
 
 ## Deployment

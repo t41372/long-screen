@@ -4,7 +4,7 @@
  *  `consistency.ts`, `compositor.ts`, `png.ts`, `layers.ts`, `voting.ts`, `framing.ts`, `pyramid.ts`,
  *  `regions.ts`, `temporal.ts`, `track.ts` (+ its `track-odometry`/`track-reacquire`/`track-keyframes` split),
  *  `pose-graph.ts`, `yuv.ts`). */
-import type { Feature, Gray, Match, Motion, MotionField, Point, Rect, Region, RGBA } from '../../types.ts';
+import type { Feature, FramePlanes, Gray, Match, Motion, MotionField, Point, Rect, Region, RGBA } from '../../types.ts';
 import { assertLayout, type CoreExports } from './exports.ts';
 import { allocOrThrow, Arena, type BytesInput, type FrameInput, FrameRing, Resident, ResidentFrame, ResidentGray } from './memory.ts';
 import { placeFrame as placeFrameImpl, writeRect as writeRectImpl } from './marshal.ts';
@@ -24,6 +24,7 @@ import * as composite from './compositor.ts';
 import type { CompositeObservation, PreparedObservation } from './compositor.ts';
 import { learner as learnerFactory, type LearnerHandle } from './layers.ts';
 import { type VotingRing, votingRing as votingRingFactory } from './voting.ts';
+import { type RevealRun, revealRun as revealRunFactory } from './reveal.ts';
 import {
   type FinishAccumulators,
   finishRegions as finishRegionsImpl,
@@ -38,6 +39,7 @@ import {
   poseGraphPass as poseGraphPassImpl,
   poseGraphRead as poseGraphReadImpl,
   poseGraphResidual as poseGraphResidualImpl,
+  poseGraphSolveCycle as poseGraphSolveCycleImpl,
 } from './pose-graph.ts';
 import {
   frameCoordinate as frameCoordinateImpl,
@@ -121,6 +123,17 @@ export class Core {
   /** Current size of the core's linear memory (it only grows), for diagnostics. */
   get memoryBytes(): number {
     return this.exports.memory.buffer.byteLength;
+  }
+  /** Whether `bytes` can be allocated in the core right now (reusing freed space or growing linear memory), checked by
+   *  allocating them and freeing them again. A raw allocation that does not fit returns null instead of aborting the
+   *  core, so a large stage asks this first: linear memory only grows, and its size says nothing about the room left
+   *  under its ceiling (2 GiB for the threaded build, less where a phone reserved less). */
+  canAllocate(bytes: number): boolean {
+    if (!(bytes > 0) || bytes >= 2 ** 32) return bytes <= 0;
+    const ptr = this.exports.ls_alloc(bytes);
+    if (!ptr) return false;
+    this.exports.ls_free(ptr, bytes);
+    return true;
   }
   /** Threads computing inside kernels: the calling thread plus parked pool helpers. */
   get threads(): number {
@@ -236,6 +249,11 @@ export class Core {
     return votingRingFactory(this, this.exports, regions, options);
   }
 
+  /** Overlay-aware block selection over frames of `width × height` (rust/core/src/reveal/). */
+  revealRun(width: number, height: number, noise: number): RevealRun {
+    return revealRunFactory(this, this.exports, width, height, noise);
+  }
+
   grayscale(rgba: Uint8ClampedArray, width: number, height: number): Gray {
     return raster.grayscale(this, rgba, width, height);
   }
@@ -288,8 +306,23 @@ export class Core {
     height: number,
     matrix: number,
     dest?: Uint8ClampedArray,
+    report?: yuv.ConversionReport,
   ): Uint8ClampedArray {
-    return yuv.frameToRGBA(this, src, format, layout, width, height, matrix, dest);
+    return yuv.frameToRGBA(this, src, format, layout, width, height, matrix, dest, report);
+  }
+  /** `yuv.hdrToRGBA`: an HDR frame's R'G'B', as a browser handed it back, to sRGB in place; pixels above white. */
+  hdrToRGBA(
+    pixels: Uint8Array | Uint8ClampedArray,
+    packing: keyof typeof yuv.PACKINGS,
+    width: number,
+    height: number,
+    transfer: keyof typeof yuv.TRANSFERS,
+  ): number {
+    return yuv.hdrToRGBA(this, pixels, packing, width, height, transfer);
+  }
+  /** `frameToRGBA` of a frame's planes straight into core memory at `out` (a resident frame slot). */
+  planesToCore(planes: FramePlanes, out: number): void {
+    yuv.frameToCore(this, planes.data, planes.format, planes.layout, planes.width, planes.height, planes.matrix, out);
   }
   extractFeatures(image: Gray, maxFeatures: number, roi?: Rect): Feature[] {
     return featuresDomain.extractFeatures(this, image, maxFeatures, roi);
@@ -465,6 +498,9 @@ export class Core {
    *  sweep per `poseGraphPass`. */
   poseGraphNew(nodes: PoseGraphNodes, edges: PoseGraphEdges): number {
     return poseGraphNewImpl(this, this.exports, nodes, edges);
+  }
+  poseGraphSolveCycle(handle: number): boolean {
+    return poseGraphSolveCycleImpl(this, this.exports, handle);
   }
   poseGraphPass(handle: number, reverse: boolean): number {
     return poseGraphPassImpl(this.exports, handle, reverse);

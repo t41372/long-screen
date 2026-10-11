@@ -1,9 +1,9 @@
 /** The reconstruction run lifecycle: starting it (settings + capability preflight), the busy/enablement state every
  *  other feature reads, `resetView`/`updateProject` (composed here because both touch project, canvas and
- *  diagnostic state at once), and the progress bar. */
+ *  diagnostic state at once), and the run's overall progress (each phase's share of the gauge, dom.ts's setProgress). */
 import type { AppState } from './state.ts';
 import { syncControls } from './state.ts';
-import { $, NO_COMPRESSION_STREAM, phaseName, setReceiptOpen, timeText, toast } from './dom.ts';
+import { $, NO_COMPRESSION_STREAM, phaseName, setProgress, setReceiptOpen, timeText, toast } from './dom.ts';
 import { preview } from './video.ts';
 import { call } from './rpc.ts';
 import { flightStart } from './flight.ts';
@@ -12,6 +12,7 @@ import { t } from '../i18n/page.ts';
 import { DEFAULT_SETTINGS, type Project, type Settings } from '../types.ts';
 import { PRINT_LOCK, type RestoreResult, type WorkerProgress } from '../protocol.ts';
 import type { Canvases } from './canvases.ts';
+import type { Crop } from './crop.ts';
 import type { Diagnostics } from './diagnostics.ts';
 import type { TiledViewer } from './viewer.ts';
 
@@ -37,7 +38,7 @@ export interface Run {
   wire(): void;
 }
 
-export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvases, diagnostics: Diagnostics): Run {
+export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvases, diagnostics: Diagnostics, crop: Crop): Run {
   let paused = false;
   // The LCD's run timer: wall-clock time of the current run, not counting time spent paused.
   let startedAt = 0, pausedAt = 0, pausedFor = 0, ticker: ReturnType<typeof setInterval> | undefined;
@@ -51,6 +52,15 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
       void navigator.locks.request(PRINT_LOCK + id, () => held);
     }
   }
+  // Paused, the printer stops working on screen too: CSS stills its animations (`is-paused`); the print's "stitching"
+  // illustration is SMIL, which only these calls pause. Under reduced motion it stays the still main.ts set.
+  const showPaused = (value: boolean) => {
+    document.body.classList.toggle('is-paused', value);
+    const svg = document.querySelector<SVGSVGElement>('#empty-state svg');
+    if (!svg || matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    if (value) svg.pauseAnimations();
+    else svg.unpauseAnimations();
+  };
   const showElapsed = () => {
     $('elapsed').textContent = timeText(((paused ? pausedAt : performance.now()) - startedAt - pausedFor) / 1000);
   };
@@ -69,6 +79,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
       void preview.play().catch(() => {});
     }
     document.body.classList.toggle('is-processing', value);
+    if (!value) showPaused(false);
     $('run-controls').hidden = !value;
     $('status-dot').classList.toggle('running', value);
     syncControls(state, viewer);
@@ -80,6 +91,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     state.canvases = [];
     canvases.reset();
     diagnostics.reset();
+    crop.reset();
     viewer.clear();
     document.body.classList.remove('has-result');
     setReceiptOpen(false);
@@ -89,7 +101,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     $('elapsed').textContent = timeText(0);
     $('frames-metric').textContent = '0';
     $('canvases-metric').textContent = '0';
-    $('progress-bar').style.width = '0';
+    setProgress(0);
   }
   function updateProject(value: Project): void {
     state.project = value;
@@ -105,13 +117,14 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     state.project = project;
     hold(project.id);
     await canvases.refreshCanvases(true);
+    await crop.load();
     updateProject(project);
     await diagnostics.loadDiagnostics();
     viewer.fit();
     setBusy(false);
     $('status-title').textContent = interrupted ? t('ui.run.interruptedStatus') : phaseName(project.status);
     if (project.status === 'complete') {
-      $('progress-bar').style.width = '100%';
+      setProgress(1, phaseName(project.status));
     }
     $('progress-message').textContent = project.error || t(interrupted ? 'ui.run.interruptedMessage' : 'ui.run.restoredMessage');
     $('progress-count').textContent = t('ui.count.frames', { count: project.renderedFrames, frames: String(project.renderedFrames) });
@@ -187,20 +200,22 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     scanning: [0, .30],
     solving: [.30, .32],
     optimizing: [.62, .03],
-    rendering: [.65, .26],
+    rendering: [.65, .13],
+    revealing: [.78, .13],
     framing: [.91, .04],
     pyramid: [.95, .05],
     complete: [1, 0],
     partial: [1, 0],
   };
   function progress(p: WorkerProgress): void {
-    $('status-title').textContent = phaseName(p.phase);
+    // A step that was already under way when the run paused still reports in; the title keeps saying it is paused.
+    if (!paused) $('status-title').textContent = phaseName(p.phase);
     $('progress-count').textContent = `${t('ui.count.frames', { count: p.frames, frames: p.frames.toLocaleString() })} · ${
       timeText(p.time)
     }`;
     $('progress-message').textContent = p.message;
     const [base, weight] = phaseWeight[p.phase] || [0, 0];
-    $('progress-bar').style.width = `${Math.min(100, (base + Math.max(0, p.fraction || 0) * weight) * 100)}%`;
+    setProgress(base + Math.max(0, p.fraction || 0) * weight, phaseName(p.phase));
     if (p.canvas?.tileCount) {
       canvases.mergeCanvas(p.canvas);
     }
@@ -218,6 +233,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
           }
         }
         paused = result.paused;
+        showPaused(paused);
         $('pause-btn').textContent = paused ? t('ui.run.resumeLabel') : t('ui.run.pauseLabel');
         $('status-title').textContent = paused ? t('ui.run.pausedStatus') : t('ui.run.resumedStatus');
       }).catch((e) => toast(String(e), true));
@@ -228,6 +244,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
         if (paused) {
           pausedFor += performance.now() - pausedAt;
           paused = false;
+          showPaused(false);
           $('pause-btn').textContent = t('ui.run.pauseLabel');
         }
         toast(t('ui.run.stopToast'));

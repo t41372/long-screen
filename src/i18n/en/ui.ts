@@ -8,6 +8,7 @@ export const uiSections: Catalog<typeof zh> = {
       solving: 'Global localization and native-pixel refinement',
       optimizing: 'Correcting loop closure and cumulative drift',
       rendering: 'Compositing the native-size sparse canvas',
+      revealing: 'Removing what floats over the page',
       framing: 'Keeping the frame and original aspect ratio',
       pyramid: 'Building a zoomable preview',
       complete: 'Complete · check diagnostics',
@@ -58,6 +59,12 @@ export const uiSections: Catalog<typeof zh> = {
       copyFailedCtor: 'Copy failed: {{error}}. Use “Take the screenshot” instead.',
       copySuccess: 'Copied a {{width}} × {{height}} long image; paste it directly.',
       copyFailed: 'Copy failed: {{error}}. The image may exceed the system clipboard limit; use “Take the screenshot” instead.',
+    },
+    crop: {
+      buttonCropped: 'Crop · {{width}} × {{height}}',
+      applied:
+        'Done. Downloads, copies and paged exports now take only this part ({{width}} × {{height}}). The full project ZIP is not cropped.',
+      removed: 'Crop removed; exports take the whole print again.',
     },
     main: {
       offscreenMissing: 'This browser is missing OffscreenCanvas; the render worker cannot run.',

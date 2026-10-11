@@ -2,7 +2,7 @@
  *  'open'|'capabilities')` directly), but every payload and reply is now a real type instead of `any`, so the
  *  compiler — not a runtime shape mismatch — catches a worker.ts handler that forgets a command or a main.ts call
  *  site that sends the wrong payload. */
-import type { CanvasMeta, Diagnostic, MediaInfo, Progress, Project, Settings } from './types.ts';
+import type { CanvasMeta, ConversionReport, Diagnostic, MediaInfo, Progress, Project, Rect, Settings } from './types.ts';
 import type { Row } from './storage/db.ts';
 import type { CanvasLayout, ExportResult } from './export/project.ts';
 import type { StoredTile } from './storage/tiles.ts';
@@ -29,6 +29,8 @@ export interface WorkerProgress extends Progress {
 export interface ProbeResult {
   info: MediaInfo;
   bitmap: ImageBitmap;
+  /** How the first frame was converted, for the page's warnings (src/media/conversion-report.ts). */
+  conversion?: ConversionReport;
 }
 
 export interface OpenResult {
@@ -76,6 +78,12 @@ export interface Commands {
     res: ExportResult;
   };
   'cleanup-export': { req: { key: string }; res: true };
+  /** The crops the print keeps, by canvas id, in world pixels (src/export/crop.ts). */
+  crops: { req: { projectId: string }; res: Record<string, Rect> };
+  /** Keeps the crop of one canvas, or drops it (`rect: null`). Replies with what was kept, whole pixels inside the
+   *  canvas, or null when nothing is (dropped, or a rectangle covering the whole canvas). Every per-canvas export
+   *  then applies it; the project ZIP never does. */
+  crop: { req: { projectId: string; canvasId: string; rect: Rect | null }; res: Rect | null };
 }
 export type CommandName = keyof Commands;
 
@@ -83,6 +91,8 @@ export interface FrameRequestEvent {
   event: 'frame-request';
   id: number;
   time: number;
+  /** An HDR recording's frame, wanted as its coded values (src/media/capture.ts `captureCodedFrame`). */
+  coded?: boolean;
 }
 /** Discriminated union of everything the worker can push to the page unprompted. */
 export type WorkerEvent =
@@ -109,5 +119,5 @@ export interface LocaleMessage {
 
 /** The page answers a worker `frame-request` on this same channel, by posted `type` rather than `event`. */
 export type FrameResponse =
-  | { type: 'frame-response'; id: number; bitmap: ImageBitmap }
+  | { type: 'frame-response'; id: number; bitmap: ImageBitmap; coded?: boolean }
   | { type: 'frame-response'; id: number; error: string };

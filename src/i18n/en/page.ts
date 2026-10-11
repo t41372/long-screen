@@ -37,6 +37,7 @@ export const pageSections: Catalog<typeof zh> = {
     },
     press: {
       ariaLabel: 'The printer',
+      build: 'Build',
     },
     screen: {
       dropTitle: 'Drop a recording here',
@@ -48,6 +49,7 @@ export const pageSections: Catalog<typeof zh> = {
     },
     controls: {
       print: 'Run',
+      progress: 'Progress',
       knobs: 'Settings',
       clear: 'Clear',
       clearTitle: 'Clear the printer: take the recording out and clear this result and its log',
@@ -75,18 +77,18 @@ export const pageSections: Catalog<typeof zh> = {
       regionsAuto: 'Auto-detected ↗',
       advancedSummary: 'More knobs <span>＋</span>',
       analysisSizeLabel: 'Analysis long edge',
-      memoryLabel: 'Working cache budget',
+      memoryLabel: 'Tile cache limit',
       computeLabel: 'Acceleration',
       computeAuto: 'Auto · WebGPU / CPU',
       computeWebgpu: 'WebGPU · CPU align',
       computeCpu: 'CPU only',
       computeHint:
-        'The GPU only speeds up the analysis thumbnails; matching and pixel compositing still run on the CPU. Auto mode measures transfer and readback and will not force the GPU when it is slower.',
+        'The GPU turns every decoded frame into pixels and shrinks the analysis thumbnails; matching and compositing still run on the CPU. Auto measures both ways first and only uses the GPU when it is faster.',
       decoderLabel: 'Decoding',
       decoderPrecise: 'Exact · WebCodecs',
       decoderCompatibility: 'Approximate · native seek',
       decoderHint:
-        "Analysis thumbnails do not change the output pixels. The budget does not include the browser / decoder / GPU's extra memory. “Approximate · native seek” may miss brief content.",
+        'Analysis thumbnails do not change the output pixels. The tile cache only holds finished tiles and grows on its own when one frame paints more than fits, so it hardly changes the speed; memory the browser, decoder, GPU and core use is not counted in it. “Approximate · native seek” may miss brief content.',
       pauseBtn: 'Pause',
       stopBtn: 'Stop & save',
       footerNote: 'No upload · no cloud inference · no external models',
@@ -179,6 +181,17 @@ export const pageSections: Catalog<typeof zh> = {
     },
     source: {
       title: 'Original observation',
+    },
+    crop: {
+      button: 'Crop',
+      groupLabel: 'Crop area',
+      left: 'Left',
+      top: 'Top',
+      width: 'Width',
+      height: 'Height',
+      full: 'Whole print',
+      cancel: 'Cancel',
+      apply: 'Apply crop',
     },
     footer: {
       stackLead: 'The core is written in',

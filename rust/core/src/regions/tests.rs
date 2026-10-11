@@ -113,6 +113,7 @@ fn finish_falls_back_to_one_solid_pane_with_no_evidence() {
         native_frames: 0.0,
         row_change: &zeros,
         col_change: &zeros,
+        col_moving: &zeros,
         col_mean: &zeros,
         col_gain: &zeros,
         horizontal_gain: &zeros,
@@ -136,5 +137,133 @@ fn finish_falls_back_to_one_solid_pane_with_no_evidence() {
             width: 96.0,
             height: 96.0
         }
+    );
+}
+
+/// Runs analysis frames through the learner (one model moving 4 px down, every cell confident), then `finish()` at
+/// factor 1 without a native reference, so the left/right band test reads the column statistics alone.
+fn learn(width: usize, height: usize, frames: &[Vec<u8>]) -> Vec<RegionOut> {
+    use crate::layers::{Field, FieldMotion, Learner};
+    let mut learner = Learner::new(width, height);
+    let motions = [FieldMotion {
+        x: 0.0,
+        y: 4.0,
+        support: 100,
+        confidence: 1.0,
+    }];
+    let cells = learner.cols * learner.rows;
+    let (labels, confidence, dynamic) = (vec![0u8; cells], vec![255u8; cells], vec![0u8; cells]);
+    let field = Field {
+        motions: &motions,
+        labels: &labels,
+        confidence: &confidence,
+        dynamic: &dynamic,
+        cols: learner.cols,
+        rows: learner.rows,
+        difference: 1.0,
+        unknown: false,
+    };
+    for pair in frames.windows(2) {
+        assert!(learner.add(&field, &pair[0], &pair[1], None));
+    }
+    let input = FinishInput {
+        width,
+        height,
+        cell: learner.cell,
+        informative_frames: learner.informative_frames as f64,
+        native_frames: 0.0,
+        row_change: &learner.row_change,
+        col_change: &learner.col_change,
+        col_moving: &learner.col_moving,
+        col_mean: &learner.col_mean,
+        col_gain: &learner.col_gain,
+        horizontal_gain: &learner.horizontal_gain,
+        split: &learner.split,
+        evidence: &learner.evidence,
+        activity: &learner.activity,
+        observations: &learner.observations,
+        native_row_change: None,
+        native_col_change: None,
+        reference: None,
+    };
+    finish(&input, width as f64, height as f64, 1)
+}
+
+/// A page scrolling 4 px a frame beside a 24-px sidebar that stands still except at `bounce` frames, where
+/// the whole window (sidebar included) is shifted down 4 px, as macOS's elastic overscroll does at a page's end.
+fn sidebar_frames(
+    count: usize,
+    bounce: &[usize],
+    sparse_right: Option<&dyn Fn(usize) -> bool>,
+) -> Vec<Vec<u8>> {
+    let (w, h) = (120usize, 72usize);
+    (0..count)
+        .map(|f| {
+            let shift = if bounce.contains(&f) { 4 } else { 0 };
+            let mut g = vec![0u8; w * h];
+            for y in 0..h {
+                for x in 0..w {
+                    let v = if x < 24 {
+                        // Sidebar: icon-like blocks, distinct per column so the band has visible structure.
+                        let sy = y + 80 - shift;
+                        if (sy / 6) % 2 == 0 && x % 8 < 5 {
+                            200 - x as i32 * 4
+                        } else {
+                            30
+                        }
+                    } else if x >= 96 && sparse_right.is_some() {
+                        // A sparse right-hand pane: one faint text line, present (and scrolling) only in some frames.
+                        let sy = y + f * 4;
+                        if sparse_right.unwrap()(f) && sy % 36 < 2 {
+                            50
+                        } else {
+                            30
+                        }
+                    } else {
+                        // Scrolling page content.
+                        let sy = y + f * 4 + 80 - shift;
+                        (((x * 7) ^ (sy * 13)) % 97 + 60) as i32
+                    };
+                    g[y * w + x] = v as u8;
+                }
+            }
+            g
+        })
+        .collect()
+}
+
+/// Failure case (g.mov): a fixed sidebar that the whole window's bounce moved in 20 of 479 frames lost its band,
+/// because the mean change those frames added crossed 0.7, and the sidebar was painted into the scrolling canvas.
+#[test]
+fn a_sidebar_still_but_for_a_few_bounces_is_a_fixed_band() {
+    for bounce in [&[][..], &[10, 11, 30, 31][..]] {
+        let regions = learn(120, 72, &sidebar_frames(41, bounce, None));
+        let fixed: Vec<_> = regions
+            .iter()
+            .filter(|r| r.kind == Kind::Fixed)
+            .map(|r| r.rect)
+            .collect();
+        assert!(
+            fixed.iter().any(|r| r.x == 0.0 && r.width == 24.0),
+            "bounce at {bounce:?}: expected a fixed 24-px left band, got {fixed:?}"
+        );
+    }
+}
+
+/// Failure case the other way: a sparse pane whose content moves in most frames (faint, so its mean change per
+/// frame is small) must stay with the moving page, not be frozen as a band.
+#[test]
+fn a_sparse_pane_that_moves_in_most_frames_is_not_a_band() {
+    let present = |f: usize| f % 4 != 0;
+    let frames = sidebar_frames(41, &[], Some(&present));
+    let regions = learn(120, 72, &frames);
+    let fixed_right: Vec<_> = regions
+        .iter()
+        .filter(|r| r.kind == Kind::Fixed && r.rect.x + r.rect.width == 120.0 && r.rect.x > 0.0)
+        .map(|r| r.rect)
+        .collect();
+    assert!(
+        fixed_right.is_empty(),
+        "the moving pane was frozen as a right band: {fixed_right:?}"
     );
 }

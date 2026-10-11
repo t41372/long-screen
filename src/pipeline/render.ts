@@ -118,7 +118,7 @@ export class RenderPass {
   /** Builds the graph/compositor/region-map and core-resident render state, loads attachments, and configures the
    * tile-cache memory budget (render buffers one extra decoded native RGBA frame — the one-frame lookahead
    * consistencyMask() compares against, see docs/ARCHITECTURE.md §七 — so the working-memory reservation grows by
-   * one more native frame than scan()'s), raising it if a single frame's footprint would not otherwise fit. */
+   * one more native frame than scan()'s), raising it if the tiles one frame paints would not otherwise fit. */
   private async setup(): Promise<void> {
     this.graph = new PoseGraph(this.ctx.store);
     this.compositor = new Compositor(
@@ -147,7 +147,7 @@ export class RenderPass {
       this.ctx.source.info.width * this.ctx.source.info.height * 5 + fixedBytes + 8 * 1024 * 1024 +
         this.ctx.source.info.width * this.ctx.source.info.height * 4,
     );
-    const raisedTiles = this.ctx.tiles.ensureFootprint(this.ctx.source.info.width, this.ctx.source.info.height);
+    const raisedTiles = this.ctx.tiles.ensureFootprint(this.ctx.regions.filter((r) => r.kind !== 'ignore').map((r) => r.rect));
     if (raisedTiles) {
       await this.ctx.diagnostics.emit({
         code: 'MEMORY_BUDGET_RAISED',

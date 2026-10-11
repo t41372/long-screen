@@ -1,6 +1,7 @@
 /** Native <video> seek + frame-capture primitives, shared by source-file.ts (native-mode probing), diagnostics.ts
  *  (source-time review) and the worker's compatibility-mode frame-request bridge (routed through rpc.ts). */
 import { $ } from './dom.ts';
+import { captureFrame } from '../media/capture.ts';
 
 export const video = $<HTMLVideoElement>('source-video');
 // A dedicated hidden decoder element for compatibility-mode frame-request seeks, so they never race the
@@ -34,6 +35,12 @@ export function waitVideoOn(el: HTMLVideoElement, event: string, options: { time
         cleanup();
         reject(new Error(`Native video ${event} wait cancelled.`));
       };
+    // A source the element cannot play fails at once, usually before anyone waits on it: its 'error' event is gone,
+    // and waiting for one would only run out the timeout.
+    if (el.error) {
+      reject(new Error(el.error.message || 'Native media playback failed.'));
+      return;
+    }
     const timer = setTimeout(() => {
       cleanup();
       reject(new Error(`Native video ${event} timed out.`));
@@ -59,22 +66,6 @@ export async function seekOn(el: HTMLVideoElement, time: number): Promise<void> 
 }
 export async function seek(time: number): Promise<void> {
   return seekOn(video, time);
-}
-export async function captureFrame(el: HTMLVideoElement): Promise<ImageBitmap> {
-  try {
-    return await createImageBitmap(el);
-  } catch (error) {
-    // Some containers expose metadata but no capturable frame; a canvas draw is the second attempt, not a silent skip.
-    const canvas = document.createElement('canvas');
-    canvas.width = el.videoWidth;
-    canvas.height = el.videoHeight;
-    const ctx = canvas.getContext('2d');
-    if (!ctx || !canvas.width) {
-      throw error;
-    }
-    ctx.drawImage(el, 0, 0);
-    return await createImageBitmap(canvas);
-  }
 }
 export async function captureNativeFrame(): Promise<ImageBitmap> {
   return captureFrame(video);

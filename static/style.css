@@ -1,9 +1,10 @@
 /* Long Screen — a pocket printer on a desk. A 2.5D low-poly cartoon device: flat-shaded faces, hard offset shadows and
- * faceted keys. The recording goes onto the printer's screen, the LCD and LED segments report the run, the keys and the
+ * faceted keys. The recording goes onto the printer's screen, the LCD and the progress gauge report the run, the keys and the
  * settings dial sit on the device, and the print comes out as an instant photo (the tile viewer).
  *
- * Body classes drive the states: `is-processing` (src/ui/run.ts, a run or an export is busy), `has-result`
- * (src/ui/canvases.ts, a canvas is on the print) and `receipt-open` (src/ui/main.ts, the print is spread over the page).
+ * Body classes drive the states: `is-processing` (src/ui/run.ts, a run or an export is busy), `is-paused` (src/ui/run.ts,
+ * the run is paused), `has-result` (src/ui/canvases.ts, a canvas is on the print) and `receipt-open` (src/ui/main.ts, the
+ * print is spread over the page).
  * Wide screens (≥ 1080px) put the printer and the print side by side; narrower ones stack them. */
 
 /* Baloo 2 (SIL OFL 1.1, static/fonts/OFL.txt), self-hosted: the page makes no network requests. Chinese text falls
@@ -490,7 +491,7 @@ button:disabled {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr);
-  grid-template-areas: "plate plate" "screen lcd" "controls controls" "slot slot";
+  grid-template-areas: "plate plate" "screen lcd" "gauge gauge" "controls controls" "slot slot";
   gap: 12px;
   padding: 14px 18px 24px;
   --screw: #5a9fd6 0 2.4px, #a9d8fa 2.6px 3.4px, transparent 3.6px;
@@ -519,6 +520,18 @@ button:disabled {
   letter-spacing: 1px;
   color: #ffffffaa;
 }
+/* The commit this page was built from (filled in by scripts/build.ts) is the printer's model number, so a report can
+   name the version. */
+.build-id a {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: inherit;
+  text-decoration: none;
+}
+.build-id a:hover,
+.build-id a:focus-visible {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
 .status-led {
   width: 11px;
   height: 11px;
@@ -535,6 +548,17 @@ button:disabled {
 /* Working hard: the whole printer shakes while it runs. */
 .is-processing .printer {
   animation: hum .42s ease-in-out infinite;
+}
+/* Paused: the printer stands still and its light stops blinking; the scan line, gauge stripes and paper hold where
+   they are. Both body classes, so these win over the working rules' `animation` shorthands wherever those sit. */
+.is-processing.is-paused .printer,
+.is-processing.is-paused .status-led.running {
+  animation: none;
+}
+.is-processing.is-paused .screen::before,
+.is-processing.is-paused .gauge-fill,
+.is-processing.is-paused .slot-out::after {
+  animation-play-state: paused;
 }
 @keyframes hum {
   25% {
@@ -662,7 +686,7 @@ button:disabled {
   }
 }
 
-/* The LCD: what the printer is doing, for how long, and how far along. */
+/* The LCD: what the printer is doing and for how long. How far along is the gauge below it. */
 .lcd {
   grid-area: lcd;
   display: flex;
@@ -714,36 +738,65 @@ button:disabled {
 .progress-count:not(:empty)::after {
   content: " · ";
 }
-.segments {
-  position: relative;
-  margin-top: auto;
-  padding-top: 8px;
-  container-type: inline-size;
-}
-.seg-row {
+/* The gauge: a plain progress bar across the printer, labelled and with the percentage written out. In user tests an
+   unlabelled LED strip inside the LCD was not recognised as progress at all. */
+.gauge {
+  grid-area: gauge;
   display: grid;
-  grid-template-columns: repeat(20, minmax(0, 1fr));
-  gap: 2px;
+  gap: 6px;
+  padding: 0 2px;
+  font-variant-numeric: tabular-nums;
 }
-.seg-row i {
-  height: 8px;
-  border-radius: 2px;
-  background: #26301d17;
+.gauge-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--white);
+  text-shadow: 0 1px 0 #3d353040;
 }
-.seg-fill {
-  position: absolute;
-  top: 8px;
-  bottom: 0;
-  left: 0;
-  width: 0;
+.gauge-label {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 1px;
+}
+.gauge-pct {
+  font-size: 20px;
+  font-weight: 800;
+  line-height: 1;
+}
+.gauge-track {
+  position: relative;
+  height: 16px;
   overflow: hidden;
+  border-radius: 8px;
+  background: #2b2622;
+  box-shadow: 0 2px 0 #ffffff55, inset 0 3px 4px #000;
+}
+.gauge-fill {
+  position: absolute;
+  inset: 3px auto 3px 3px;
+  width: 0;
+  max-width: calc(100% - 6px);
+  border-radius: 5px;
+  background: var(--led);
+  box-shadow: 0 0 10px #ffd24d88;
   transition: width .3s ease-out;
 }
-.seg-fill .seg-row {
-  width: 100cqw;
+/* Moving stripes while the printer works, so the bar reads as alive even between updates. */
+.is-processing .gauge-fill {
+  background: repeating-linear-gradient(-45deg, var(--led) 0 10px, #ffe58a 10px 20px);
+  background-size: 28.28px 100%;
+  animation: gauge-stripes .9s linear infinite;
 }
-.seg-fill i {
-  background: #26301d;
+.gauge.done .gauge-fill {
+  background: #7ee08a;
+  box-shadow: 0 0 10px #7ee08a88;
+}
+@keyframes gauge-stripes {
+  to {
+    background-position: 28.28px 0;
+  }
 }
 
 /* The keys. Every cap is a flat-shaded solid: a darker copy of its shape sits under it as the extrusion. */
@@ -1148,6 +1201,108 @@ button:disabled {
   font-size: 11.5px;
   font-weight: 600;
   color: var(--faint);
+}
+/* Cropping (src/ui/crop.ts): the box sits over the print in screen pixels and the viewer veils the rest; the bar
+   under the tools types the box's edges. */
+.crop-box {
+  position: absolute;
+  left: 0;
+  top: 0;
+  border: 2px solid var(--white);
+  outline: 1.5px solid #3d3530cc;
+  cursor: move;
+  touch-action: none;
+}
+.crop-box i {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  margin: -9px 0 0 -9px;
+  border-radius: 4px;
+  background: var(--white);
+  box-shadow: 0 0 0 1.5px #3d3530cc;
+}
+.crop-box i[data-grip="nw"] {
+  left: 0;
+  top: 0;
+  cursor: nwse-resize;
+}
+.crop-box i[data-grip="n"] {
+  left: 50%;
+  top: 0;
+  cursor: ns-resize;
+}
+.crop-box i[data-grip="ne"] {
+  left: 100%;
+  top: 0;
+  cursor: nesw-resize;
+}
+.crop-box i[data-grip="e"] {
+  left: 100%;
+  top: 50%;
+  cursor: ew-resize;
+}
+.crop-box i[data-grip="se"] {
+  left: 100%;
+  top: 100%;
+  cursor: nwse-resize;
+}
+.crop-box i[data-grip="s"] {
+  left: 50%;
+  top: 100%;
+  cursor: ns-resize;
+}
+.crop-box i[data-grip="sw"] {
+  left: 0;
+  top: 100%;
+  cursor: nesw-resize;
+}
+.crop-box i[data-grip="w"] {
+  left: 0;
+  top: 50%;
+  cursor: ew-resize;
+}
+.crop-size {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: #3d3530d9;
+  color: var(--white);
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  pointer-events: none;
+}
+.crop-bar {
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px;
+}
+.crop-field {
+  display: grid;
+  gap: 3px;
+  font-size: 11.5px;
+  font-weight: 800;
+  color: var(--muted);
+}
+.crop-field input {
+  width: 86px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--white);
+  box-shadow: inset 0 0 0 1.5px #3d35302a;
+  font-variant-numeric: tabular-nums;
+}
+.crop-field input[aria-invalid] {
+  box-shadow: inset 0 0 0 2px var(--err);
+}
+#crop-apply {
+  margin-left: auto;
 }
 .take-row {
   flex-wrap: wrap;
@@ -1876,7 +2031,7 @@ dialog::backdrop {
   }
   .printer-front {
     grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "plate" "screen" "lcd" "controls" "slot";
+    grid-template-areas: "plate" "screen" "lcd" "gauge" "controls" "slot";
     padding: 14px 14px 24px;
   }
   .lcd-head {
@@ -1891,6 +2046,9 @@ dialog::backdrop {
   }
   .lcd-line {
     -webkit-line-clamp: 2;
+  }
+  .gauge-pct {
+    font-size: 18px;
   }
   .controls {
     flex-wrap: wrap;
@@ -1910,6 +2068,12 @@ dialog::backdrop {
   }
   .stage {
     height: 360px;
+  }
+  .crop-field {
+    flex: 1 1 calc(25% - 8px);
+  }
+  .crop-field input {
+    width: 100%;
   }
   .has-result .stage {
     height: 62vh;

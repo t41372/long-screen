@@ -17,6 +17,7 @@ export interface FinishAccumulators {
   nativeFrames: number;
   rowChange: Float64Array;
   colChange: Float64Array;
+  colMoving: Float64Array;
   colMean: Float64Array;
   colGain: Float64Array;
   horizontalGain: Float64Array;
@@ -58,6 +59,7 @@ export function finishRegions(
     acc.nativeRowChange ? acc.nativeRowChange.length * 8 : 0,
     acc.nativeColChange ? acc.nativeColChange.length * 8 : 0,
     referenceBytes,
+    width * 8,
   ];
   const [
     desc,
@@ -73,9 +75,11 @@ export function finishRegions(
     nativeRowChangePtr,
     nativeColChangePtr,
     referenceScratch,
+    colMovingPtr,
   ] = core.scratch(sizes);
   core.writeBytes(rowChangePtr, acc.rowChange);
   core.writeBytes(colChangePtr, acc.colChange);
+  core.writeBytes(colMovingPtr, acc.colMoving);
   core.writeBytes(colMeanPtr, acc.colMean);
   core.writeBytes(colGainPtr, acc.colGain);
   core.writeBytes(horizontalGainPtr, acc.horizontalGain);
@@ -109,6 +113,7 @@ export function finishRegions(
   view.setFloat64(88, nativeWidth, true);
   view.setFloat64(96, nativeHeight, true);
   view.setUint32(104, factor, true);
+  view.setUint32(108, colMovingPtr, true);
   const handle = core.check(exports.ls_regions_finish(desc), 'regions finish');
   try {
     const count = core.check(exports.ls_regions_count(handle), 'regions count');

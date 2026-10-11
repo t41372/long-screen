@@ -36,6 +36,7 @@ export const pageSections = {
     },
     press: {
       ariaLabel: '打印机',
+      build: '版本',
     },
     screen: {
       dropTitle: '把录屏拖到这里',
@@ -47,6 +48,7 @@ export const pageSections = {
     },
     controls: {
       print: '运行',
+      progress: '进度',
       knobs: '设置',
       clear: '清空',
       clearTitle: '清空打印机：取出录屏，清掉这次的结果和记录',
@@ -74,16 +76,17 @@ export const pageSections = {
       regionsAuto: '自动识别 ↗',
       advancedSummary: '更多旋钮 <span>＋</span>',
       analysisSizeLabel: '分析用的长边',
-      memoryLabel: '内存预算',
+      memoryLabel: '瓦片缓存上限',
       computeLabel: '分析加速',
       computeAuto: '自动 · 实测后选 WebGPU 或 CPU',
       computeWebgpu: 'WebGPU 分析 · CPU 配准',
       computeCpu: '仅 CPU',
-      computeHint: 'GPU 只加速分析缩图；匹配和像素合成仍用 CPU。自动模式包含传输与回读实测，较慢时不强行用 GPU。',
+      computeHint: 'GPU 负责把解码出的每一帧转成像素、缩出分析小图；匹配和拼接仍在 CPU 上。自动模式会先实测，GPU 不更快就不用它。',
       decoderLabel: '解码方式',
       decoderPrecise: '逐帧 · WebCodecs',
       decoderCompatibility: '近似 · 原生 seek',
-      decoderHint: '分析缩图不改变输出像素。预算不包括浏览器 / 解码器 / GPU 的额外内存。兼容 seek 模式可能漏掉短暂内容。',
+      decoderHint:
+        '分析缩图不改变输出像素。瓦片缓存只放拼好的图块，放不下一帧要画的图块时会自己加大，所以几乎不影响速度；浏览器、解码器、GPU 和计算核心用的内存不算在里面。兼容 seek 模式可能漏掉短暂内容。',
       pauseBtn: '暂停',
       stopBtn: '停止并保存',
       footerNote: '不上传 · 无云端推理 · 无外部模型',
@@ -172,6 +175,17 @@ export const pageSections = {
     },
     source: {
       title: '录屏原画面',
+    },
+    crop: {
+      button: '裁切',
+      groupLabel: '裁切范围',
+      left: '距左',
+      top: '距上',
+      width: '宽',
+      height: '高',
+      full: '整张',
+      cancel: '取消',
+      apply: '裁好了',
     },
     footer: {
       stackLead: '核心用',

@@ -1,5 +1,5 @@
 import { basename, dirname, join, resolve, toFileUrl } from '@std/path';
-import { type Browser, chromium, type Page } from 'playwright';
+import { type Browser, chromium, type Page, webkit } from 'playwright';
 
 /**
  * Benchmarks the shipped browser pipeline, rather than a Node/Deno substitute. It deliberately writes only JSON and
@@ -8,9 +8,16 @@ import { type Browser, chromium, type Page } from 'playwright';
  * Examples:
  *   deno run --allow-all scripts/benchmark-pipeline.ts --input recording.mov
  *   deno run --allow-all scripts/benchmark-pipeline.ts --input recording.mov --baseline-root .baseline
+ *   deno run --allow-all scripts/benchmark-pipeline.ts --input recording.mov --browser safari
  */
+/** Where the pipeline runs: Chrome (Playwright, with CPU profiles and CDP metrics), WebKit (Playwright's build of
+ *  Safari's engine, headless, so nothing can throttle it by taking focus), or the Safari / Firefox installed on this
+ *  Mac, opened on a page the benchmark serves. */
+type BrowserName = 'chrome' | 'webkit' | 'safari' | 'firefox';
+const SYSTEM_BROWSERS: Partial<Record<BrowserName, string>> = { safari: 'Safari', firefox: 'Firefox' };
 interface Options {
   input: string;
+  browser: BrowserName;
   root: string;
   baselineRoot?: string;
   passes: number;
@@ -18,6 +25,12 @@ interface Options {
   analysisSize: number;
   verifyTiles: boolean;
   allowPartial: boolean;
+  /** Write each canvas as PNG and the evidence rows the recording oracles read (scripts/check-recording-oracles.py). */
+  exportCanvases: boolean;
+  /** Rebuild only the TS bundles, reusing the cores already in rust/target. */
+  skipCoreBuild: boolean;
+  /** Skip the Chrome CPU profile, whose sampling slows the run it records. */
+  noProfile: boolean;
   /** Tile keys matching this pattern also get their raw evidence arrays written (diagnosing a hash difference). */
   dumpEvidence?: string;
 }
@@ -35,6 +48,9 @@ interface PassReport {
   /** Core build the page actually ran (undefined for trees that predate the threaded core). */
   core?: { variant: string; threads: number; reason: string };
   crossOriginIsolated?: boolean;
+  userAgent?: string;
+  /** System browsers: 500 ms samples of the run, and how many found the tab hidden or unfocused (throttled). */
+  focus?: { samples: number; hidden: number; unfocused: number };
   status: string;
   error?: string;
   source: {
@@ -45,6 +61,9 @@ interface PassReport {
     frames?: number;
     codec: string;
     notices?: unknown[];
+    /** How decoded frames became RGBA (FrameConverter.describe) and the last decode's timing (FrameSource.stats). */
+    conversion?: string;
+    lastDecode?: unknown;
   };
   pipeline: {
     frames: number;
@@ -72,6 +91,8 @@ interface PassReport {
     putManyCalls: number;
     rows: number;
     writeMS: number;
+    /** `<phase> <method>` → calls and milliseconds of every read, scan and delete. */
+    access?: Record<string, { calls: number; ms: number }>;
   };
   memory: {
     stats?: unknown;
@@ -102,6 +123,7 @@ interface BenchmarkReport {
   generatedAt: string;
   root: string;
   input: string;
+  browser: BrowserName;
   passes: number;
   analysisSize: number;
   results: PassReport[];
@@ -124,6 +146,13 @@ Options:
                          (raw PNG byte differences are reported as info, not a failure — see contentSha256)
   --dump-evidence REGEX  with --verify-tiles, also write raw evidence arrays of matching tile keys
   --allow-partial        accept a partial run (a stream-copied prefix whose container count exceeds its frames)
+  --export-canvases      after timing, write every observed canvas as PNG and the canvas/observation/node/diagnostic/
+                         reveal rows as <label>-pass-N.evidence.json (what scripts/check-recording-oracles.py reads)
+  --skip-core-build      rebuild only the TS bundles, reusing the cores already in rust/target
+  --no-profile           do not record a Chrome CPU profile (its sampling slows the timed run)
+  --browser NAME         chrome (default), webkit (Playwright's build), or the installed safari / firefox; the
+                         installed browsers open a tab that must stay in front, and support neither
+                         --verify-tiles nor --export-canvases
   --output DIR           JSON/profile directory (default: test-results/benchmark-pipeline)
 `;
 
@@ -137,13 +166,17 @@ function valueAfter(args: string[], index: number, flag: string): string {
 
 function parseArgs(args: string[]): Options {
   let input = '',
+    browser: BrowserName = 'chrome',
     root = Deno.cwd(),
     baselineRoot: string | undefined,
     passes = 1,
     output = join(Deno.cwd(), 'test-results/benchmark-pipeline'),
     analysisSize = 640,
     verifyTiles = false,
-    allowPartial = false;
+    allowPartial = false,
+    exportCanvases = false,
+    skipCoreBuild = false,
+    noProfile = false;
   let dumpEvidence: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -165,6 +198,16 @@ function parseArgs(args: string[]): Options {
       dumpEvidence = valueAfter(args, i++, arg);
     } else if (arg === '--allow-partial') {
       allowPartial = true;
+    } else if (arg === '--export-canvases') {
+      exportCanvases = true;
+    } else if (arg === '--skip-core-build') {
+      skipCoreBuild = true;
+    } else if (arg === '--no-profile') {
+      noProfile = true;
+    } else if (arg === '--browser') {
+      const name = valueAfter(args, i++, arg);
+      if (!['chrome', 'webkit', 'safari', 'firefox'].includes(name)) throw new Error(`Unknown browser: ${name}\n\n${usage}`);
+      browser = name as BrowserName;
     } else if (arg === '--help' || arg === '-h') {
       console.log(usage);
       Deno.exit(0);
@@ -173,17 +216,251 @@ function parseArgs(args: string[]): Options {
     }
   }
   if (!input) throw new Error(`--input is required.\n\n${usage}`);
+  if (SYSTEM_BROWSERS[browser] && (verifyTiles || exportCanvases)) {
+    throw new Error(`--verify-tiles and --export-canvases need a Playwright browser (chrome or webkit).`);
+  }
+  if (browser !== 'chrome') noProfile = true;
   if (!Number.isInteger(passes) || passes < 1 || passes > 20) throw new Error('--passes must be an integer from 1 to 20.');
   if (!Number.isInteger(analysisSize) || analysisSize < 320) throw new Error('--analysis-size must be an integer of at least 320.');
   if (!Deno.statSync(input).isFile) throw new Error(`Input is not a file: ${input}`);
   if (!Deno.statSync(root).isDirectory) throw new Error(`Repository root is not a directory: ${root}`);
   if (baselineRoot && !Deno.statSync(baselineRoot).isDirectory) throw new Error(`Baseline root is not a directory: ${baselineRoot}`);
-  return { input, root, baselineRoot, passes, output, analysisSize, verifyTiles, allowPartial, dumpEvidence };
+  return {
+    input,
+    browser,
+    root,
+    baselineRoot,
+    passes,
+    output,
+    analysisSize,
+    verifyTiles,
+    allowPartial,
+    exportCanvases,
+    skipCoreBuild,
+    noProfile,
+    dumpEvidence,
+  };
 }
 
-async function runBuild(root: string): Promise<void> {
+/** The benchmark body, run inside the page: Playwright evaluates it, and benchmarkPage() serialises it for a system
+ *  browser. It may only use what the page has (the test kit), never this module's scope. */
+const benchmarkInPage = async ([sourceURL, analysis, verify]: [string, number, boolean]) => {
+  const kit = (globalThis as any).longScreenKit;
+  const inputName = decodeURIComponent(sourceURL.split('/').pop() || 'recording');
+  const file = new File([await (await fetch(sourceURL)).blob()], inputName);
+  const db = await kit.Database.open();
+  const storage = { putManyCalls: 0, rows: 0, writeMS: 0 };
+  const originalPutMany = db.putMany.bind(db);
+  db.putMany = async (rows: Array<{ key: string; value: unknown }>) => {
+    const started = performance.now();
+    storage.putManyCalls++;
+    storage.rows += rows.length;
+    try {
+      await originalPutMany(rows);
+    } finally {
+      storage.writeMS += performance.now() - started;
+    }
+  };
+  // Reads, scans, deletes and writes per pipeline phase (`phase` below), so a slow store shows which stage pays for it.
+  const access: Record<string, { calls: number; ms: number }> = {};
+  for (const method of ['get', 'scan', 'delete', 'deleteMany', 'putMany'] as const) {
+    const original = (db as any)[method].bind(db);
+    (db as any)[method] = async (...args: unknown[]) => {
+      // Writes are told apart by their first row's key family (run/<id>/ stripped), e.g. "solving putMany node".
+      const first = method === 'putMany' ? (args[0] as Array<{ key: string }>)[0]?.key : undefined;
+      const family = first ? ' ' + first.replace(/^run\/[^/]+\//, '').split('/')[0] : '';
+      const started = performance.now(), bucket = access[`${phase || 'setup'} ${method}${family}`] ??= { calls: 0, ms: 0 };
+      bucket.calls++;
+      try {
+        return await original(...args);
+      } finally {
+        bucket.ms += performance.now() - started;
+      }
+    };
+  }
+  const source = await kit.openMedia(file);
+  const png = { encodes: 0, decodes: 0, encodedBytes: 0, decodedBytes: 0, encodeMS: 0, decodeMS: 0 };
+  const phases: Record<string, number> = {};
+  let phase = '', phaseStarted = performance.now(), lastProgressAt = 0;
+  const diagnostics: Record<string, number> = {};
+  const engine = new kit.Engine(db, source, { ...kit.DEFAULT_SETTINGS, analysisSize: analysis }, {
+    progress: (progress: { phase: string; frames: number }) => {
+      const now = performance.now();
+      const phaseChanged = progress.phase !== phase;
+      if (progress.phase !== phase) {
+        if (phase) phases[phase] = (phases[phase] || 0) + now - phaseStarted;
+        phase = progress.phase;
+        phaseStarted = now;
+      }
+      if (phaseChanged || now - lastProgressAt >= 10000) {
+        console.log(`BENCHMARK ${phase} (${progress.frames} frames)`);
+        lastProgressAt = now;
+      }
+    },
+    diagnostic: (diagnostic: { code: string }) => {
+      diagnostics[diagnostic.code] = (diagnostics[diagnostic.code] || 0) + 1;
+    },
+    project: () => {},
+  });
+  const originalCodec = engine.tiles.codec;
+  (engine.tiles as any).codec = {
+    encode: async (image: unknown) => {
+      const started = performance.now();
+      png.encodes++;
+      try {
+        const blob = await originalCodec.encode(image);
+        png.encodedBytes += blob.size;
+        return blob;
+      } finally {
+        png.encodeMS += performance.now() - started;
+      }
+    },
+    decode: async (blob: Blob, size: number) => {
+      const started = performance.now();
+      png.decodes++;
+      png.decodedBytes += blob.size;
+      try {
+        return await originalCodec.decode(blob, size);
+      } finally {
+        png.decodeMS += performance.now() - started;
+      }
+    },
+  };
+  const started = performance.now();
+  const project = await engine.run();
+  const seconds = (performance.now() - started) / 1000;
+  if (phase) phases[phase] = (phases[phase] || 0) + performance.now() - phaseStarted;
+  const performanceRow = await engine.store.get('performance');
+  const memory = await engine.store.get('memory-stats');
+  const canvases: Array<Record<string, unknown>> = [];
+  for await (const { value } of kit.iterate(engine.store, 'canvas/')) canvases.push(value);
+  const diagnosticsRows: Array<{ code: string }> = [];
+  for await (const { value } of kit.iterate(engine.store, 'diagnostic/')) diagnosticsRows.push(value);
+  const info = source.info, conversion = source.conversion?.(), sourceStats = source.stats;
+  source.dispose();
+  // The system-browser page (benchmarkPage) closes and deletes the database afterwards.
+  (globalThis as any).benchmarkDatabase = db;
+  if (verify) {
+    (globalThis as any).benchmarkStore = engine.store;
+    (globalThis as any).benchmarkProject = project;
+  }
+  return {
+    pass: 0,
+    core: kit.corePlan ? { variant: kit.corePlan.variant, threads: kit.coreThreads(), reason: kit.corePlan.reason } : undefined,
+    crossOriginIsolated: (globalThis as any).crossOriginIsolated,
+    status: project.status,
+    error: project.error,
+    source: {
+      name: info.name,
+      width: info.width,
+      height: info.height,
+      duration: info.duration,
+      frames: info.frameCount,
+      codec: info.codec,
+      notices: info.notices,
+      conversion,
+      lastDecode: sourceStats,
+    },
+    pipeline: {
+      frames: project.frames,
+      renderedFrames: project.renderedFrames,
+      seconds,
+      phases,
+      persistedTimings: performanceRow,
+    },
+    consistency: {
+      exactDuplicateFrames: (performanceRow as any)?.exactDuplicateFrames,
+      skippedPaints: (performanceRow as any)?.skippedPaints,
+      votedLayers: (performanceRow as any)?.consistencyVotedLayers,
+      thinLayers: (performanceRow as any)?.consistencyThinLayers,
+      diagnostics: Object.fromEntries(
+        diagnosticsRows.reduce((counts, row) => counts.set(row.code, (counts.get(row.code) || 0) + 1), new Map<string, number>()),
+      ),
+    },
+    png,
+    storage: { ...storage, access },
+    memory: { stats: memory, native: {}, page: {} },
+    canvases: canvases.map((canvas) => ({
+      id: canvas.id as string,
+      kind: canvas.kind as string,
+      bounds: canvas.bounds,
+      tileCount: canvas.tileCount as number,
+      observedPixels: canvas.observedPixels as number,
+      conflictPixels: canvas.conflictPixels as number,
+    })),
+    browserErrors: [],
+    failedRequests: [],
+    externalRequests: [],
+  } satisfies PassReport;
+};
+
+function recordingURL(base: string, input: string): string {
+  return `${base}/recording/${encodeURIComponent(basename(input))}`;
+}
+
+/** The page a system browser opens: runs benchmarkInPage once per pass and posts each report (and progress lines and
+ *  page errors) back to the benchmark server, deleting the run's database between passes so the browser profile
+ *  keeps nothing. */
+function benchmarkPage(sourceURL: string, analysis: number, passes: number): string {
+  return `<!doctype html>
+<meta charset="utf-8">
+<title>Long Screen benchmark</title>
+<p id="status">Benchmark running. Keep this tab in front until it says it is done.</p>
+<script type="module" src="/assets/testkit.js"></script>
+<script type="module">
+const post = (path, body) => fetch(path, { method: 'POST', body: JSON.stringify(body) }).catch(() => {});
+const log = console.log.bind(console);
+console.log = (...parts) => {
+  log(...parts);
+  const message = parts.join(' ');
+  if (message.startsWith('BENCHMARK ')) post('/__bench/progress', { message });
+};
+addEventListener('error', (event) => post('/__bench/error', { message: String(event.message) }));
+addEventListener('unhandledrejection', (event) => post('/__bench/error', { message: String(event.reason?.stack || event.reason) }));
+const status = document.getElementById('status');
+const run = ${benchmarkInPage.toString()};
+const drop = () => new Promise((resolve) => {
+  const request = indexedDB.deleteDatabase('long-screen-local');
+  request.onsuccess = request.onerror = request.onblocked = () => resolve();
+});
+while (!globalThis.longScreenKit) await new Promise((resolve) => setTimeout(resolve, 50));
+await post('/__bench/progress', { message: 'BENCHMARK page ready' });
+for (let pass = 1; pass <= ${passes}; pass++) {
+  status.textContent = 'Benchmark pass ' + pass + ' of ${passes} running. Keep this tab in front.';
+  await drop();
+  // A hidden or unfocused tab is throttled, so the report says how much of the run it was in front.
+  const focus = { samples: 0, hidden: 0, unfocused: 0 };
+  const sampler = setInterval(() => {
+    focus.samples++;
+    if (document.visibilityState !== 'visible') focus.hidden++;
+    if (!document.hasFocus()) focus.unfocused++;
+  }, 500);
+  try {
+    const report = await run(${JSON.stringify([sourceURL, analysis, false])});
+    clearInterval(sampler);
+    report.userAgent = navigator.userAgent;
+    report.focus = focus;
+    globalThis.benchmarkDatabase?.close();
+    await post('/__bench/report', { pass, report });
+  } catch (error) {
+    clearInterval(sampler);
+    globalThis.benchmarkDatabase?.close();
+    // WebKit's stack omits the message, so send both.
+    await post('/__bench/report', { pass, error: String(error) + '\\n' + (error?.stack || '') });
+  }
+  delete globalThis.benchmarkDatabase;
+}
+await drop();
+// Leave nothing running: the test kit's core keeps its helper workers alive for as long as the page is open, and
+// enough finished tabs holding them stop the next tab's core from starting.
+location.replace('about:blank');
+</script>
+`;
+}
+
+async function runBuild(root: string, skipCoreBuild: boolean): Promise<void> {
   const command = new Deno.Command(Deno.execPath(), {
-    args: ['task', 'build'],
+    args: ['task', 'build', ...(skipCoreBuild ? ['--skip-core'] : [])],
     cwd: root,
     stdout: 'inherit',
     stderr: 'inherit',
@@ -192,18 +469,112 @@ async function runBuild(root: string): Promise<void> {
   if (!result.success) throw new Error(`Building ${root} failed with exit code ${result.code}.`);
 }
 
-async function startServer(root: string, input: string): Promise<{ base: string; close: () => Promise<void> }> {
+/** What a system-browser page posts back (benchmarkPage). */
+type PageMessage =
+  | { kind: 'report'; pass: number; report?: PassReport; error?: string }
+  | { kind: 'progress'; message: string }
+  | { kind: 'error'; message: string };
+
+interface Server {
+  base: string;
+  close: () => Promise<void>;
+  /** Serves benchmarkPage at /__bench/page.html; messages it posts arrive here. */
+  page?: { html: string; listen: (message: PageMessage) => void };
+}
+
+async function startServer(root: string, input: string): Promise<Server> {
   // Import the target root's handler so --baseline-root really runs the old source tree, not the current checkout.
   const moduleURL = `${toFileUrl(join(root, 'main.ts')).href}?benchmark=${Date.now()}-${Math.random()}`;
   const { createHandler } = await import(moduleURL) as typeof import('../main.ts');
-  const server = Deno.serve(
-    { port: 0, hostname: '127.0.0.1', onListen: () => {} },
-    createHandler({ root: join(root, 'dist'), mounts: { '/recording/': dirname(input) } }),
-  );
-  return {
-    base: `http://127.0.0.1:${server.addr.port}`,
-    close: async () => await server.shutdown(),
-  };
+  const handler = createHandler({ root: join(root, 'dist'), mounts: { '/recording/': dirname(input) } });
+  const state: Server = { base: '', close: async () => {} };
+  const server = Deno.serve({ port: 0, hostname: '127.0.0.1', onListen: () => {} }, async (request) => {
+    const path = new URL(request.url).pathname;
+    if (!path.startsWith('/__bench/') || !state.page) return handler(request);
+    if (request.method === 'GET' && path === '/__bench/page.html') {
+      // Same isolation headers as the app (main.ts), so the page gets the threaded core.
+      return new Response(state.page.html, {
+        headers: {
+          'content-type': 'text/html; charset=utf-8',
+          'cross-origin-opener-policy': 'same-origin',
+          'cross-origin-embedder-policy': 'require-corp',
+          'cross-origin-resource-policy': 'same-origin',
+          'cache-control': 'no-store',
+        },
+      });
+    }
+    if (request.method === 'POST') {
+      const body = await request.json();
+      const kind = path.slice('/__bench/'.length);
+      if (kind === 'report' || kind === 'progress' || kind === 'error') state.page.listen({ kind, ...body });
+      return new Response('ok');
+    }
+    return new Response('not found', { status: 404 });
+  });
+  state.base = `http://127.0.0.1:${server.addr.port}`;
+  state.close = async () => await server.shutdown();
+  return state;
+}
+
+/** Runs every pass in the installed Safari or Firefox: one tab on benchmarkPage, reports posted back per pass. */
+async function runSystemPasses(options: Options, server: Server, label: string): Promise<PassReport[]> {
+  const app = SYSTEM_BROWSERS[options.browser]!, reports: PassReport[] = [], errors: string[] = [];
+  let ready = false;
+  let progressPath = join(options.output, `${label}-pass-1.progress.jsonl`);
+  await Deno.writeTextFile(progressPath, '');
+  const done = new Promise<void>((resolve, reject) => {
+    server.page = {
+      html: benchmarkPage(recordingURL(server.base, options.input), options.analysisSize, options.passes),
+      listen: (message) => {
+        if (message.kind === 'progress') {
+          ready = true;
+          console.log(`${label}: ${message.message}`);
+          Deno.writeTextFileSync(progressPath, JSON.stringify({ at: new Date().toISOString(), message: message.message }) + '\n', {
+            append: true,
+          });
+        } else if (message.kind === 'error') {
+          errors.push(message.message);
+        } else if (message.error || !message.report) {
+          reject(new Error(`${label} pass ${message.pass} failed in ${app}: ${message.error}`));
+        } else {
+          reports.push({ ...message.report, pass: message.pass, browserErrors: errors.splice(0) });
+          progressPath = join(options.output, `${label}-pass-${message.pass + 1}.progress.jsonl`);
+          if (reports.length === options.passes) resolve();
+          else Deno.writeTextFileSync(progressPath, '');
+        }
+      },
+    };
+  });
+  // The page's script is assembled from strings; a syntax slip there would only show as a page that never starts.
+  const inline = server.page!.html.match(/<script type="module">([\s\S]*)<\/script>/)?.[1] ?? '';
+  try {
+    new Function(`return (async () => {\n${inline}\n});`);
+  } catch (error) {
+    throw new Error(`${label}: the benchmark page's script does not parse: ${error}`);
+  }
+  const opened = await new Deno.Command('open', { args: ['-a', app, `${server.base}/__bench/page.html`] }).output();
+  if (!opened.success) throw new Error(`Could not open ${app}: ${new TextDecoder().decode(opened.stderr)}`);
+  let timer: number | undefined, watchdog: number | undefined;
+  try {
+    await Promise.race([
+      done,
+      new Promise<never>((_, reject) => {
+        // A page that never loads the test kit (a wrong path, a blocked script) would otherwise wait the full hour.
+        watchdog = setTimeout(() => {
+          if (!ready) {
+            reject(new Error(`${label}: the ${app} page did not start within 2 minutes (errors: ${errors.join('; ') || 'none'})`));
+          }
+        }, 2 * 60 * 1000);
+      }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label}: no report from ${app} within 60 minutes`)), 60 * 60 * 1000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+    clearTimeout(watchdog);
+  }
+  return reports;
 }
 
 function metricMap(metrics: Array<{ name: string; value: number }>): BrowserMetricSet {
@@ -228,9 +599,11 @@ async function runPass(
   output: string,
   label: string,
   verifyTiles: boolean,
+  exportCanvases: boolean,
+  profile: boolean,
   dumpEvidence?: string,
 ): Promise<PassReport> {
-  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 }, acceptDownloads: true });
   const page = await context.newPage();
   const progressPath = join(output, `${label}-pass-${pass}.progress.jsonl`);
   await Deno.writeTextFile(progressPath, '');
@@ -250,7 +623,10 @@ async function runPass(
   page.on('request', (request) => {
     if (/^https?:/.test(request.url()) && !request.url().startsWith(base)) externalRequests.push(request.url());
   });
-  const cdp = await context.newCDPSession(page);
+  // CDP (metrics, CPU profile) is Chrome's; WebKit runs report empty browser metrics.
+  const cdp = page.context().browser()?.browserType().name() === 'chromium'
+    ? await context.newCDPSession(page)
+    : { send: async (method: string) => method === 'Performance.getMetrics' ? { metrics: [] } : {} };
   await cdp.send('Performance.enable');
   await waitForHarness(page, base);
   const beforeMetrics = metricMap(
@@ -260,140 +636,22 @@ async function runPass(
   let cpuProfile: unknown;
   let failed = false;
   const profilePath = join(output, `${label}-pass-${pass}.cpuprofile`);
-  try {
-    await cdp.send('Profiler.enable');
-    await cdp.send('Profiler.start');
-    profilerStarted = true;
-  } catch (error) {
-    console.warn(`CPU profiler unavailable for ${label} pass ${pass}: ${String(error)}`);
+  if (profile) {
+    try {
+      await cdp.send('Profiler.enable');
+      await cdp.send('Profiler.start');
+      profilerStarted = true;
+    } catch (error) {
+      console.warn(`CPU profiler unavailable for ${label} pass ${pass}: ${String(error)}`);
+    }
   }
   let report: PassReport;
   try {
-    report = await page.evaluate(async ([sourceURL, analysis, verify]: [string, number, boolean]) => {
-      const kit = (globalThis as any).longScreenKit;
-      const inputName = decodeURIComponent(sourceURL.split('/').pop() || 'recording');
-      const file = new File([await (await fetch(sourceURL)).blob()], inputName);
-      const db = await kit.Database.open();
-      const storage = { putManyCalls: 0, rows: 0, writeMS: 0 };
-      const originalPutMany = db.putMany.bind(db);
-      db.putMany = async (rows: Array<{ key: string; value: unknown }>) => {
-        const started = performance.now();
-        storage.putManyCalls++;
-        storage.rows += rows.length;
-        try {
-          await originalPutMany(rows);
-        } finally {
-          storage.writeMS += performance.now() - started;
-        }
-      };
-      const source = await kit.openMedia(file);
-      const png = { encodes: 0, decodes: 0, encodedBytes: 0, decodedBytes: 0, encodeMS: 0, decodeMS: 0 };
-      const phases: Record<string, number> = {};
-      let phase = '', phaseStarted = performance.now(), lastProgressAt = 0;
-      const diagnostics: Record<string, number> = {};
-      const engine = new kit.Engine(db, source, { ...kit.DEFAULT_SETTINGS, analysisSize: analysis }, {
-        progress: (progress: { phase: string; frames: number }) => {
-          const now = performance.now();
-          const phaseChanged = progress.phase !== phase;
-          if (progress.phase !== phase) {
-            if (phase) phases[phase] = (phases[phase] || 0) + now - phaseStarted;
-            phase = progress.phase;
-            phaseStarted = now;
-          }
-          if (phaseChanged || now - lastProgressAt >= 10000) {
-            console.log(`BENCHMARK ${phase} (${progress.frames} frames)`);
-            lastProgressAt = now;
-          }
-        },
-        diagnostic: (diagnostic: { code: string }) => {
-          diagnostics[diagnostic.code] = (diagnostics[diagnostic.code] || 0) + 1;
-        },
-        project: () => {},
-      });
-      const originalCodec = engine.tiles.codec;
-      (engine.tiles as any).codec = {
-        encode: async (image: unknown) => {
-          const started = performance.now();
-          png.encodes++;
-          try {
-            const blob = await originalCodec.encode(image);
-            png.encodedBytes += blob.size;
-            return blob;
-          } finally {
-            png.encodeMS += performance.now() - started;
-          }
-        },
-        decode: async (blob: Blob, size: number) => {
-          const started = performance.now();
-          png.decodes++;
-          png.decodedBytes += blob.size;
-          try {
-            return await originalCodec.decode(blob, size);
-          } finally {
-            png.decodeMS += performance.now() - started;
-          }
-        },
-      };
-      const started = performance.now();
-      const project = await engine.run();
-      const seconds = (performance.now() - started) / 1000;
-      if (phase) phases[phase] = (phases[phase] || 0) + performance.now() - phaseStarted;
-      const performanceRow = await engine.store.get('performance');
-      const memory = await engine.store.get('memory-stats');
-      const canvases: Array<Record<string, unknown>> = [];
-      for await (const { value } of kit.iterate(engine.store, 'canvas/')) canvases.push(value);
-      const diagnosticsRows: Array<{ code: string }> = [];
-      for await (const { value } of kit.iterate(engine.store, 'diagnostic/')) diagnosticsRows.push(value);
-      const info = source.info;
-      source.dispose();
-      if (verify) (globalThis as any).benchmarkStore = engine.store;
-      return {
-        pass: 0,
-        core: kit.corePlan ? { variant: kit.corePlan.variant, threads: kit.coreThreads(), reason: kit.corePlan.reason } : undefined,
-        crossOriginIsolated: (globalThis as any).crossOriginIsolated,
-        status: project.status,
-        error: project.error,
-        source: {
-          name: info.name,
-          width: info.width,
-          height: info.height,
-          duration: info.duration,
-          frames: info.frameCount,
-          codec: info.codec,
-          notices: info.notices,
-        },
-        pipeline: {
-          frames: project.frames,
-          renderedFrames: project.renderedFrames,
-          seconds,
-          phases,
-          persistedTimings: performanceRow,
-        },
-        consistency: {
-          exactDuplicateFrames: (performanceRow as any)?.exactDuplicateFrames,
-          skippedPaints: (performanceRow as any)?.skippedPaints,
-          votedLayers: (performanceRow as any)?.consistencyVotedLayers,
-          thinLayers: (performanceRow as any)?.consistencyThinLayers,
-          diagnostics: Object.fromEntries(
-            diagnosticsRows.reduce((counts, row) => counts.set(row.code, (counts.get(row.code) || 0) + 1), new Map<string, number>()),
-          ),
-        },
-        png,
-        storage,
-        memory: { stats: memory, native: {}, page: {} },
-        canvases: canvases.map((canvas) => ({
-          id: canvas.id as string,
-          kind: canvas.kind as string,
-          bounds: canvas.bounds,
-          tileCount: canvas.tileCount as number,
-          observedPixels: canvas.observedPixels as number,
-          conflictPixels: canvas.conflictPixels as number,
-        })),
-        browserErrors: [],
-        failedRequests: [],
-        externalRequests: [],
-      } satisfies PassReport;
-    }, [`${base}/recording/${encodeURIComponent(basename(input))}`, analysisSize, verifyTiles] as [string, number, boolean]);
+    report = await page.evaluate(benchmarkInPage, [recordingURL(base, input), analysisSize, verifyTiles || exportCanvases] as [
+      string,
+      number,
+      boolean,
+    ]);
   } catch (error) {
     failed = true;
     await Deno.writeTextFile(
@@ -477,7 +735,6 @@ async function runPass(
           : undefined;
         tiles.push({ key, hashes: { ...hashes, pixels: await digest(image.data.slice().buffer) }, evidence });
       }
-      delete (globalThis as any).benchmarkStore;
       const evidenceFields = ['coverage', 'provisional', 'quality', 'conflicts', 'owner', 'score', 'frozen'];
       return {
         count: rows.length,
@@ -498,6 +755,45 @@ async function runPass(
     await Deno.writeTextFile(join(output, `${label}-pass-${pass}.tiles.json`), JSON.stringify(tiles));
     report.storedTiles = summary;
   }
+  if (exportCanvases) {
+    const evidence = await page.evaluate(async () => {
+      const kit = (globalThis as any).longScreenKit, store = (globalThis as any).benchmarkStore;
+      const rows: Record<string, unknown[]> = {};
+      for (const prefix of ['canvas/', 'observation/', 'node/', 'diagnostic/', 'reveal/']) {
+        rows[prefix] = [];
+        for await (const { key, value } of kit.iterate(store, prefix)) rows[prefix].push(prefix === 'reveal/' ? { key, ...value } : value);
+      }
+      const regions = (await store.get('regions')) || [];
+      return JSON.stringify(
+        { regions, rows },
+        (_, value) => ArrayBuffer.isView(value) ? Array.from(value as unknown as ArrayLike<number>) : value,
+      );
+    });
+    await Deno.writeTextFile(join(output, `${label}-pass-${pass}.evidence.json`), evidence);
+    for (const canvas of report.canvases.filter((c) => c.observedPixels > 0)) {
+      const url = await page.evaluate(async (id: string) => {
+        const kit = (globalThis as any).longScreenKit, store = (globalThis as any).benchmarkStore;
+        const meta = await store.get(`canvas/${id}`);
+        const result = await kit.exportCanvas(store, (globalThis as any).benchmarkProject, meta, () => {}, undefined, 'single');
+        const blob = result.blob ||
+          await (await navigator.storage.getDirectory()).getFileHandle(result.temporary).then((f: FileSystemFileHandle) => f.getFile());
+        return URL.createObjectURL(blob);
+      }, canvas.id);
+      const downloaded = page.waitForEvent('download');
+      await page.evaluate((url: string) => {
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'canvas.png';
+        a.click();
+      }, url);
+      await (await downloaded).saveAs(join(output, `${label}-pass-${pass}-${canvas.id}.png`));
+      await page.evaluate((url: string) => URL.revokeObjectURL(url), url);
+    }
+  }
+  await page.evaluate(() => {
+    delete (globalThis as any).benchmarkStore;
+    delete (globalThis as any).benchmarkProject;
+  });
   await context.close();
   return report;
 }
@@ -528,20 +824,53 @@ function summarize(results: PassReport[]): BenchmarkReport['summary'] {
   };
 }
 
+async function writeReport(options: Options, root: string, label: string, results: PassReport[]): Promise<BenchmarkReport> {
+  const report: BenchmarkReport = {
+    generatedAt: new Date().toISOString(),
+    root,
+    input: options.input,
+    browser: options.browser,
+    passes: options.passes,
+    analysisSize: options.analysisSize,
+    results,
+    summary: summarize(results),
+  };
+  await Deno.mkdir(options.output, { recursive: true });
+  await Deno.writeTextFile(join(options.output, `${label}.json`), JSON.stringify(report, null, 2));
+  return report;
+}
+
 async function benchmarkRoot(options: Options, root: string, label: string): Promise<BenchmarkReport> {
-  await runBuild(root);
+  await runBuild(root, options.skipCoreBuild);
   const server = await startServer(root, options.input);
+  if (SYSTEM_BROWSERS[options.browser]) {
+    try {
+      console.log(`\n${label}: ${options.passes} pass(es) in ${SYSTEM_BROWSERS[options.browser]}`);
+      const results = await runSystemPasses(options, server, label);
+      for (const result of results) {
+        await Deno.writeTextFile(join(options.output, `${label}-pass-${result.pass}.json`), JSON.stringify(result, null, 2));
+        console.log(JSON.stringify({ status: result.status, seconds: Number(result.pipeline.seconds.toFixed(3)), focus: result.focus }));
+        const acceptable = result.status === 'complete' || (options.allowPartial && result.status === 'partial');
+        if (!acceptable) throw new Error(`${label} pass ${result.pass} ended ${result.status}: ${result.error || 'unknown error'}`);
+      }
+      return await writeReport(options, root, label, results);
+    } finally {
+      await server.close();
+    }
+  }
   const browserOptions: Parameters<typeof chromium.launch>[0] = { headless: true };
   const channel = Deno.env.get('LONGSCREEN_CHANNEL');
   const executablePath = Deno.env.get('LONGSCREEN_CHROME');
-  if (channel) {
+  if (options.browser === 'webkit') {
+    // Playwright's own WebKit build; the installed Safari is the system browser above.
+  } else if (channel) {
     browserOptions.channel = channel;
   } else {
     // Prefer an explicitly supplied system Chrome, then fall back to Playwright's managed browser. This keeps the
     // benchmark runnable without a system Chrome while LONGSCREEN_CHROME still allows testing the platform decoder.
     browserOptions.executablePath = executablePath || chromium.executablePath();
   }
-  const browser = await chromium.launch(browserOptions);
+  const browser = await (options.browser === 'webkit' ? webkit : chromium).launch(browserOptions);
   try {
     const results: PassReport[] = [];
     for (let pass = 1; pass <= options.passes; pass++) {
@@ -561,6 +890,8 @@ async function benchmarkRoot(options: Options, root: string, label: string): Pro
           options.output,
           label,
           options.verifyTiles,
+          options.exportCanvases,
+          !options.noProfile,
           options.dumpEvidence,
         );
       } catch (error) {
@@ -589,18 +920,7 @@ async function benchmarkRoot(options: Options, root: string, label: string): Pro
       const acceptable = result.status === 'complete' || (options.allowPartial && result.status === 'partial');
       if (!acceptable) throw new Error(`${label} pass ${pass} ended ${result.status}: ${result.error || 'unknown error'}`);
     }
-    const report: BenchmarkReport = {
-      generatedAt: new Date().toISOString(),
-      root,
-      input: options.input,
-      passes: options.passes,
-      analysisSize: options.analysisSize,
-      results,
-      summary: summarize(results),
-    };
-    await Deno.mkdir(options.output, { recursive: true });
-    await Deno.writeTextFile(join(options.output, `${label}.json`), JSON.stringify(report, null, 2));
-    return report;
+    return await writeReport(options, root, label, results);
   } finally {
     await browser.close();
     await server.close();

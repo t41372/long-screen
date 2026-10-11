@@ -1,13 +1,15 @@
 /** "下载大截图" (one native-size PNG) and "导出完整项目" (the archival ZIP), plus "复制大截图" to the clipboard. Both
  *  downloads prefer a native save-file picker and fall back to an anchor download / OPFS temporary copy. */
 import type { AppState } from './state.ts';
-import { $, humanBytes, toast } from './dom.ts';
+import { $, humanBytes, setProgress, shownProgress, toast } from './dom.ts';
 import { call } from './rpc.ts';
 import { t } from '../i18n/page.ts';
 import type { ExportResult } from '../export/project.ts';
 import type { Diagnostic } from '../types.ts';
 import type { Run } from './run.ts';
 import type { TiledViewer } from './viewer.ts';
+import type { Crop } from './crop.ts';
+import { canvasRect } from '../export/crop.ts';
 
 /** File name for the downloaded image: the recording's name, not a generic one. */
 function imageFileName(state: AppState): string {
@@ -17,14 +19,14 @@ function imageFileName(state: AppState): string {
 
 type ExportKind = 'project' | 'png' | 'sheets';
 
-export function createExport(state: AppState, viewer: TiledViewer, run: Run, addDiagnostic: (d: Diagnostic) => void) {
+export function createExport(state: AppState, viewer: TiledViewer, run: Run, addDiagnostic: (d: Diagnostic) => void, crop: Crop) {
   let downloadURL: string | undefined;
 
   function cleanupTemporary(key?: string): void {
     if (key) void call('cleanup-export', { key }).catch(() => {});
   }
   async function doExport(kind: ExportKind): Promise<void> {
-    if (!state.project || state.busy) {
+    if (!state.project || state.busy || state.cropping) {
       return;
     }
     let handle: FileSystemFileHandle | undefined;
@@ -32,6 +34,8 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
     const format = kind === 'png' ? 'png' : kind === 'sheets' ? 'png' : 'project';
     const name = kind === 'png' ? imageFileName(state) : kind === 'sheets' ? 'long-screen-sheets.zip' : 'long-screen-project.zip';
     const isZip = kind !== 'png';
+    // The export reports through the printer's gauge; afterwards it shows the print's own progress again.
+    const shown = shownProgress();
     run.setBusy(true);
     $('run-controls').hidden = true;
     try {
@@ -110,6 +114,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
         action: t('ui.export.exportErrorAction'),
       });
     } finally {
+      setProgress(shown.fraction, shown.stage);
       run.setBusy(false);
     }
   }
@@ -117,11 +122,14 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
    *  refuses clipboard writes started later) with the image as a promise, which the worker fulfils once encoded. */
   function doCopy(): void {
     const c = viewer.current;
-    if (!state.project || state.busy || !c) return;
+    if (!state.project || state.busy || state.cropping || !c) return;
+    // What the copy holds: the canvas's kept crop if it has one (the worker applies it), else the whole canvas.
+    const copied = crop.current() ?? canvasRect(c.bounds);
     if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
       toast(t('ui.export.clipboardUnsupported'), true);
       return;
     }
+    const shown = shownProgress();
     run.setBusy(true);
     $('run-controls').hidden = true;
     let temporary: string | undefined;
@@ -136,15 +144,17 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
       item = new ClipboardItem({ 'image/png': png });
     } catch (error) {
       png.then((b) => b, () => undefined).finally(() => cleanupTemporary(temporary));
+      setProgress(shown.fraction, shown.stage);
       run.setBusy(false);
       toast(t('ui.export.copyFailedCtor', { error: String(error) }), true);
       return;
     }
     navigator.clipboard.write([item])
-      .then(() => toast(t('ui.export.copySuccess', { width: Math.round(c.bounds.width), height: Math.round(c.bounds.height) })))
+      .then(() => toast(t('ui.export.copySuccess', { width: copied.width, height: copied.height })))
       .catch((error) => toast(t('ui.export.copyFailed', { error: String(error) }), true))
       .finally(() => {
         void png.catch(() => {}).finally(() => cleanupTemporary(temporary));
+        setProgress(shown.fraction, shown.stage);
         run.setBusy(false);
       });
   }

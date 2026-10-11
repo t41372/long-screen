@@ -108,6 +108,14 @@ export class RunContext {
   processed = 0;
   regions: Region[] = [];
   timings: Record<string, number> = {};
+  /** Adds the source's latest decode timing (`FrameSource.stats`) to `timings` under `stage`. */
+  recordSource(stage: string): void {
+    const stats = this.source.stats;
+    if (!stats) return;
+    this.timings[`${stage}.decodeMS`] = stats.decodeMS;
+    this.timings[`${stage}.convertMS`] = stats.convertMS;
+    this.timings[`${stage}.converted`] = stats.converted;
+  }
   duplicates = 0;
   skippedPaints = 0;
   /** Built once at the end of scan(), read by solve()/render()/Compositor for the rest of the run. Owns a

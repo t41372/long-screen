@@ -23,6 +23,7 @@ import {
   NONFINITE_CONFIDENCE,
   occlusionEligible,
   odometry,
+  type OdometryEstimate,
   ownFeaturesOf,
   priorMatchesOf,
   reacquire,
@@ -87,6 +88,8 @@ interface StepLocals {
   viaAnchor: NativeRefinement | undefined;
   weakStep: boolean;
   stepError: number;
+  /** Odometry's rescued step (`OdometryEstimate.rescue`), taken only in place of a new fragment. */
+  rescue?: OdometryEstimate['rescue'];
 }
 /** Everything region-step.ts's stepRegion() needs that lives for the whole solve() pass, not just one frame:
  * services, the pose graph and keyframe index, the fragment-attachment map and its three canonicalisation
@@ -262,6 +265,7 @@ export class SolvePass {
     locals.weakStep = est.weakStep;
     locals.confidence = est.confidence;
     locals.stepError = est.stepError;
+    locals.rescue = est.rescue;
     if (est.contentChange) {
       await this.ctx.diagnostics.emit({
         code: 'PARTIAL_CONTENT_CHANGE',
@@ -450,6 +454,13 @@ export class SolvePass {
         },
         message: t('diag.RELOCALIZED.message'),
       });
+    } else if (locals.rescue && !locals.zoomChange) {
+      // Neither the anchor nor the keyframe index placed it, but odometry measured the step: the plain native error
+      // was only pushed up by a part of the region that does not scroll (or a fast step's encoder loss). Taken as a
+      // tracked step at its own low confidence rather than starting a new fragment.
+      const { delta, confidence, ambiguous, weakStep, stepError } = locals.rescue;
+      Object.assign(locals, { lost: false, decision: 'tracked', delta, confidence, ambiguous, weakStep, stepError });
+      await this.applyTracked(state, input, locals);
     } else {
       // Name the cause: a magnification change is a different pixel grid, not a lost trajectory.
       const scale = fragmentCause(locals.zoomChange, input.scan.field.zoom, previousGray, state.blind, g, locals.ownFeatures, locals.roi);

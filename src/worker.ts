@@ -1,11 +1,13 @@
-import { type CanvasMeta, DEFAULT_SETTINGS, type Diagnostic, type MediaInfo, type Project, type Settings } from './types.ts';
-import { Database } from './storage/db.ts';
+import { type CanvasMeta, DEFAULT_SETTINGS, type Diagnostic, type MediaInfo, type Project, type Rect, type Settings } from './types.ts';
+import { Database, iterate } from './storage/db.ts';
 import { keepLatest, projectKey, runStore, sweepProjects } from './storage/projects.ts';
 import { Engine } from './pipeline/engine.ts';
-import { CompatibilitySource, openMedia, PreciseSource } from './media/source.ts';
+import { CompatibilitySource, frameConverter, openMedia, PreciseSource } from './media/source.ts';
+import type { Capture } from './media/capture.ts';
 import { DemoSource } from './media/demo.ts';
 import { type CanvasLayout, exportCanvas, exportProject } from './export/project.ts';
 import { cleanupExport } from './export/target.ts';
+import { clampCrop, coversCanvas, CROP_PREFIX } from './export/crop.ts';
 import { core, coreLoaded, loadPlannedCore, planCore } from './core/wasm.ts';
 import { tileKey } from './storage/tiles.ts';
 import type { StoredTile } from './storage/tiles.ts';
@@ -18,7 +20,7 @@ const scope = globalThis as unknown as {
 const post = (message: unknown, transfer: Transferable[] = []) => scope.postMessage(message, transfer);
 let database: Promise<Database> | undefined, active: Engine | undefined, exporting = false, starting = false, probing = false, frameId = 0;
 const frames = new Map<number, {
-  resolve: (bitmap: ImageBitmap) => void;
+  resolve: (capture: Capture) => void;
   reject: (error: Error) => void;
   timer: ReturnType<typeof setTimeout>;
 }>();
@@ -35,7 +37,7 @@ const ensureCore = () =>
         `CORE_UNAVAILABLE: the reconstruction core (core.wasm) failed to load: ${error instanceof Error ? error.message : String(error)}`,
       );
     });
-function requestFrame(time: number): Promise<ImageBitmap> {
+function requestFrame(time: number, coded: boolean): Promise<Capture> {
   return new Promise((resolve, reject) => {
     const id = ++frameId;
     const timer = setTimeout(() => {
@@ -43,7 +45,7 @@ function requestFrame(time: number): Promise<ImageBitmap> {
       reject(new Error('Native video seek did not finish within 30 seconds.'));
     }, 30000);
     frames.set(id, { resolve, reject, timer });
-    post({ event: 'frame-request', id, time });
+    post({ event: 'frame-request', id, time, coded });
   });
 }
 /** How long the browser keeps the last print: long enough to survive a reload, a closed tab or a run the browser
@@ -103,7 +105,7 @@ const handlers: Handlers = {
           const bitmap = await createImageBitmap(
             new ImageData(frame.image.data as Uint8ClampedArray<ArrayBuffer>, frame.image.width, frame.image.height),
           );
-          return { info: source.info, bitmap };
+          return { info: source.info, bitmap, conversion: source.conversionReport?.() };
         }
         throw new Error('The decoder produced no frames for this file.');
       } finally {
@@ -145,7 +147,7 @@ const handlers: Handlers = {
         }
         source = new CompatibilitySource(payload.info as MediaInfo, settings.compatibilityFPS, requestFrame);
       } else {
-        source = await openMedia(payload.file as File);
+        source = await openMedia(payload.file as File, frameConverter(settings.compute));
       }
       for (const region of settings.regions) {
         const r = region.rect;
@@ -258,10 +260,38 @@ const handlers: Handlers = {
       // payload.layout is typed as CanvasLayout, but the debug handle (globalThis.longScreen.rpc, src/ui/main.ts)
       // can post any string, so it is re-validated here rather than trusted straight through to exportCanvas.
       const layout: CanvasLayout = payload.layout === 'single' || payload.layout === 'sheets' ? payload.layout : 'auto';
-      return await exportCanvas(store, project, meta, progress, payload.handle, layout);
+      // The canvas's kept crop, if any, applies to every per-canvas export (PNG, sheets, the clipboard copy).
+      const crop = await store.get<Rect>(`${CROP_PREFIX}${meta.id}`);
+      return await exportCanvas(store, project, meta, progress, payload.handle, layout, crop);
     } finally {
       exporting = false;
     }
+  },
+  async crops(payload, database) {
+    const crops: Record<string, Rect> = {};
+    for await (const { key, value } of iterate<Rect>(runStore(database, requireProjectId(payload.projectId)), CROP_PREFIX)) {
+      crops[key.slice(CROP_PREFIX.length)] = value;
+    }
+    return crops;
+  },
+  async crop(payload, database) {
+    if (active || exporting || starting) busyError();
+    const store = runStore(database, requireProjectId(payload.projectId)), key = `${CROP_PREFIX}${payload.canvasId}`;
+    const meta = await store.get<CanvasMeta>(`canvas/${payload.canvasId}`);
+    if (!meta) {
+      throw new Error('Canvas not found.');
+    }
+    const rect = payload.rect ? clampCrop(payload.rect, meta.bounds) : undefined;
+    if (payload.rect && !rect) {
+      throw new Error(`The crop ${JSON.stringify(payload.rect)} leaves nothing of this canvas.`);
+    }
+    // A crop that keeps the whole canvas is no crop: nothing is kept, so the export stays exactly the uncropped one.
+    if (!rect || coversCanvas(rect, meta.bounds)) {
+      await store.delete(key);
+      return null;
+    }
+    await store.put(key, rect);
+    return rect;
   },
   async 'cleanup-export'(payload) {
     await cleanupExport(payload.key);
@@ -297,7 +327,7 @@ scope.onmessage = (event) => {
     if ('error' in m) {
       pending.reject(new Error(m.error));
     } else {
-      pending.resolve(m.bitmap);
+      pending.resolve({ bitmap: m.bitmap, coded: !!m.coded });
     }
     return;
   }

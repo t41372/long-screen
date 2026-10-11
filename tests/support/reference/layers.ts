@@ -24,6 +24,7 @@ export class ReferenceLayerLearner {
   informativeFrames = 0;
   rowChange: Float64Array;
   colChange: Float64Array;
+  colMoving: Float64Array;
   colMean: Float64Array;
   colGain: Float64Array;
   horizontalGain: Float64Array;
@@ -42,6 +43,7 @@ export class ReferenceLayerLearner {
     this.activity = new Float64Array(n);
     this.observations = new Float64Array(n);
     this.colChange = new Float64Array(width);
+    this.colMoving = new Float64Array(width);
     this.colMean = new Float64Array(width);
     this.colGain = new Float64Array(this.cols);
     this.horizontalGain = new Float64Array(this.rows);
@@ -75,6 +77,7 @@ export class ReferenceLayerLearner {
         n++;
       }
       this.colChange[x] += change / n;
+      if (change / n > 1) this.colMoving[x]++;
       this.colMean[x] += mean / n;
     }
     const models = field.motions.length,
@@ -216,6 +219,7 @@ export interface FinishAccumulators {
   nativeFrames: number;
   rowChange: Float64Array;
   colChange: Float64Array;
+  colMoving: Float64Array;
   colMean: Float64Array;
   colGain: Float64Array;
   horizontalGain: Float64Array;
@@ -376,10 +380,12 @@ export function referenceFinish(
   let left = 0, right = width;
   let exactLeft: number | undefined, exactRight: number | undefined;
   if (informativeFrames >= 2) {
-    while (left < width * .45 && colChange[left] / informativeFrames < .7) {
+    // How often a column moved, not its mean change: a few frames of the whole window bouncing must not outweigh
+    // many of a sidebar standing still (rust/core/src/regions/bands.rs, STATIONARY_COLUMN_SHARE).
+    while (left < width * .45 && acc.colMoving[left] / informativeFrames < .25) {
       left++;
     }
-    while (right > width * .55 && colChange[right - 1] / informativeFrames < .7) {
+    while (right > width * .55 && acc.colMoving[right - 1] / informativeFrames < .25) {
       right--;
     }
     // Refine appearance edges BEFORE testing texture, otherwise wide empty page gutters dilute the

@@ -18,13 +18,55 @@ Deno.test({
       await page.goto(h.base + '/');
       await page.waitForFunction('!!window.longScreen');
       await page.screenshot({ path: `${results}desktop-empty.png`, fullPage: true });
+      // The printer's plate names the commit dist-test/ was built from (scripts/build.ts), linked to it on GitHub. That
+      // is a commit of this checkout, not necessarily HEAD: dist-test/ is only rebuilt when a build input changes.
+      const build = await page.evaluate(() => {
+        const line = document.querySelector<HTMLElement>('#build-id')!, link = document.querySelector<HTMLAnchorElement>('#build-commit')!;
+        return { hidden: line.hidden, label: link.textContent ?? '', href: link.href };
+      });
+      const full = build.href.match(/^https:\/\/github\.com\/t41372\/long-screen\/commit\/([0-9a-f]{40})$/)?.[1];
+      assert(
+        !build.hidden && full && /^[0-9a-f]{7,}(-dirty)?$/.test(build.label) && full.startsWith(build.label.replace('-dirty', '')),
+        JSON.stringify(build),
+      );
+      assert(
+        (await new Deno.Command('git', { args: ['cat-file', '-e', `${full}^{commit}`] }).output()).success,
+        `${full} is not a commit here`,
+      );
       await page.setInputFiles('#file-input', `${new URL('../fixtures/negative-cts-v0.mov', import.meta.url).pathname}`);
       await page.waitForFunction(() => document.querySelector('#file-subtitle')?.textContent?.includes('43 帧'), null, { timeout: 30000 });
       const subtitle = await page.textContent('#file-subtitle');
       assert(subtitle?.includes('320 × 240') && subtitle.includes('avc1'), subtitle ?? '');
       assert(!(await page.isDisabled('#regions-btn')), 'regions button enabled after probe');
+      // Progress is a labelled bar on the printer itself, with the percentage written out and progressbar semantics;
+      // every value it shows during the run is recorded to check that it moved through the middle, not only 0 → 100.
+      const gauge = () =>
+        page.evaluate(() => {
+          const bar = document.querySelector('#progress')!,
+            inside = (a: DOMRect, b: DOMRect) => a.left >= b.left && a.right <= b.right && a.top >= b.top && a.bottom <= b.bottom;
+          return {
+            role: bar.getAttribute('role'),
+            label: document.getElementById(bar.getAttribute('aria-labelledby') || '')?.textContent,
+            now: bar.getAttribute('aria-valuenow'),
+            text: document.querySelector('#progress-pct')?.textContent,
+            onPrinter: inside(bar.getBoundingClientRect(), document.querySelector('#machine')!.getBoundingClientRect()),
+            done: document.querySelector('#gauge')!.classList.contains('done'),
+          };
+        });
+      assertEquals(await gauge(), { role: 'progressbar', label: '进度', now: '0', text: '0%', onPrinter: true, done: false });
+      await page.evaluate(() => {
+        const seen: string[] = ((globalThis as unknown as { gaugeSeen: string[] }).gaugeSeen = []);
+        new MutationObserver(() => seen.push(document.querySelector('#progress')!.getAttribute('aria-valuenow')!))
+          .observe(document.querySelector('#progress')!, { attributes: true, attributeFilter: ['aria-valuenow'] });
+      });
       await page.click('#start-btn');
       await page.waitForFunction('["complete","error","partial"].includes(longScreen.getProject()?.status)', null, { timeout: 180000 });
+      await page.waitForFunction(() => document.querySelector('#progress')?.getAttribute('aria-valuenow') === '100', null, {
+        timeout: 30000,
+      });
+      assertEquals(await gauge(), { role: 'progressbar', label: '进度', now: '100', text: '100%', onPrinter: true, done: true });
+      const seen = (await page.evaluate('gaugeSeen') as string[]).map(Number);
+      assert(seen.some((v) => v > 0 && v < 100), `the gauge never showed a value between 0 and 100: ${seen.join(',')}`);
       const project = await page.evaluate('longScreen.getProject()') as {
         status: string;
         renderedFrames: number;
@@ -56,12 +98,16 @@ Deno.test({
       const png = await decodePNG(await Deno.readFile(path));
       assertEquals(png.width, selected.w);
       assertEquals(png.height, selected.h);
+      // The export reports through the gauge, then hands it back to the finished print.
+      await page.waitForFunction('!document.querySelector("#export-png").disabled', null, { timeout: 30000 });
+      assertEquals(await gauge(), { role: 'progressbar', label: '进度', now: '100', text: '100%', onPrinter: true, done: true });
       // The browser keeps the last print, so a reload (or a closed tab) puts it back on screen.
       await page.reload();
       await page.waitForFunction('!!window.longScreen');
       await page.waitForFunction(`longScreen.getProject()?.id === ${JSON.stringify(project.id)}`, null, { timeout: 30000 });
       await page.waitForFunction('document.body.classList.contains("has-result")', null, { timeout: 30000 });
       await page.waitForFunction(() => document.querySelector('#status-title')?.textContent === '拼好了', null, { timeout: 30000 });
+      assertEquals(await gauge(), { role: 'progressbar', label: '进度', now: '100', text: '100%', onPrinter: true, done: true });
       assertEquals(h.errors, []);
       assertEquals(h.external, []);
     } finally {
@@ -283,6 +329,90 @@ Deno.test({
       } finally {
         await h.close();
       }
+    }
+  },
+});
+// Failure cases: a paused run whose printer keeps shaking, light blinking, scan line sweeping, gauge stripes moving,
+// paper feeding and stitching illustration playing, so nothing on screen says it stopped; the "paused" title overwritten by a progress report from the
+// step that was under way when the pause landed; the stopped animations not coming back on resume.
+Deno.test({
+  name: 'browser UI: pausing a run stills the printer and keeps saying it is paused until it resumes',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const h = await harness();
+    try {
+      const page = h.page;
+      await page.goto(h.base + '/');
+      await page.waitForFunction('!!window.longScreen');
+      await page.setInputFiles('#file-input', `${new URL('../fixtures/scroll.mp4', import.meta.url).pathname}`);
+      await page.waitForFunction(() => document.querySelector('#file-subtitle')?.textContent?.includes('avc1'), null, { timeout: 30000 });
+      await page.click('#start-btn');
+      // Clicked as the page sees it: Playwright's own click waits for the key to hold still, which a working printer
+      // never does (the shaking this test is about), and the short fixture run would be over by then.
+      await page.waitForFunction(() => {
+        if (!document.body.classList.contains('is-processing') || document.querySelector('#run-controls')!.hasAttribute('hidden')) {
+          return false;
+        }
+        document.querySelector<HTMLButtonElement>('#pause-btn')!.click();
+        return true;
+      });
+      await page.waitForFunction(() => document.body.classList.contains('is-paused'), null, { timeout: 30000 });
+      const motion = () =>
+        page.evaluate(() => {
+          const style = (selector: string, pseudo?: string) => getComputedStyle(document.querySelector(selector)!, pseudo);
+          return {
+            printer: style('.printer').animationName,
+            led: style('#status-dot').animationName,
+            scan: style('.screen', '::before').animationPlayState,
+            gauge: style('.gauge-fill').animationPlayState,
+            paper: style('.slot-out', '::after').animationPlayState,
+            illustration: document.querySelector<SVGSVGElement>('#empty-state svg')!.animationsPaused(),
+            title: document.querySelector('#status-title')!.textContent,
+          };
+        });
+      // A report from the step under way may still arrive after the pause; give it time to (not) overwrite the title.
+      await page.waitForTimeout(1500);
+      assertEquals(await motion(), {
+        printer: 'none',
+        led: 'none',
+        scan: 'paused',
+        gauge: 'paused',
+        paper: 'paused',
+        illustration: true,
+        title: '已暂停 · 可以继续',
+      });
+      await page.screenshot({ path: `${results}desktop-paused.png` });
+      await page.evaluate(() => document.querySelector<HTMLButtonElement>('#pause-btn')!.click());
+      await page.waitForFunction(() => !document.body.classList.contains('is-paused'), null, { timeout: 30000 });
+      const resumed = await motion();
+      assertEquals([resumed.printer, resumed.scan, resumed.gauge, resumed.illustration], ['hum', 'running', 'running', false]);
+      await page.waitForFunction('["complete","error","partial"].includes(longScreen.getProject()?.status)', null, { timeout: 180000 });
+      assertEquals(await page.evaluate(() => document.body.classList.contains('is-paused')), false);
+      assertEquals(h.errors, []);
+    } finally {
+      await h.close();
+    }
+  },
+});
+// Failure case: a recording neither the frame-accurate decoder nor the <video> element can play, refused at pick time
+// with the <video> element's opaque error while the reason that says what to do sits only in the log.
+Deno.test({
+  name: 'browser UI: a recording no decoder here can play is refused when picked, with the reason and what to do',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const h = await harness();
+    try {
+      const page = h.page;
+      await page.goto(h.base + '/');
+      await page.waitForFunction('!!window.longScreen');
+      await page.setInputFiles('#file-input', `${new URL('../fixtures/prores.mov', import.meta.url).pathname}`);
+      await page.waitForFunction(() => document.querySelector('#toast')?.textContent?.includes('ProRes'), null, { timeout: 30000 });
+      const toast = await page.textContent('#toast');
+      assert(toast?.includes('这个浏览器解不了这段录屏的编码') && toast.includes('请先导出成 H.264 或 HEVC'), toast ?? '');
+    } finally {
+      await h.close();
     }
   },
 });

@@ -1,7 +1,6 @@
 import type { Feature, Gray, Point, Rect, RGBA } from '../types.ts';
 import type { KV } from '../storage/db.ts';
 import type { Patch } from './motion.ts';
-import { pad } from './math.ts';
 import { core, type ResidentFrame, type ResidentGray } from './wasm.ts';
 export interface Keyframe extends Point {
   id: string;
@@ -143,8 +142,18 @@ export function evaluateCandidates(
     analysisError: result.analysisError,
   };
 }
+/** One visual word's postings in one layer: keyframe ids in ascending frame order, one per frame (a later keyframe at
+ *  the same frame replaces the earlier one). */
+interface Posting {
+  frames: number[];
+  ids: string[];
+}
+/** Keyframes live in the store (`keyframe/<id>`); their word postings live here, for the solve pass that builds and
+ *  reads them. As store rows they were tens of thousands of tiny writes per recording (half of all rows a run wrote,
+ *  and the slowest part of solve on a disk-backed IndexedDB); in memory they are a few bytes each. */
 export class KeyframeIndex {
   private warnedLayers = new Set<string>();
+  private postings = new Map<string, Map<number, Posting>>();
   constructor(private db: KV, private warn: (message: string) => Promise<void>) {}
   private async warnOnce(layer: string): Promise<void> {
     if (this.warnedLayers.has(layer)) {
@@ -158,9 +167,21 @@ export class KeyframeIndex {
   async add(k: Keyframe): Promise<void> {
     await this.db.put(`keyframe/${k.id}`, k);
     const words = core().featureWords(k.features.filter((_, i) => i % 2 === 0));
-    // Immutable per-keyframe postings. Reading a frequent word never allocates its entire list.
-    for (let i = 0; i < words.length; i += 128) {
-      await this.db.putMany(words.slice(i, i + 128).map((word) => ({ key: `word/${k.layer}/${word}/${pad(k.frame)}`, value: k.id })));
+    let layer = this.postings.get(k.layer);
+    if (!layer) this.postings.set(k.layer, layer = new Map());
+    for (const word of words) {
+      let posting = layer.get(word);
+      if (!posting) layer.set(word, posting = { frames: [], ids: [] });
+      const { frames, ids } = posting;
+      // Keyframes arrive in frame order, so this is almost always an append.
+      let at = frames.length;
+      while (at > 0 && frames[at - 1] > k.frame) at--;
+      if (at > 0 && frames[at - 1] === k.frame) {
+        ids[at - 1] = k.id;
+      } else {
+        frames.splice(at, 0, k.frame);
+        ids.splice(at, 0, k.id);
+      }
     }
   }
   /** Finds where the current observation sits relative to earlier keyframes. Returns nothing rather than guessing when several places fit. */
@@ -189,25 +210,26 @@ export class KeyframeIndex {
       words = allWords.filter((_, i) => i % Math.max(1, Math.floor(allWords.length / 48)) === 0).slice(0, 48),
       votes = new Map<string, number>();
     let truncated = false;
+    const postings = this.postings.get(layer);
     for (const word of words) {
-      const prefix = `word/${layer}/${word}/`, forward = await this.db.scan<string>(prefix, { limit: 97 });
-      if (forward.length > 96) {
+      const ids = postings?.get(word)?.ids ?? [];
+      if (ids.length > 96) {
         truncated = true;
       }
       const seen = new Set<string>();
-      // The whole posting can only ever be scanned in ascending frame order; on a long recording that starves recent
-      // keyframes of ever becoming candidates. Take a spread — the earliest half and, when the list overruns the
+      // Taking only the start of a posting (ascending frame order) would starve recent keyframes on a long
+      // recording of ever becoming candidates. Take a spread — the earliest half and, when the list overruns the
       // forward budget, the latest half too — within the same total candidate budget.
-      for (const { value: id } of forward.slice(0, 48)) {
+      for (const id of ids.slice(0, 48)) {
         if (id === exclude) {
           continue;
         }
         seen.add(id);
         votes.set(id, (votes.get(id) || 0) + 1);
       }
-      if (forward.length > 48) {
-        const backward = await this.db.scan<string>(prefix, { limit: 48, reverse: true });
-        for (const { value: id } of backward) {
+      if (ids.length > 48) {
+        const backward = ids.slice(-48).reverse();
+        for (const id of backward) {
           if (id === exclude || seen.has(id)) {
             continue;
           }
@@ -220,8 +242,8 @@ export class KeyframeIndex {
       await this.warnOnce(layer);
     }
     // Intentional TS, not an unported kernel: top-12 candidates by word-vote
-    // count, each needing at least 3 votes, is inline glue over `votes` (a KV posting-list tally built above by
-    // `this.db.scan`) — there is no buffer to hand Rust here until the KV reads finish, so this stays the
+    // count, each needing at least 3 votes, is inline glue over `votes` (the posting tally built above), and the
+    // candidates' keyframes are KV reads — there is no buffer to hand Rust here until they finish, so this stays the
     // adapter's own bookkeeping, like `evaluateCandidates`'s scoring above.
     const candidateIds = [...votes.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12),
       keyframes: Keyframe[] = [];

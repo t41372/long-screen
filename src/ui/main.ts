@@ -3,17 +3,19 @@
  *  this file, and everything it imports from src/ui/**, is the "thin TypeScript" shell over the Rust core. */
 // First import: picks the page language before any other module can produce text.
 import { t, translatePage, wireLanguageSelect } from '../i18n/page.ts';
-import { $, NO_COMPRESSION_STREAM, phaseName, setReceiptOpen, toast } from './dom.ts';
+import { $, NO_COMPRESSION_STREAM, phaseName, setProgress, setReceiptOpen, toast } from './dom.ts';
 import { call, on, onError, onFrameRequest, onMessageError } from './rpc.ts';
 import { TiledViewer } from './viewer.ts';
 import { createState, syncControls } from './state.ts';
-import { captureFrame, decoderVideo, seekOn, video } from './video.ts';
+import { decoderVideo, seekOn, video } from './video.ts';
+import { captureCodedFrame, captureFrame } from '../media/capture.ts';
 import { createCanvases } from './canvases.ts';
 import { createDiagnostics } from './diagnostics.ts';
 import { createSourceFile, forgetHashes } from './source-file.ts';
 import { createRun } from './run.ts';
 import { createRegions } from './regions.ts';
 import { createExport } from './export.ts';
+import { createCrop } from './crop.ts';
 import { flightEnd, flightProgress, takeInterruptedFlight } from './flight.ts';
 import { MEMORY_EXPORT_LIMIT } from '../export/target.ts';
 
@@ -29,16 +31,19 @@ const viewer = new TiledViewer(
   (error) => toast(String(error), true),
 );
 
-// Dependency order: canvases and diagnostics need only the viewer; source-file needs diagnostics' addDiagnostic;
-// run composes resetView/updateProject out of canvases+diagnostics; export needs run for setBusy/resetView; regions is
+// Dependency order: crop needs only the viewer; canvases tells crop when the canvas changes; diagnostics needs the
+// viewer; source-file needs diagnostics' addDiagnostic; run composes resetView/updateProject out of
+// canvases+diagnostics+crop; export needs run for setBusy/resetView and crop for the size it copies; regions is
 // independent.
-const canvases = createCanvases(state, viewer);
+const crop = createCrop(state, viewer);
+const canvases = createCanvases(state, viewer, () => crop.show());
 const diagnostics = createDiagnostics(state, viewer, canvases);
 const sourceFile = createSourceFile(state, { addDiagnostic: diagnostics.addDiagnostic });
-const run = createRun(state, viewer, canvases, diagnostics);
+const run = createRun(state, viewer, canvases, diagnostics, crop);
 const regions = createRegions(state);
-const exporter = createExport(state, viewer, run, diagnostics.addDiagnostic);
+const exporter = createExport(state, viewer, run, diagnostics.addDiagnostic, crop);
 
+crop.wire();
 canvases.wire();
 diagnostics.wire();
 sourceFile.wire();
@@ -128,9 +133,11 @@ addEventListener('click', (e) => {
 });
 
 // Worker event routing.
-onFrameRequest((time) =>
+onFrameRequest((time, coded) =>
   // Exclusively on decoderVideo, never the dialog's source-video: the two must not share a seek target.
-  seekOn(decoderVideo, time).then(() => captureFrame(decoderVideo))
+  seekOn(decoderVideo, time).then(async () =>
+    coded ? captureCodedFrame(decoderVideo) : { bitmap: await captureFrame(decoderVideo), coded: false }
+  )
 );
 on('progress', (m) => {
   run.progress(m.data);
@@ -154,9 +161,9 @@ on('finished', (m) => {
   });
   void diagnostics.loadDiagnostics();
   $('status-title').textContent = phaseName(m.data.status);
-  // The last progress event can land short of the end; a finished print shows every gumball filled.
+  // The last progress event can land short of the end; a finished print shows the gauge full.
   if (m.data.status === 'complete') {
-    $('progress-bar').style.width = '100%';
+    setProgress(1, phaseName(m.data.status));
   }
   if (m.data.error) {
     toast(m.data.error, true);
@@ -171,7 +178,7 @@ on('fatal', (m) => {
 on('export-progress', (m) => {
   $('progress-message').textContent = m.data.message;
   if (m.data.fraction) {
-    $('progress-bar').style.width = `${m.data.fraction * 100}%`;
+    setProgress(m.data.fraction, m.data.message);
   }
 });
 onError((message) => {

@@ -7,7 +7,7 @@ use crate::features::{match_features, Feature};
 use crate::geometry::{js_ceil, js_hypot, Rect};
 use crate::motion::{
     audit_translation, refine_native_at, select_native_points, translation_hypotheses, Gray,
-    MatchPoints, Point,
+    MatchPoints, NativeRefinement, Point,
 };
 use crate::region::Region;
 
@@ -26,6 +26,17 @@ pub struct ContentChange {
     pub blocks: u32,
 }
 
+/// A step the plain native error rejected but [`rescuable`] measured as unambiguous: what `Tracked` would have
+/// carried. The caller takes it only where the frame would otherwise start a new fragment (after re-acquiring the
+/// anchor and relocalising have both failed), so every frame those already place stays as it was.
+pub struct Rescue {
+    pub delta: (f64, f64),
+    pub confidence: f64,
+    pub ambiguous: bool,
+    pub weak_step: bool,
+    pub step_error: f64,
+}
+
 pub struct OdometryEstimate {
     pub decision: OdometryDecision,
     pub delta: (f64, f64),
@@ -38,6 +49,8 @@ pub struct OdometryEstimate {
     /// `f64::INFINITY` on the `Static`/`Lost` branches, exactly like the TS original's `stepError`.
     pub step_error: f64,
     pub content_change: Option<ContentChange>,
+    /// On `Static`/`Lost`: the rescued step, when there is one.
+    pub rescue: Option<Rescue>,
 }
 
 /// One region's odometry inputs, fused into a single call: `matchFeatures` +
@@ -66,6 +79,29 @@ pub struct OdometryInputs<'a> {
     /// Carried in from before this call; returned unchanged on the `Static`/`Lost` branches, exactly as the
     /// TS original left the outer `confidence` local untouched there.
     pub confidence: f64,
+}
+
+/// Native mean error below which a step is tracked.
+const TRACKED_ERROR: f64 = 14.0;
+/// A step over [`TRACKED_ERROR`] can still be rescued when the offsets around it cost clearly more (runner-up above
+/// [`RESCUE_SEPARATION`] × the error) and its trimmed error ([`NativeRefinement::trimmed`]) is a small share of what
+/// a misplaced offset costs (below [`RESCUE_SHARE`] × the runner-up). Both are ratios because the errors scale with
+/// the content's contrast: the same steps of an HDR recording cost about twice as much once its colours are right as
+/// when its coded values were shown dark. Measured on 8 real steps the plain mean rejected — a sticky sidebar (error
+/// 14.3, trimmed 2.8, runner-up 50.5), a translucent tab bar (14.9, 5.0, 55.7) and fast flicks of 101–198 px
+/// (18.0–25.7, 8.4–12.7, 51.3–54.2): runner-up / error 2.07–3.73, trimmed / runner-up 0.06–0.25. Every other
+/// hypothesis the matches proposed had a runner-up within 1.1 × its error and a trimmed error at 0.66 or more of its
+/// runner-up.
+const RESCUE_SEPARATION: f64 = 1.5;
+const RESCUE_SHARE: f64 = 0.35;
+
+/// Whether a step the plain mean rejected is still a measurement: the points of a part that does not scroll (and,
+/// on a fast step, the encoder's loss) alone pushed the mean up — the rest match closely and no nearby offset does.
+fn rescuable(n: &NativeRefinement) -> bool {
+    n.error >= TRACKED_ERROR
+        && n.error.is_finite()
+        && n.runner_up > RESCUE_SEPARATION * n.error
+        && n.trimmed < RESCUE_SHARE * n.runner_up
 }
 
 /// `track.ts::odometry`.
@@ -180,9 +216,10 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
         .collect();
     refined.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
 
+    let mut rescue = None;
     if let Some(best_index) = (!refined.is_empty()).then_some(0usize) {
         let (best_m, best_audit, best_n, _) = &refined[best_index];
-        if best_n.error < 14.0 {
+        if best_n.error < TRACKED_ERROR || rescuable(best_n) {
             let delta = (best_n.x as f64, best_n.y as f64);
             let rival = refined.iter().enumerate().find(|(i, (_, _, n, _))| {
                 *i != best_index
@@ -217,15 +254,25 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
                 * (-step_error / 20.0).exp()
                 * if ambiguous { 0.6 } else { 1.0 }
                 * if weak_step { 0.5 } else { 1.0 };
-            return OdometryEstimate {
-                decision: OdometryDecision::Tracked,
+            if best_n.error < TRACKED_ERROR {
+                return OdometryEstimate {
+                    decision: OdometryDecision::Tracked,
+                    delta,
+                    confidence,
+                    ambiguous,
+                    weak_step,
+                    step_error,
+                    content_change,
+                    rescue: None,
+                };
+            }
+            rescue = Some(Rescue {
                 delta,
                 confidence,
                 ambiguous,
                 weak_step,
                 step_error,
-                content_change,
-            };
+            });
         }
     }
 
@@ -261,5 +308,48 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
         weak_step: false,
         step_error: f64::INFINITY,
         content_change: None,
+        rescue,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rescuable;
+    use crate::motion::NativeRefinement;
+
+    fn n(error: f64, trimmed: f64, runner_up: f64) -> NativeRefinement {
+        NativeRefinement {
+            x: 0,
+            y: 0,
+            error,
+            samples: 600,
+            runner_up,
+            trimmed,
+        }
+    }
+
+    // Failure cases for the rescue gate: a step the plain mean accepts counted as a rescue (it never needs one); the
+    // measured rescues (a sticky sidebar, a translucent tab bar, the slowest and the fastest flick) refused; a rescue
+    // granted when the trimmed error is not low next to what a misplaced offset costs, when another offset close by
+    // nearly matches (an aliased step on repeated content), when there were too few points to measure anything, or
+    // for a hypothesis that is simply wrong.
+    #[test]
+    fn only_an_unambiguous_step_the_plain_mean_rejected_is_rescuable() {
+        assert!(!rescuable(&n(13.9, 2.0, 50.0)));
+        for (error, trimmed, runner_up) in [
+            (14.33, 2.8, 50.48),
+            (14.90, 5.0, 55.71),
+            (20.2, 8.7, 52.0),
+            (25.0, 12.7, 51.8),
+        ] {
+            assert!(
+                rescuable(&n(error, trimmed, runner_up)),
+                "{error} {trimmed} {runner_up}"
+            );
+        }
+        assert!(!rescuable(&n(14.33, 20.0, 50.48)));
+        assert!(!rescuable(&n(14.33, 2.8, 20.0)));
+        assert!(!rescuable(&n(f64::INFINITY, 2.8, f64::INFINITY)));
+        assert!(!rescuable(&n(51.8, 39.1, 54.0)));
     }
 }

@@ -8,6 +8,9 @@ export interface KV {
   putMany(rows: Row[]): Promise<void>;
   delete(key: string): Promise<void>;
   deleteMany(keys: string[]): Promise<void>;
+  /** Deletes every key starting with `prefix` without reading the rows; `deletePrefix()` below falls back to paged
+   *  scans and deletes for a store without it. */
+  deletePrefix?(prefix: string): Promise<void>;
   scan<T>(prefix: string, options?: {
     after?: string;
     limit?: number;
@@ -151,6 +154,18 @@ export class Database implements KV {
     }
     await done;
   }
+  /** One key-range delete: the rows are never read, which on a disk-backed store (Safari's especially) is most of
+   *  what deleting a few thousand scratch rows costs. */
+  async deletePrefix(prefix: string): Promise<void> {
+    const tx = this.db.transaction('records', 'readwrite');
+    const done = new Promise<void>((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onabort = () => reject(tx.error || new Error('Local storage transaction aborted.'));
+      tx.onerror = (event) => reject(transactionError(event, tx, 'Local storage transaction failed.'));
+    });
+    tx.objectStore('records').delete(IDBKeyRange.bound(prefix, prefix + '\uffff'));
+    await done;
+  }
   async scan<T>(prefix: string, options: {
     after?: string;
     limit?: number;
@@ -201,6 +216,9 @@ export class Namespace implements KV {
   deleteMany(keys: string[]): Promise<void> {
     return this.base.deleteMany(keys.map((k) => this.prefix + k));
   }
+  deletePrefix(prefix: string): Promise<void> {
+    return deletePrefix(this.base, this.prefix + prefix);
+  }
   async scan<T>(prefix: string, options: {
     after?: string;
     limit?: number;
@@ -227,8 +245,9 @@ export async function* iterate<T>(db: KV, prefix: string, reverse = false, pageS
   }
 }
 export async function deletePrefix(db: KV, prefix: string): Promise<void> {
+  if (db.deletePrefix) return await db.deletePrefix(prefix);
   // Page through with scan() (256 at a time) and delete each page in one deleteMany, instead of one delete
-  // transaction per row: a keyframe/word/scan-features cleanup over tens of thousands of rows is one transaction
+  // transaction per row: a keyframe/scan-features cleanup over thousands of rows is one transaction
   // per 256 rows rather than one per row.
   while (true) {
     const rows = await db.scan(prefix, { limit: 256 });
@@ -289,6 +308,12 @@ export class MemoryKV implements KV {
     for (const key of keys) {
       await this.delete(key);
     }
+  }
+  async deletePrefix(prefix: string): Promise<void> {
+    const from = this.lowerBound(prefix);
+    let to = from;
+    while (to < this.keys.length && this.keys[to].startsWith(prefix)) this.data.delete(this.keys[to++]);
+    this.keys.splice(from, to - from);
   }
   async scan<T>(prefix: string, options: { after?: string; limit?: number; reverse?: boolean } = {}): Promise<Row<T>[]> {
     const limit = options.limit || 16, out: Row<T>[] = [];

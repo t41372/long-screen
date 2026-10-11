@@ -1,16 +1,39 @@
-import type { FrameImage, FrameSource, MediaInfo, MediaNotice, RGBA } from '../types.ts';
+import type {
+  ConversionReport,
+  FrameImage,
+  FramePlanes,
+  FrameSource,
+  MediaInfo,
+  MediaNotice,
+  PlanarFrame,
+  RGBA,
+  Settings,
+  SkippedFrame,
+  SourceStats,
+} from '../types.ts';
 import type { Demuxer } from './reader.ts';
 import { MediabunnyDemuxer } from './mediabunny-demux.ts';
-import { type FrameConverter, workerConverter } from './convert.ts';
+import { directConverter, type FrameConverter, planarConverter, workerConverter } from './convert.ts';
 import { releaseUnlessHeld } from './pool.ts';
+import type { Capture } from './capture.ts';
+import { hdrTransfer } from './conversion-check.ts';
+import { WebGLReader } from './texture-convert.ts';
+import { core } from '../core/wasm.ts';
 import { t } from '../i18n/index.ts';
+/** Decoded frames an off-thread converter may be converting ahead of the one the pipeline is on; the decoder
+ *  buffers two (the producer's backpressure in `PreciseSource`). */
+const PREFETCH = 2;
 export async function openDemuxer(file: Blob): Promise<Demuxer> {
   return await new MediabunnyDemuxer(file).init();
 }
-export async function openMedia(
-  file: File,
-  convert: FrameConverter = workerConverter(new URL('./convert-worker.js', import.meta.url)),
-): Promise<FrameSource> {
+/** The shipped conversion chain: a worker converting with WebGPU when its first frame agrees with `copyTo(RGBA)` and
+ *  measures faster (or `compute` asks for it), otherwise with `copyTo(RGBA)`; frames the worker cannot take convert
+ *  in-thread (src/media/convert.ts). */
+export function frameConverter(compute: Settings['compute'] = 'auto'): FrameConverter {
+  const planar = planarConverter();
+  return workerConverter(new URL('./convert-worker.js', import.meta.url), directConverter(planar), compute, planar);
+}
+export async function openMedia(file: File, convert: FrameConverter = frameConverter()): Promise<FrameSource> {
   if (typeof VideoDecoder === 'undefined') {
     throw new Error(
       'WEBCODECS_UNAVAILABLE: This browser cannot provide frame-accurate decoding. Select the explicitly labelled compatibility mode, or use a browser with WebCodecs.',
@@ -27,7 +50,7 @@ export async function openMedia(
   if (!support.supported) {
     demux.dispose();
     throw new Error(
-      `UNSUPPORTED_CODEC: ${demux.config.codec} is not decodable by this browser/device. No frames were silently skipped. Try compatibility mode or an H.264/VP9 recording.`,
+      t('media.UNSUPPORTED_CODEC', { codec: demux.config.codec, advice: t(`media.UNSUPPORTED_ADVICE.${codecFamily(demux.config.codec)}`) }),
     );
   }
   return new PreciseSource(file, demux, convert);
@@ -63,8 +86,25 @@ export class Signal {
  *  It is not a similarity threshold for "close enough looking" content — it is the floor below which a difference
  *  carries no information at all, so raising it to paper over a registration error would be the wrong fix. */
 export const DECODED_VIDEO_NOISE = 10;
+/** Which advice an undecodable codec string gets: HEVC (iPhone and Mac recordings), ProRes, the H.264 profiles only
+ *  Chrome decodes (High 10, High 4:2:2, High 4:4:4: profile_idc 110, 122, 244), AV1, or anything else. */
+function codecFamily(codec: string): 'hevc' | 'prores' | 'h264' | 'av1' | 'other' {
+  if (/^(hev1|hvc1)/.test(codec)) return 'hevc';
+  if (/^(apc[nhso]|ap4[hx])/.test(codec)) return 'prores';
+  if (/^avc[13]\.(6e|7a|f4)/i.test(codec)) return 'h264';
+  if (/^av01/.test(codec)) return 'av1';
+  return 'other';
+}
+/** The container's colour as a plain object (MediaInfo is persisted and posted between threads), when it says any. */
+function colourOf(c: VideoColorSpaceInit | undefined): { colour?: VideoColorSpaceInit } {
+  const colour = Object.fromEntries(
+    (['primaries', 'transfer', 'matrix', 'fullRange'] as const).flatMap((k) => c?.[k] === undefined || c?.[k] === null ? [] : [[k, c[k]]]),
+  ) as VideoColorSpaceInit;
+  return Object.keys(colour).length ? { colour } : {};
+}
 export class PreciseSource implements FrameSource {
   info: MediaInfo;
+  stats: SourceStats = { frames: 0, converted: 0, decodeMS: 0, convertMS: 0 };
   private cancelled = false;
   /** Milliseconds without decoder output before the run is declared stalled. Overridable for tests. */
   stallTimeout = 30000;
@@ -85,6 +125,7 @@ export class PreciseSource implements FrameSource {
       noise: DECODED_VIDEO_NOISE,
       warnings: demux.warnings,
       notices: [],
+      ...colourOf(demux.config.colorSpace),
     };
   }
   dispose(): void {
@@ -95,6 +136,10 @@ export class PreciseSource implements FrameSource {
   /** How decoded frames are being turned into RGBA, for diagnostics. */
   conversion(): string {
     return this.convert.describe?.() ?? 'custom converter';
+  }
+  /** The converter's first-frame report (src/media/conversion-report.ts turns it into diagnostics). */
+  conversionReport(): ConversionReport | undefined {
+    return this.convert.report?.() ?? (this.stats.converted ? { method: this.conversion() } : undefined);
   }
   private notice(code: string, message: string): void {
     const list = this.info.notices ??= [];
@@ -158,11 +203,24 @@ export class PreciseSource implements FrameSource {
     }
   }
   async *frames(): AsyncGenerator<FrameImage> {
+    yield* this.decode() as AsyncGenerator<FrameImage>;
+  }
+  /** Every frame is decoded (later frames depend on it); the ones `want` declines are closed unconverted. */
+  async *sparseFrames(
+    want: (index: number) => boolean,
+    options: { planes?: boolean } = {},
+  ): AsyncGenerator<FrameImage | SkippedFrame | PlanarFrame> {
+    yield* this.decode(want, options.planes);
+  }
+  private async *decode(want?: (index: number) => boolean, planes = false): AsyncGenerator<FrameImage | SkippedFrame | PlanarFrame> {
     const { demux, info } = this, queue: VideoFrame[] = [], signal = new Signal();
+    /** How many decoded frames ahead the converter wants converting (`FrameConverter.prefetch`). */
+    const depth = () => this.convert.prefetch === true ? PREFETCH : this.convert.prefetch || 0;
     // Engine calls frames() multiple times (scan, solve, render) on the same PreciseSource; each pass reports its
     // own diagnostic counts. Without this, notices from earlier passes silently accumulate into later ones, and
     // since project.media is this exact object by reference, an exported manifest ends up N× over-reporting.
     info.notices = [];
+    const stats: SourceStats = this.stats = { frames: 0, converted: 0, decodeMS: 0, convertMS: 0 };
     let ended = false, producerDone = false, failure: unknown = null, submitted = 0, received = 0, lastOutput = performance.now();
     const decoder = new VideoDecoder({
       output: (frame) => {
@@ -185,7 +243,10 @@ export class PreciseSource implements FrameSource {
     const producer = (async () => {
       try {
         for await (const packet of demux.packets()) {
-          while (!ended && !failure && (queue.length >= 2 || decoder.decodeQueueSize >= 2 || submitted - received >= 32)) {
+          // Decoded frames wait here for as many conversions as the converter runs ahead (at least two).
+          while (
+            !ended && !failure && (queue.length >= Math.max(2, depth()) || decoder.decodeQueueSize >= 2 || submitted - received >= 32)
+          ) {
             await signal.wait(100);
             if (!queue.length && performance.now() - lastOutput > this.stallTimeout) {
               throw new Error(
@@ -234,7 +295,8 @@ export class PreciseSource implements FrameSource {
           }
         }
       } catch (e) {
-        if (!ended) {
+        // A disposed source's demuxer throws on its next read; that is the cancellation, not a decode failure.
+        if (!ended && !this.cancelled) {
           failure = e;
         }
       } finally {
@@ -243,10 +305,15 @@ export class PreciseSource implements FrameSource {
       }
     })();
     let index = 0, lastTimestamp = -Infinity;
-    // An off-thread converter is handed the next decoded frame while the pipeline works on the current one. This is
-    // speculative only: that frame's checks below still run, in order, when it is taken, and a frame they skip or
-    // reject just drops its early conversion.
-    let ahead: { frame: VideoFrame; image: Promise<RGBA> } | undefined;
+    // An off-thread converter is handed the next decoded frames (as many as the decoder has buffered, at most
+    // PREFETCH) while the pipeline works on the current one, so their round trips overlap. This is speculative only:
+    // each frame's checks below still run, in order, when it is taken, and a frame they skip or reject just drops
+    // its early conversion.
+    const ahead = new Map<VideoFrame, Promise<RGBA>>();
+    // The same for planes handed out to a caller that converts them itself (`planes`): a worker copies the next frames'
+    // planes while the caller works.
+    const aheadPlanes = new Map<VideoFrame, Promise<FramePlanes | undefined>>();
+    const dropPlanes = async (early?: Promise<FramePlanes | undefined>) => await early?.then((p) => p?.release()).catch(() => {});
     try {
       while (!producerDone || queue.length) {
         if (failure) {
@@ -262,12 +329,15 @@ export class PreciseSource implements FrameSource {
               } seconds. The committed prefix is retained.`,
             );
           }
+          const waiting = performance.now();
           await signal.wait();
+          stats.decodeMS += performance.now() - waiting;
           continue;
         }
         const frame = queue.shift()!;
-        const early = ahead?.frame === frame ? ahead.image : undefined;
-        ahead = undefined;
+        const early = ahead.get(frame), earlyPlanes = aheadPlanes.get(frame);
+        ahead.delete(frame);
+        aheadPlanes.delete(frame);
         signal.notify();
         let closed = false;
         try {
@@ -276,6 +346,7 @@ export class PreciseSource implements FrameSource {
             // frame is never yielded, so its already-started prefetch (`early`, if the source was one step ahead
             // of the decoder) would otherwise convert into an image nothing ever releases.
             await early?.then((image) => releaseUnlessHeld(image)).catch(() => {});
+            await dropPlanes(earlyPlanes);
             this.notice('NEGATIVE_TIMESTAMP_SKIPPED', t('media.NEGATIVE_TIMESTAMP_SKIPPED'));
             continue;
           }
@@ -287,14 +358,52 @@ export class PreciseSource implements FrameSource {
             lastTimestamp = frame.timestamp;
           }
           this.checkFrameGeometry(frame, index);
-          const image = await (early ?? this.convert(frame, info)), time = frame.timestamp / 1e6, duration = (frame.duration || 0) / 1e6;
-          if (this.convert.prefetch && queue.length && !this.cancelled) {
-            const next = queue[0];
-            ahead = { frame: next, image: (async () => await this.convert(next, info))() };
-            ahead.image.catch(() => {});
+          const time = frame.timestamp / 1e6, duration = (frame.duration || 0) / 1e6;
+          if (want && !want(index)) {
+            await early?.then((image) => releaseUnlessHeld(image)).catch(() => {});
+            await dropPlanes(earlyPlanes);
+            frame.close();
+            closed = true;
+            stats.frames++;
+            yield { time, duration, index: index++ };
+            continue;
+          }
+          const converting = performance.now();
+          // The caller converts planes itself when the run converts on the CPU (`FrameConverter.planes`).
+          const own = planes && !early ? (await earlyPlanes) ?? await this.convert.planes?.(frame, info) : undefined;
+          if (own) {
+            stats.convertMS += performance.now() - converting;
+            if (depth() && !this.cancelled) {
+              for (let k = 0; k < Math.min(queue.length, depth()); k++) {
+                const next = queue[k];
+                if (aheadPlanes.has(next) || ahead.has(next) || (want && !want(index + 1 + k))) continue;
+                const copy = this.convert.planes!(next, info);
+                copy.catch(() => {});
+                aheadPlanes.set(next, copy);
+              }
+            }
+            frame.close();
+            closed = true;
+            stats.frames++;
+            stats.converted++;
+            yield { planes: own, time, duration, index: index++ };
+            continue;
+          }
+          const image = await (early ?? this.convert(frame, info));
+          stats.convertMS += performance.now() - converting;
+          if (depth() && !this.cancelled) {
+            for (let k = 0; k < Math.min(queue.length, depth()); k++) {
+              const next = queue[k];
+              if (ahead.has(next) || (want && !want(index + 1 + k))) continue;
+              const image = (async () => await this.convert(next, info))();
+              image.catch(() => {});
+              ahead.set(next, image);
+            }
           }
           frame.close();
           closed = true;
+          stats.frames++;
+          stats.converted++;
           yield { image, time, duration, index: index++ };
         } finally {
           if (!closed) {
@@ -318,8 +427,10 @@ export class PreciseSource implements FrameSource {
       // Bounded by the converter's own timeout; a stopped pass leaves no conversion running into the next one. A
       // frame that did convert here was never yielded to any pass, so nothing else can be holding its pool
       // buffer — release it now or it (and the buffer behind it) is simply lost, not reused.
-      await ahead?.image.then((image) => releaseUnlessHeld(image)).catch(() => {});
-      ahead = undefined;
+      for (const image of ahead.values()) await image.then((image) => releaseUnlessHeld(image)).catch(() => {});
+      for (const copy of aheadPlanes.values()) await dropPlanes(copy);
+      aheadPlanes.clear();
+      ahead.clear();
       await producer;
     }
   }
@@ -327,11 +438,18 @@ export class PreciseSource implements FrameSource {
 /** Explicitly approximate fallback. Main thread performs native video seeks; worker stays backpressured. */
 export class CompatibilitySource implements FrameSource {
   private cancelled = false;
+  /** An HDR recording's transfer (from the container's tag): its frames are captured as coded values and converted
+   *  in the core, as the checked routes of PreciseSource do. */
+  private readonly hdr: 'pq' | 'hlg' | undefined;
+  /** Set on the first frame of an HDR recording: whether its frames are read as coded values. */
+  private coded?: boolean;
+  private report?: ConversionReport;
   constructor(
     public info: MediaInfo,
     private fps: number,
-    private request: (time: number) => Promise<ImageBitmap>,
+    private request: (time: number, coded: boolean) => Promise<Capture>,
     private read: (bitmap: ImageBitmap) => RGBA = bitmapReader(),
+    private readCoded: (bitmap: ImageBitmap) => Uint8Array | undefined = codedReader(),
   ) {
     info.mode = `Approximate native seek (${fps} Hz)`;
     info.frameCount = Math.ceil(info.duration * fps);
@@ -339,14 +457,19 @@ export class CompatibilitySource implements FrameSource {
     // bitmap path), so it can only be noisier — never tighter.
     info.noise ??= DECODED_VIDEO_NOISE;
     info.notices ??= [];
+    this.hdr = hdrTransfer(info.colour);
   }
   dispose(): void {
     this.cancelled = true;
   }
+  /** For an HDR recording, once a frame has been read: how, and whether its colours are the core's or the browser's. */
+  conversionReport(): ConversionReport | undefined {
+    return this.report;
+  }
   async *frames(): AsyncGenerator<FrameImage> {
     for (let index = 0; index < this.info.frameCount! && !this.cancelled; index++) {
       const time = index / this.fps;
-      const bitmap = await this.request(time);
+      const { bitmap, coded } = await this.request(time, !!this.hdr && this.coded !== false);
       let image: RGBA;
       try {
         if (bitmap.width !== this.info.width || bitmap.height !== this.info.height) {
@@ -354,13 +477,43 @@ export class CompatibilitySource implements FrameSource {
             `FRAME_GEOMETRY_CHANGED: native seek returned ${bitmap.width}×${bitmap.height}, expected ${this.info.width}×${this.info.height}. The prefix is retained; no resizing was performed.`,
           );
         }
-        image = this.read(bitmap);
+        image = this.hdr ? this.readHdr(bitmap, coded, this.hdr, time) : this.read(bitmap);
       } finally {
         bitmap.close();
       }
       yield { image, time, duration: 1 / this.fps, index };
     }
   }
+  private readHdr(bitmap: ImageBitmap, coded: boolean, transfer: 'pq' | 'hlg', time: number): RGBA {
+    const { width, height } = bitmap, values = coded && this.coded !== false ? this.readCoded(bitmap) : undefined;
+    if (this.coded === undefined) {
+      this.coded = !!values;
+      this.report = {
+        method: values
+          ? `video snapshot's coded values (WebGL) + core ${transfer.toUpperCase()}→sRGB`
+          : "video snapshot in the browser's colours",
+        hdr: { transfer, verified: !!values },
+      };
+    } else if (this.coded !== !!values) {
+      // A run mixing the core's colours with the browser's would put two versions of every colour on one canvas.
+      throw new Error(
+        `HDR_CAPTURE_CHANGED: the frame at ${time.toFixed(3)} s could not be read the way the first one was. The prefix is retained.`,
+      );
+    }
+    if (!values) return this.read(bitmap);
+    const above = core().hdrToRGBA(values, 'rgba8', width, height, transfer);
+    if (this.report?.hdr && this.report.hdr.aboveShare === undefined) this.report.hdr.aboveShare = above / (width * height);
+    return { width, height, data: new Uint8ClampedArray(values.buffer, values.byteOffset, values.byteLength) };
+  }
+}
+/** Reads a captured bitmap's values back unchanged (WebGL, no colour conversion); undefined where there is no WebGL2,
+ *  which leaves the browser's colours. */
+export function codedReader(): (bitmap: ImageBitmap) => Uint8Array | undefined {
+  let reader: WebGLReader | null | undefined;
+  return (bitmap) => {
+    if (reader === undefined) reader = WebGLReader.create() ?? null;
+    return reader?.read(bitmap, bitmap.width, bitmap.height);
+  };
 }
 export function bitmapReader(): (bitmap: ImageBitmap) => RGBA {
   let canvas: OffscreenCanvas | undefined, ctx: OffscreenCanvasRenderingContext2D | null = null;

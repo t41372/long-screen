@@ -99,8 +99,12 @@ export class FrameRing {
     return this.slots.find((s) => s.index === index)?.frame;
   }
   upload(index: number, image: RGBA): ResidentFrame {
-    if (image.width !== this.width || image.height !== this.height) {
-      throw new Error(`CORE_BAD_ARGUMENT: frame ${image.width}×${image.height} does not fit a ${this.width}×${this.height} ring.`);
+    return this.fill(index, image.width, image.height, (frame) => frame.write(image.data));
+  }
+  /** Like `upload`, but `write` puts the frame's RGBA into the slot itself (a conversion straight into core memory). */
+  fill(index: number, width: number, height: number, write: (slot: ResidentFrame) => void): ResidentFrame {
+    if (width !== this.width || height !== this.height) {
+      throw new Error(`CORE_BAD_ARGUMENT: frame ${width}×${height} does not fit a ${this.width}×${this.height} ring.`);
     }
     const existing = this.get(index);
     if (existing) return existing;
@@ -112,7 +116,7 @@ export class FrameRing {
     }
     slot.index = index;
     slot.used = ++this.tick;
-    slot.frame.write(image.data);
+    write(slot.frame);
     return slot.frame;
   }
   free(): void {

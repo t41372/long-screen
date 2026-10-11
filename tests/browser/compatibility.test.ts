@@ -41,6 +41,37 @@ for (const browser of ['chromium', 'webkit'] as const) {
     },
   });
 
+  // The page's frame bridge (src/ui/main.ts → src/media/capture.ts) on an HDR recording: the worker asks for coded
+  // values, the page captures them without colour conversion, the worker converts them in the core. Failure case: the
+  // request or the answer losing the wish on the way, which leaves the browser's colours and an HDR_UNCHECKED warning.
+  Deno.test({
+    name: `browser ${browser}: native-seek reconstruction of an HDR recording converts its coded values`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      const h = await harness({ browser });
+      try {
+        const { page } = h;
+        await page.goto(h.base);
+        await page.waitForFunction('!!window.longScreen');
+        await page.setInputFiles('#file-input', `${root}tests/fixtures/hdr-pq.mp4`);
+        await page.waitForFunction('!document.querySelector("#regions-btn").disabled', null, { timeout: 60000 });
+        await page.click('#knobs-btn');
+        await page.click('details.advanced > summary');
+        await page.selectOption('#decoder', 'compatibility');
+        await page.evaluate(() => document.querySelector<HTMLButtonElement>('#start-btn')!.click());
+        await page.waitForFunction('["complete", "partial", "error"].includes(longScreen.getProject()?.status)', null, { timeout: 600000 });
+        const project = await page.evaluate<Project>('longScreen.getProject()');
+        assertEquals(project.status, 'complete', JSON.stringify(project));
+        assertEquals(project.settings.decoder, 'compatibility');
+        assert(project.diagnostics.FRAME_CONVERSION, JSON.stringify(project.diagnostics));
+        assertEquals(project.diagnostics.HDR_UNCHECKED, undefined, JSON.stringify(project.diagnostics));
+        assertEquals(h.errors, []);
+      } finally {
+        await h.close();
+      }
+    },
+  });
   Deno.test({
     name: `browser ${browser}: LAN HTTP supports explicit native-seek reconstruction without a secure context`,
     sanitizeOps: false,

@@ -146,6 +146,15 @@ Deno.test({
           const second = await digest(await collect(source));
           const counts = { ...worker.counts };
           source.dispose();
+          // On the CPU, conversions spread over several workers (the same copyTo in each): frames must come back
+          // identical and in order, and buffers must go back to the worker that lent them.
+          const cpu = kit.workerConverter(new URL('./assets/convert-worker.js', location.href), undefined, 'cpu');
+          const cpuSource = await open(cpu);
+          const cpuFirst = await digest(await collect(cpuSource));
+          const cpuStopped = await digest(await collect(cpuSource, 3));
+          const cpuSecond = await digest(await collect(cpuSource));
+          const cpuCounts = { ...cpu.counts };
+          cpuSource.dispose();
           const broken = kit.workerConverter(new URL('./assets/missing-convert-worker.js', location.href));
           const fallbackSource = await open(broken);
           const fallback = await digest(await collect(fallbackSource));
@@ -159,6 +168,10 @@ Deno.test({
             counts,
             fallbackSame: JSON.stringify(fallback) === JSON.stringify(reference),
             fallbackCounts: { ...broken.counts },
+            cpuSame: [cpuFirst, cpuSecond].every((d) => JSON.stringify(d) === JSON.stringify(reference)) &&
+              JSON.stringify(cpuStopped) === JSON.stringify(reference.slice(0, 3)),
+            cpuCounts,
+            cores: navigator.hardwareConcurrency,
           };
         }
         return results;
@@ -175,6 +188,9 @@ Deno.test({
         assert(v.fallbackSame, `${name}: in-thread fallback frames differ`);
         assertEquals(v.fallbackCounts.worker, 0, name);
         assert(/conversion worker/.test(v.fallbackCounts.reason), `${name}: fallback reason ${v.fallbackCounts.reason}`);
+        assert(v.cpuSame, `${name}: frames converted across several CPU workers differ or come out of order`);
+        assertEquals([v.cpuCounts.inThread, v.cpuCounts.reason], [0, undefined], `${name}: ${JSON.stringify(v.cpuCounts)}`);
+        if (v.cores >= 8) assert(v.cpuCounts.workers >= 2, `${name}: one worker on ${v.cores} cores (${JSON.stringify(v.cpuCounts)})`);
       }
       assertEquals(h.errors, []);
     } finally {
@@ -267,22 +283,35 @@ Deno.test({
       for (const name of names) {
         const r = await h.page.evaluate(async (name: string) => {
           const kit = (window as any).longScreenKit, blob = await (await fetch('/test_case/' + name)).blob(), file = new File([blob], name);
-          const demux = await kit.openDemuxer(file);
+          const demux = await kit.openDemuxer(file), stamps: number[] = [];
           let packets = 0;
-          for await (const _ of demux.packets()) {
+          for await (const p of demux.packets()) {
+            stamps.push(p.timestamp);
             packets++;
           }
-          const source = await kit.openMedia(file), t0 = performance.now();
+          const source = await kit.openMedia(file), t0 = performance.now(), times: number[] = [];
           let count = 0, last = -Infinity, mono = true;
           for await (const f of source.frames()) {
             if (f.time < last) {
               mono = false;
             }
             last = f.time;
+            times.push(Math.round(f.time * 1e6));
             count++;
           }
           source.dispose();
-          return { packets, frames: count, mono, last, seconds: Math.round((performance.now() - t0) / 100) / 10, info: source.info };
+          stamps.sort((a, b) => a - b);
+          // Microseconds by which a frame's time differs from the packet it was decoded from, worst case.
+          const drift = Math.max(...times.map((t, i) => Math.abs(t - stamps[i])));
+          return {
+            packets,
+            frames: count,
+            mono,
+            last,
+            drift,
+            seconds: Math.round((performance.now() - t0) / 100) / 10,
+            info: source.info,
+          };
         }, name);
         console.log(
           name,
@@ -290,7 +319,11 @@ Deno.test({
         );
         assertEquals(r.frames, r.packets, `${name}: every packet became a frame`);
         assert(r.mono, `${name}: presentation order`);
-        assert(r.last <= r.info.duration + .1, `${name}: timestamps inside the recording`);
+        // Each frame keeps its packet's presentation time. A recording may hold a frame past its declared duration (e.mov's
+        // last frame is 0.295 s past the end of its edit list, h's starts exactly at it), and that frame is kept: it is a
+        // real capture of the screen. A misread offset puts a frame days away (an unsigned `ctts` gave ~7,158,278 s).
+        assert(r.drift <= 1, `${name}: frames keep their packets' timestamps (off by up to ${r.drift} µs)`);
+        assert(r.last < r.info.duration + 1, `${name}: timestamps near the recording (last ${r.last} s of ${r.info.duration} s)`);
       }
     } finally {
       await h.close();

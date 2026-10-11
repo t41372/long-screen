@@ -6,6 +6,7 @@ export const uiSections = {
       solving: '给每一帧找位置',
       optimizing: '校正累积误差',
       rendering: '按原尺寸拼图',
+      revealing: '去掉浮在页面上的东西',
       framing: '还原窗口外框',
       pyramid: '生成预览',
       complete: '拼好了',
@@ -54,6 +55,11 @@ export const uiSections = {
       copyFailedCtor: '复制失败：{{error}}。请改用“下载大截图”。',
       copySuccess: '已复制 {{width}} × {{height}} 的大截图，可以直接粘贴。',
       copyFailed: '复制失败：{{error}}。图片可能超出系统剪贴板的限制，请改用“下载大截图”。',
+    },
+    crop: {
+      buttonCropped: '裁切 · {{width}} × {{height}}',
+      applied: '好了，之后下载、复制和分页导出都只取这一块（{{width}} × {{height}}）。完整项目 ZIP 不受影响。',
+      removed: '已取消裁切，导出又是整张。',
     },
     main: {
       offscreenMissing: '当前浏览器缺少 OffscreenCanvas；无法运行渲染 Worker。',

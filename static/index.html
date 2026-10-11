@@ -49,7 +49,7 @@
             <div class="printer-top" aria-hidden="true"></div>
             <div class="printer-side" aria-hidden="true"></div>
             <div class="printer-front">
-              <div class="plate"><b>LONG SCREEN</b><span>LS-01</span><span class="status-led" id="status-dot"></span></div>
+              <div class="plate"><b>LONG SCREEN</b><span class="build-id" id="build-id" hidden><a id="build-commit" href="https://github.com/t41372/long-screen" target="_blank" rel="noopener" title="版本" data-i18n-attr="title:page.press.build"></a></span><span class="status-led" id="status-dot"></span></div>
               <label class="screen" id="drop-zone" tabindex="0">
                 <input type="file" id="file-input" accept="video/*,.mp4,.mov,.webm,.mkv" hidden>
                 <video id="preview-video" muted loop playsinline preload="metadata" aria-hidden="true"></video>
@@ -59,8 +59,12 @@
               <div class="lcd">
                 <div class="lcd-head"><strong id="status-title" data-i18n="page.canvas.statusReady">准备好了</strong><span class="elapsed" id="elapsed">0:00</span></div>
                 <div class="lcd-line"><span class="progress-count" id="progress-count"></span><span class="progress-message" id="progress-message" data-i18n="page.canvas.progressMessageDefault">放录屏 → 按运行 → 拿整张</span></div>
-                <!-- The LED segments are the progress bar: src/ui/run.ts sets #progress-bar's width, which lights them. -->
-                <div class="segments" aria-hidden="true"><div class="seg-row"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="seg-fill" id="progress-bar"><div class="seg-row"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div></div>
+              </div>
+              <!-- Progress where people look for one: a labelled bar across the printer with the percentage written out.
+                   src/ui/dom.ts's setProgress() sets the fill, the number and the aria values. -->
+              <div class="gauge" id="gauge">
+                <div class="gauge-head"><span class="gauge-label" id="progress-label" data-i18n="page.controls.progress">进度</span><span class="gauge-pct" id="progress-pct" aria-hidden="true">0%</span></div>
+                <div class="gauge-track" id="progress" role="progressbar" aria-labelledby="progress-label" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div class="gauge-fill" id="progress-bar"></div></div>
               </div>
               <div class="controls">
                 <div class="aux">
@@ -80,6 +84,7 @@
         <div class="receipt" id="receipt" role="region" aria-label="大截图" data-i18n-attr="aria-label:page.canvas.ariaLabel">
           <div class="stage" id="stage">
             <canvas id="viewer" aria-label="大截图，可以拖动和缩放" data-i18n-attr="aria-label:page.canvas.viewerAriaLabel"></canvas>
+            <div class="crop-box" id="crop-box" hidden><span class="crop-size" id="crop-size"></span></div>
             <div class="tray-idle">
               <!-- What the tool does, as a loop: a recording's window wanders over a page (REC), everything it has seen
                    fills in behind it, then the whole page lands as one screenshot. One SMIL timeline (12 s) drives the
@@ -238,7 +243,19 @@
               <label class="quality-toggle"><input type="checkbox" id="quality-toggle"> <span data-i18n="page.canvas.qualityMask">显示拼接质量</span></label>
               <button id="fit-btn" class="chip" title="缩放到能看到整张图" data-i18n-attr="title:page.canvas.fitTitle" data-i18n="page.canvas.fitBtn">看全图</button>
               <button id="native-btn" class="chip" title="原尺寸" data-i18n-attr="title:page.canvas.nativeTitle">1:1</button>
+              <button id="crop-btn" class="chip" aria-pressed="false" disabled data-i18n="page.crop.button">裁切</button>
               <span class="lod-label" id="lod-label" data-i18n="page.canvas.lodLabel">棋盘格 = 没看到的地方</span>
+            </div>
+            <!-- Cropping (src/ui/crop.ts): the box over the print is dragged, these fields type its edges, relative to the
+                 print's top-left corner. -->
+            <div class="crop-bar" id="crop-bar" role="group" aria-label="裁切范围" data-i18n-attr="aria-label:page.crop.groupLabel" hidden>
+              <label class="crop-field"><span data-i18n="page.crop.left">距左</span><input type="number" id="crop-left" step="1" inputmode="numeric"></label>
+              <label class="crop-field"><span data-i18n="page.crop.top">距上</span><input type="number" id="crop-top" step="1" inputmode="numeric"></label>
+              <label class="crop-field"><span data-i18n="page.crop.width">宽</span><input type="number" id="crop-width" min="1" step="1" inputmode="numeric"></label>
+              <label class="crop-field"><span data-i18n="page.crop.height">高</span><input type="number" id="crop-height" min="1" step="1" inputmode="numeric"></label>
+              <button id="crop-full" class="chip" data-i18n="page.crop.full">整张</button>
+              <button id="crop-cancel" class="chip" data-i18n="page.crop.cancel">取消</button>
+              <button id="crop-apply" class="primary" data-i18n="page.crop.apply">裁好了</button>
             </div>
             <div class="take-row">
               <button id="export-png" class="primary big" disabled data-i18n-html="page.export.downloadPng">下载大截图 · PNG <span>↓</span></button>
@@ -278,11 +295,11 @@
       <details class="advanced">
         <summary data-i18n-html="page.reconstruct.advancedSummary">更多旋钮 <span>＋</span></summary>
         <div class="setting-row"><label for="analysis-size" data-i18n="page.reconstruct.analysisSizeLabel">分析用的长边</label><select id="analysis-size" class="pill-select"><option>320</option><option>480</option><option selected>640</option><option>960</option><option>1280</option></select></div>
-        <div class="setting-row"><label for="memory" data-i18n="page.reconstruct.memoryLabel">内存预算</label><select id="memory" class="pill-select"><option value="64">64 MB</option><option value="128" selected>128 MB</option><option value="256">256 MB</option><option value="512">512 MB</option></select></div>
+        <div class="setting-row"><label for="memory" data-i18n="page.reconstruct.memoryLabel">瓦片缓存上限</label><select id="memory" class="pill-select"><option value="64">64 MB</option><option value="128" selected>128 MB</option><option value="256">256 MB</option><option value="512">512 MB</option></select></div>
         <div class="setting-row"><label for="compute" data-i18n="page.reconstruct.computeLabel">分析加速</label><select id="compute" class="pill-select"><option value="auto" data-i18n="page.reconstruct.computeAuto">自动 · 实测后选 WebGPU 或 CPU</option><option value="webgpu" data-i18n="page.reconstruct.computeWebgpu">WebGPU 分析 · CPU 配准</option><option value="cpu" data-i18n="page.reconstruct.computeCpu">仅 CPU</option></select></div>
-        <p class="hint" data-i18n="page.reconstruct.computeHint">GPU 只加速分析缩图；匹配和像素合成仍用 CPU。自动模式包含传输与回读实测，较慢时不强行用 GPU。</p>
+        <p class="hint" data-i18n="page.reconstruct.computeHint">GPU 负责把解码出的每一帧转成像素、缩出分析小图；匹配和拼接仍在 CPU 上。自动模式会先实测，GPU 不更快就不用它。</p>
         <div class="setting-row"><label for="decoder" data-i18n="page.reconstruct.decoderLabel">解码方式</label><select id="decoder" class="pill-select"><option value="precise" data-i18n="page.reconstruct.decoderPrecise">逐帧 · WebCodecs</option><option value="compatibility" data-i18n="page.reconstruct.decoderCompatibility">近似 · 原生 seek</option></select></div>
-        <p class="hint" data-i18n="page.reconstruct.decoderHint">分析缩图不改变输出像素。预算不包括浏览器 / 解码器 / GPU 的额外内存。兼容 seek 模式可能漏掉短暂内容。</p>
+        <p class="hint" data-i18n="page.reconstruct.decoderHint">分析缩图不改变输出像素。瓦片缓存只放拼好的图块，放不下一帧要画的图块时会自己加大，所以几乎不影响速度；浏览器、解码器、GPU 和计算核心用的内存不算在里面。兼容 seek 模式可能漏掉短暂内容。</p>
       </details>
     </div>
 

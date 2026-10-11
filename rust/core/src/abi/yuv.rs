@@ -3,12 +3,14 @@
 use crate::abi::memory::{slice, slice_mut};
 use crate::abi::wire::Reader;
 use crate::abi::STATUS_BAD_ARGUMENT;
-use crate::yuv::{Format as FrameFormat, Plane, MATRICES};
+use crate::yuv::hdr::{self, Packing, Transfer};
+use crate::yuv::{Format as FrameFormat, Plane, Signal};
 
 /// Converts one decoded frame as laid out by `VideoFrame.copyTo` (`src`, `src_len` bytes; `planes` points at
 /// four `(offset, stride)` u32 pairs, unused ones ignored) to `width × height` RGBA at `dst`. `format` and
-/// `matrix` are the codes of `yuv::Format::from_code` and `yuv::MATRICES`. 0 on success, a negative status on a
-/// bad argument or a plane outside `src`.
+/// `matrix` are the codes of `yuv::Format::from_code` and `yuv::Signal::from_code`. On success the number of
+/// pixels above white (`yuv::hdr::ABOVE_WHITE`; always 0 for SDR), a negative status on a bad argument or a plane
+/// outside `src`.
 #[no_mangle]
 pub extern "C" fn ls_frame_to_rgba(
     src: u32,
@@ -21,10 +23,8 @@ pub extern "C" fn ls_frame_to_rgba(
     dst: u32,
 ) -> i32 {
     let (w, h) = (width as usize, height as usize);
-    let (Some(format), Some(coeffs)) = (
-        FrameFormat::from_code(format),
-        MATRICES.get(matrix as usize),
-    ) else {
+    let (Some(format), Some(signal)) = (FrameFormat::from_code(format), Signal::from_code(matrix))
+    else {
         return STATUS_BAD_ARGUMENT;
     };
     if w == 0 || h == 0 {
@@ -58,6 +58,40 @@ pub extern "C" fn ls_frame_to_rgba(
         }
         layout[i] = plane;
     }
-    crate::yuv::to_rgba(src, format, &layout, w, h, coeffs, out);
-    0
+    crate::yuv::convert(src, format, &layout, w, h, signal, out).min(i32::MAX as usize) as i32
+}
+
+/// Converts `width × height` R'G'B' at `pixels` (4 bytes per pixel, `packing` 0 RGBA8 or 1 RGB10A2; an HDR signal
+/// with BT.2020 primaries, `transfer` 1 PQ or 2 HLG as in `yuv::Signal`) to sRGB RGBA in place. On success the number
+/// of pixels above white, a negative status on a bad argument.
+#[no_mangle]
+pub extern "C" fn ls_hdr_rgb_to_rgba(
+    pixels: u32,
+    packing: u32,
+    width: u32,
+    height: u32,
+    transfer: u32,
+) -> i32 {
+    let len = (width as usize)
+        .saturating_mul(height as usize)
+        .saturating_mul(4);
+    let packing = match packing {
+        0 => Packing::Rgba8,
+        1 => Packing::Rgb10a2,
+        _ => return STATUS_BAD_ARGUMENT,
+    };
+    let transfer = match transfer {
+        1 => Transfer::Pq,
+        2 => Transfer::Hlg,
+        _ => return STATUS_BAD_ARGUMENT,
+    };
+    if len == 0 {
+        return STATUS_BAD_ARGUMENT;
+    }
+    // SAFETY: an adapter-owned buffer, bounds checked.
+    let Some(buf) = (unsafe { slice_mut(pixels, len) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    hdr::rgb_to_rgba(buf, packing, width as usize, height as usize, transfer).min(i32::MAX as usize)
+        as i32
 }

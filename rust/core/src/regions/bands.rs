@@ -98,13 +98,19 @@ fn textured(
     structure >= 8 && structure as f64 / (samples.max(1) as f64) > 0.003
 }
 
+/// Share of informative frames a column may move in and still count as stationary for the left/right bands. The
+/// bands read how often a column moved, not its mean change: macOS's elastic overscroll moves the whole window, fixed
+/// sidebar included, for a few frames at a page's end, and in g.mov those 20 of 479 frames lifted the sidebar's mean
+/// change over 0.7 while it moved in under 0.05 of them. Every other recording's bands are the same under both.
+const STATIONARY_COLUMN_SHARE: f64 = 0.25;
+
 #[allow(clippy::too_many_arguments)]
 pub fn detect_bands(
     width: i64,
     height: i64,
     informative_frames: f64,
     row_change: &[f64],
-    col_change: &[f64],
+    col_moving: &[f64],
     col_mean: &[f64],
     reference: Option<&Rgba>,
     native_width: f64,
@@ -139,12 +145,12 @@ pub fn detect_bands(
     let (mut exact_left, mut exact_right) = (None, None);
     if informative_frames >= 2.0 {
         while (left as f64) < width as f64 * 0.45
-            && stat_at(col_change, left) / informative_frames < 0.7
+            && stat_at(col_moving, left) / informative_frames < STATIONARY_COLUMN_SHARE
         {
             left += 1;
         }
         while right as f64 > width as f64 * 0.55
-            && stat_at(col_change, right - 1) / informative_frames < 0.7
+            && stat_at(col_moving, right - 1) / informative_frames < STATIONARY_COLUMN_SHARE
         {
             right -= 1;
         }

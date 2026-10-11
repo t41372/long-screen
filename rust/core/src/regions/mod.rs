@@ -53,6 +53,8 @@ pub struct FinishInput<'a> {
     pub native_frames: f64,
     pub row_change: &'a [f64],
     pub col_change: &'a [f64],
+    /// `Learner::col_moving`: per column, the informative frames in which it moved.
+    pub col_moving: &'a [f64],
     pub col_mean: &'a [f64],
     pub col_gain: &'a [f64],
     pub horizontal_gain: &'a [f64],
@@ -146,7 +148,7 @@ pub fn finish(
         height,
         input.informative_frames,
         input.row_change,
-        input.col_change,
+        input.col_moving,
         input.col_mean,
         reference,
         native_width,
