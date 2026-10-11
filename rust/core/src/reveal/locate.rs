@@ -333,7 +333,9 @@ pub fn tiers(frame: &Frame<'_>, model: &mut LayerModel, tau: i32) -> Vec<u8> {
                         boxes.push((kx0, ky0, kx1, ky1));
                     }
                 }
-                if !placed && keyed == 0 {
+                // Colour alone locates a featureless thumb, but only part of a textured object. If that
+                // object's template is missing, its unmatched label or toolbar cells are not clean page.
+                if !placed && (keyed == 0 || o.textured) {
                     mark(&mut tier, o, 0, 0, TIER_VEIL);
                 }
             }

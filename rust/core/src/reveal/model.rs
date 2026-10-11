@@ -323,3 +323,90 @@ pub fn build(stats: &LayerStats, tau: i32) -> LayerModel {
         objects,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::reveal::locate::tiers;
+    use crate::reveal::stats::CellRef;
+    use crate::reveal::{Footprint, Frame, TIER_CLEAN};
+
+    struct Page(u8);
+    impl CellRef for Page {
+        fn cell(&self, _: i64, _: i64) -> Option<[u8; 3]> {
+            Some([self.0; 3])
+        }
+        fn cells(&self) -> (i64, i64, i64, i64) {
+            (0, 0, 48, 32)
+        }
+    }
+
+    fn button(page: u8, ink: u8) -> Vec<u8> {
+        let mut rgba = vec![255; 96 * 64 * 4];
+        for y in 0..64 {
+            for x in 0..96 {
+                let v = if (16..80).contains(&x) && (16..48).contains(&y) {
+                    if (32..64).contains(&x) && (24..40).contains(&y) {
+                        ink
+                    } else {
+                        240
+                    }
+                } else {
+                    page
+                };
+                let i = (y * 96 + x) * 4;
+                rgba[i..i + 3].fill(v);
+            }
+        }
+        rgba
+    }
+
+    // A button has a mostly uniform background but also its own visible label. If that label changes, the
+    // old template no longer locates it; matching only its background must not certify the new label as page.
+    #[test]
+    fn a_changed_label_on_an_opaque_button_is_not_clean_page_content() {
+        let mut stats = LayerStats::new(0, 0, 96, 64);
+        let mask = vec![1; 96 * 64];
+        let footprint = Footprint {
+            x: 0,
+            y: 0,
+            width: 96,
+            height: 64,
+            mask: &mask,
+        };
+        for background in (0..=240).step_by(16) {
+            let rgba = button(background, 0);
+            stats.accumulate_cells(
+                &Frame {
+                    rgba: &rgba,
+                    width: 96,
+                    height: 64,
+                },
+                &footprint,
+                &Page(background),
+                (0, 0),
+                24,
+            );
+        }
+        let mut model = build(&stats, 24);
+        let rgba = button(128, 80);
+        let tier = tiers(
+            &Frame {
+                rgba: &rgba,
+                width: 96,
+                height: 64,
+            },
+            &mut model,
+            24,
+        );
+        for y in 10..22 {
+            for x in 10..38 {
+                assert!(
+                    tier[y * 48 + x] < TIER_CLEAN,
+                    "button cell ({x}, {y}) treated as page"
+                );
+            }
+        }
+        assert_eq!(tier[0], TIER_CLEAN);
+    }
+}
