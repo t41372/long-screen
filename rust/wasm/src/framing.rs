@@ -1,19 +1,37 @@
-//! Presentation-canvas synthesis: layout/coordinate mapping, background statistics, and the two per-tile
-//! passes `buildFramedCanvas` drives (`src/core/wasm/framing.ts` mirrors this file).
+//! Presentation canvases (`src/core/wasm/framing.ts` mirrors this file): the engine's framing session
+//! (`long_screen_engine::framing::FramingSession`), one handle per framed canvas `buildFramedCanvas` builds, plus
+//! the layout/coordinate mapping the parity tests check on their own.
+//!
+//! `ls_framing_step` returns its result's length (error convention 6) and leaves it in the handle for
+//! `ls_framing_take`. The result is a `bytes.rs` record: u8 kind, then
+//!   0 need reference; 1 need index; 2 next output tile
+//!   3 need tile: str canvas, u32 level, i32 x, i32 y
+//!   4 save a resident tile: u32 cache id
+//!   5 save a detached tile: str canvas, u32 level, i32 x, i32 y, u8 existed, f64 touched (its planes through
+//!     `ls_framing_detached` until the next step)
+//!   6 done, unframed; 7 done, skipped: the diagnostics (`diagnostic.rs`)
+//!   8 done, framed: str id, f64 width, height, pane rect (4 × f64), u32 reference frame, f64 offset x, offset y,
+//!     tile count, observed pixels, provisional pixels
 
-use crate::memory::{in_bounds, slice, slice_mut};
+use crate::bytes::{Cursor, Out};
+use crate::diagnostic::write_diagnostics;
+use crate::memory::{slice, slice_mut, HandleTable};
+use crate::tiles::{tiles, TILE_PLANES_BYTES};
 use crate::wire::{read_rect, Reader, VOTING_REGION_BYTES};
-use crate::STATUS_BAD_ARGUMENT;
-use long_screen_core::framing::{
-    backgrounds, fold_evidence, frame_coordinate, frame_layout, paint_tile, Coordinate, Layout,
-    OutputTile, SourceTile,
-};
+use crate::{STATUS_BAD_ARGUMENT, STATUS_OK};
+use long_screen_core::framing::{frame_coordinate, frame_layout, Coordinate, Layout};
+use long_screen_core::geometry::Rect;
 use long_screen_core::region::{Mask as RegionMask, Region};
+use long_screen_engine::framing::{
+    FramingError, FramingSession, Outcome, Reference, SaveTile, SourceCanvas, Step,
+};
+use long_screen_engine::tiles::Tile;
 
 /// Bytes of one serialised `Layout` (`ls_frame_layout`'s `out`): pane rect (32), content rect (32), dx f64 (8),
 /// dy f64 (8), seam_x f64 (8), width f64 (8), height f64 (8).
 pub(crate) const LAYOUT_BYTES: usize = 104;
-const SOURCE_TILE_BYTES: usize = 40;
+/// `ls_framing_step` was called after `NeedTile` without the tile being inserted.
+pub const STATUS_NOT_PROVIDED: i32 = -2;
 
 fn write_layout(dst: &mut [u8], layout: &Layout) {
     let w = |dst: &mut [u8], at: usize, v: f64| dst[at..at + 8].copy_from_slice(&v.to_le_bytes());
@@ -72,7 +90,7 @@ pub extern "C" fn ls_frame_layout(
 }
 
 /// Computes `frameCoordinate` for test/diagnostic use (not on the per-tile hot path, which classifies pixels
-/// inline in `ls_frame_paint_tile`). Returns 0 (content), 1 (extension), 2 (source — `out` holds x, y as two
+/// inline in the framing session). Returns 0 (content), 1 (extension), 2 (source — `out` holds x, y as two
 /// f64), or `STATUS_BAD_ARGUMENT`.
 #[no_mangle]
 pub extern "C" fn ls_frame_coordinate(layout: u32, x: f64, y: f64, out: u32) -> i32 {
@@ -90,49 +108,6 @@ pub extern "C" fn ls_frame_coordinate(layout: u32, x: f64, y: f64, out: u32) -> 
             2
         }
     }
-}
-
-/// Computes the modal background rows/columns for `pane` in `source` (`backgrounds()`); `rows_out` holds
-/// `source_height` u32s, `columns_out` holds `source_width` u32s.
-#[no_mangle]
-pub extern "C" fn ls_frame_backgrounds(
-    source: u32,
-    source_width: u32,
-    source_height: u32,
-    pane: u32,
-    rows_out: u32,
-    columns_out: u32,
-) -> i32 {
-    let (w, h) = (source_width as usize, source_height as usize);
-    if w == 0 || h == 0 {
-        return STATUS_BAD_ARGUMENT;
-    }
-    let (Some(source), Some(pane), Some(rows_out), Some(columns_out)) = (
-        unsafe { slice(source, w * h * 4) },
-        unsafe { slice(pane, 32) },
-        unsafe { slice_mut(rows_out, h * 4) },
-        unsafe { slice_mut(columns_out, w * 4) },
-    ) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let (rows, columns) = backgrounds(source, w, h, read_rect(pane));
-    for (d, v) in rows_out.chunks_exact_mut(4).zip(rows) {
-        d.copy_from_slice(&v.to_le_bytes());
-    }
-    for (d, v) in columns_out.chunks_exact_mut(4).zip(columns) {
-        d.copy_from_slice(&v.to_le_bytes());
-    }
-    crate::STATUS_OK
-}
-
-/// Reads `count` little-endian u32s out of a bounds-checked byte slice (background rows/columns: small,
-/// computed once per canvas, so a copy here is not worth an alignment-dependent reinterpret).
-fn read_u32s(bytes: &[u8], count: usize) -> Vec<u32> {
-    bytes
-        .chunks_exact(4)
-        .take(count)
-        .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
-        .collect()
 }
 
 /// # Safety
@@ -170,207 +145,251 @@ unsafe fn read_regions(ptr: u32, count: u32) -> Option<Vec<Region>> {
     Some(out)
 }
 
-/// Pass 1 of `buildFramedCanvas` for one output tile: paints native-chrome and background-extension pixels
-/// (`bounds` = `boundsFor(tx, ty)`, already clipped to the framed canvas). Content-rect pixels are left
-/// untouched for `ls_frame_fold_evidence` (or, absent overlapping source evidence, whatever `pixels`/`coverage`
-/// already held — a resumed run's tile is not zeroed first). Descriptor (76 bytes): u32 layout ptr, bounds rect
-/// (4×f64), u32 source rgba ptr, u32 source width, u32 source height, u32 bg rows ptr, u32 bg columns ptr,
-/// u32 ignore-region ptr (`VOTING_REGION_BYTES` entries), u32 ignore-region count, u32 tile size, u32 output
-/// pixels ptr, u32 output coverage ptr.
-#[no_mangle]
-pub extern "C" fn ls_frame_paint_tile(desc: u32) -> i32 {
-    let Some(d) = (unsafe { slice(desc, 76) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let r = Reader(d);
-    let Some(layout_bytes) = (unsafe { slice(r.u32(0), LAYOUT_BYTES) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let layout = read_layout(layout_bytes);
-    let bounds = read_rect(&d[4..36]);
-    let (sw, sh) = (r.u32(40) as usize, r.u32(44) as usize);
-    if sw == 0 || sh == 0 {
-        return STATUS_BAD_ARGUMENT;
+struct Session {
+    session: FramingSession,
+    out: Vec<u8>,
+    /// The detached output tile the last step asked the host to store.
+    detached: Option<Box<Tile>>,
+}
+
+static mut FRAMINGS: HandleTable<Session> = HandleTable::new();
+
+fn framings() -> &'static mut HandleTable<Session> {
+    // SAFETY: only the main instance touches FRAMINGS, and only through these exported entry points — no pool
+    // helper thread reaches this module.
+    unsafe { &mut *std::ptr::addr_of_mut!(FRAMINGS) }
+}
+
+fn status(error: FramingError) -> i32 {
+    match error {
+        FramingError::NotProvided => STATUS_NOT_PROVIDED,
+        FramingError::Unexpected | FramingError::BadReference => STATUS_BAD_ARGUMENT,
     }
-    let (Some(source), Some(bg_rows), Some(bg_columns)) = (
-        unsafe { slice(r.u32(36), sw * sh * 4) },
-        unsafe { slice(r.u32(48), sh * 4) },
-        unsafe { slice(r.u32(52), sw * 4) },
-    ) else {
+}
+
+fn read_rect_record(c: &mut Cursor) -> Option<Rect> {
+    Some(Rect {
+        x: c.f64()?,
+        y: c.f64()?,
+        width: c.f64()?,
+        height: c.f64()?,
+    })
+}
+
+/// A session for one framed canvas. `input` is a `bytes.rs` record: str source canvas id, its bounds rect
+/// (4 × f64), f64 tile count, u8 attached, the pane rect (4 × f64), u32 tile size, u32 tile limit. `ignore` holds
+/// `ignore_count` `VOTING_REGION_BYTES` region descriptors (copied; they need not outlive the call). Returns a
+/// handle.
+#[no_mangle]
+pub extern "C" fn ls_framing_new(input: u32, len: u32, ignore: u32, ignore_count: u32) -> i32 {
+    // SAFETY: adapter-owned buffer, bounds checked.
+    let Some(bytes) = (unsafe { slice(input, len as usize) }) else {
         return STATUS_BAD_ARGUMENT;
     };
-    let (bg_rows, bg_columns) = (read_u32s(bg_rows, sh), read_u32s(bg_columns, sw));
-    let ignore_count = r.u32(60);
+    let mut c = Cursor::new(bytes);
+    let parsed = (|| {
+        let id = c.str()?.to_string();
+        let bounds = read_rect_record(&mut c)?;
+        let tile_count = c.f64()?;
+        let attached = c.bool()?;
+        let pane = read_rect_record(&mut c)?;
+        let size = c.u32()? as usize;
+        let max_tiles = c.u32()? as usize;
+        Some((id, bounds, tile_count, attached, pane, size, max_tiles))
+    })();
+    let Some((id, bounds, tile_count, attached, pane, size, max_tiles)) = parsed else {
+        return STATUS_BAD_ARGUMENT;
+    };
     let ignore = if ignore_count == 0 {
         Vec::new()
     } else {
-        match unsafe { read_regions(r.u32(56), ignore_count) } {
+        // SAFETY: adapter-owned descriptors whose embedded pointers cover what they declare.
+        match unsafe { read_regions(ignore, ignore_count) } {
             Some(v) => v,
             None => return STATUS_BAD_ARGUMENT,
         }
     };
-    let size = r.u32(64) as usize;
-    if size == 0 {
-        return STATUS_BAD_ARGUMENT;
-    }
-    let n = size * size;
-    let (Some(pixels), Some(coverage)) = (unsafe { slice_mut(r.u32(68), n * 4) }, unsafe {
-        slice_mut(r.u32(72), n.div_ceil(8))
-    }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let mut out = OutputTile {
-        size,
-        pixels,
-        coverage,
-        provisional: &mut [],
-        quality: &mut [],
-        score: &mut [],
-        owner: &mut [],
-        conflicts: &mut [],
-        frozen: &mut [],
-    };
-    paint_tile(
-        &mut out,
-        &layout,
+    let source = SourceCanvas {
+        id,
         bounds,
-        source,
-        sw,
-        sh,
-        &bg_rows,
-        &bg_columns,
-        &ignore,
-    );
-    crate::STATUS_OK
+        tile_count: if tile_count > 0.0 {
+            tile_count as u64
+        } else {
+            0
+        },
+        attached,
+    };
+    framings().insert(Session {
+        session: FramingSession::new(source, pane, ignore, size, max_tiles),
+        out: Vec::new(),
+        detached: None,
+    })
 }
 
-/// Pass 2 of `buildFramedCanvas` for one output tile: folds up to four overlapping resident source tiles'
-/// pixels, coverage, provisional bits and 16×16 block evidence (quality/score/owner/conflicts/frozen) into
-/// the output tile. Descriptor (96 bytes): u32 layout ptr, bounds rect (4×f64), f64 source canvas bounds.x,
-/// f64 source canvas bounds.y, u32 tile size, u32 output pixels/coverage/provisional/quality/score/owner/
-/// conflicts/frozen ptrs, u32 source tile count (0–4), u32 source tile array ptr. Each `SOURCE_TILE_BYTES`
-/// (40) entry: i32 sx, i32 sy, u32 pixels/coverage/provisional/quality/score/owner/conflicts/frozen ptrs.
 #[no_mangle]
-pub extern "C" fn ls_frame_fold_evidence(desc: u32) -> i32 {
-    let Some(d) = (unsafe { slice(desc, 96) }) else {
+pub extern "C" fn ls_framing_free(handle: u32) {
+    framings().free(handle)
+}
+
+/// The reference frame (`rgba` holds width × height × 4 bytes; copied), or none when `rgba` is 0.
+#[no_mangle]
+pub extern "C" fn ls_framing_reference(
+    handle: u32,
+    frame: u32,
+    rgba: u32,
+    width: u32,
+    height: u32,
+) -> i32 {
+    let Some(s) = framings().get(handle) else {
         return STATUS_BAD_ARGUMENT;
     };
-    let r = Reader(d);
-    let Some(layout_bytes) = (unsafe { slice(r.u32(0), LAYOUT_BYTES) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let layout = read_layout(layout_bytes);
-    let bounds = read_rect(&d[4..36]);
-    let (source_bounds_x, source_bounds_y) = (r.f64(36), r.f64(44));
-    let size = r.u32(52) as usize;
-    if size == 0 {
-        return STATUS_BAD_ARGUMENT;
-    }
-    let n = size * size;
-    let blocks = (size / 16) * (size / 16);
-    let (owner_ptr, score_ptr) = (r.u32(76), r.u32(72));
-    if owner_ptr == 0
-        || score_ptr == 0
-        || owner_ptr % 4 != 0
-        || score_ptr % 4 != 0
-        || !in_bounds(owner_ptr, blocks * 4)
-        || !in_bounds(score_ptr, blocks * 4)
-    {
-        return STATUS_BAD_ARGUMENT;
-    }
-    let (
-        Some(pixels),
-        Some(coverage),
-        Some(provisional),
-        Some(quality),
-        Some(conflicts),
-        Some(frozen),
-    ) = (
-        unsafe { slice_mut(r.u32(56), n * 4) },
-        unsafe { slice_mut(r.u32(60), n.div_ceil(8)) },
-        unsafe { slice_mut(r.u32(64), n.div_ceil(8)) },
-        unsafe { slice_mut(r.u32(68), blocks) },
-        unsafe { slice_mut(r.u32(80), blocks) },
-        unsafe { slice_mut(r.u32(84), blocks) },
-    )
-    else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    // SAFETY: 4-byte aligned and bounds checked above; distinct allocations from the other tile buffers.
-    let score = unsafe { std::slice::from_raw_parts_mut(score_ptr as *mut f32, blocks) };
-    let owner = unsafe { std::slice::from_raw_parts_mut(owner_ptr as *mut u32, blocks) };
-    let source_count = r.u32(88) as usize;
-    if source_count > 4 {
-        return STATUS_BAD_ARGUMENT;
-    }
-    let Some(entries) = (unsafe { slice(r.u32(92), source_count * SOURCE_TILE_BYTES) }) else {
-        return STATUS_BAD_ARGUMENT;
-    };
-    let mut sources = Vec::with_capacity(source_count);
-    for c in entries.chunks_exact(SOURCE_TILE_BYTES) {
-        let sr = Reader(c);
-        let (sscore_ptr, sowner_ptr) = (sr.u32(24), sr.u32(28));
-        if sscore_ptr == 0
-            || sowner_ptr == 0
-            || sscore_ptr % 4 != 0
-            || sowner_ptr % 4 != 0
-            || !in_bounds(sscore_ptr, blocks * 4)
-            || !in_bounds(sowner_ptr, blocks * 4)
-        {
-            return STATUS_BAD_ARGUMENT;
-        }
-        let (
-            Some(spixels),
-            Some(scoverage),
-            Some(sprovisional),
-            Some(squality),
-            Some(sconflicts),
-            Some(sfrozen),
-        ) = (
-            unsafe { slice(sr.u32(8), n * 4) },
-            unsafe { slice(sr.u32(12), n.div_ceil(8)) },
-            unsafe { slice(sr.u32(16), n.div_ceil(8)) },
-            unsafe { slice(sr.u32(20), blocks) },
-            unsafe { slice(sr.u32(32), blocks) },
-            unsafe { slice(sr.u32(36), blocks) },
-        )
-        else {
+    let reference = if rgba == 0 {
+        None
+    } else {
+        let (w, h) = (width as usize, height as usize);
+        // SAFETY: adapter-owned buffer, bounds checked.
+        let Some(pixels) = (unsafe { slice(rgba, w * h * 4) }) else {
             return STATUS_BAD_ARGUMENT;
         };
-        // SAFETY: 4-byte aligned and bounds checked above; distinct allocations from the other tile buffers.
-        let sscore = unsafe { std::slice::from_raw_parts(sscore_ptr as *const f32, blocks) };
-        let sowner = unsafe { std::slice::from_raw_parts(sowner_ptr as *const u32, blocks) };
-        sources.push(SourceTile {
-            sx: sr.i32(0) as i64,
-            sy: sr.i32(4) as i64,
-            pixels: spixels,
-            coverage: scoverage,
-            provisional: sprovisional,
-            quality: squality,
-            score: sscore,
-            owner: sowner,
-            conflicts: sconflicts,
-            frozen: sfrozen,
-        });
-    }
-    let mut out = OutputTile {
-        size,
-        pixels,
-        coverage,
-        provisional,
-        quality,
-        score,
-        owner,
-        conflicts,
-        frozen,
+        Some(Reference {
+            frame,
+            width: w,
+            height: h,
+            rgba: pixels.to_vec(),
+        })
     };
-    fold_evidence(
-        &mut out,
-        &layout,
-        source_bounds_x,
-        source_bounds_y,
-        bounds,
-        &sources,
-    );
-    crate::STATUS_OK
+    match s.session.reference(reference) {
+        Ok(()) => STATUS_OK,
+        Err(e) => status(e),
+    }
+}
+
+/// One stored level-0 tile-index row of the source canvas.
+#[no_mangle]
+pub extern "C" fn ls_framing_index(handle: u32, x: i32, y: i32, observed: f64) -> i32 {
+    let Some(s) = framings().get(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let observed = if observed > 0.0 { observed as u64 } else { 0 };
+    match s.session.index(x, y, observed) {
+        Ok(()) => STATUS_OK,
+        Err(e) => status(e),
+    }
+}
+
+fn write_key(w: &mut Out, canvas: &str, level: u32, x: i32, y: i32) {
+    w.str(canvas);
+    w.u32(level);
+    w.u32(x as u32);
+    w.u32(y as u32);
+}
+
+/// Runs the session against the tile cache `tiles_handle` to its next step, at the host's time `now`; returns the
+/// result's length (see the module comment).
+#[no_mangle]
+pub extern "C" fn ls_framing_step(handle: u32, tiles_handle: u32, now: f64) -> i32 {
+    let (Some(s), Some(t)) = (framings().get(handle), tiles(tiles_handle)) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    s.detached = None;
+    let step = match s.session.step(&mut t.cache, now) {
+        Ok(step) => step,
+        Err(e) => return status(e),
+    };
+    let mut w = Out::default();
+    match step {
+        Step::NeedReference => w.u8(0),
+        Step::NeedIndex => w.u8(1),
+        Step::Next => w.u8(2),
+        Step::NeedTile(k) => {
+            w.u8(3);
+            write_key(&mut w, &k.canvas, k.level, k.x, k.y);
+        }
+        Step::Save(SaveTile::Resident(id)) => {
+            w.u8(4);
+            w.u32(id);
+        }
+        Step::Save(SaveTile::Detached(tile)) => {
+            w.u8(5);
+            write_key(
+                &mut w,
+                &tile.key.canvas,
+                tile.key.level,
+                tile.key.x,
+                tile.key.y,
+            );
+            w.bool(tile.existed);
+            w.f64(tile.touched.unwrap_or(f64::NAN));
+            s.detached = Some(tile);
+        }
+        Step::Done(Outcome::Unframed) => w.u8(6),
+        Step::Done(Outcome::Skipped(d)) => {
+            w.u8(7);
+            write_diagnostics(&mut w, &[d]);
+        }
+        Step::Done(Outcome::Framed(f)) => {
+            w.u8(8);
+            w.str(&f.id);
+            w.f64(f.width);
+            w.f64(f.height);
+            for v in [
+                f.source_region.x,
+                f.source_region.y,
+                f.source_region.width,
+                f.source_region.height,
+            ] {
+                w.f64(v);
+            }
+            w.u32(f.reference_frame);
+            w.f64(f.offset_x);
+            w.f64(f.offset_y);
+            w.f64(f.tile_count as f64);
+            w.f64(f.observed_pixels as f64);
+            w.f64(f.provisional_pixels as f64);
+        }
+    }
+    s.out = w.0;
+    s.out.len() as i32
+}
+
+#[no_mangle]
+pub extern "C" fn ls_framing_take(handle: u32, out: u32, len: u32) -> i32 {
+    let Some(s) = framings().get(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    crate::bytes::take(&mut s.out, out, len)
+}
+
+/// Where the detached output tile the last step returned keeps its planes, in `ls_tiles_planes`'s
+/// `TILE_PLANES_BYTES` layout; valid until the next step or `ls_framing_free`.
+#[no_mangle]
+pub extern "C" fn ls_framing_detached(handle: u32, out: u32) -> i32 {
+    let Some(s) = framings().get(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let Some(tile) = s.detached.as_ref() else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    // SAFETY: adapter-owned buffer, bounds checked.
+    let Some(dst) = (unsafe { slice_mut(out, TILE_PLANES_BYTES) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let planes: [(*const u8, usize); 8] = [
+        (tile.pixels.as_ptr(), tile.pixels.len()),
+        (tile.coverage.as_ptr(), tile.coverage.len()),
+        (tile.provisional.as_ptr(), tile.provisional.len()),
+        (tile.quality.as_ptr(), tile.quality.len()),
+        (tile.conflicts.as_ptr(), tile.conflicts.len()),
+        (tile.owner.as_ptr() as *const u8, tile.owner.len() * 4),
+        (tile.score.as_ptr() as *const u8, tile.score.len() * 4),
+        (tile.frozen.as_ptr(), tile.frozen.len()),
+    ];
+    for (i, (ptr, len)) in planes.into_iter().enumerate() {
+        dst[i * 8..i * 8 + 4].copy_from_slice(&(ptr as usize as u32).to_le_bytes());
+        dst[i * 8 + 4..i * 8 + 8].copy_from_slice(&(len as u32).to_le_bytes());
+    }
+    dst[64..68].copy_from_slice(&(tile.dirty as u32).to_le_bytes());
+    dst[68..72].copy_from_slice(&(tile.existed as u32).to_le_bytes());
+    dst[72..80].copy_from_slice(&tile.touched.unwrap_or(f64::NAN).to_le_bytes());
+    STATUS_OK
 }

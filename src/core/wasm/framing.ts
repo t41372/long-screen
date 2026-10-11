@@ -1,14 +1,15 @@
-/** Presentation-canvas synthesis (`src/core/framing.ts::buildFramedCanvas`, mirrors `rust/wasm/src/framing.rs`):
- *  layout/coordinate mapping, background-extension statistics, and the two per-tile passes the shell drives once
- *  per output tile — `paintTile` (native chrome + background bands) and `foldEvidence` (up to four overlapping
- *  source tiles' pixels/coverage/provisional bits/block evidence). Tile-cache traversal, the O(perimeter)
- *  candidate pre-check and KV writes stay in `src/core/framing.ts`. */
+/** Presentation canvases (mirrors `rust/wasm/src/framing.rs`): the engine's framing session
+ *  (`long_screen_engine::framing::FramingSession`) that `src/core/framing.ts::buildFramedCanvas` drives for one framed
+ *  canvas, plus the layout/coordinate mapping the parity tests check on their own. */
 import type { Rect, Region, RGBA } from '../../types.ts';
 import type { Core } from './core.ts';
 import type { CoreExports } from './exports.ts';
 import { LAYOUT_BYTES, VOTING_REGION_BYTES } from './exports.ts';
 import { writeRegionDescriptor } from './marshal.ts';
-import type { Resident } from './memory.ts';
+import { FreeGuard, type Resident } from './memory.ts';
+import { ByteReader, ByteWriter } from './bytes.ts';
+import { type EngineDiagnostic, readDiagnostics } from './diagnostic.ts';
+import type { TileCacheHandle } from './tiles.ts';
 
 export interface FrameLayout {
   width: number;
@@ -19,25 +20,6 @@ export interface FrameLayout {
   dy: number;
   seamX: number;
 }
-/** The mutable buffers of one resident tile, as `TileStore` holds them (`storage/tiles.ts::Tile`). */
-export interface FramingTile {
-  pixels: Uint8ClampedArray;
-  coverage: Uint8Array;
-  provisional: Uint8Array;
-  quality: Uint8Array;
-  score: Float32Array;
-  owner: Uint32Array;
-  conflicts: Uint8Array;
-  frozen: Uint8Array;
-}
-/** One source tile and its tile coordinates. The tile itself, not a copy of its fields: a cached tile's planes are
- *  views of core memory, read only when they are copied in. */
-export interface SourceFramingTile {
-  sx: number;
-  sy: number;
-  tile: FramingTile;
-}
-const SOURCE_TILE_BYTES = 40, MAX_SOURCE_TILES = 4;
 
 function writeLayout(view: DataView, layout: FrameLayout): void {
   view.setFloat64(0, layout.pane.x, true);
@@ -70,14 +52,8 @@ function readLayout(view: DataView): FrameLayout {
     height: view.getFloat64(96, true),
   };
 }
-function writeRect(view: DataView, at: number, r: Rect): void {
-  view.setFloat64(at, r.x, true);
-  view.setFloat64(at + 8, r.y, true);
-  view.setFloat64(at + 16, r.width, true);
-  view.setFloat64(at + 24, r.height, true);
-}
 
-/** `frameLayout()`: not on the per-tile hot path (called once per canvas), so a plain `scratch()` round trip is fine. */
+/** `frameLayout()`: test use (the session computes its own layout). */
 export function frameLayout(
   core: Core,
   exports: CoreExports,
@@ -91,7 +67,7 @@ export function frameLayout(
   core.check(exports.ls_frame_layout(source.width, source.height, paneP, boundsWidth, boundsHeight, outP), 'frameLayout');
   return readLayout(new DataView(exports.memory.buffer, outP, LAYOUT_BYTES));
 }
-/** `frameCoordinate()`: test/diagnostic use only — the per-tile kernels classify pixels inline. */
+/** `frameCoordinate()`: test/diagnostic use only — the session classifies pixels inline. */
 export function frameCoordinate(
   core: Core,
   exports: CoreExports,
@@ -108,25 +84,9 @@ export function frameCoordinate(
   return { x: view.getFloat64(0, true), y: view.getFloat64(8, true) };
 }
 
-/** One canvas's worth of session state for `buildFramedCanvas`: the reference frame and background statistics
- *  uploaded once, plus reused scratch slots for the per-tile calls. Dispose exactly once (the pipeline's finally). */
-export interface FramingSession {
-  layout: FrameLayout;
-  /** Pass 1: native-chrome/background synthesis for `bounds` (`boundsFor(tx, ty)`, already tile-clipped). Only
-   *  `tile.pixels`/`tile.coverage` are touched; content-rect pixels are left as `tiles.get` returned them. */
-  paintTile(tile: FramingTile, bounds: Rect): void;
-  /** Pass 2: folds up to four overlapping resident source tiles into `tile` at `bounds`. */
-  foldEvidence(tile: FramingTile, bounds: Rect, sourceBoundsX: number, sourceBoundsY: number, sources: SourceFramingTile[]): void;
-  dispose(): void;
-}
-
-/** Uploads `regions` (ignore regions here) into PERSISTENT core memory (`ls_frame_paint_tile`'s pointer is read
- *  by every tile of a session, and transient `core.scratch()` resets on the very next unrelated kernel call —
- *  e.g. the PNG decode a `tiles.get()` between two tiles can trigger — so it would silently corrupt). Caller
- *  frees the returned residents exactly once (session `dispose()`). Frees every resident it allocated itself
- *  before rethrowing (e.g. a mask-size mismatch caught partway through the `forEach` below) — otherwise a
- *  region upload thrown away by the caller (nothing left to call `dispose()` on `residents`, since the throw
- *  never returns them) would leak every allocation this function made before the error. */
+/** Uploads `regions` (ignore regions here) for `ls_framing_new`, which copies them. Caller frees the returned
+ *  residents exactly once; on a throw partway (e.g. a mask that does not match its declared size) this frees what
+ *  it already allocated before rethrowing. */
 function uploadRegions(core: Core, exports: CoreExports, regions: Region[]): { ptr: number; count: number; residents: Resident[] } {
   if (!regions.length) return { ptr: 0, count: 0, residents: [] };
   const residents: Resident[] = [];
@@ -152,160 +112,199 @@ function uploadRegions(core: Core, exports: CoreExports, regions: Region[]): { p
   }
 }
 
-/** Opens a framing session for one presentation canvas: uploads the reference frame and computes the background
- *  rows/columns once (`ls_frame_backgrounds`), then plans reused frame-wide scratch for every subsequent
- *  `paintTile`/`foldEvidence` call (never per-pixel FFI — one call per output tile, mirroring `composite.ts`).
- *  Every persistent allocation made here (`sourceFrame`, `bgRows`, `bgColumns`, the ignore-region residents) is
- *  normally freed by the returned session's `dispose()` — but nothing calls `dispose()` on a session that was
- *  never returned, so a throw partway through this function (a bad `ls_frame_backgrounds` status, an
- *  out-of-memory `core.alloc`, or `uploadRegions` rethrowing after freeing its own residents) must free
- *  whatever this function already allocated itself before propagating the error, or that memory leaks for the
- *  rest of the session. */
-export function openFramingSession(
+/** The canvas a framing session frames. */
+export interface FramingSource {
+  id: string;
+  bounds: Rect;
+  tileCount: number;
+  attached: boolean;
+}
+/** A framed canvas the session built (`long_screen_engine::framing::FramedCanvas`). */
+export interface FramedCanvas {
+  id: string;
+  width: number;
+  height: number;
+  sourceRegion: Rect;
+  referenceFrame: number;
+  offset: { x: number; y: number };
+  tileCount: number;
+  observedPixels: number;
+  provisionalPixels: number;
+}
+/** An output tile the cache evicted while its source tiles came in, as the session kept it: copies of its planes. */
+export interface DetachedTile {
+  canvasId: string;
+  level: number;
+  x: number;
+  y: number;
+  pixels: Uint8ClampedArray;
+  coverage: Uint8Array;
+  provisional: Uint8Array;
+  quality: Uint8Array;
+  conflicts: Uint8Array;
+  owner: Uint32Array;
+  score: Float32Array;
+  frozen: Uint8Array;
+  dirty: boolean;
+  existed: boolean;
+  touched?: number;
+}
+/** One step of a framing session (`long_screen_engine::framing::Step`). */
+export type FramingStep =
+  /** Read the reference frame and pass it to `reference()`. */
+  | { kind: 'reference' }
+  /** Pass every stored level-0 `tile-index/` row of the source canvas to `index()`. */
+  | { kind: 'index' }
+  /** The next output tile starts: check for pause and stop. */
+  | { kind: 'next' }
+  /** Bring this tile into the cache. */
+  | { kind: 'tile'; canvas: string; level: number; x: number; y: number }
+  /** Store this resident tile now. */
+  | { kind: 'save'; id: number }
+  /** Store this tile, which the cache evicted while the session still worked on it, now. */
+  | { kind: 'saveDetached'; tile: DetachedTile }
+  | { kind: 'unframed' }
+  | { kind: 'skipped'; diagnostics: EngineDiagnostic[] }
+  | { kind: 'framed'; canvas: FramedCanvas };
+
+/** `ls_framing_step`: stepped after a `tile` step without the tile being inserted. */
+const NOT_PROVIDED = -2;
+/** Plane layout `ls_framing_detached` reports (`ls_tiles_planes`'s). */
+const PLANES_BYTES = 80;
+const PLANE_TYPES = [Uint8ClampedArray, Uint8Array, Uint8Array, Uint8Array, Uint8Array, Uint32Array, Float32Array, Uint8Array] as const;
+
+/** One framed canvas in progress in core memory. `free()` releases it; one nobody frees is released when it is
+ *  garbage collected. */
+export class FramingSessionHandle {
+  private static readonly registry = new FinalizationRegistry<{ exports: CoreExports; handle: number }>(({ exports, handle }) =>
+    exports.ls_framing_free(handle)
+  );
+  private readonly freeGuard = new FreeGuard();
+  private readonly token = {};
+  constructor(private readonly core: Core, private readonly exports: CoreExports, private readonly handle: number) {
+    FramingSessionHandle.registry.register(this, { exports, handle }, this.token);
+  }
+  /** The decoded reference frame and its frame number, or nothing when none is stored. */
+  reference(reference?: { frame: number; image: RGBA }): void {
+    if (!reference) {
+      this.core.check(this.exports.ls_framing_reference(this.handle, 0, 0, 0, 0), 'framing reference');
+      return;
+    }
+    const { frame, image } = reference, pixels = this.core.upload(image.data);
+    try {
+      this.core.check(this.exports.ls_framing_reference(this.handle, frame, pixels.ptr, image.width, image.height), 'framing reference');
+    } finally {
+      pixels.free();
+    }
+  }
+  /** One stored level-0 tile-index row of the source canvas. */
+  index(x: number, y: number, observed: number): void {
+    this.core.check(this.exports.ls_framing_index(this.handle, x, y, observed), 'framing index');
+  }
+  step(tiles: TileCacheHandle, now: number): FramingStep {
+    const length = this.exports.ls_framing_step(this.handle, tiles.handle, now);
+    if (length === NOT_PROVIDED) throw new Error('CORE_BAD_ARGUMENT: framing stepped before the tile it asked for was brought in.');
+    this.core.check(length, 'framing step');
+    const [out] = this.core.scratch([length]);
+    this.core.check(this.exports.ls_framing_take(this.handle, out, length), 'framing step result');
+    const r = new ByteReader(this.core.readBytes(out, length)), kind = r.u8();
+    const key = () => ({ canvas: r.str(), level: r.u32(), x: r.u32() | 0, y: r.u32() | 0 });
+    switch (kind) {
+      case 0:
+        return { kind: 'reference' };
+      case 1:
+        return { kind: 'index' };
+      case 2:
+        return { kind: 'next' };
+      case 3:
+        return { kind: 'tile', ...key() };
+      case 4:
+        return { kind: 'save', id: r.u32() };
+      case 5: {
+        const { canvas, level, x, y } = key(), existed = r.bool(), touched = r.f64();
+        return { kind: 'saveDetached', tile: this.detached(canvas, level, x, y, existed, touched) };
+      }
+      case 6:
+        return { kind: 'unframed' };
+      case 7:
+        return { kind: 'skipped', diagnostics: readDiagnostics(r) };
+      default: {
+        const id = r.str(), width = r.f64(), height = r.f64();
+        const sourceRegion = { x: r.f64(), y: r.f64(), width: r.f64(), height: r.f64() }, referenceFrame = r.u32();
+        const offset = { x: r.f64(), y: r.f64() };
+        return {
+          kind: 'framed',
+          canvas: {
+            id,
+            width,
+            height,
+            sourceRegion,
+            referenceFrame,
+            offset,
+            tileCount: r.f64(),
+            observedPixels: r.f64(),
+            provisionalPixels: r.f64(),
+          },
+        };
+      }
+    }
+  }
+  /** Copies the detached tile's planes out of core memory (a stored row must not hold a view of it). */
+  private detached(canvasId: string, level: number, x: number, y: number, existed: boolean, touched: number): DetachedTile {
+    const [out] = this.core.scratch([PLANES_BYTES]);
+    this.core.check(this.exports.ls_framing_detached(this.handle, out), 'framing detached tile');
+    const view = new DataView(this.exports.memory.buffer, out, PLANES_BYTES);
+    const planes = PLANE_TYPES.map((Type, i) => {
+      const ptr = view.getUint32(i * 8, true), len = view.getUint32(i * 8 + 4, true);
+      // A copy in an ArrayBuffer of its own: never shared memory, and aligned for the wider plane types.
+      return new Type(new Uint8Array(this.exports.memory.buffer, ptr, len).slice().buffer);
+    });
+    const dirty = view.getUint32(64, true) !== 0;
+    return {
+      canvasId,
+      level,
+      x,
+      y,
+      pixels: planes[0] as Uint8ClampedArray,
+      coverage: planes[1] as Uint8Array,
+      provisional: planes[2] as Uint8Array,
+      quality: planes[3] as Uint8Array,
+      conflicts: planes[4] as Uint8Array,
+      owner: planes[5] as Uint32Array,
+      score: planes[6] as Float32Array,
+      frozen: planes[7] as Uint8Array,
+      dirty,
+      existed,
+      ...(Number.isNaN(touched) ? {} : { touched }),
+    };
+  }
+  free(): void {
+    this.freeGuard.once(() => {
+      FramingSessionHandle.registry.unregister(this.token);
+      this.exports.ls_framing_free(this.handle);
+    });
+  }
+}
+
+/** A framing session for `source` seen through `pane` of the reference frame, leaving `ignoreRegions` out of the
+ *  chrome, over `tileSize`-pixel tiles, skipped when it would plan more than `maxTiles` output tiles. */
+export function framingSession(
   core: Core,
   exports: CoreExports,
-  source: RGBA,
-  layout: FrameLayout,
+  source: FramingSource,
+  pane: Rect,
   ignoreRegions: Region[],
   tileSize: number,
-): FramingSession {
-  const toFree: Resident[] = [];
+  maxTiles: number,
+): FramingSessionHandle {
+  const w = new ByteWriter().str(source.id).f64(source.bounds.x).f64(source.bounds.y).f64(source.bounds.width).f64(source.bounds.height)
+    .f64(source.tileCount).bool(source.attached).f64(pane.x).f64(pane.y).f64(pane.width).f64(pane.height).u32(tileSize).u32(maxTiles);
+  const regions = uploadRegions(core, exports, ignoreRegions);
   try {
-    const sourceFrame = core.frame(source.width, source.height);
-    toFree.push(sourceFrame);
-    sourceFrame.write(source.data);
-    const bgRows = core.alloc(source.height * 4);
-    toFree.push(bgRows);
-    const bgColumns = core.alloc(source.width * 4);
-    toFree.push(bgColumns);
-    const [panePtr] = core.scratch([32]);
-    core.writeRect(panePtr, layout.pane);
-    core.check(
-      exports.ls_frame_backgrounds(sourceFrame.ptr, source.width, source.height, panePtr, bgRows.ptr, bgColumns.ptr),
-      'frameBackgrounds',
-    );
-    const { ptr: ignorePtr, count: ignoreCount, residents: ignoreResidents } = uploadRegions(core, exports, ignoreRegions);
-    toFree.push(...ignoreResidents);
-
-    const n = tileSize * tileSize, bits = Math.ceil(n / 8), blocks = (tileSize / 16) ** 2;
-    const sizes: number[] = [
-      LAYOUT_BYTES,
-      76, // paint descriptor
-      96, // fold descriptor
-      n * 4, // tile.pixels
-      bits, // tile.coverage
-      bits, // tile.provisional
-      blocks, // tile.quality
-      blocks * 4, // tile.score
-      blocks * 4, // tile.owner
-      blocks, // tile.conflicts
-      blocks, // tile.frozen
-      MAX_SOURCE_TILES * SOURCE_TILE_BYTES,
-    ];
-    for (let i = 0; i < MAX_SOURCE_TILES; i++) sizes.push(n * 4, bits, bits, blocks, blocks * 4, blocks * 4, blocks, blocks);
-    const ptr = core.scratchFrame(sizes);
-    const [layoutP, paintDescP, foldDescP, tPixels, tCoverage, tProvisional, tQuality, tScore, tOwner, tConflicts, tFrozen, sourcesP] = ptr;
-    writeLayout(new DataView(exports.memory.buffer, layoutP, LAYOUT_BYTES), layout);
-    const sourceSlots = Array.from({ length: MAX_SOURCE_TILES }, (_, i) => ptr.slice(12 + i * 8, 12 + i * 8 + 8));
-
-    const writeTileIn = (tile: FramingTile, which: 'pixels' | 'all') => {
-      core.writeBytes(tPixels, tile.pixels);
-      core.writeBytes(tCoverage, tile.coverage);
-      if (which === 'all') {
-        core.writeBytes(tProvisional, tile.provisional);
-        core.writeBytes(tQuality, tile.quality);
-        core.writeBytes(tScore, tile.score);
-        core.writeBytes(tOwner, tile.owner);
-        core.writeBytes(tConflicts, tile.conflicts);
-        core.writeBytes(tFrozen, tile.frozen);
-      }
-    };
-    const readTileOut = (tile: FramingTile, which: 'pixels' | 'all') => {
-      const mem = new Uint8Array(exports.memory.buffer);
-      tile.pixels.set(mem.subarray(tPixels, tPixels + n * 4));
-      tile.coverage.set(mem.subarray(tCoverage, tCoverage + tile.coverage.byteLength));
-      if (which === 'all') {
-        tile.provisional.set(mem.subarray(tProvisional, tProvisional + tile.provisional.byteLength));
-        tile.quality.set(mem.subarray(tQuality, tQuality + blocks));
-        tile.score.set(new Float32Array(exports.memory.buffer, tScore, blocks));
-        tile.owner.set(new Uint32Array(exports.memory.buffer, tOwner, blocks));
-        tile.conflicts.set(mem.subarray(tConflicts, tConflicts + blocks));
-        tile.frozen.set(mem.subarray(tFrozen, tFrozen + blocks));
-      }
-    };
-
-    return {
-      layout,
-      paintTile(tile, bounds) {
-        writeTileIn(tile, 'pixels');
-        const view = new DataView(exports.memory.buffer, paintDescP, 76);
-        view.setUint32(0, layoutP, true);
-        writeRect(view, 4, bounds);
-        view.setUint32(36, sourceFrame.ptr, true);
-        view.setUint32(40, source.width, true);
-        view.setUint32(44, source.height, true);
-        view.setUint32(48, bgRows.ptr, true);
-        view.setUint32(52, bgColumns.ptr, true);
-        view.setUint32(56, ignorePtr, true);
-        view.setUint32(60, ignoreCount, true);
-        view.setUint32(64, tileSize, true);
-        view.setUint32(68, tPixels, true);
-        view.setUint32(72, tCoverage, true);
-        core.check(exports.ls_frame_paint_tile(paintDescP), 'framePaintTile');
-        readTileOut(tile, 'pixels');
-      },
-      foldEvidence(tile, bounds, sourceBoundsX, sourceBoundsY, sources) {
-        if (sources.length > MAX_SOURCE_TILES) {
-          throw new Error(`CORE_BAD_ARGUMENT: at most ${MAX_SOURCE_TILES} source tiles fold into one output tile.`);
-        }
-        writeTileIn(tile, 'all');
-        sources.forEach((s, i) => {
-          const [sp, sc, spr, sq, ssc, so, scf, sfr] = sourceSlots[i];
-          core.writeBytes(sp, s.tile.pixels);
-          core.writeBytes(sc, s.tile.coverage);
-          core.writeBytes(spr, s.tile.provisional);
-          core.writeBytes(sq, s.tile.quality);
-          core.writeBytes(ssc, s.tile.score);
-          core.writeBytes(so, s.tile.owner);
-          core.writeBytes(scf, s.tile.conflicts);
-          core.writeBytes(sfr, s.tile.frozen);
-          const ev = new DataView(exports.memory.buffer, sourcesP + i * SOURCE_TILE_BYTES, SOURCE_TILE_BYTES);
-          ev.setInt32(0, s.sx, true);
-          ev.setInt32(4, s.sy, true);
-          ev.setUint32(8, sp, true);
-          ev.setUint32(12, sc, true);
-          ev.setUint32(16, spr, true);
-          ev.setUint32(20, sq, true);
-          ev.setUint32(24, ssc, true);
-          ev.setUint32(28, so, true);
-          ev.setUint32(32, scf, true);
-          ev.setUint32(36, sfr, true);
-        });
-        const view = new DataView(exports.memory.buffer, foldDescP, 96);
-        view.setUint32(0, layoutP, true);
-        writeRect(view, 4, bounds);
-        view.setFloat64(36, sourceBoundsX, true);
-        view.setFloat64(44, sourceBoundsY, true);
-        view.setUint32(52, tileSize, true);
-        view.setUint32(56, tPixels, true);
-        view.setUint32(60, tCoverage, true);
-        view.setUint32(64, tProvisional, true);
-        view.setUint32(68, tQuality, true);
-        view.setUint32(72, tScore, true);
-        view.setUint32(76, tOwner, true);
-        view.setUint32(80, tConflicts, true);
-        view.setUint32(84, tFrozen, true);
-        view.setUint32(88, sources.length, true);
-        view.setUint32(92, sourcesP, true);
-        core.check(exports.ls_frame_fold_evidence(foldDescP), 'frameFoldEvidence');
-        readTileOut(tile, 'all');
-      },
-      dispose() {
-        for (const r of toFree) r.free();
-      },
-    };
-  } catch (error) {
-    for (const r of toFree) r.free();
-    throw error;
+    const [ptr, len] = w.place(core);
+    const handle = core.check(exports.ls_framing_new(ptr, len, regions.ptr, regions.count), 'framing session');
+    return new FramingSessionHandle(core, exports, handle);
+  } finally {
+    for (const r of regions.residents) r.free();
   }
 }

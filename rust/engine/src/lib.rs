@@ -15,12 +15,16 @@ pub mod attachments;
 pub mod catalog;
 pub mod compositor;
 pub mod diagnostic;
+pub mod framing;
 pub mod keyframes;
 pub mod layers;
 pub mod pose_graph;
+pub mod pyramid;
 pub mod scan;
 pub mod solve;
 pub mod tiles;
 
 #[cfg(test)]
 mod host_tests;
+#[cfg(test)]
+mod presentation_host_tests;

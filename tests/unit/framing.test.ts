@@ -91,6 +91,41 @@ Deno.test('framing: raw pixels and holes survive negative origins; decorated pix
   assert(covered(t, 0));
   assertEquals((await tiles.get(meta.id, -1, 0)).pixels[i * 4], 19);
 });
+Deno.test('framing: a two-tile cache that evicts the output tile mid-fold stores exactly what a large cache does', async () => {
+  // Output tile (0,0) sits over four source tiles; with room for two tiles, bringing in the second source tile
+  // evicts the output tile, and the session must finish and store it from the copy it kept.
+  const run = async (maxTiles?: number) => {
+    const db = new MemoryKV(), tiles = new TileStore(db, 16, 64);
+    for (const [sx, sy] of [[-1, 0], [0, 0], [-1, 1], [0, 1]]) {
+      const t = await tiles.get(meta.id, sx, sy);
+      for (let i = 0; i < 16 * 16; i++) {
+        t.pixels.set([40 + sx * 30, 60 + sy * 50, i & 255, 255], i * 4);
+        markCovered(t, i);
+      }
+      markProvisional(t, sx + 2 + sy * 16);
+      t.quality[0] = 10 + sy;
+      t.owner[0] = 5 + sx;
+      t.dirty = true;
+    }
+    await tiles.clear();
+    if (maxTiles) tiles.maxTiles = maxTiles;
+    await db.put('frame-reference', { frame: 0, image: new Blob([await encodeRGBA(reference())]) });
+    const framed = await buildFramedCanvas(db, tiles, meta, region, [region], async () => {});
+    await tiles.flush();
+    const rows: Record<string, unknown> = {};
+    for await (const { key, value } of iterate<Record<string, unknown>>(db, `tile/${meta.id}-framed/`)) {
+      rows[key] = await Promise.all(
+        Object.entries(value).map(async ([k, v]) => [k, v instanceof Blob ? [...new Uint8Array(await v.arrayBuffer())] : v]),
+      );
+    }
+    return { framed, rows, evictions: tiles.evictions };
+  };
+  const large = await run(), small = await run(2);
+  assert(small.evictions > large.evictions, 'the two-tile cache never evicted');
+  assertEquals(small.framed, large.framed);
+  assertEquals(Object.keys(small.rows).length, 2);
+  assertEquals(small.rows, large.rows);
+});
 Deno.test('framing: copied content preserves provisional and block evidence conservatively across the presentation offset', async () => {
   const db = new MemoryKV(), tiles = new TileStore(db, 16, 64), source = reference();
   const sourceMeta: CanvasMeta = { ...meta, id: 'evidence', uncertainPixels: 7, conflictPixels: 11, provisionalPixels: 1 };
@@ -233,13 +268,14 @@ Deno.test('framing: a 12000×12000 sparse bounding box with 8 observed tiles sta
   const positions: [number, number][] = [[2, 2], [3, 3], [5, 8], [10, 2], [15, 15], [20, 4], [4, 20], [22, 22]];
   for (const [sx, sy] of positions) await paintSourceTile(tiles, big.id, sx, sy);
   // Count framed-tile allocations rather than wall-clock time: the O(area) traversal allocated one tile per grid cell,
-  // and a timing bound is load-dependent on a shared machine.
-  const originalGet = tiles.get.bind(tiles);
+  // and a timing bound is load-dependent on a shared machine. Every framed tile is new, so the framing session asks
+  // the host to bring each one into the cache exactly once.
+  const originalLoad = tiles.load.bind(tiles);
   let framedGets = 0;
-  tiles.get = ((canvasId: string, x: number, y: number, level?: number) => {
+  tiles.load = ((canvasId: string, x: number, y: number, level?: number) => {
     if (canvasId === `${big.id}-framed`) framedGets++;
-    return originalGet(canvasId, x, y, level);
-  }) as typeof tiles.get;
+    return originalLoad(canvasId, x, y, level);
+  }) as typeof tiles.load;
   const framed = await buildFramedCanvas(db, tiles, big, region, [region], async () => {});
   assert(framed);
   const cols = Math.ceil((source.width + 12000 - region.rect.width) / tiles.size),
@@ -271,7 +307,9 @@ Deno.test('framing: giant sparse bounds stop at the candidate limit without trav
   });
   assertEquals(result, undefined);
   assert(reason?.includes('64'), `expected reason to name the 64-tile limit, got: ${reason}`);
-  assert(checkpoints >= 1 && checkpoints <= 2, `expected bounded checkpoint work before skipping, got ${checkpoints}`);
+  // The plan is bounded by maxTiles and made in one engine step; the skip comes before any output tile starts, so no
+  // per-tile checkpoint runs.
+  assertEquals(checkpoints, 0, `expected the skip before any output tile, got ${checkpoints} checkpoints`);
   assertEquals(await countPrefix(db, `tile/${giant.id}-framed/`), 0);
   assertEquals(await countPrefix(db, `tile-index/${giant.id}-framed/`), 0);
 });

@@ -34,8 +34,9 @@ import {
   frameCoordinate as frameCoordinateImpl,
   type FrameLayout,
   frameLayout as frameLayoutImpl,
-  type FramingSession,
-  openFramingSession as openFramingSessionImpl,
+  framingSession as framingSessionFactory,
+  type FramingSessionHandle,
+  type FramingSource,
 } from './framing.ts';
 import * as track from './track.ts';
 import type { FragmentCauseGate, LoopVerdict, OcclusionDecision } from './track.ts';
@@ -91,12 +92,8 @@ export class Core {
   /** Transient arena: every kernel call replans it. */
   private readonly arena: Arena;
   /** Frame arena: holds state that must survive a whole per-canvas tile loop, during which transient calls
-   *  (e.g. PNG encoding on tile eviction) must not clobber it — either one `prepareObservation()` result
-   *  (compositor.ts, the render pass's compositing) or one `FramingSession` (framing.ts, the presentation
-   *  pass's `paintTile`/`foldEvidence` loop). Only one of the two is ever live at a time: `Engine.run()`
-   *  (src/pipeline/engine.ts) awaits the whole render pass to finish before starting the presentation pass, so
-   *  their frame-arena users never interleave — a future concurrent-canvas render would need a second arena
-   *  (or to serialise on this one) before that invariant could break. */
+   *  (e.g. PNG encoding on tile eviction) must not clobber it: the render pass's compositing placement
+   *  (compositor.ts). The presentation pass's framing session keeps its state in the engine, not here. */
   private readonly frameArena: Arena;
   readonly featureBytes: number;
   readonly matchBytes: number;
@@ -262,6 +259,10 @@ export class Core {
   }
   assemblePyramidParent(children: (Uint8ClampedArray | undefined)[], size: number): RGBA {
     return pyramid.assemblePyramidParent(this, children, size);
+  }
+  /** The engine's pyramid session for one canvas (`storage/tiles.ts::TileStore.buildPyramid`). */
+  pyramidSession(canvas: string, width: number, height: number, size: number): pyramid.PyramidSessionHandle {
+    return pyramid.pyramidSession(this, this.exports, canvas, width, height, size);
   }
   /** The engine's tile cache for `size`-pixel tiles under a `memoryMB` budget (`storage/tiles.ts::TileStore`). */
   tileCache(size: number, memoryMB: number): TileCacheHandle {
@@ -567,13 +568,12 @@ export class Core {
   frameLayout(source: { width: number; height: number }, pane: Rect, boundsWidth: number, boundsHeight: number): FrameLayout {
     return frameLayoutImpl(this, this.exports, source, pane, boundsWidth, boundsHeight);
   }
-  /** `buildFramedCanvas`'s `frameCoordinate()` (test/diagnostic use; the per-tile kernels classify inline). */
+  /** `frameCoordinate()` (test/diagnostic use; the framing session classifies pixels inline). */
   frameCoordinate(layout: FrameLayout, x: number, y: number): { x: number; y: number } | undefined | null {
     return frameCoordinateImpl(this, this.exports, layout, x, y);
   }
-  /** Opens a `buildFramedCanvas` session for one presentation canvas: uploads the reference frame, computes
-   *  background statistics once, and returns the per-output-tile `paintTile`/`foldEvidence` calls. */
-  openFramingSession(source: RGBA, layout: FrameLayout, ignoreRegions: Region[], tileSize: number): FramingSession {
-    return openFramingSessionImpl(this, this.exports, source, layout, ignoreRegions, tileSize);
+  /** The engine's framing session for one framed canvas (`core/framing.ts::buildFramedCanvas`). */
+  framingSession(source: FramingSource, pane: Rect, ignoreRegions: Region[], tileSize: number, maxTiles: number): FramingSessionHandle {
+    return framingSessionFactory(this, this.exports, source, pane, ignoreRegions, tileSize, maxTiles);
   }
 }

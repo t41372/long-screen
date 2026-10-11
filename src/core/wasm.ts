@@ -31,7 +31,7 @@ export type {
   LoopVerdict,
   OcclusionDecision,
 } from './wasm/track.ts';
-export type { FrameLayout, FramingSession, FramingTile, SourceFramingTile } from './wasm/framing.ts';
+export type { DetachedTile, FramedCanvas, FrameLayout, FramingSessionHandle, FramingSource, FramingStep } from './wasm/framing.ts';
 export type { CompositorEvent, CompositorHandle, CompositorStats } from './wasm/compositor.ts';
 export { COMPOSITOR_DISPOSED, COMPOSITOR_OUTSIDE_CANVAS } from './wasm/compositor.ts';
 export { type StoredPlanes, TILE_PLANES, type TileCacheHandle, type TileCacheStats, type TilePlanes } from './wasm/tiles.ts';

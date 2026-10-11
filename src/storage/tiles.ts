@@ -295,6 +295,12 @@ export class TileStore {
       t.existed = true;
     }
   }
+  /** Stores a resident tile by its cache id (one an engine session wrote into the cache and marked dirty). */
+  async saveResident(id: number): Promise<void> {
+    const t = this.byId.get(id);
+    if (!t) throw new Error(`CORE_BAD_ARGUMENT: tile ${id} is not resident.`);
+    await this.save(t);
+  }
   async save(t: Tile): Promise<void> {
     if (!t.dirty) {
       return;
@@ -330,55 +336,49 @@ export class TileStore {
     }
     return this.db.get<StoredTile>(`tile/${key}`);
   }
-  /** Small image pyramids are previews only. Level zero remains at source resolution. */
+  /** Small image pyramids are previews only. Level zero remains at source resolution. The engine's pyramid session
+   *  (`long_screen_engine::pyramid`) decides the levels, the parents each level queues and their order, and
+   *  assembles each parent; this host reads the stored rows it asks for and writes what it returns, straight to
+   *  storage (the pyramid does not go through the tile cache). The `pyramid-todo/` rows record the queued parents
+   *  while a level is built. */
   async buildPyramid(meta: CanvasMeta, onProgress: () => Promise<void>): Promise<void> {
     await this.clear();
     // A previous attempt on this same canvas that crashed mid-level can leave a stale work queue; start from a
     // clean one rather than resuming into (possibly inconsistent) leftovers.
     await deletePrefix(this.db, `pyramid-todo/${meta.id}/`);
-    const size = this.size;
-    // How many times `size` must double to reach or pass the larger bound dimension — `ceil(log2(dimension /
-    // size))` (clamped to 0), computed by repeated doubling instead of `Math.log2`: a floating-point log/exp
-    // implementation is not guaranteed bit-identical across engines, and a wrong level count here would change
-    // how many pyramid levels get built, not just round a display value. Loop count is small in practice (tile
-    // sizes are at least tens of pixels; `size` doubles each step) and bounded by `POSE_BOUND`'s addressable
-    // canvas range regardless.
-    const maxDimension = Math.max(meta.bounds.width, meta.bounds.height);
-    let maxLevel = 0;
-    for (let scale = size; scale < maxDimension; scale *= 2) maxLevel++;
+    const size = this.size, session = core().pyramidSession(meta.id, meta.bounds.width, meta.bounds.height, size);
     try {
-      for (let level = 1; level <= maxLevel; level++) {
-        for await (const row of iterate<TileIndex>(this.db, `tile-index/${meta.id}/${level - 1}/`)) {
-          const t = row.value, x = Math.floor(t.x / 2), y = Math.floor(t.y / 2);
-          await this.db.put(`pyramid-todo/${meta.id}/${level}/${x}_${y}`, { x, y });
-        }
-        for await (const row of iterate<{ x: number; y: number }>(this.db, `pyramid-todo/${meta.id}/${level}/`)) {
-          const { x, y } = row.value;
-          // Quadrant order [dx=0,dy=0], [dx=1,dy=0], [dx=0,dy=1], [dx=1,dy=1] — row-major over the 2×2 grid,
-          // matching rust/core/src/pyramid.rs::assemble_parent.
-          const children: (Uint8ClampedArray | undefined)[] = [];
-          for (let dy = 0; dy < 2; dy++) {
-            for (let dx = 0; dx < 2; dx++) {
-              const child = await this.db.get<StoredTile>(`tile/${tileKey(meta.id, level - 1, x * 2 + dx, y * 2 + dy)}`);
-              children.push(child ? await this.codec.decode(child.blob, size) : undefined);
-            }
+      for (let step = session.step(); step.kind !== 'done'; step = session.step()) {
+        if (step.kind === 'index') {
+          for await (const row of iterate<TileIndex>(this.db, `tile-index/${meta.id}/${step.level - 1}/`)) {
+            const { x, y } = session.queue(row.value.x, row.value.y);
+            await this.db.put(`pyramid-todo/${meta.id}/${step.level}/${x}_${y}`, { x, y });
           }
-          const any = children.some((c) => c);
-          if (any) {
-            const parent = core().assemblePyramidParent(children, size);
-            const blob = await this.codec.encode(parent), key = tileKey(meta.id, level, x, y);
+        } else if (step.kind === 'children') {
+          const children: (Uint8ClampedArray | undefined)[] = [];
+          for (const c of step.children) {
+            const child = await this.db.get<StoredTile>(`tile/${tileKey(meta.id, c.level, c.x, c.y)}`);
+            children.push(child ? await this.codec.decode(child.blob, size) : undefined);
+          }
+          session.provide(children);
+        } else if (step.kind === 'parent') {
+          const { level, x, y } = step;
+          if (step.pixels) {
+            const blob = await this.codec.encode({ width: size, height: size, data: step.pixels }), key = tileKey(meta.id, level, x, y);
             await this.db.putMany([{
               key: `tile/${key}`,
               value: { blob, x, y, level, owner: new Uint32Array(), score: new Float32Array() },
             }, { key: `tile-index/${key}`, value: { canvasId: meta.id, level, x, y, observed: 0 } satisfies TileIndex }]);
           }
-          await this.db.delete(row.key);
+          await this.db.delete(`pyramid-todo/${meta.id}/${level}/${x}_${y}`);
           await onProgress();
+        } else {
+          meta.maxLevel = step.level;
+          await this.db.put(`canvas/${meta.id}`, meta);
         }
-        meta.maxLevel = level;
-        await this.db.put(`canvas/${meta.id}`, meta);
       }
     } finally {
+      session.free();
       // Best-effort: never leave a half-drained work queue behind on a thrown error either.
       try {
         await deletePrefix(this.db, `pyramid-todo/${meta.id}/`);

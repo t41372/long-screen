@@ -13,7 +13,7 @@ export function writeRect(exports: CoreExports, ptr: number, r: Rect): void {
 
 /** Writes one region's `VOTING_REGION_BYTES`-byte wire descriptor at `base + o`: rect, exclusions, crop, solid
  *  flag and mask — the format `ls_voting_new`, `ls_regions_label_atlas`, `ls_track_odometry` and
- *  `ls_frame_paint_tile` all read. `exclusionsPtr`/`cropPtr`/`maskPtr` must already be allocated (scratch or
+ *  `ls_framing_new` all read. `exclusionsPtr`/`cropPtr`/`maskPtr` must already be allocated (scratch or
  *  persistent, whichever the caller uses) with room for the region's exclusions rects, crop rect and mask
  *  bytes respectively; pass 0 for whichever the region has none of. */
 export function writeRegionDescriptor(

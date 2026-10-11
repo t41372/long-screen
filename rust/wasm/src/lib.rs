@@ -17,7 +17,7 @@
 //!      a bad argument), and `ls_probe_scale`, whose count is 0 or 1 (no candidate passed the gates / one did,
 //!      written to `out`).
 //!   4. A handle (> 0) or `STATUS_BAD_ARGUMENT`: `ls_learner_new`, `ls_voting_new`, `ls_pose_graph_new`,
-//!      `ls_temporal_index_new`, `ls_png_encode`.
+//!      `ls_temporal_index_new`, `ls_png_encode`, `ls_pyramid_new`, `ls_framing_new`.
 //!   5. A plain numeric result with its own out-of-band sentinel, no status code: `ls_stationary_boundary`
 //!      (−1.0 none, −2.0 bad argument), `ls_verify_translation` (`NaN` bad argument), `ls_detect_scale` and
 //!      `ls_mean_difference` (a neutral default — 1.0 / 255.0 — on a bad argument, since callers cannot branch
@@ -25,7 +25,8 @@
 //!   6. A result length (≥ 0, the result waiting in the handle for its `_take`) or a negative status, some with
 //!      their own meaning: the engine state objects (`ls_pose_graph_*`, see `pose_graph.rs` for its
 //!      missing-node statuses; `ls_keyframe_index_retrieve`; the solve session `ls_solve_*`, whose pose-graph
-//!      failures use the same missing-node statuses).
+//!      failures use the same missing-node statuses; `ls_pyramid_step`; `ls_framing_step`, whose −2 is a tile
+//!      asked for and not inserted).
 
 mod bytes;
 mod chrome;

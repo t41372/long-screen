@@ -46,6 +46,12 @@ export interface CoreExports {
     size: number,
     out: number,
   ): number;
+  ls_pyramid_new(canvas: number, canvasLen: number, width: number, height: number, size: number): number;
+  ls_pyramid_free(handle: number): void;
+  ls_pyramid_queue(handle: number, x: number, y: number, out: number): number;
+  ls_pyramid_provide(handle: number, children: number): number;
+  ls_pyramid_step(handle: number): number;
+  ls_pyramid_take(handle: number, out: number, len: number): number;
   ls_overwrite_tile(
     tile: number,
     rgba: number,
@@ -507,16 +513,13 @@ export interface CoreExports {
   ): number;
   ls_frame_layout(sourceWidth: number, sourceHeight: number, pane: number, boundsWidth: number, boundsHeight: number, out: number): number;
   ls_frame_coordinate(layout: number, x: number, y: number, out: number): number;
-  ls_frame_backgrounds(
-    source: number,
-    sourceWidth: number,
-    sourceHeight: number,
-    pane: number,
-    rowsOut: number,
-    columnsOut: number,
-  ): number;
-  ls_frame_paint_tile(desc: number): number;
-  ls_frame_fold_evidence(desc: number): number;
+  ls_framing_new(input: number, len: number, ignore: number, ignoreCount: number): number;
+  ls_framing_free(handle: number): void;
+  ls_framing_reference(handle: number, frame: number, rgba: number, width: number, height: number): number;
+  ls_framing_index(handle: number, x: number, y: number, observed: number): number;
+  ls_framing_step(handle: number, tiles: number, now: number): number;
+  ls_framing_take(handle: number, out: number, len: number): number;
+  ls_framing_detached(handle: number, out: number): number;
 }
 
 /** Byte layouts shared with `rust/wasm/src/wire.rs`. Asserted against the live module's `ls_layout` once
