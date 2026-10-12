@@ -4,6 +4,7 @@
 
 ## 目录
 
+- [2026-09-original-requirements.md](2026-09-original-requirements.md) — 项目开始时写的核心需求与技术目标：完全在浏览器端侧、质量优先，从录屏重建背后的二维画布。现在做到什么、没做什么，以 `docs/CAPABILITIES.md` 为准。
 - [2026-09-22-rust-wasm-assessment.md](2026-09-22-rust-wasm-assessment.md) — 迁移前写的评估：为什么要把算法迁到 Rust/Wasm、隔离原型的实测数字、迁移顺序与验收标准。迁移已完成；这份文档记录的是当时还没做、需要论证的状态。
 - [2026-09-rust-migration-log.md](2026-09-rust-migration-log.md) — 上面那份评估之后，几轮交接的持续更新日志：逐模块迁移进度、每一轮的基准数字、Safari 崩溃与隐私浏览排查、WebGPU 评估结论。曾经是接手前必读的文档；现在架构已经稳定，先读 `docs/ARCHITECTURE.md`。
 - [2026-09-review.md](2026-09-review.md) — 一轮内部代码 review（下称"2026-09 review"）之后，已验证修复与性能记录的汇总。不是 review 本身的完整清单（那份没有单独存档），只是这一轮已经落实的部分。

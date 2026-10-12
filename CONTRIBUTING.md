@@ -7,14 +7,59 @@ Thanks for taking a look. This file has two parts: how to propose a change, and 
 - **Bugs and ideas:** open a [GitHub issue](https://github.com/t41372/long-screen/issues). For a wrong result, say which browser or package you used and, if you can share it, attach the recording or a short clip that shows the problem. A screenshot of the print and the diagnostics from the log sheet help too.
 - **Pull requests:** small and focused is easiest to review. Say what changed and why, and how you checked it.
 
-Setting up: install [Deno](https://deno.com) 2.x and [rustup](https://rustup.rs); rustup fetches the pinned Rust toolchain on the first build. Then:
+### Setting up
+
+Install [Deno](https://deno.com) 2.x and [rustup](https://rustup.rs); rustup fetches the pinned Rust toolchain on the first build. `deno task start` builds the app and serves it on http://localhost:4173. The other tasks:
 
 ```sh
-deno task start   # build and serve the app on http://localhost:4173
-deno task test    # Rust tests plus the Deno unit and scenario tests
-deno task fmt     # format before you commit
-deno task lint    # formatting, deno lint and clippy: run it before calling a change done
+deno task build:core     # compiles only the Rust core to rust/target/{scalar,simd,threads}
+deno task build          # builds the Rust core + bundles TS into dist/ (for testing/dev, with test harness and source maps)
+deno task build:prod     # same, minus the test harness and source maps, for production deployment
+deno task build:package  # the TypeScript package into dist-package/
+deno task check          # full type check
+deno task test           # builds the core, runs the Rust tests (cargo), then the Deno unit and scenario end-to-end tests (no browser)
+deno task coverage       # the Deno tests plus per-file line-coverage floors (scripts/coverage.ts)
+deno task test:browser   # decoding, reconstruction, UI, and export tests in real Chrome + Playwright WebKit
+deno task test:python    # builds the Python wheel into a fresh venv and runs its pytest suite (needs uv)
+deno task lint           # deno fmt --check + deno lint + cargo fmt --check + clippy
+deno task fmt            # deno fmt + cargo fmt
+deno task bench          # native benchmarks of the core kernels on the public test recordings
+deno task fixtures       # generates missing encoded test fixtures with ffmpeg (existing files are not overwritten)
+deno task fingerprint    # byte-level fingerprinting tool per scenario, per persisted row; see docs/TESTING.md
 ```
+
+Browser tests (`deno task test:browser`) require Google Chrome (the Chromium bundled with Playwright doesn't include H.264) and Playwright's WebKit: `npx playwright@1.58.2 install webkit` (requires Node.js; the version matches the `playwright` entry in `deno.json`). `deno task fixtures` requires ffmpeg.
+
+Run `deno task fmt` before committing and `deno task lint` before calling a change done.
+
+### Where things are
+
+```text
+rust/long-screen  The one published crate: the native driver library and the `long-screen` command line, with its layers as modules:
+  src/kernels     The algorithms (motion, layers, tracking, compositing, presentation kernels), with no FFI
+  src/engine      The run's state machine (scan, solve, render, presentation), driven step by step by a host
+  src/decode      Native video decoding: AVFoundation, Media Foundation, or a user-installed ffmpeg
+rust/wasm         The kernels' and engine's extern "C" exports; compiles into the three builds core.wasm / core.simd.wasm / core.threads.wasm
+rust/python       The Python package (PyO3 + maturin) over rust/long-screen
+rust/bench        Native benchmarks of the core kernels on the public test recordings
+src/core          TS shell around the core: registration, layering, pose graph, keyframes, compositing, rasterization, loading the core and picking its build (src/core/wasm/**)
+src/media         Container parsing (Input/BlobSource/EncodedPacketSink from the npm package mediabunny), ranged reads, WebCodecs decoding
+src/codec         TS orchestration layer for PNG encode/decode; chunk/CRC validation goes through the core
+src/pipeline      Orchestration of the three-pass engine (scan/solve/render); conflict resolution and pose-graph optimization themselves are already in the Rust core, this is call ordering and KV I/O
+src/storage       IndexedDB / in-memory KV, tiles, diagnostics
+src/synthetic     Synthetic scenes, renderer, ground-truth validator (used by the tests)
+src/export        ZIP64 (via the npm package client-zip), PNG paging, offline viewer
+src/ui            UI and tile viewer
+src/package       The npm package's entry: reconstruct() driving the app's worker from another page
+scripts           Build (build.ts/build-core.sh), benchmarks, fingerprinting, sample generation, and other tooling scripts
+static            COOP/COEP `_headers`, dev harness page, and other static assets
+tests/unit        Pure Deno unit tests, scenario end-to-end tests, TS↔Rust byte-level parity checks under `tests/unit/parity/`
+tests/support     Test core loader, scenario ground-truth validation, frozen parity reference implementations (tests/support/reference/)
+tests/browser     Playwright driving real Chrome + WebKit
+tests/package     A third-party page using the built package (driven by tests/browser/package.test.ts)
+```
+
+### Rules
 
 [AGENTS.md](AGENTS.md) holds the project's rules (it is written for coding agents, but it is the same rulebook for people). The ones that matter most:
 
@@ -47,7 +92,9 @@ GH_TOKEN=$(gh auth token) uvx zizmor --pedantic .github/workflows
 
 ### Deploying the web app
 
-Push to `main`. Cloudflare Pages runs `bash scripts/pages-build.sh` and publishes `dist/` within a few minutes; any other branch gets a preview URL instead. After a deploy, open the site and run the sample recording once. The threaded core needs the COOP/COEP headers from `static/_headers`; `curl -sI https://long-screen.yi-ting.com/` should list them. [README.md](README.md#deployment) has the details.
+Push to `main`. Cloudflare Pages runs `bash scripts/pages-build.sh` and publishes `dist/` within a few minutes; any other branch gets a preview URL instead. After a deploy, open the site and run the sample recording once. The threaded core needs the COOP/COEP headers from `static/_headers`; `curl -sI https://long-screen.yi-ting.com/` should list them. [README.md](README.md#deployment) covers hosting a copy anywhere else.
+
+This repository deploys through Cloudflare Pages' Git integration: on a push to `main`, Cloudflare pulls the repository, runs `bash scripts/pages-build.sh` and publishes `dist/`; a push to any other branch creates a preview deployment. The Pages build image has neither Rust nor Deno installed, so the script first installs rustup and the toolchain pinned in `rust/rust-toolchain.toml`, then runs `deno task build:prod` with the official `deno` package from npm. Set it up once in the Cloudflare dashboard: Workers & Pages → Create → Pages → Connect to Git, pick this repository, production branch `main`, build command `bash scripts/pages-build.sh`, build output directory `dist`. No API token, repository secret or GitHub Actions is needed.
 
 ### Releasing
 

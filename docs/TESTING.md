@@ -135,7 +135,7 @@ Playwright 自带的 WebKit 26 会对标了 BT.709 传递函数的 SDR H.264 做
 
 ### 局部真值（recording oracles）
 
-真实录屏没有整图真值，但有一些位置能从原生帧里确知应该是什么：`docs/benchmarks/2026-10-03-recording-oracles.json` 按录屏列出这些世界矩形（f 22 处、c 7 处、0 两处，a、b、d、e 少量仅供参考），`scripts/check-recording-oracles.py` 把输出画布与 ffmpeg 独立解码的原生帧逐像素比较。检查分几种：纯色（例如 c 的滚动条轨道必须是白的）、与指定原生帧足够接近、白字不能变暗，以及「完整时刻」——整片区域必须完整来自同一帧，并且与那一帧足够接近。完整时刻只认揭示阶段的 `reveal/<canvas>` 来源行（docs/FORMAT.md）：整片覆盖的每一块都必须是同一帧的整块拷贝。
+真实录屏没有整图真值，但有一些位置能从原生帧里确知应该是什么：`scripts/recording-oracles.json` 按录屏列出这些世界矩形（f 22 处、c 7 处、0 两处，a、b、d、e 少量仅供参考），`scripts/check-recording-oracles.py` 把输出画布与 ffmpeg 独立解码的原生帧逐像素比较。检查分几种：纯色（例如 c 的滚动条轨道必须是白的）、与指定原生帧足够接近、白字不能变暗，以及「完整时刻」——整片区域必须完整来自同一帧，并且与那一帧足够接近。完整时刻只认揭示阶段的 `reveal/<canvas>` 来源行（docs/FORMAT.md）：整片覆盖的每一块都必须是同一帧的整块拷贝。
 
 ```sh
 deno run --allow-all scripts/benchmark-pipeline.ts --input test_case/f.mov --export-canvases --no-profile --output test-results/oracles/f

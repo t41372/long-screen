@@ -507,7 +507,7 @@ PyO3 绑定（`long-screen-py`，cdylib，导入名 `long_screen._native`；依�
 - `export-catalog.ts` — 把 `src/i18n` 的 `diag`、`progress`、`names` 三节导出成 `rust/long-screen/catalog/*.json`（`deno task export-catalog`，`--check` 只检查）；遇到 Rust 格式化器不支持的写法（嵌套 `$t()`、格式化器、`{{- }}`、复数键）直接报错。
 - `compare-tiles.ts` — `benchmark-pipeline.ts --verify-tiles` 产出的逐瓦片指纹按字段比较，定位差异瓦片。
 - `benchmark-pipeline.ts` — 真实 Chrome（Playwright）下的端到端流水线基准，支持 `--baseline-root`/`--verify-tiles`；`--export-canvases` 另写出各画布 PNG 与局部真值检查要读的证据行，`--skip-core-build` 复用已构建的核心，`--no-profile` 不录 CPU profile。
-- `check-recording-oracles.py` — 真实录屏的局部真值检查：按 `docs/benchmarks/2026-10-03-recording-oracles.json` 里的世界矩形，把输出与 ffmpeg 独立解码的原生帧比较；完整时刻检查读 `reveal/<canvas>` 来源行；`--reference browser` 用与应用相同的矩阵和色度插值生成参照帧（docs/TESTING.md）。
+- `check-recording-oracles.py` — 真实录屏的局部真值检查：按 `scripts/recording-oracles.json` 里的世界矩形，把输出与 ffmpeg 独立解码的原生帧比较；完整时刻检查读 `reveal/<canvas>` 来源行；`--reference browser` 用与应用相同的矩阵和色度插值生成参照帧（docs/TESTING.md）。
 - `benchmark-kernels.ts` — Deno V8 下的核心内核微基准（投票环 observe、一致性掩码、瓦片合成）。
 - `benchmark-ts-vs-rust.ts` — 同输入同算法，冻结 TS oracle 对 Rust 核心的逐内核计时对比。
 - `benchmark-png.ts` — PNG 编解码基准。

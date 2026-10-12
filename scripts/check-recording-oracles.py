@@ -114,7 +114,7 @@ def main():
     parser.add_argument('--video', required=True, type=Path)
     parser.add_argument('--result', required=True, type=Path)
     parser.add_argument('--output', type=Path, help='Write a separate review without replacing an earlier oracle report')
-    parser.add_argument('--manifest', type=Path, default=Path(__file__).resolve().parent.parent / 'docs/benchmarks/2026-10-03-recording-oracles.json')
+    parser.add_argument('--manifest', type=Path, default=Path(__file__).resolve().parent / 'recording-oracles.json')
     parser.add_argument('--reference', choices=['ffmpeg', 'browser'], default='ffmpeg')
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text())

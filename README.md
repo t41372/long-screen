@@ -84,7 +84,7 @@ long-screen recording.mov -o print.png --json report.json
 
 It writes the print, the canvas the web app shows first, as one PNG (fragments it could not place go next to it as `print-fragment-<n>.png` in the app's order, or use `--out-dir` for every canvas), progress and warnings on stderr, and with `--json` a report of the diagnostics, canvases and timings; `--lang zh`, `--threads`, `--memory-mb` and `--help` for the rest. Exit codes: 0 complete, 3 partial result, 1 the run failed, 4 the video could not be opened, 5 an output could not be written, 2 any other error.
 
-On macOS and Windows it decodes with the system decoder (AVFoundation, Media Foundation). On Linux, and for files the system decoder cannot read (WebM on macOS, for example), it runs a user-installed `ffmpeg` and `ffprobe` (e.g. `sudo apt install ffmpeg`); ffmpeg is not bundled. Its rows match the web app's row for row on the same frames (`scripts/native-parity.ts` checks this).
+On macOS and Windows it decodes with the system decoder (AVFoundation, Media Foundation). On Linux, and for files the system decoder cannot read (WebM on macOS, for example), it runs a user-installed `ffmpeg` and `ffprobe` (e.g. `sudo apt install ffmpeg`); ffmpeg is not bundled. Given the same frames, its result matches the web app's exactly.
 
 ### Rust library
 
@@ -128,7 +128,7 @@ result.save("print.png")  # fragments: result.fragments; NumPy: result.print_ima
 print(result.status, [d["code"] for d in result.diagnostics if d["severity"] != "info"])
 ```
 
-It decodes the way the command line does, and `reconstruct_frames` takes frames you decoded yourself. The engine runs with the GIL released; Ctrl-C stops it at the next step. On macOS its rows are identical to the command line's and the web app's (`rust/python/tests/parity_*.py` check this). The package's own README ([rust/python/README.md](rust/python/README.md)) has the API. From a checkout, `deno task test:python` builds and tests it (needs [uv](https://docs.astral.sh/uv/)), and `cd rust/python && maturin build --release` makes just the wheel.
+It decodes the way the command line does, and `reconstruct_frames` takes frames you decoded yourself. The engine runs with the GIL released; Ctrl-C stops it at the next step. Its results are the same as the command line's and the web app's. The package's own README ([rust/python/README.md](rust/python/README.md)) has the API.
 
 ### TypeScript package
 
@@ -145,7 +145,7 @@ const run = reconstruct(file, { locale: 'en', onProgress: (p) => console.log(p.p
 const { status, prints, diagnostics } = await run.result; // prints[i].png is a native-size PNG Blob
 ```
 
-It runs the app's worker and Wasm core unchanged, in a Worker next to `index.js`; `run.pause()`, `resume()`, `stop()` and `cancel()` control it. Each call keeps its working rows in an IndexedDB database of its own and deletes it before `result` settles. Vite and webpack pick up the worker and Wasm files by themselves; without a bundler, serve the package folder from your own origin. A cross-origin-isolated page (COOP/COEP, see [Deployment](#deployment)) runs the threaded core, any other page the single-thread one, with the same result; its PNGs match the app's byte for byte in Chrome and WebKit (`tests/browser/package.test.ts`). The package's own README ([src/package/README.md](src/package/README.md)) has the details. From a checkout, `deno task build:package` builds it into `dist-package/`.
+It runs the app's worker and Wasm core unchanged, in a Worker next to `index.js`; `run.pause()`, `resume()`, `stop()` and `cancel()` control it. Each call keeps its working rows in an IndexedDB database of its own and deletes it before `result` settles. Vite and webpack pick up the worker and Wasm files by themselves; without a bundler, serve the package folder from your own origin. A cross-origin-isolated page (COOP/COEP, see [Deployment](#deployment)) runs the threaded core, any other page the single-thread one, with the same result; its PNGs match the app's byte for byte in Chrome and WebKit. The package's own README ([src/package/README.md](src/package/README.md)) has the details.
 
 ## How it works
 
@@ -159,57 +159,21 @@ File / Blob (chunked random-access reads via the npm package mediabunny)
   → IndexedDB native-size tiles / coverage bitmap / diagnostics
 ```
 
-Decoding is the only step that depends on browser APIs: `FrameSource` produces `RGBA`, not a canvas, for the passes that follow. Registration, layering, the pose graph, compositing, tile encode/decode, and other algorithms all live in the Wasm core compiled from `rust/long-screen` (its `kernels` and `engine` modules); TypeScript is a thin shell around it (UI, Worker RPC, I/O, orchestration). Deno tests and the browser load the same core, so algorithm behavior verified in Deno is the same behavior you get in the browser. Outside the browser, `rust/long-screen` drives the same engine with native decoders in place of WebCodecs and an in-memory store in place of IndexedDB. See the [architecture doc](docs/ARCHITECTURE.md) (in Chinese) for details (sections 11 and 12 are the current module-by-module ownership list and what's deliberately kept in TS); the history of the migration is recorded in [docs/history/2026-09-rust-migration-log.md](docs/history/2026-09-rust-migration-log.md) (finished, doesn't reflect current state).
+Decoding is the only step that depends on browser APIs: `FrameSource` produces `RGBA`, not a canvas, for the passes that follow. Registration, layering, the pose graph, compositing, tile encode/decode, and other algorithms all live in the Wasm core compiled from `rust/long-screen` (its `kernels` and `engine` modules); TypeScript is a thin shell around it (UI, Worker RPC, I/O, orchestration). Deno tests and the browser load the same core, so algorithm behavior verified in Deno is the same behavior you get in the browser. Outside the browser, `rust/long-screen` drives the same engine with native decoders in place of WebCodecs and an in-memory store in place of IndexedDB. The [architecture doc](docs/ARCHITECTURE.md) (in Chinese) has the details; its sections 11 and 12 list which module owns what and what stays in TypeScript on purpose.
 
-### Directory layout
+## Deployment
 
-```text
-rust/long-screen  The one published crate: the native driver library and the `long-screen` command line, with its layers as modules:
-  src/kernels     The algorithms (motion, layers, tracking, compositing, presentation kernels), with no FFI
-  src/engine      The run's state machine (scan, solve, render, presentation), driven step by step by a host
-  src/decode      Native video decoding: AVFoundation, Media Foundation, or a user-installed ffmpeg
-rust/wasm         The kernels' and engine's extern "C" exports; compiles into the three builds core.wasm / core.simd.wasm / core.threads.wasm
-rust/python       The Python package (PyO3 + maturin) over rust/long-screen
-rust/bench        Native benchmarks of the core kernels on the public test recordings
-src/core          TS shell around the core: registration, layering, pose graph, keyframes, compositing, rasterization, loading the core and picking its build (src/core/wasm/**)
-src/media         Container parsing (Input/BlobSource/EncodedPacketSink from the npm package mediabunny), ranged reads, WebCodecs decoding
-src/codec         TS orchestration layer for PNG encode/decode; chunk/CRC validation goes through the core
-src/pipeline      Orchestration of the three-pass engine (scan/solve/render); conflict resolution and pose-graph optimization themselves are already in the Rust core, this is call ordering and KV I/O
-src/storage       IndexedDB / in-memory KV, tiles, diagnostics
-src/synthetic     Synthetic scenes, renderer, ground-truth validator (used by the tests)
-src/export        ZIP64 (via the npm package client-zip), PNG paging, offline viewer
-src/ui            UI and tile viewer
-src/package       The npm package's entry: reconstruct() driving the app's worker from another page
-scripts           Build (build.ts/build-core.sh), benchmarks, fingerprinting, sample generation, and other tooling scripts
-static            COOP/COEP `_headers`, dev harness page, and other static assets
-tests/unit        Pure Deno unit tests, scenario end-to-end tests, TS↔Rust byte-level parity checks under `tests/unit/parity/`
-tests/support     Test core loader, scenario ground-truth validation, frozen parity reference implementations (tests/support/reference/)
-tests/browser     Playwright driving real Chrome + WebKit
-tests/package     A third-party page using the built package (driven by tests/browser/package.test.ts)
-```
+`deno task build:prod` writes a static site to `dist/`. To host your own copy:
 
-## Development
+- Use a host that applies a `_headers` file, such as Cloudflare Pages or Netlify. `static/_headers` sets the COOP/COEP/CORP headers the threaded core needs, plus `no-cache`. Without them (on GitHub Pages, for example) the app still works, on the single-threaded core.
+- The host must send those headers on 304 responses too, not only on 200: a 304 without CORP once broke downloads in WebKit's private browsing. Check a repeated request in the browser's devtools. The dev server (`deno task start`) adds them to every response.
+- Keep `sw.js` next to `index.html`, where the build puts it, so the offline service worker covers the whole app.
 
-```sh
-deno task build:core     # compiles only the Rust core to rust/target/{scalar,simd,threads}
-deno task build          # builds the Rust core + bundles TS into dist/ (for testing/dev, with test harness and source maps)
-deno task build:prod     # same, minus the test harness and source maps, for production deployment
-deno task build:package  # the TypeScript package into dist-package/
-deno task check          # full type check
-deno task test           # builds the core, runs the Rust tests (cargo), then the Deno unit and scenario end-to-end tests (no browser)
-deno task coverage       # the Deno tests plus per-file line-coverage floors (scripts/coverage.ts)
-deno task test:browser   # decoding, reconstruction, UI, and export tests in real Chrome + Playwright WebKit
-deno task test:python    # builds the Python wheel into a fresh venv and runs its pytest suite (needs uv)
-deno task lint           # deno fmt --check + deno lint + cargo fmt --check + clippy
-deno task fmt            # deno fmt + cargo fmt
-deno task bench          # native benchmarks of the core kernels on the public test recordings
-deno task fixtures       # generates missing encoded test fixtures with ffmpeg (existing files are not overwritten)
-deno task fingerprint    # byte-level fingerprinting tool per scenario, per persisted row; see docs/TESTING.md
-```
+How the production site is set up on Cloudflare Pages is in [CONTRIBUTING.md](CONTRIBUTING.md#deploying-the-web-app).
 
-Browser tests (`deno task test:browser`) require Google Chrome (the Chromium bundled with Playwright doesn't include H.264) and Playwright's WebKit: `npx playwright@1.58.2 install webkit` (requires Node.js; the version matches the `playwright` entry in `deno.json`). `deno task fixtures` requires ffmpeg. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to propose a change and how releases work; [AGENTS.md](AGENTS.md) collects the project's rules and the commands for running a single test.
+## Contributing and documentation
 
-### Documentation
+[CONTRIBUTING.md](CONTRIBUTING.md) explains how to build and test a checkout, how to propose a change, and how the web app and the packages are released. [AGENTS.md](AGENTS.md) collects the project's rules.
 
 - [Capabilities](docs/CAPABILITIES.md): what is tested and what is not implemented.
 - [Architecture](docs/ARCHITECTURE.md): the pipeline, its invariants, and which module owns what.
@@ -218,12 +182,6 @@ Browser tests (`deno task test:browser`) require Google Chrome (the Chromium bun
 - [Releasing](docs/RELEASING.md): the registries, step by step.
 
 The files under `docs/` are in Chinese.
-
-## Deployment
-
-The `dist/` produced by `deno task build:prod` is a static site — upload it to any static host that respects a `_headers` file (Cloudflare Pages, Netlify; `static/_headers` is copied as-is and sets the COOP/COEP/CORP response headers needed for the threaded build, plus a caching policy). Keep the service worker `sw.js` next to `index.html`, where the build puts it, so its scope covers the whole app; the `no-cache` policy applies to it like everything else. GitHub Pages is no longer the recommended host: it can't set custom response headers, which means the page isn't cross-origin isolated and the Wasm core falls back to the single-threaded build (it still runs, just without thread acceleration). **The host must send all three headers on 304 responses too**, not only on 200: the dev server (`deno task start`) reattaches them to every response, but static hosts don't necessarily behave consistently here — a 304 missing the CORP header once broke the download flow in WebKit private browsing (see the commit history entry "dev server re-applies COOP/COEP/CORP to every response"); whether the `_headers` file itself applies to 304s varies by host, so verify on the real host when deploying (check a repeated request with `If-None-Match` in the browser devtools to confirm the 304 response also carries all three headers).
-
-This repository deploys through Cloudflare Pages' Git integration: on a push to `main`, Cloudflare pulls the repository, runs `bash scripts/pages-build.sh` and publishes `dist/`; a push to any other branch creates a preview deployment. The Pages build image has neither Rust nor Deno installed, so the script first installs rustup and the toolchain pinned in `rust/rust-toolchain.toml`, then runs `deno task build:prod` with the official `deno` package from npm. Set it up once in the Cloudflare dashboard: Workers & Pages → Create → Pages → Connect to Git, pick this repository, production branch `main`, build command `bash scripts/pages-build.sh`, build output directory `dist`. No API token, repository secret or GitHub Actions is needed.
 
 ## License
 
