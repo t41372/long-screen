@@ -29,6 +29,22 @@ pub fn relocalize_verdict(m: Option<MatchInfo>, zoom_change: bool) -> bool {
     }
 }
 
+/// Whether an anchor re-acquisition contradicts the step odometry's rescue measured: the step it implies (re-acquired
+/// pose minus the current pose) is [`SAME_PLACE`] or more from the rescue's. Both measure the same frame, so they agree
+/// to a pixel or two when both are right, and the re-acquisition is then kept, as it carries no drift. When they
+/// disagreed, the rescue was the one that was right. On a Mac recording of a long web page the two met on 176 frames:
+/// 130 agreed within 3 px; of the other 46, one was an ambiguous re-acquisition at confidence 0.04 on a periodic alias,
+/// 1790 px off, 44 matched a screen-fixed panel in the moving layer at zero offset from the anchor during a fast fling,
+/// unambiguous and more confident than the rescue (0.38–0.53 against 0.25–0.44), and one was 442 px off at 0.23.
+/// Neither a confidence floor nor a comparison of confidences separates the 44.
+pub fn reacquisition_contradicts_rescue(implied_step: (f64, f64), rescue: (f64, f64)) -> bool {
+    js_hypot(implied_step.0 - rescue.0, implied_step.1 - rescue.1) >= SAME_PLACE
+}
+
+/// Distance at which two placements of the same content disagree (a loop closure's discrepancy, a thin-overlap
+/// correction, a re-acquisition against the rescue).
+const SAME_PLACE: f64 = 16.0;
+
 /// The three branches `track.ts::fragmentCause` chooses between: the trivial "gate" ("pure
 /// part"). `ZoomChange` means the caller returns `{ scale: fieldZoom, error: 0 }` directly;
 /// `ProbeScale` means the caller runs the existing `probeScale` kernel; `None` means "no cause"
@@ -130,7 +146,7 @@ pub fn thin_overlap_correction(
         canonical_keyframe.1 + offset.1,
     );
     let discrepancy = js_hypot(target.0 - pose.0, target.1 - pose.1);
-    if discrepancy >= 16.0 {
+    if discrepancy >= SAME_PLACE {
         Some((target, discrepancy))
     } else {
         None
@@ -159,9 +175,9 @@ pub fn loop_closure_verdict(
         global_keyframe.0 + shift.0 + global_offset.0 - pose.0,
         global_keyframe.1 + shift.1 + global_offset.1 - pose.1,
     );
-    if !global_ambiguous && global_confidence > 0.72 && discrepancy < 16.0 {
+    if !global_ambiguous && global_confidence > 0.72 && discrepancy < SAME_PLACE {
         (LoopVerdict::Closure, discrepancy)
-    } else if discrepancy >= 16.0 {
+    } else if discrepancy >= SAME_PLACE {
         (LoopVerdict::Inconsistent, discrepancy)
     } else if global_ambiguous {
         (LoopVerdict::Ambiguous, discrepancy)

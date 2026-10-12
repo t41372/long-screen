@@ -25,6 +25,30 @@ mod tests {
     use super::*;
     use crate::kernels::motion::MatchPoints;
 
+    // Failure cases, from a recording's trace (implied step, rescue): the ambiguous alias at frame 230
+    // ((0, -1562), (0, 228)), a snap-back onto a screen-fixed panel at frame 1394 ((0, 0), (0, -336)) and frame 1527
+    // ((0, -358), (0, -800)) kept over the rescue; the same step measured both ways (frame 1175, (0, 951) and (0, 948))
+    // or a step of zero both ways refused.
+    #[test]
+    fn a_reacquisition_contradicts_the_rescue_only_by_a_different_place() {
+        assert!(reacquisition_contradicts_rescue(
+            (0.0, -1562.0),
+            (0.0, 228.0)
+        ));
+        assert!(reacquisition_contradicts_rescue((0.0, 0.0), (0.0, -336.0)));
+        assert!(reacquisition_contradicts_rescue(
+            (0.0, -358.0),
+            (0.0, -800.0)
+        ));
+        assert!(reacquisition_contradicts_rescue((16.0, 0.0), (0.0, 0.0)));
+        assert!(!reacquisition_contradicts_rescue(
+            (0.0, 951.0),
+            (0.0, 948.0)
+        ));
+        assert!(!reacquisition_contradicts_rescue((0.0, 0.0), (0.0, 0.0)));
+        assert!(!reacquisition_contradicts_rescue((11.0, 11.0), (0.0, 0.0)));
+    }
+
     #[test]
     fn uncertainty_thresholds() {
         assert!(uncertainty(0.5999999999999999, false, false));

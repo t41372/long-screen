@@ -3,24 +3,28 @@
 //! revisit search that never resumes, or resumes with rows the store lost; a pose driven non-finite or out of range
 //! by odometry or drift control, which must start a fresh fragment and never reach a placement; an attachment or
 //! thin-overlap correction with an invalid pose, which must be rejected before anything is stored; a step the plain
-//! native error rejected but odometry measured, which must be placed instead of starting a fragment (and only then);
-//! and frames still in the voting ring when the frames end, which must still be finalised.
+//! native error rejected but odometry measured, which must be placed instead of starting a fragment (and only then),
+//! and which an anchor re-acquisition that contradicts it must not replace; and frames still in the voting ring when
+//! the frames end, which must still be finalised.
 //!
 //! Frames are windows onto a synthetic textured page; [`Seams`] replaces a core decision where a test needs one.
 
 use super::*;
 use crate::engine::pose_graph::PoseRow;
-use crate::kernels::track::{DriftEstimate, OdometryDecision, OdometryEstimate, Rescue};
+use crate::kernels::track::{
+    DriftEstimate, OdometryDecision, OdometryEstimate, ReacquireEstimate, Rescue,
+};
 
 type OdometrySeam = Box<dyn FnMut(u32, &mut OdometryEstimate) -> bool>;
 type Seam<T> = Box<dyn FnMut(&mut Option<T>)>;
 
 /// Replacements for core decisions. `odometry` may edit a frame's estimate and returns whether that frame's anchor
-/// re-acquisition fails; `thin` also opens the thin-overlap gate.
+/// re-acquisition fails; `reacquire` may replace a re-acquisition's result; `thin` also opens the thin-overlap gate.
 #[derive(Default)]
 pub(crate) struct Seams {
     pub odometry: Option<OdometrySeam>,
     pub reacquire_fails: bool,
+    pub reacquire: Option<Seam<ReacquireEstimate>>,
     pub drift: Option<Seam<DriftEstimate>>,
     pub attach: Option<Seam<(f64, f64)>>,
     pub thin: Option<Seam<((f64, f64), f64)>>,
@@ -464,6 +468,65 @@ fn a_rejected_step_that_odometry_measured_is_placed_instead_of_a_fragment() {
             || host.codes().contains(&"SCALE_CHANGE_FRAGMENT")
     );
     assert_eq!(host.canvases().len(), 2);
+}
+
+/// Rejects the first tracked step of frame 3 onwards and offers it as a rescue, as [`rejected`] does, but lets the
+/// anchor re-acquisition succeed with `found` (relative to the anchor, frame 0 at the origin: the scroll stays within
+/// a keyframe's distance until frame 3).
+fn reacquired(found: ReacquireEstimate) -> (Host, Vec<FrameDone>) {
+    let page = page();
+    let (mut host, mut s) = (Host::default(), session(true));
+    let mut done = false;
+    s.seams.odometry = Some(Box::new(move |frame, est| {
+        if done || frame < 3 || est.decision != OdometryDecision::Tracked {
+            return false;
+        }
+        done = true;
+        est.decision = OdometryDecision::Lost;
+        est.rescue = Some(Rescue {
+            delta: est.delta,
+            confidence: 0.3,
+            ambiguous: false,
+            weak_step: false,
+            step_error: 20.0,
+        });
+        false
+    }));
+    let mut found = Some(found);
+    s.seams.reacquire = Some(Box::new(move |top| {
+        if let Some(found) = found.take() {
+            *top = Some(found);
+        }
+    }));
+    let frames = scroll(&mut host, &mut s, &page, 8, 7);
+    (host, frames)
+}
+
+// Failure cases for a re-acquisition that contradicts odometry's rescue: one that snaps back onto the anchor (a
+// screen-fixed panel matches at zero offset, with more confidence than the rescue), and an ambiguous, barely
+// confident one on a periodic alias. Either replaced the measured step, and every later frame inherited the error.
+// One that agrees with the rescue to within a few pixels still places the frame, through the anchor.
+#[test]
+fn a_reacquisition_that_contradicts_the_rescue_does_not_replace_it() {
+    let estimate = |y: i32, ambiguous: bool, confidence: f64| ReacquireEstimate {
+        x: 0,
+        y,
+        ambiguous,
+        confidence,
+        error: 4.0,
+    };
+    for (found, case) in [
+        (estimate(0, false, 0.45), "snap-back"),
+        (estimate(-90, true, 0.04), "alias"),
+    ] {
+        let (host, frames) = reacquired(found);
+        assert_eq!(host.canvases().len(), 1, "{case}: {:?}", host.codes());
+        for (i, f) in frames.iter().enumerate() {
+            assert_eq!(f.placements[0].y, (i * 7) as f64, "{case}, frame {i}");
+        }
+    }
+    let (_, frames) = reacquired(estimate(24, false, 0.9));
+    assert_eq!(frames[3].placements[0].y, 24.0);
 }
 
 #[test]

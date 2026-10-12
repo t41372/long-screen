@@ -428,8 +428,25 @@ impl SolveSession {
         };
         let top = track::reacquire_refine(&models, &patches(&anchor), native, rect, f, radius);
         #[cfg(test)]
-        let top = top.filter(|_| !std::mem::take(&mut self.seams.reacquire_fails));
+        #[allow(unused_mut)]
+        let mut top = top.filter(|_| !std::mem::take(&mut self.seams.reacquire_fails));
+        #[cfg(test)]
+        if let Some(seam) = self.seams.reacquire.as_mut() {
+            seam(&mut top);
+        }
         if let Some(top) = top {
+            // A rescue that the re-acquisition contradicts keeps the frame lost: relocalization, then the rescue.
+            let pose = self.states[i].pose;
+            let implied = (
+                anchor.x + top.x as f64 - pose.0,
+                anchor.y + top.y as f64 - pose.1,
+            );
+            if s.rescue
+                .as_ref()
+                .is_some_and(|r| track::reacquisition_contradicts_rescue(implied, r.delta))
+            {
+                return;
+            }
             s.decision = Decision::Tracked;
             s.via_anchor = Some((top.x as f64, top.y as f64));
             s.ambiguous = top.ambiguous;
