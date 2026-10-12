@@ -298,6 +298,20 @@ pub extern "C" fn ls_render_wanted_votes(
     })
 }
 
+/// Input: u32 count, then per stored plan u32 frame index and the plan. Hands every stored plan over before the first
+/// frame (`RenderSession::add_plan`). Returns a status.
+#[no_mangle]
+pub extern "C" fn ls_render_add_plans(handle: u32, input: u32, len: u32) -> i32 {
+    let status = call(handle, input, len, |s, c, _| {
+        for _ in 0..c.u32()? {
+            let index = c.u32()?;
+            s.add_plan(index, &read_plan(c)?);
+        }
+        Some(STATUS_OK)
+    });
+    status.min(STATUS_OK)
+}
+
 /// Input: u32 index, f64 time, plan, u8 has prev, u8 has prev plan + [plan], u8 has next, u8 has next plan +
 /// [plan], u32 votes, then per vote f64 index, u8 present, [record]. Returns a status.
 #[no_mangle]

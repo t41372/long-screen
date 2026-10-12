@@ -748,7 +748,7 @@ pub fn render(ctx: &mut Ctx, source: &mut dyn FrameSource) -> Result<(), String>
             owned_pixels: counts.get(i + 1).copied().unwrap_or(0) as f64,
         })
         .collect();
-    let session = RenderSession::new(RenderConfig {
+    let mut session = RenderSession::new(RenderConfig {
         width: ctx.info.width,
         height: ctx.info.height,
         factor: ctx.factor as i32,
@@ -756,6 +756,12 @@ pub fn render(ctx: &mut Ctx, source: &mut dyn FrameSource) -> Result<(), String>
         regions,
         attachments,
     });
+    // Every stored plan, for where each canvas's page ends (elastic overscroll).
+    for key in ctx.keys("plan/") {
+        if let (Some(Js::Obj(row)), Ok(index)) = (ctx.get(&key), key["plan/".len()..].parse()) {
+            session.add_plan(index, &plan_of(&row));
+        }
+    }
     let stable = ctx.settings.stable();
     let compositor = Compositor::new(
         if stable {

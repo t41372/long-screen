@@ -48,6 +48,7 @@ pub mod diagnostic;
 pub mod framing;
 pub mod keyframes;
 pub mod layers;
+pub mod overscroll;
 pub mod pose_graph;
 pub mod pyramid;
 pub mod render;

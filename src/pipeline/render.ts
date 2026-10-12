@@ -82,6 +82,10 @@ export class RenderPass {
       }),
       attachments,
     });
+    // Every stored plan, for where each canvas's page ends (elastic overscroll).
+    const plans: { index: number; plan: FramePlan }[] = [];
+    for await (const { value } of iterate<FramePlan>(ctx.store, 'plan/', false, 256)) plans.push({ index: value.index, plan: value });
+    this.session.addPlans(plans);
     this.base = { skippedPaints: ctx.skippedPaints, tiles: ctx.project.tiles, observedPixels: ctx.project.observedPixels };
     this.lastFlush = this.now();
     const raised = this.session.configureTiles(ctx.tiles.engine, ctx.project.settings.memoryMB);

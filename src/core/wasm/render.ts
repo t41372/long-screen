@@ -177,6 +177,14 @@ export class RenderSessionHandle {
     const r = this.result(this.exports.ls_render_wanted_votes(this.handle, index, hasPrev ? 1 : 0, hasNext ? 1 : 0), 'renderWantedVotes');
     return Array.from({ length: r.u32() }, () => r.f64());
   }
+  /** Hands every stored plan over before the first frame: the session reads them for where each canvas's page ends
+   *  (elastic overscroll). */
+  addPlans(plans: { index: number; plan: FramePlan }[]): void {
+    const w = new ByteWriter().u32(plans.length);
+    for (const { index, plan } of plans) writePlan(w.u32(index), plan);
+    const [ptr, len] = w.place(this.core);
+    this.core.check(this.exports.ls_render_add_plans(this.handle, ptr, len), 'renderAddPlans');
+  }
   begin(input: RenderFrameInput): void {
     const w = new ByteWriter().u32(input.index).f64(input.time);
     writePlan(w, input.plan);

@@ -40,6 +40,7 @@ pub mod framing;
 pub mod geometry;
 pub mod layers;
 pub mod motion;
+pub mod overscroll;
 pub mod png;
 pub mod pool;
 pub mod pose_graph;

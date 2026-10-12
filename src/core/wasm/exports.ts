@@ -314,6 +314,7 @@ export interface CoreExports {
   ls_render_take(handle: number, out: number, len: number): number;
   ls_render_configure_tiles(handle: number, tiles: number, memoryMB: number): number;
   ls_render_wanted_votes(handle: number, index: number, hasPrev: number, hasNext: number): number;
+  ls_render_add_plans(handle: number, input: number, len: number): number;
   ls_render_begin(handle: number, input: number, len: number): number;
   ls_render_step(handle: number, compositor: number, tiles: number, graph: number, labels: number, labelsLen: number, now: number): number;
   ls_render_provide_meta(handle: number, input: number, len: number): number;

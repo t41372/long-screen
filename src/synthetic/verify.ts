@@ -232,6 +232,12 @@ async function verifyCanvas(
         if (atlas.labels[y * W + x] !== code) {
           continue;
         }
+        if (layer.pageEdges) {
+          const wx = x - v.x + p.x, wy = y - v.y + p.y;
+          if (wx < 0 || wy < 0 || wx >= worldW || wy >= layer.world.height) {
+            continue;
+          }
+        }
         const cx = x + px - bx, cy = y + py - by;
         if (cx >= 0 && cy >= 0 && cx < bw && cy < bh) {
           expected[cy * bw + cx] = 1;

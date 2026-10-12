@@ -33,6 +33,7 @@ use crate::engine::compositor::{
     CompositeError, Compositor, CompositorDiagnostic, Frame, Placement, Step as CompositorStep,
 };
 use crate::engine::diagnostic::{Diagnostic, Severity, Value};
+use crate::engine::overscroll::{self, Overscroll};
 use crate::engine::pose_graph::{PoseGraph, PoseGraphError};
 use crate::engine::tiles::{TileCache, TileKey};
 use crate::kernels::consistency::{
@@ -438,6 +439,8 @@ struct Paint {
     /// For a moving region: the neighbours, resolved once the current frame is in (`None` until then).
     neighbours: Option<[Option<NeighbourPlacement>; 2]>,
     masked: bool,
+    /// Lines left out past the page's edges ([`crate::kernels::overscroll::SIDES`] order), once measured.
+    overscroll: Option<[u16; 4]>,
     begun: bool,
 }
 
@@ -492,6 +495,7 @@ pub struct RenderSession {
     counters: RenderCounters,
     events: Vec<Diagnostic>,
     job: Option<FrameJob>,
+    overscroll: Overscroll,
 }
 
 impl RenderSession {
@@ -529,7 +533,20 @@ impl RenderSession {
             counters: RenderCounters::default(),
             events: Vec::new(),
             job: None,
+            overscroll: Overscroll::default(),
         }
+    }
+
+    /// Hands over a stored plan before the first frame is rendered: the session reads every plan's moving-region
+    /// placements to find where each canvas's page ends (elastic overscroll, docs/ARCHITECTURE.md §十). A host that
+    /// hands over none renders as if no page had edges.
+    pub fn add_plan(&mut self, index: u32, plan: &FramePlan) {
+        let (regions, index_of) = (&self.regions, &self.region_index);
+        self.overscroll.add_plan(index, plan, |layer| {
+            index_of
+                .get(layer)
+                .is_some_and(|&i| regions[i].kind == RegionKind::Moving)
+        });
     }
 
     /// Sizes the tile cache for this pass: the memory setting less what the pass itself holds (the ring's frames
@@ -1009,6 +1026,7 @@ impl RenderSession {
                             current: None,
                             neighbours: None,
                             masked: false,
+                            overscroll: None,
                             begun: false,
                         });
                         continue;
@@ -1022,7 +1040,14 @@ impl RenderSession {
                     if moving {
                         job.latest = Some(p.canvas.clone());
                     }
-                    let placement = placed(&raw, &p);
+                    let at = overscroll::Resolved {
+                        canvas: &p.canvas,
+                        x: p.x,
+                        y: p.y,
+                    };
+                    let left_out = self.overscroll.reuse(&raw.layer, at);
+                    let region = self.regions[self.region(&raw.layer)?].rect;
+                    let placement = placed(&raw, &p, overscroll::strips(region, left_out));
                     let mut d = decision(p.canvas, placement, Some((0.0, 0.0, 0.0)));
                     d.reused_exact_observation = true;
                     job.decisions.push(d);
@@ -1169,8 +1194,16 @@ impl RenderSession {
             );
             paint.masked = true;
         }
+        if paint.overscroll.is_none() {
+            let lines = self.left_out(raw, paint, region_at, current, io)?;
+            paint.overscroll = Some(lines.map(|n| n.clamp(0, u16::MAX as i64) as u16));
+        }
+        let left_out = paint.overscroll.unwrap_or_default().map(i64::from);
+        let strips = overscroll::strips(self.regions[region_at].rect, left_out);
         let region = &self.regions[region_at];
         if !paint.begun {
+            let mut occlusions = raw.occlusions.clone().unwrap_or_default();
+            occlusions.extend(strips.iter().copied());
             io.compositor
                 .begin(
                     io.cache,
@@ -1185,7 +1218,7 @@ impl RenderSession {
                         time: raw.time,
                         confidence: raw.confidence,
                         uncertain: raw.uncertain,
-                        occlusions: raw.occlusions.clone().unwrap_or_default(),
+                        occlusions,
                         fixed,
                     },
                     self.width,
@@ -1231,7 +1264,10 @@ impl RenderSession {
         }
         let canvas = paint.p.canvas.clone();
         if let Some(meta) = self.metas.get_mut(&canvas) {
-            meta.bounds = union(meta.bounds, s.bounds);
+            let placed_rect = overscroll::trim(s.bounds, left_out);
+            if placed_rect.width > 0.0 {
+                meta.bounds = union(meta.bounds, placed_rect);
+            }
             meta.observed_pixels += s.added as f64;
             meta.uncertain_pixels += s.uncertain as f64;
             meta.conflict_pixels += s.conflicts as f64;
@@ -1247,10 +1283,81 @@ impl RenderSession {
         }
         job.decisions.push(decision(
             canvas,
-            placed(raw, &paint.p),
+            placed(raw, &paint.p, strips),
             Some((s.added as f64, s.conflicts as f64, s.uncertain as f64)),
         ));
         Ok(None)
+    }
+
+    /// The lines a moving-region placement leaves out past its canvas's page edges (none for other regions),
+    /// working the edges out from the plans the host handed over on first use.
+    fn left_out(
+        &mut self,
+        raw: &PlanPlacement,
+        paint: &Paint,
+        region_at: usize,
+        current: usize,
+        io: &RenderIo,
+    ) -> Result<[i64; 4], RenderError> {
+        let graph = io.graph;
+        let region = &self.regions[region_at];
+        if region.kind != RegionKind::Moving {
+            return Ok([0; 4]);
+        }
+        let (regions, index_of) = (&self.regions, &self.region_index);
+        let (attachments, overscroll) = (&self.attachments, &mut self.overscroll);
+        overscroll.prepare(
+            // A placement that cannot be resolved is left out of the trajectory; its own frame fails as before.
+            |p, frame| {
+                let resolved = graph
+                    .correction(&p.node, frame as f64)
+                    .and_then(|(cx, cy)| {
+                        let (sx, sy) = render_shift(attachments, &p.canvas_id, graph)?;
+                        Ok((p.x + cx + sx, p.y + cy + sy))
+                    });
+                let canvas = resolve_target(attachments, &p.canvas_id).to_string();
+                Ok::<_, RenderError>(
+                    resolved
+                        .ok()
+                        .filter(|&(x, y)| is_valid_pose(x, y))
+                        .map(|(x, y)| (canvas, x, y)),
+                )
+            },
+            |layer| {
+                let r = regions[*index_of.get(layer)?].rect;
+                let (_, _, w, h) = overscroll::pixel_rect(r);
+                Some((w, h))
+            },
+        )?;
+        // Neighbours whose page moved against this frame show what stays put on screen.
+        let moved = |n: &Option<NeighbourPlacement>| {
+            n.as_ref().and_then(|n| {
+                let same = n.resolved.canvas == paint.p.canvas
+                    && js_round(n.resolved.x) == js_round(paint.p.x)
+                    && js_round(n.resolved.y) == js_round(paint.p.y);
+                (!same).then_some(n.slot).flatten()
+            })
+        };
+        let slots = paint
+            .neighbours
+            .as_ref()
+            .map_or([None, None], |[a, b]| [moved(a), moved(b)]);
+        let ring = &self.ring;
+        let lines = crate::kernels::overscroll::Lines {
+            rgba: &ring.slots[current].pixels,
+            width: self.width,
+            height: self.height,
+            labels: Some((io.labels, region.code)),
+            region: overscroll::pixel_rect(region.rect),
+            neighbours: slots.map(|s| s.map(|s| &ring.slots[s].pixels[..])),
+            noise: self.noise,
+        };
+        let at = overscroll::Resolved {
+            canvas: &paint.p.canvas,
+            x: paint.p.x,
+            y: paint.p.y,
+        };
+        Ok(self.overscroll.measure(&raw.layer, at, &lines))
     }
 
     /// The previous and next frames' placements of the same layer, resolved, when that frame is in hand and placed
@@ -1372,12 +1479,18 @@ fn vote<'a>(
     }))
 }
 
-/// The plan's placement at its resolved pose and canvas.
-fn placed(raw: &PlanPlacement, p: &Resolved) -> PlanPlacement {
+/// The plan's placement at its resolved pose and canvas, with `left_out` (lines past the page's edges) added to its
+/// occlusions.
+fn placed(raw: &PlanPlacement, p: &Resolved, left_out: Vec<Rect>) -> PlanPlacement {
+    let mut occlusions = raw.occlusions.clone();
+    if !left_out.is_empty() {
+        occlusions.get_or_insert_with(Vec::new).extend(left_out);
+    }
     PlanPlacement {
         canvas_id: p.canvas.clone(),
         x: p.x,
         y: p.y,
+        occlusions,
         ..raw.clone()
     }
 }

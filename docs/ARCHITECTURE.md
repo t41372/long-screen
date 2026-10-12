@@ -158,6 +158,17 @@ WebCodecs 支持查询在启动前完成。按展示顺序消费输出、处理 
 
 整块从一帧拷来的块，瓦片的 `ownerFrame` 改成那一帧；每张画布另存一行 `reveal/<canvas>`，逐块记下像素来自哪一帧（整块拷贝的帧号、逐像素多数的 −2、保持合成器原样的 −1），供真实录屏的局部真值检查认证「这一片完整来自同一帧」（docs/TESTING.md、docs/FORMAT.md）。
 
+### 弹性越界：页面边缘外露出的底色
+
+macOS、iOS 的浏览器和看图应用在页面边缘允许内容越过边缘再弹回。跟踪如实跟着内容，所以这些帧的位姿越过了页面的边，区域里越界的那一条显示的是窗口底色（浏览器的灰色、页面自己的背景色、看图应用的黑色），不是页面。宿主在第一帧之前把全部 `plan/` 行交给渲染会话（`RenderSession::add_plan`）；第一次放置运动区域时，会话把每张画布上的全部放置按最终位姿（经位置图改正和接回位移，取合成器用的取整位姿）排成轨迹，对四条边分别求出页面的边（`rust/long-screen/src/kernels/overscroll.rs::page_edges`，会话一侧在 `rust/long-screen/src/engine/overscroll.rs`）：
+
+1. 一次「回弹」是越过某个值的一段帧：从页面一侧进入，以小步回到这个值（最后三次回程都不超过 5 px），然后停住或再往外走；越过至少 2 px、至多区域该方向尺寸的四分之一。回到之后又在原处停两帧算「停稳」。
+2. 边在最外侧那组停稳的回弹附近（相距 3 px 内算一组，组里的回弹数至少是最大一组的四分之一）。没有停稳的回弹时用全部回弹；如果页面从没在那附近停留过（不到 8 帧），说明弹簧还没回到原位就被用户滚走了，边改取回弹内侧、四分之一范围内页面停留过 8 帧以上的最外侧位置。
+3. 在这组附近，取页面停留帧数最多的那个值：按住越过边缘时只停一会儿，停在边上的时间长得多。
+4. 任何一帧越过这个值超过四分之一，这一侧就不算有边：页面在那边还有内容。
+
+只凭运动分不清弹回和录到范围最外侧的一次普通往回滚，所以每一帧还要看像素：越过边缘的那一侧，从区域外沿往里数「底色行」（`background_lines`）——一行里 95% 的像素与这一行的中位色相差不超过片源噪声（剩下的 5% 容得下指针尖和滚动条滑块的边）。数到第一行有页面内容的地方为止。只有把钉在屏幕上的像素（与相邻帧同一屏幕位置相同，而相邻帧的位姿不同）放到一边才是一个颜色的行，最多连续 32 行、且后面还接着底色行时照样计入：这是贴着视口边的细条（test_5 的下边）；更长的一段、或者数到头还没完的一段就停下，钉在底色上的按钮、被区域学习留在运动层里的侧栏都当内容看。最多数到越界量。数到的行离越界量不超过 3 行（运动读出的边可能比底色真正的尽头靠外一两个像素），这些行才作为遮挡矩形加进这次放置；差得更多说明那一条里还有别的东西——页面内容，或者钉在运动层里的输入框——整条照常合成，页面内容因此永远不会被留空。只留空外面一截不行：test_8 的越界帧会把运动层里的输入框画到一个个错开的位置，页面底端被撕碎。遮挡矩形走现成的路：合成器、时间记录的完整性检查和揭示都不看被遮挡的像素，观察台账行带着它们，画布范围（`CanvasMeta.bounds`）也不含它们。重复帧捷径不重新测量，沿用同一层上次在同一位姿上的结果。宿主不交 plan 时，渲染与以前完全一样。
+
 ## 八、输出
 
 原尺寸磁盘瓦片 + 覆盖位图 + 有限 LRU 缓存。查看器只绘制可见区域，预览金字塔按 alpha 加权减半，不让未观察像素把已观察像素拉暗，且不改写 level 0。
@@ -215,6 +226,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - **`TemporalRegion` 的 `complete` 意思是「这次观察重写了该块以前覆盖过的每一个像素」**，不是「该块有 256 个覆盖像素」。只有部分覆盖历史的块，以部分覆盖达成 `complete` 是合法的（一次放置的编排——瓦片顺序、冲突分量、`resolveTemporal` 的决策与 `overwritePatch`、诊断——在 `rust/long-screen/src/engine/compositor.rs`；`src/core/compositor.ts` 只是宿主，负责读写 `temporal/` 行与格式化诊断文字；连通分量与决策（`TemporalIndex::decide`/`mask_complete`/`commit`）在 `rust/long-screen/src/kernels/temporal.rs`，单瓦片的逐像素合成在 `rust/long-screen/src/kernels/compositor.rs::composite_tile`）。
 - **`Compositor.resolveTemporal` 的 `maskComplete` 检查是整个连通冲突分量上的全有全无，不是逐像素的。** 带着指针/悬浮按钮的观察不是一个好的「完整时刻」，即使它是该区域的第一次完整视图。这是单独设计的不变式，不要随手放宽；它也**不是**覆盖物污染残留的原因（已逐像素查证排除，见 issue #2）。
 - **任何相邻帧都无法比较的像素默认为一致，不是不一致**（编排在 `rust/long-screen/src/engine/render.rs`，逐像素判定在 `rust/long-screen/src/kernels/consistency.rs::consistency_mask`）。只出现在一帧里的内容（`glimpse` 场景）仍然必须画出来；把「没有证据」当成「拒绝」会让每个首尾帧和每次短暂回访变成窟窿。
+- **越过页面边缘露出的底色在合成时留空；边从运动里读，留空多少由像素决定**（`rust/long-screen/src/kernels/overscroll.rs`，`rust/long-screen/src/engine/overscroll.rs`，§七「弹性越界」）。实测失败：合成器把弹性越界露出的窗口底色按世界坐标写进画布，揭示又从越界帧整块拷贝，画布范围是所有放置矩形的并集，于是长图多出只覆盖部分行列的边条，边上呈阶梯状缺口——owner_2.01.28 的 3834×6839 里有 402,441 个透明像素，owner_1.53.20 的 5318×8630 里 1,130,615 个，test_4 的 9186×7011 里 2,515,477 个，test_1 的 4589×6686 里 506,436 个；test_5 四周是看图应用的黑边。改后前三张是 3771×6736、5220×8233、8928×6222，没有一个透明像素（test_4 是 Chrome 打开的一张图，停在顶端的第 20 帧和停在底端的第 960 帧里画都顶到区域边缘，画上下那片深色只在回弹里露出过）；test_1 是 4539×6395，剩下的 116,645 个透明像素在右边那条浏览器滚动条轨道旁（轨道钉在屏幕上、被区域学习留在运动层里，不是底色，那一条不会被留空）；test_5 是 4421×6493，上、左两条黑边没了，下边只剩十几行；test_8 顶上多出的 112 行聊天底色没了（7737 → 7625）。几条构造各有原因：边取停留最多的值，不取最外侧的回弹，因为按住越过边缘时也会停（test_5 第 124–140 帧停在 −117）；没停稳就被拖走的回弹（test_3 停在 −43 两帧就往下滚）只能从页面停留过的位置找边；越界上限是区域的四分之一，因为 `fixture` 场景那种匀速的平移来回（320 px 的视口里往外 100 px 再匀速回来）在 2/5 的上限下被当成了回弹，而它右边几列卡片间的空白在片源噪声内是同一个颜色，像素检查拦不住；像素检查从外沿往里数、遇到页面内容就停，所以运动读出的边靠里时也不会剪掉内容（test_5 右边的边读成 1468，真正的边约在 1483，越过它的 464 帧一行都没留空）。钉在屏幕上的东西只在连续不超过 32 行、后面还接着底色时才跟着留空：不加限制时 test_3 页面顶端上方那一摞「登入」按钮没了，但 test_2 运动层里那块侧栏推广在页面底端的干净副本也被撕碎了——那块侧栏本来就该是固定区域（区域学习的待办），按钮也一样，所以 test_3 这次没有改变。代价：在录到范围的最外侧，普通往回滚和弹回在运动上一模一样，只靠「那一条里没有页面内容」区分，所以一大片纯色的页面区域（与底色同色的留白）如果只在一次往回滚里露出过，仍可能被当成底色剪掉；运动层里钉着的输入框（f）在页面底端改由别的帧来画，发送按钮上方多了一小块缺口。`glimpse`、`vertical`、`horizontal`、`fling`、`fixture` 和其余场景的指纹逐行不变。
 - **瞬态像素可以被一致的观察覆盖修复，即使所在块是 `frozen` 的。** `frozen` 防的是重新挑选某个时刻，不是修复屏幕覆盖物的烧录；像普通替换那样用 `!frozen` 挡住修复路径会让烧录永久化（§七）。
 - **`identical === count` 短路必须保留 `&& !provisionalInBlock` 例外**；反过来，降级规则刻意不作用于被逐位完整复现的块——那是佐证而非反证（§七）。
 - **降级判据必须是逐位相同，不是容差。** ≤10 的容差会连「确实不同但接近」一起抓进来，而那正是块级冲突逻辑负责的事（§七，`tests/unit/compositor.test.ts` 两侧都有断言）。
@@ -317,6 +329,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `raster.rs` — 原生帧光栅内核：luma、盒式分析降采样、预览减半。Rust 算法核心。
 - `features.rs` — 角点检测（3×3 结构张量最小特征值，整数前缀和）与二值描述子。Rust 算法核心。
 - `motion.rs` — 平移/缩放假设生成、patch 误差、audit、整数精修。Rust 算法核心。
+- `overscroll.rs` — 弹性越界（§七）：从一张画布的位姿轨迹求出页面四条边（`page_edges`），数一帧越界那一侧从外沿往里的底色行（`background_lines`）。Rust 算法核心。
 - `chrome.rs` — 固定边界持续性外观边、吸附遮挡带检测。Rust 算法核心。
 - `consistency.rs` — 单区域世界一致性掩码（±1 帧证据 + 投票环终审），以及固定区域的一致性（`fixed_mask`）。Rust 算法核心。
 - `fixed_history.rs` — 固定区域每个像素的取值段，和由此得到的去掉瞬态的第一帧（§七）。Rust 算法核心。
@@ -345,7 +358,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `raster.rs`、`features.rs`、`motion.rs`、`chrome.rs`、`consistency.rs`、`compositor.rs`（含引擎合成器 `ls_compositor_*`）、`temporal.rs`、`framing.rs`（引擎呈现画布会话 `ls_framing_*`，`ls_framing_step` 按约定 6 返回结果长度，−2 表示要的瓦片没有载入）、`pyramid.rs`（引擎金字塔会话 `ls_pyramid_*`，同样按约定 6）、`reveal.rs`（引擎揭示会话 `ls_reveal_*`，`ls_reveal_step` 同样按约定 6，−2 同上；`ls_reveal_frame` 给出会话帧缓冲的指针）、`png.rs`、`layers.rs`、`regions.rs`、`track.rs`、`track_odometry.rs`、`track_reacquire.rs`、`track_keyframes.rs`、`voting.rs`、`yuv.rs` — 对应域的 `extern "C"` 导出，逐个镜像 `src/core/wasm/<域>.ts`（见一域三文件规则）。绑定。
 - `scan.rs` — 扫描会话（`long_screen::engine::scan::ScanSession`）的导出：帧缓冲指针、`ls_scan_push`/`ls_scan_finish` 的结果留在 handle 里由 `ls_scan_take` 取走（约定 6），另有一次性的 `ls_scan_estimate_motion`；`diagnostic.rs` 是引擎结构化诊断的 `bytes.rs` 记录写法。镜像 `src/core/wasm/scan.ts`、`diagnostic.ts`。绑定。
 - `solve.rs` — 引擎求解会话（`long_screen::engine::solve::SolveSession`）的导出，每次求解一个 handle：`ls_solve_begin`/`_run`/`_provide` 推进一帧，结果（放置、要读的关键帧 id、投票记录）留在 handle 里由 `ls_solve_take` 拷出，`ls_solve_effects` 取这一步要写的行与诊断事件，`ls_solve_take_graph` 把位置图移交给一个 `ls_pose_graph_*` handle 去松弛。镜像 `src/core/wasm/solve.ts`。绑定。
-- `render.rs` — 引擎渲染会话（`long_screen::engine::render::RenderSession`）的导出，一趟渲染一个 handle；每一步借用合成器、瓦片缓存、位置图的 handle 和 atlas 标签平面，结果（诊断、计数、要宿主做的事或这一帧的台账行）留在 handle 里由 `ls_render_take` 拷给 TS；帧槽地址由 `ls_render_frame_slot` 给出，宿主直接把 RGBA 写进去。镜像 `src/core/wasm/render.ts`。绑定。
+- `render.rs` — 引擎渲染会话（`long_screen::engine::render::RenderSession`）的导出，一趟渲染一个 handle；`ls_render_add_plans` 在第一帧之前一次交来全部 plan（弹性越界，§七）；每一步借用合成器、瓦片缓存、位置图的 handle 和 atlas 标签平面，结果（诊断、计数、要宿主做的事或这一帧的台账行）留在 handle 里由 `ls_render_take` 拷给 TS；帧槽地址由 `ls_render_frame_slot` 给出，宿主直接把 RGBA 写进去。镜像 `src/core/wasm/render.ts`。绑定。
 - `pose_graph.rs`、`keyframes.rs` — 引擎状态对象（`long_screen::engine::pose_graph::PoseGraph`、`keyframes::KeyframeIndex`）的导出，每个 TS 实例一个 handle；结果留在 handle 里，由 `_take` 拷给 TS。镜像 `src/core/wasm/pose-graph.ts`、`keyframes.ts`。绑定。
 
 ### rust/long-screen/src/engine（引擎，§十三）
@@ -362,6 +375,7 @@ Rust/Wasm 核心（scalar/SIMD128/threads 三种构建，见 §三）、WebGPU �
 - `src/engine/solve/tests.rs`、`tests/engine_solve_host.rs` — 求解会话的失败用例（顺序错的调用、重复帧捷径、回访续步与丢失的行、里程计/漂移控制给出的非有限或越界位姿、被拒的接回与薄重叠改正、救回的一步、与救回矛盾的重新捕获、投票环收尾；经测试缝替换核心的判定）与原生宿主测试（同步循环只经公开 API 求解一段来回滚动并松弛位置图）。Rust 引擎（测试）。
 - `src/engine/keyframes.rs` — `KeyframeIndex`：每层每词的关键帧倒排表、按词投票取候选、每层一次的检索预算告警（`RELOCALIZATION_BUDGET`）与 `Retrieval::admits`；关键帧行本身由宿主存取。Rust 引擎。
 - `src/engine/render.rs` — `RenderSession`：渲染趟。每帧 `begin`（这一帧及前后帧的 plan、`wanted_votes` 点名的一致性记录）→ 反复 `step` → `Done`（观察台账行）；要宿主提供的东西用 `NeedMeta`（`canvas/` 行）、`NeedFrame`（帧像素，写进三槽帧环）、`NeedTile`/`NeedTemporal`（合成器的需要，原样转出）。会话持有放置解析（位置图改正 + 接回链）、重复帧与固定区域未变的捷径、三槽帧环（槽按首次装入的先后复用，但不复用正在合成的这一帧及其前后帧所在的槽）、一致性掩码与四槽投票窗口、画布元数据（脏的按首次变更顺序交给宿主落盘）、瓦片预算配置（`configure_tiles`），诊断是共用的结构化 `Diagnostic`（不带文字；合成器自己的 `CompositorDiagnostic` 在这里换成它）。不持有瓦片缓存、合成器和位置图，每一步借用。Rust 引擎。
+- `src/engine/overscroll.rs` — 渲染会话里的弹性越界（§七）：留着宿主交来的全部 plan 里运动区域的放置，第一次用到时按画布求边；每次放置把越界那一侧的底色行变成遮挡矩形（`strips`），并从放置矩形里去掉（`trim`）。Rust 引擎。
 - `src/engine/render/tests.rs` — 渲染会话的失败用例与顺序（缺元数据、缺节点、未知图层、不可放置的位姿、重复帧不解码、固定区域、前后帧的装入顺序、跨画布邻居、连续两帧不画之后前瞻帧不挤掉前一帧、投票窗口、截断的投票、脏元数据顺序、接回、瓦片预算）。Rust 引擎（测试）。
 - `tests/engine_render_host.rs` — 原生宿主测试：同步循环按单帧前瞻驱动渲染会话（只有一块瓦片的缓存，每块都换出再读回），核对台账、画布元数据与成品像素：屏幕固定的红条只留在第一帧在它下面画下的两行。Rust 引擎（测试）。
 - `tests/engine_pose_graph_host.rs` — 原生宿主测试：把引擎给的写入存进有序表，中途停止松弛，再从表里重建位置图，核对两边一致。Rust 引擎（测试）。

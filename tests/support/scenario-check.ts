@@ -116,6 +116,9 @@ async function checkResult(name: string, scenario: Scenario, result: RunResult):
       covered: v.covered,
       fragmentReports: v.fragmentReports,
     };
+    if (e.bounds) {
+      assertEquals(v.mainCanvas.bounds, e.bounds, `${name}/${layer.id}: main canvas bounds`);
+    }
     if (expectedFragments !== undefined && expectedFragments >= 0) {
       assertEquals(v.fragments.length, expectedFragments, `${name}/${layer.id}: fragments`);
     }

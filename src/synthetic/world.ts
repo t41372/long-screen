@@ -227,6 +227,9 @@ export interface Layer {
   zoom?: number[];
   /** World-space rectangles redrawn every frame (animation, playing video, live counters). */
   dynamics?: { rect: Rect; draw: (scratch: World, frame: number, time: number) => void; every?: number }[];
+  /** The world's border is the page's edge: what a viewport shows past it is the browser's overscroll background,
+   *  not page content, so the verifier never expects it and counts any of it on the canvas as invented. */
+  pageEdges?: boolean;
 }
 export interface Overlay {
   id: string;
@@ -263,6 +266,8 @@ export interface Expectations {
   status: 'complete' | 'partial';
   /** Frames the run is expected to render. */
   frames?: number;
+  /** The main canvas's bounds the run must end with, when declared. */
+  bounds?: Rect;
   /** Declared pixel-level ambiguity: placements may differ from truth only by multiples of this period (identical repeated rows). */
   ambiguousPeriod?: number;
   /** Known limitation: the run must complete and report conflicts, but pixel-set equality is not asserted. */
@@ -383,7 +388,16 @@ export function renderFrame(s: Scenario, index: number): RenderedFrame {
       dynamicRects[layer.id].push(d.rect);
     }
     if (zoom === 1) {
-      blit(image, v.x, v.y, data, layer.world.width, { x: p.x, y: p.y, width: v.width, height: v.height });
+      if (layer.pageEdges) {
+        // Only the page's own columns: past its left or right edge the viewport shows the background. (blit reads a
+        // row past the world's width into the next row, which the older scenarios' 1-px jitter relies on.)
+        const left = Math.max(0, -p.x), right = Math.min(v.width, layer.world.width - p.x);
+        if (right > left) {
+          blit(image, v.x + left, v.y, data, layer.world.width, { x: p.x + left, y: p.y, width: right - left, height: v.height });
+        }
+      } else {
+        blit(image, v.x, v.y, data, layer.world.width, { x: p.x, y: p.y, width: v.width, height: v.height });
+      }
     } else {
       for (let y = 0; y < v.height; y++) {
         for (let x = 0; x < v.width; x++) {

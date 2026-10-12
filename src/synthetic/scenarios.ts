@@ -168,6 +168,7 @@ export const SCENARIO_NAMES = [
   'glimpse',
   'menu-bar',
   'live-bar',
+  'overscroll',
 ] as const;
 export type ScenarioName = typeof SCENARIO_NAMES[number];
 /** Deterministic recordings with exact ground truth. Each one isolates a behaviour named in the requirements. */
@@ -951,6 +952,46 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         expect: expect({
           fragments: { body: 0 },
           diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
+        }),
+      };
+    }
+    case 'overscroll': {
+      // Elastic overscroll at every edge of a 900×1800 page: the viewport runs past the page's edge and shows the
+      // scenario background there (the browser's overscroll gap), which is not page content. A fling into the bottom
+      // edge overshoots and decays back exponentially; a pan into the right edge does the same; a drag past the top
+      // edge is held for a while before release; a pan past the left edge springs back only part of the way before
+      // the user pans away (the left edge itself is where the page rested earlier). The page ends with an ordinary
+      // reversal inside it, which must not be mistaken for a bounce.
+      const world = makeWorld(900, 1800, 241, 'article');
+      const path: Point[] = [];
+      const run = (xs: number[], ys: number[]) => xs.forEach((x, i) => path.push({ x, y: ys[i] }));
+      const ys = (values: number[], x: number) => run(values.map(() => x), values);
+      const xs = (values: number[], y: number) => run(values, values.map(() => y));
+      ys([0, 0, 0, 0, 60, 150, 270, 420, 590, 760, 920, 1060, 1180, 1280, 1350, 1400], 0);
+      // Bottom edge at 1400: overshoot to 1448, exponential decay, settle.
+      ys([1430, 1445, 1448, 1444, 1437, 1429, 1422, 1416, 1411, 1407, 1404, 1402, 1401, 1400, 1400, 1400, 1400], 0);
+      // Right edge at 260: overshoot to 290, decay, settle.
+      xs([30, 70, 120, 170, 215, 250, 260, 275, 286, 290, 287, 281, 275, 270, 266, 263, 261, 260, 260, 260, 260], 1400);
+      // Top edge at 0: a drag past it, held at -40, released.
+      ys([1300, 1150, 980, 800, 620, 450, 300, 170, 70, 10, 0, -12, -22, -30, -36, -40, -40, -40, -40, -40], 260);
+      ys([-27, -17, -10, -6, -3, -1, 0, 0, 0, 0], 260);
+      // Left edge at 0: past it to -26, part of the way back, then away before settling.
+      xs([200, 140, 80, 30, 0, -14, -22, -26, -24, -19, -14, -10, -7, -5, -5, 8, 40, 90, 140], 0);
+      // An ordinary reversal inside the page.
+      ys([60, 180, 330, 480, 600, 680, 720, 700, 640, 560, 500, 470, 460, 460, 500, 600, 720], 140);
+      return {
+        name,
+        description: '弹性越界：滚过页面边缘时露出的底色不是页面内容。',
+        width: W,
+        height: H,
+        background: [226, 229, 234],
+        layers: [body(world, path, { pageEdges: true })],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 241)],
+        frames: frames(path.length),
+        expect: expect({
+          fragments: { body: 0 },
+          bounds: { x: 0, y: HEADER, width: 900, height: 1800 },
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
       };
     }

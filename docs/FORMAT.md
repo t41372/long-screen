@@ -62,7 +62,7 @@ worldY = tileY * tileSize + inTileY
 
 ## 帧记录
 
-`observations.jsonl` 每行包括零基 frame、秒 time，以及每个层的 canvasId、最终 placement、addedPixels、conflictPixels、uncertainPixels。准确解码模式消费每个可解码的视频 observation；seek 模式是采样观察，并不是原视频帧索引。时间戳保留容器意义，fMP4 第一帧可能非零。
+`observations.jsonl` 每行包括零基 frame、秒 time，以及每个层的 canvasId、最终 placement、addedPixels、conflictPixels、uncertainPixels。placement 的 `occlusions`（屏幕坐标矩形，其中的像素没有合成）除了吸附遮挡带，还包括弹性越界时越过页面边缘的那几行底色（docs/ARCHITECTURE.md §七「弹性越界」）；只在有时出现。准确解码模式消费每个可解码的视频 observation；seek 模式是采样观察，并不是原视频帧索引。时间戳保留容器意义，fMP4 第一帧可能非零。
 
 `analysis.jsonl` 有降采样运动场、假设、置信、zoom 检测等；它不是原始全尺寸画面，也不含每个特征点的 256-bit BRIEF 描述子（那些只在处理期间存在于 `scan-features/<frame>`，供回访检索用，解完即删，不进导出）。原文件既未包含，也未做强哈希绑定。
 
