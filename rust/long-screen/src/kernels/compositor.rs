@@ -34,6 +34,11 @@ pub struct Observation<'a> {
     pub confidence: f64,
     pub uncertain: bool,
     pub frame: u32,
+    /// A screen-fixed region: every consistent pixel replaces what the block holds, whatever the block scores and
+    /// whether it conflicts, so the canvas keeps each pixel's latest consistent value (docs/ARCHITECTURE.md §十
+    /// "合成与瞬态像素"). A moving region (`false`) replaces a block only on a better score and leaves conflicts to the
+    /// temporal records.
+    pub latest: bool,
 }
 
 #[derive(Default, Debug, PartialEq)]
@@ -43,6 +48,9 @@ pub struct TileStats {
     pub uncertain: u32,
     pub provisional_delta: i32,
     pub changed: bool,
+    /// For a fixed region (`Observation::latest`): conflicting blocks whose every pixel is consistent, i.e. blocks
+    /// that settled into a new state in this frame.
+    pub settled_blocks: u32,
     /// Blocks flagged conflicting this call, as tile-local (bx, by).
     pub conflict_blocks: Vec<(u32, u32)>,
 }
@@ -96,6 +104,7 @@ struct Part {
     uncertain: u32,
     provisional_delta: i32,
     changed: bool,
+    settled: u32,
 }
 
 /// The block rows `by0..by1` of a tile, as disjoint sub-slices (row `by0` is local row 0).
@@ -245,6 +254,7 @@ pub fn composite_tile(
         stats.uncertain += p.uncertain;
         stats.provisional_delta += p.provisional_delta;
         stats.changed |= p.changed;
+        stats.settled_blocks += p.settled;
     }
     for r in 0..rows {
         for bx in bx0..bx1 {
@@ -434,7 +444,27 @@ fn composite_block(geo: &Geometry<'_, '_>, t: &mut Rows<'_>, bx: i64, by: i64, s
     let score = obs.confidence * 100.0
         + (12.0f64).min(sharpness as f64 / count as f64 * 0.15)
         + (6.0f64).min(edge.max(0.0) / 40.0);
-    let replace = complete && !conflict && t.frozen[q] == 0 && score > t.score[q] as f64 + 4.0;
+    let replace = complete
+        && t.frozen[q] == 0
+        && (obs.latest || (!conflict && score > t.score[q] as f64 + 4.0));
+    if conflict && obs.latest {
+        if let Some(consistent) = obs.consistent {
+            let settled = (sy0..sy1).all(|y| {
+                let sy = y + geo.dy;
+                sy < 0
+                    || sy >= h
+                    || (cx0..cx1).all(|x| {
+                        let src = (sy * w + x + geo.dx) as usize;
+                        !inside(src)
+                            || occluded(obs.occlusions, x + geo.dx, sy)
+                            || consistent[src] != 0
+                    })
+            });
+            if settled {
+                sum.settled += 1;
+            }
+        }
+    }
     if conflict {
         t.conflicts[q] = 1;
         t.flagged[q] = 1;
@@ -570,6 +600,7 @@ mod tests {
             confidence: 0.9,
             uncertain: false,
             frame: 3,
+            latest: false,
         };
         let world = Rect {
             x: 5.0,

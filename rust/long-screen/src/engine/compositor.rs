@@ -48,6 +48,9 @@ pub struct Placement {
     pub confidence: f64,
     pub uncertain: bool,
     pub occlusions: Vec<Rect>,
+    /// A screen-fixed region, placed at the origin in every frame: each consistent pixel takes the latest observation
+    /// and no temporal record is kept (docs/ARCHITECTURE.md §十 "合成与瞬态像素").
+    pub fixed: bool,
 }
 
 /// The observed frame, its atlas label plane and its world-consistency mask (1 = consistent; `None` treats every
@@ -73,6 +76,8 @@ pub struct CompositeStats {
     pub bounds: Rect,
     /// Net change in provisional pixels (set minus healed); can be negative.
     pub provisional_pixels: i64,
+    /// Fixed placements: conflicting blocks that settled into a new state (see `TileStats::settled_blocks`).
+    pub settled_blocks: u64,
 }
 
 impl Default for CompositeStats {
@@ -89,6 +94,7 @@ impl Default for CompositeStats {
                 height: 0.0,
             },
             provisional_pixels: 0,
+            settled_blocks: 0,
         }
     }
 }
@@ -360,6 +366,7 @@ impl Compositor {
                         confidence: job.p.confidence,
                         uncertain: job.p.uncertain,
                         frame: job.p.frame,
+                        latest: job.p.fixed,
                     };
                     let stats = {
                         let mut buffers = tile_buffers(tile, cache_size(size))?;
@@ -377,6 +384,7 @@ impl Compositor {
                     job.stats.conflicts += stats.conflicts as u64;
                     job.stats.uncertain += stats.uncertain as u64;
                     job.stats.provisional_pixels += stats.provisional_delta as i64;
+                    job.stats.settled_blocks += stats.settled_blocks as u64;
                     for (bx, by) in stats.conflict_blocks {
                         job.conflict_blocks
                             .push((tx * per_tile + bx as i32, ty * per_tile + by as i32));
@@ -415,6 +423,13 @@ impl Compositor {
                         })
                         .collect();
                     job.phase = Phase::Component(0);
+                }
+                Phase::Component(c) if c < job.components.len() && job.p.fixed => {
+                    // Conflicts on a fixed canvas are still detected and reported, but no moment is chosen for them:
+                    // the per-pixel writes above already took every consistent pixel of this frame.
+                    job.patch.clear();
+                    job.incomplete = None;
+                    job.phase = Phase::Patch(c, 0);
                 }
                 Phase::Component(c) if c < job.components.len() => {
                     let canvas = &job.p.canvas;

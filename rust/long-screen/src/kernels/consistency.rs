@@ -98,7 +98,7 @@ fn span(x: f64, width: f64) -> (i64, i64) {
 
 /// Largest RGB channel-difference sum `s` with `s / 3 <= noise` (the historical float test, evaluated for every
 /// possible sum so fractional noise rounds exactly as before); 0 when only identical pixels pass.
-fn sum_limit(noise: f64) -> u32 {
+pub fn sum_limit(noise: f64) -> u32 {
     (0..=765u32)
         .take_while(|&s| s as f64 / 3.0 <= noise)
         .last()
@@ -399,6 +399,74 @@ fn mask_pixel(
     }
 }
 
+/// One placement of a screen-fixed region and the neighbouring frames' pixels (frame-sized RGBA, `None` when that frame
+/// is not in hand or did not place the region).
+pub struct FixedMaskInput<'a> {
+    pub rgba: &'a [u8],
+    pub labels: &'a [u8],
+    pub width: usize,
+    pub height: usize,
+    pub region: Rect,
+    pub code: u8,
+    pub prev: Option<&'a [u8]>,
+    pub next: Option<&'a [u8]>,
+    pub noise: f64,
+}
+
+/// Consistency of a screen-fixed region's pixels (docs/ARCHITECTURE.md §十 "合成与瞬态像素"): the region never moves, so a
+/// pixel is compared with the same screen pixel of the previous and next frame. Unlike [`consistency_mask`], one
+/// agreeing neighbour clears it: a pixel is inconsistent only when it has at least one neighbour and differs, beyond
+/// the source's noise, from every one it has. A pointer crossing the band differs from both neighbours, and so does
+/// each frame of a fade; the first frame of the settled state agrees with the next one. The moving rule would condemn
+/// that first settled frame, and the identical frame after it is never painted (`fixed_update` finds no change), so
+/// the settled state would never be written. With no neighbour at all the pixel is consistent. Writes one byte per
+/// native pixel into `out` (1 = consistent); pixels outside the region stay 1.
+pub fn fixed_mask(input: &FixedMaskInput<'_>, out: &mut [u8]) {
+    let (w, h) = (input.width, input.height);
+    let out = &mut out[..w * h];
+    out.fill(1);
+    let neighbours: Vec<&[u8]> = [input.prev, input.next].into_iter().flatten().collect();
+    if neighbours.is_empty() {
+        return;
+    }
+    let x0 = js_floor(input.region.x).clamp(0, w as i32) as usize;
+    let x1 = js_ceil(input.region.x + input.region.width).clamp(0, w as i32) as usize;
+    let y0 = js_floor(input.region.y).clamp(0, h as i32) as usize;
+    let y1 = js_ceil(input.region.y + input.region.height).clamp(0, h as i32) as usize;
+    let rows = y1.saturating_sub(y0);
+    let limit = sum_limit(input.noise);
+    let chunks = crate::kernels::pool::chunks_for(rows * w, 64 * 1024);
+    let base = SyncPtr(out.as_mut_ptr());
+    crate::kernels::pool::par_for(chunks, |c| {
+        let (a, b) = (
+            y0 + crate::kernels::pool::split(rows, chunks, c),
+            y0 + crate::kernels::pool::split(rows, chunks, c + 1),
+        );
+        for y in a..b {
+            // SAFETY: chunks cover disjoint row ranges of `out`, which outlives the parallel call.
+            let row = unsafe { std::slice::from_raw_parts_mut(base.get().add(y * w), w) };
+            for (x, flag) in row.iter_mut().enumerate().take(x1).skip(x0) {
+                let i = y * w + x;
+                if input.labels[i] != input.code {
+                    continue;
+                }
+                let k = i * 4;
+                let px = &input.rgba[k..k + 3];
+                let differs = |n: &&[u8]| {
+                    let q = &n[k..k + 3];
+                    let sum = px[0].abs_diff(q[0]) as u32
+                        + px[1].abs_diff(q[1]) as u32
+                        + px[2].abs_diff(q[2]) as u32;
+                    sum > limit
+                };
+                if neighbours.iter().all(differs) {
+                    *flag = 0;
+                }
+            }
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -457,5 +525,75 @@ mod tests {
         }));
         consistency_mask(&excused, &mut out);
         assert!(out.iter().all(|&v| v == 1));
+    }
+
+    /// A 4×1 strip of grey values.
+    fn strip(values: [u8; 4]) -> Vec<u8> {
+        values.iter().flat_map(|&v| [v, v, v, 255]).collect()
+    }
+
+    fn fixed(current: &[u8], prev: Option<&[u8]>, next: Option<&[u8]>, labels: &[u8]) -> Vec<u8> {
+        let mut out = vec![9u8; 4];
+        fixed_mask(
+            &FixedMaskInput {
+                rgba: current,
+                labels,
+                width: 4,
+                height: 1,
+                region: Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 4.0,
+                    height: 1.0,
+                },
+                code: 1,
+                prev,
+                next,
+                noise: 10.0,
+            },
+            &mut out,
+        );
+        out
+    }
+
+    #[test]
+    fn a_fixed_pixel_is_condemned_only_when_it_differs_from_every_neighbour() {
+        let labels = [1u8; 4];
+        // Pixel 0 is a pointer in this frame only; pixel 1 the first settled frame after a change (differs from the
+        // previous frame, equals the next); pixel 2 the last frame before a change; pixel 3 within the noise of both.
+        let current = strip([250, 200, 100, 100]);
+        let prev = strip([100, 120, 100, 95]);
+        let next = strip([100, 200, 180, 108]);
+        assert_eq!(
+            fixed(&current, Some(&prev), Some(&next), &labels),
+            vec![0, 1, 1, 1]
+        );
+    }
+
+    #[test]
+    fn a_lone_fixed_neighbour_that_disagrees_condemns() {
+        // The first frame of a recording with a pointer the next frame no longer shows: provisional, healed later.
+        let labels = [1u8; 4];
+        let current = strip([250, 100, 100, 100]);
+        let next = strip([100, 100, 100, 100]);
+        assert_eq!(
+            fixed(&current, None, Some(&next), &labels),
+            vec![0, 1, 1, 1]
+        );
+        assert_eq!(
+            fixed(&current, Some(&next), None, &labels),
+            vec![0, 1, 1, 1]
+        );
+    }
+
+    #[test]
+    fn a_fixed_pixel_without_neighbours_or_outside_the_region_is_consistent() {
+        let current = strip([250, 250, 250, 250]);
+        let other = strip([0, 0, 0, 0]);
+        assert_eq!(fixed(&current, None, None, &[1; 4]), vec![1, 1, 1, 1]);
+        assert_eq!(
+            fixed(&current, Some(&other), Some(&other), &[1, 2, 1, 2]),
+            vec![0, 1, 0, 1]
+        );
     }
 }

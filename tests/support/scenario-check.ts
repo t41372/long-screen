@@ -247,11 +247,13 @@ async function checkResult(name: string, scenario: Scenario, result: RunResult):
       if (rect.width * rect.height < 4000) {
         continue;
       }
-      const f = await verifyFixed(result, rect);
+      const f = await verifyFixed(result, rect, overlay.settled);
       report.fixed[overlay.id] = { mismatched: f.mismatched, conflicts: f.conflicts, covered: f.covered };
       if (!e.limitation) {
         assertEquals(f.mismatched, 0, `${name}/${overlay.id}: fixed pixels differ from the observed band`);
-        assertEquals(f.conflicts, 0, `${name}/${overlay.id}: a static band reported temporal conflicts`);
+        if (overlay.settled === undefined) {
+          assertEquals(f.conflicts, 0, `${name}/${overlay.id}: a static band reported temporal conflicts`);
+        }
         assert(f.covered >= rect.width * rect.height * .5, `${name}/${overlay.id}: fixed canvas covers too little of the band`);
       }
     }

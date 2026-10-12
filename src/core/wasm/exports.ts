@@ -319,6 +319,7 @@ export interface CoreExports {
   ls_render_provide_meta(handle: number, input: number, len: number): number;
   ls_render_frame_slot(handle: number, index: number, out: number): number;
   ls_render_cancel(handle: number, compositor: number): void;
+  ls_render_begin_finish(handle: number): number;
   ls_render_meta(handle: number, input: number, len: number): number;
   ls_render_dirty_metas(handle: number): number;
   ls_pose_graph_new(): number;

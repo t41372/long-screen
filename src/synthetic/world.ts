@@ -231,6 +231,10 @@ export interface Layer {
 export interface Overlay {
   id: string;
   kind: 'fixed' | 'dynamic';
+  /** A fixed overlay that changes during the recording: the frame whose drawing of the fixed overlays alone (no dynamic
+   *  overlay) is the ground truth for its canvas. Undeclared, the canvas must equal frame 0 as recorded and report no
+   *  conflict. */
+  settled?: number;
   /** Draws in screen space and returns the rectangles it touched. */
   draw: (frame: RGBA, index: number, time: number) => Rect[];
 }

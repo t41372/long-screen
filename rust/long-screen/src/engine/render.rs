@@ -35,12 +35,22 @@ use crate::engine::compositor::{
 use crate::engine::diagnostic::{Diagnostic, Severity, Value};
 use crate::engine::pose_graph::{PoseGraph, PoseGraphError};
 use crate::engine::tiles::{TileCache, TileKey};
-use crate::kernels::consistency::{consistency_mask, MaskInput, Neighbour, Vote};
+use crate::kernels::consistency::{
+    consistency_mask, fixed_mask, sum_limit, FixedMaskInput, MaskInput, Neighbour, Vote,
+};
+use crate::kernels::fixed_history::FixedHistory;
 use crate::kernels::geometry::{js_round, Rect};
 use crate::kernels::raster::fixed_update;
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
+
+/// A fixed region that settled into a new state in more than this share of its frames is not one bar with a few
+/// states but content changing under it (test_8's translucent header: 325 of 599 frames; real bars: at most 83
+/// of 1,258). It keeps its first frame instead of its last state. A short recording needs more
+/// than [`DYNAMIC_FRAMES`] such frames too: one bar appearing in a four-frame clip is not content moving under it.
+const DYNAMIC_SHARE: f64 = 0.2;
+const DYNAMIC_FRAMES: u32 = 10;
 
 pub use crate::engine::solve::{is_valid_pose, POSE_BOUND};
 
@@ -440,6 +450,25 @@ struct FrameJob {
     latest: Option<String>,
 }
 
+/// What the session knows about one fixed region's states over the run.
+struct FixedState {
+    history: FixedHistory,
+    /// Frames that placed the region, and those of them that settled some block into a new state.
+    frames: u32,
+    settled: u32,
+    /// Once the run is finished: the first frame without transients (as it was, for a dynamic region).
+    first: Option<Vec<u32>>,
+}
+
+/// The finishing job: dynamic fixed regions, whose canvas takes their first frame back.
+struct FinishJob {
+    regions: Vec<usize>,
+    at: usize,
+    begun: bool,
+    frame: u32,
+    time: f64,
+}
+
 pub struct RenderSession {
     width: usize,
     height: usize,
@@ -451,6 +480,9 @@ pub struct RenderSession {
     ring: FrameRing,
     mask: Vec<u8>,
     fixed: HashMap<String, Vec<u8>>,
+    states: HashMap<String, FixedState>,
+    finish: Option<FinishJob>,
+    last: Option<(u32, f64)>,
     previous: HashMap<String, Resolved>,
     votes: VotingWindow,
     metas: HashMap<String, CanvasMeta>,
@@ -485,6 +517,9 @@ impl RenderSession {
             ring: FrameRing::new(pixels * 4),
             mask: vec![1; pixels],
             fixed: HashMap::new(),
+            states: HashMap::new(),
+            finish: None,
+            last: None,
             previous: HashMap::new(),
             votes: VotingWindow::default(),
             metas: HashMap::new(),
@@ -498,8 +533,8 @@ impl RenderSession {
     }
 
     /// Sizes the tile cache for this pass: the memory setting less what the pass itself holds (the ring's frames
-    /// and the frame-sized planes around them, each fixed region's saved copy, 8 MB of headroom), then raised to
-    /// what one frame paints. Returns the `MEMORY_BUDGET_RAISED` diagnostic (info) when it had to raise the limit:
+    /// and the frame-sized planes around them, each fixed region's saved copy and history, 8 MB of headroom), then
+    /// raised to what one frame paints. Returns the `MEMORY_BUDGET_RAISED` diagnostic (info) when it had to raise the limit:
     /// `from`, `to` and `mb` for the message, and a `{ budgetMB, tiles, raisedBy }` detail.
     pub fn configure_tiles(&self, cache: &mut TileCache, memory_mb: f64) -> Option<Diagnostic> {
         let fixed_bytes = self
@@ -507,7 +542,7 @@ impl RenderSession {
             .iter()
             .filter(|r| r.kind == RegionKind::Fixed)
             .fold(0.0, |n, r| {
-                n + r.rect.width.ceil() * r.rect.height.ceil() * 4.0
+                n + r.rect.width.ceil() * r.rect.height.ceil() * 4.0 + FixedHistory::bytes(r.rect)
             });
         let (w, h) = (self.width as f64, self.height as f64);
         cache.configure_budget(
@@ -586,9 +621,10 @@ impl RenderSession {
         input: FrameInput,
         votes: Vec<(i64, Option<ConsistencyRecord>)>,
     ) -> Result<(), RenderError> {
-        if self.job.is_some() {
+        if self.job.is_some() || self.finish.is_some() {
             return Err(RenderError::Busy);
         }
+        self.last = Some((input.index, input.time));
         let mut provided: HashMap<i64, Option<ConsistencyRecord>> = votes.into_iter().collect();
         let index = input.index as i64;
         let own = self.votes.get(index, &mut provided)?;
@@ -648,6 +684,14 @@ impl RenderSession {
     /// Runs the frame until it needs something from the host or is done. On an error the frame is abandoned (and
     /// the compositor's placement cancelled); the session stays usable.
     pub fn step(&mut self, io: &mut RenderIo) -> Result<RenderStep, RenderError> {
+        if self.finish.is_some() {
+            let result = self.run_finish(io);
+            if result.is_err() {
+                self.finish = None;
+                io.compositor.cancel();
+            }
+            return result;
+        }
         let mut job = self.job.take().ok_or(RenderError::NoFrame)?;
         let result = if io.labels.len() != self.width * self.height {
             Err(RenderError::FrameSize)
@@ -665,6 +709,137 @@ impl RenderSession {
             }
         }
         result
+    }
+
+    /// Ends the run's fixed regions after the last frame: each one's first epoch closes and its first frame without
+    /// transients is worked out, and a region whose state kept changing (more than [`DYNAMIC_SHARE`] of its frames,
+    /// and more than [`DYNAMIC_FRAMES`], settled into a new state) gets its first frame back on its canvas, as it
+    /// was, instead of its last state. Returns whether there is anything to paint;
+    /// when there is, step the session as for a frame until [`RenderStep::Done`] (its observation is empty and is
+    /// not a ledger row). Call once, after the last frame.
+    pub fn begin_finish(&mut self) -> Result<bool, RenderError> {
+        if self.job.is_some() || self.finish.is_some() {
+            return Err(RenderError::Busy);
+        }
+        let Some((last, time)) = self.last else {
+            return Ok(false);
+        };
+        let limit = sum_limit(self.noise);
+        let mut regions = Vec::new();
+        for (at, region) in self.regions.iter().enumerate() {
+            let Some(state) = self.states.get_mut(&region.id) else {
+                continue;
+            };
+            if state.first.is_some() {
+                continue;
+            }
+            state.history.close(last + 1);
+            let dynamic = state.settled > DYNAMIC_FRAMES
+                && state.settled as f64 > DYNAMIC_SHARE * state.frames as f64;
+            // Content moving under a dynamic region also changes in small patches; none of them is a transient
+            // over the bar, so its first frame is kept as it was.
+            state.first = Some(if dynamic {
+                state.history.frame0().to_vec()
+            } else {
+                state.history.first(limit)
+            });
+            if dynamic && self.previous.contains_key(&region.id) {
+                regions.push(at);
+            }
+        }
+        if regions.is_empty() {
+            return Ok(false);
+        }
+        let frame = self.states[&self.regions[regions[0]].id]
+            .history
+            .first_frame()
+            .unwrap_or(0);
+        self.finish = Some(FinishJob {
+            regions,
+            at: 0,
+            begun: false,
+            frame,
+            time,
+        });
+        Ok(true)
+    }
+
+    fn run_finish(&mut self, io: &mut RenderIo) -> Result<RenderStep, RenderError> {
+        loop {
+            let job = self.finish.as_mut().unwrap();
+            let Some(&at) = job.regions.get(job.at) else {
+                let (frame, time) = (job.frame, job.time);
+                self.finish = None;
+                return Ok(RenderStep::Done(FrameOutcome {
+                    observation: Observation {
+                        frame,
+                        time,
+                        decisions: Vec::new(),
+                    },
+                    latest: None,
+                }));
+            };
+            let (begun, frame_index, time) = (job.begun, job.frame, job.time);
+            let region = &self.regions[at];
+            let p = self.previous[&region.id].clone();
+            let slot = self.ring.fill(-2, None);
+            if !begun {
+                let state = &self.states[&region.id];
+                state.history.paint(
+                    state.first.as_ref().unwrap(),
+                    &mut self.ring.slots[slot].pixels,
+                    self.width,
+                    self.height,
+                );
+                self.mask.fill(1);
+                io.compositor
+                    .begin(
+                        io.cache,
+                        Placement {
+                            canvas: p.canvas.clone(),
+                            region: region.rect,
+                            code: region.code,
+                            owned_pixels: region.owned_pixels,
+                            x: p.x,
+                            y: p.y,
+                            frame: frame_index,
+                            time,
+                            confidence: 1.0,
+                            uncertain: false,
+                            occlusions: Vec::new(),
+                            fixed: true,
+                        },
+                        self.width,
+                        self.height,
+                    )
+                    .map_err(RenderError::Compositor)?;
+                self.finish.as_mut().unwrap().begun = true;
+            }
+            let frame = Frame {
+                rgba: &self.ring.slots[slot].pixels,
+                width: self.width,
+                height: self.height,
+                labels: io.labels,
+                consistent: Some(&self.mask[..]),
+            };
+            let outcome = match io.compositor.step(io.cache, &frame, io.now) {
+                Ok(CompositorStep::NeedTile(key)) => return Ok(RenderStep::NeedTile(key)),
+                Ok(CompositorStep::NeedTemporal(canvas)) => {
+                    return Ok(RenderStep::NeedTemporal(canvas))
+                }
+                Ok(CompositorStep::Done(outcome)) => outcome,
+                Err(e) => return Err(RenderError::Compositor(e)),
+            };
+            // What the canvas held is replaced, not contradicted: the rewrite reports no conflict of its own.
+            if let Some(meta) = self.metas.get_mut(&p.canvas) {
+                meta.observed_pixels += outcome.stats.added as f64;
+                meta.provisional_pixels += outcome.stats.provisional_pixels as f64;
+            }
+            self.mark_dirty(&p.canvas);
+            let job = self.finish.as_mut().unwrap();
+            job.begun = false;
+            job.at += 1;
+        }
     }
 
     fn resolve(
@@ -782,10 +957,25 @@ impl RenderSession {
                         rh,
                         region.code,
                     );
+                    if !old {
+                        let region = &self.regions[self.region(&raw.layer)?];
+                        self.states.insert(
+                            region.id.clone(),
+                            FixedState {
+                                history: FixedHistory::new(region.rect),
+                                frames: 0,
+                                settled: 0,
+                                first: None,
+                            },
+                        );
+                    }
                     job.stage = Stage::Decide(p, old && !changed);
                 }
                 Stage::Decide(p, unchanged) => {
                     self.previous.insert(raw.layer.clone(), p.clone());
+                    if let Some(state) = self.states.get_mut(&raw.layer) {
+                        state.frames += 1;
+                    }
                     if !unchanged {
                         job.stage = Stage::Paint(Paint {
                             p,
@@ -851,8 +1041,10 @@ impl RenderSession {
                 slot
             }
         };
-        let moving = self.regions[region_at].kind == RegionKind::Moving;
-        if moving && !paint.masked {
+        let kind = self.regions[region_at].kind;
+        let moving = kind == RegionKind::Moving;
+        let fixed = kind == RegionKind::Fixed;
+        if (moving || fixed) && !paint.masked {
             if paint.neighbours.is_none() {
                 paint.neighbours = Some(self.neighbours(job, raw, io.graph)?);
             }
@@ -873,6 +1065,46 @@ impl RenderSession {
                     self.ring.slots[n.slot.unwrap()].index == index as i64 + 2 * side as i64 - 1
                 })
             }));
+            let region = &self.regions[region_at];
+            if fixed {
+                // The same screen pixels of the neighbouring frames that placed the region on this canvas.
+                let [prev, next] = [0, 1].map(|side| {
+                    neighbours[side]
+                        .as_ref()
+                        .filter(|n| n.resolved.canvas == paint.p.canvas)
+                        .map(|n| &self.ring.slots[n.slot.unwrap()].pixels[..])
+                });
+                fixed_mask(
+                    &FixedMaskInput {
+                        rgba: &self.ring.slots[current].pixels,
+                        labels: io.labels,
+                        width: self.width,
+                        height: self.height,
+                        region: region.rect,
+                        code: region.code,
+                        prev,
+                        next,
+                        noise: self.noise,
+                    },
+                    &mut self.mask,
+                );
+                if let Some(state) = self.states.get_mut(&region.id) {
+                    state.history.update(
+                        &self.ring.slots[current].pixels,
+                        io.labels,
+                        &self.mask,
+                        self.width,
+                        self.height,
+                        region.code,
+                        index,
+                        sum_limit(self.noise),
+                    );
+                }
+                paint.masked = true;
+            }
+        }
+        if moving && !paint.masked {
+            let neighbours = paint.neighbours.as_ref().unwrap();
             let region = &self.regions[region_at];
             let own = vote(job.votes[0].as_deref(), &region.id)?;
             let mut sides: [Option<Neighbour>; 2] = [None, None];
@@ -927,6 +1159,7 @@ impl RenderSession {
                         confidence: raw.confidence,
                         uncertain: raw.uncertain,
                         occlusions: raw.occlusions.clone().unwrap_or_default(),
+                        fixed,
                     },
                     self.width,
                     self.height,
@@ -947,7 +1180,7 @@ impl RenderSession {
             width: self.width,
             height: self.height,
             labels: io.labels,
-            consistent: moving.then_some(&self.mask[..]),
+            consistent: (moving || fixed).then_some(&self.mask[..]),
         };
         let outcome = match io.compositor.step(io.cache, &frame, io.now) {
             Ok(CompositorStep::NeedTile(key)) => return Ok(Some(RenderStep::NeedTile(key))),
@@ -964,6 +1197,11 @@ impl RenderSession {
         self.events
             .extend(outcome.diagnostics.into_iter().map(compositor_diagnostic));
         let s = outcome.stats;
+        if fixed && s.settled_blocks > 0 {
+            if let Some(state) = self.states.get_mut(&raw.layer) {
+                state.settled += 1;
+            }
+        }
         let canvas = paint.p.canvas.clone();
         if let Some(meta) = self.metas.get_mut(&canvas) {
             meta.bounds = union(meta.bounds, s.bounds);
@@ -1149,5 +1387,7 @@ fn union(a: Rect, b: Rect) -> Rect {
     }
 }
 
+#[cfg(test)]
+mod fixed_tests;
 #[cfg(test)]
 mod tests;

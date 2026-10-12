@@ -35,6 +35,7 @@ pub mod chrome;
 pub mod compositor;
 pub mod consistency;
 pub mod features;
+pub mod fixed_history;
 pub mod framing;
 pub mod geometry;
 pub mod layers;

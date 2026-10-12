@@ -518,6 +518,68 @@ impl Pass {
         }
     }
 
+    /// After the last frame: the session's finishing job for the fixed regions (`RenderSession::begin_finish`). A
+    /// failure leaves the frames already rendered and marks the run partial, as a failed frame does.
+    fn finish(&mut self, ctx: &mut Ctx) {
+        let result = (|| -> Result<(), String> {
+            if !self.session.begin_finish().map_err(|e| e.to_string())? {
+                return Ok(());
+            }
+            loop {
+                let now = self.now();
+                let step = {
+                    let mut io = RenderIo {
+                        cache: &mut ctx.tiles.cache,
+                        compositor: &mut self.compositor,
+                        graph: self.graph.as_ref().ok_or("no pose graph")?,
+                        labels: &self.labels,
+                        now,
+                    };
+                    self.session.step(&mut io)
+                };
+                for e in &self.session.take_events() {
+                    self.report(ctx, e);
+                }
+                match step.map_err(|e| e.to_string())? {
+                    RenderStep::Done(_) => return Ok(()),
+                    RenderStep::NeedMeta(canvas) => {
+                        let meta = match ctx.get(&format!("canvas/{canvas}")) {
+                            Some(Js::Obj(o)) => Some(o),
+                            _ => None,
+                        };
+                        let values = meta.as_ref().map(meta_of);
+                        if let Some(m) = meta {
+                            self.metas.insert(canvas.clone(), m);
+                        }
+                        self.session.provide_meta(&canvas, values);
+                    }
+                    RenderStep::NeedFrame(_) => {
+                        return Err("CORE_BAD_ARGUMENT: the finishing job asked for a frame".into())
+                    }
+                    RenderStep::NeedTile(key) => {
+                        let run = ctx.key("");
+                        ctx.tiles.load(
+                            &mut ctx.store,
+                            &run,
+                            TileKey::new(&key.canvas, 0, key.x, key.y),
+                        )?;
+                    }
+                    RenderStep::NeedTemporal(canvas) => {
+                        self.compositor
+                            .load_temporal(&canvas, Vec::new())
+                            .map_err(|e| format!("{e:?}"))?;
+                    }
+                }
+            }
+        })();
+        if let Err(e) = result {
+            self.session.cancel(&mut self.compositor);
+            ctx.partial = true;
+            let rendered = ctx.rendered_frames;
+            ctx.prefix_only("ANALYSIS_PREFIX_ONLY", "render", rendered, &e);
+        }
+    }
+
     /// One decoded frame: composite its plan, store the ledger row, report progress.
     fn process(
         &mut self,
@@ -741,6 +803,9 @@ pub fn render(ctx: &mut Ctx, source: &mut dyn FrameSource) -> Result<(), String>
             }
         }
     })();
+    if outcome.is_ok() && ctx.rendered_frames > 0 {
+        pass.finish(ctx);
+    }
     // The page's `finally`: release the temporal indexes, then store what is still owed.
     pass.compositor.dispose();
     pass.flush_temporal(ctx);

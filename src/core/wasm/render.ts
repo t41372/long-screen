@@ -234,6 +234,10 @@ export class RenderSessionHandle {
   cancel(compositor: CompositorHandle): void {
     this.exports.ls_render_cancel(this.handle, compositor.handle);
   }
+  /** After the last frame: whether the session has a finishing job to step like a frame (`begin_finish`). */
+  beginFinish(): boolean {
+    return this.core.check(this.exports.ls_render_begin_finish(this.handle), 'renderBeginFinish') === 1;
+  }
   meta(canvas: string): RenderMeta | undefined {
     const [ptr, len] = new ByteWriter().str(canvas).place(this.core);
     const r = this.result(this.exports.ls_render_meta(this.handle, ptr, len), 'renderMeta');

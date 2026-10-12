@@ -449,6 +449,19 @@ pub extern "C" fn ls_render_frame_slot(handle: u32, index: u32, out: u32) -> i32
     STATUS_OK
 }
 
+/// Ends the run's fixed regions after the last frame (`RenderSession::begin_finish`): 1 when the session has a
+/// finishing job to step like a frame, 0 when not, or a negative status.
+#[no_mangle]
+pub extern "C" fn ls_render_begin_finish(handle: u32) -> i32 {
+    let Some(s) = handles().get(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    match s.session.begin_finish() {
+        Ok(work) => work as i32,
+        Err(_) => STATUS_BAD_ARGUMENT,
+    }
+}
+
 /// Abandons the frame in progress and the compositor's placement with it.
 #[no_mangle]
 pub extern "C" fn ls_render_cancel(handle: u32, compositor_handle: u32) {

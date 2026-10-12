@@ -166,6 +166,8 @@ export const SCENARIO_NAMES = [
   'toolbar-collapse',
   'chrome-everything',
   'glimpse',
+  'menu-bar',
+  'live-bar',
 ] as const;
 export type ScenarioName = typeof SCENARIO_NAMES[number];
 /** Deterministic recordings with exact ground truth. Each one isolates a behaviour named in the requirements. */
@@ -864,6 +866,92 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         overlays: [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 27)],
         frames: frames(path.length),
         expect: expect({ fragments: { body: 0 }, diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] } }),
+      };
+    }
+    case 'menu-bar': {
+      // A screen-fixed bar shows one toolbar until frame 24, cross-fades over eight frames to another and keeps it (a
+      // menu bar that appears during a recording). A mouse pointer sweeps across it 27 px a frame in frames 0–3 (so
+      // frame 0 shows it) and again in frames 20–34, through the whole fade and past it. The bar's canvas must show the
+      // settled toolbar without the pointer: no pointer trail, no frame of the fade, nothing of the first toolbar.
+      // The recording is long and the pointer is in the bar for few of its frames: region learning reads a row's mean
+      // change over the whole recording, and in a 90-frame version the pointer's rows changed often enough that only
+      // the bar's top 17–24 rows were learned as fixed.
+      const world = makeWorld(900, 2400, 231, 'article');
+      const path = linearPath([{ x: 0, y: 0 }, { x: 0, y: 1900 }], [299]);
+      const n = path.length, bar = { x: 0, y: 0, width: W, height: HEADER };
+      const before = fixedBand('header', bar, 29, [24, 26, 30]), after = fixedBand('header', bar, 28);
+      const pointer = cursor((i) => ({ x: 30 + (i * 27) % 560, y: 14 }));
+      return {
+        name,
+        description: '固定栏中途淡出换成另一条栏，鼠标指针在栏里扫过：栏的画布只留下最后的样子，不留指针。',
+        width: W,
+        height: H,
+        background: [251, 250, 246],
+        layers: [body(world, path)],
+        overlays: [
+          {
+            id: 'header',
+            kind: 'fixed',
+            settled: n - 1,
+            draw: (frame, index, time) => {
+              const alpha = Math.min(1, Math.max(0, (index - 23) / 8));
+              const start = (bar.y * frame.width) * 4, end = ((bar.y + bar.height) * frame.width) * 4;
+              before.draw(frame, index, time);
+              const old = frame.data.slice(start, end), rects = after.draw(frame, index, time);
+              for (let i = start; i < end; i++) {
+                frame.data[i] = Math.round(old[i - start] * (1 - alpha) + frame.data[i] * alpha);
+              }
+              return rects;
+            },
+          },
+          {
+            id: 'cursor',
+            kind: 'dynamic',
+            draw: (frame, index, time) => index < 4 || (index >= 20 && index < 35) ? pointer.draw(frame, index, time) : [],
+          },
+        ],
+        frames: frames(n),
+        expect: expect({
+          fragments: { body: 0 },
+          diagnostics: { present: ['TEMPORAL_OR_ALIGNMENT_CONFLICT'], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
+        }),
+      };
+    }
+    case 'live-bar': {
+      // A screen-fixed bar whose status light changes colour every third frame for the whole recording, as content
+      // scrolling under a translucent header does (test_8): the bar settles into a new state in a third of its frames,
+      // so it is not one bar with a few states. Its canvas keeps frame 0 as it was (the light's first colour), and the
+      // framed print keeps the reference frame. The light stays in place: a mark moving along the bar every third frame
+      // pulled the body's placement off by 1 px.
+      const world = makeWorld(900, 2400, 231, 'article');
+      const path = linearPath([{ x: 0, y: 0 }, { x: 0, y: 1900 }], [299]);
+      const bar = { x: 0, y: 0, width: W, height: HEADER }, light = { x: 300, y: 18, width: 16, height: 12 };
+      const band = fixedBand('header', bar, 251);
+      const colours: RGB[] = [[214, 136, 112], [120, 160, 140], [203, 211, 197], [90, 110, 180], [240, 200, 90]];
+      return {
+        name,
+        description: '固定栏里的内容一直在变（像内容在半透明标题栏下滚过）：栏的画布保留第 0 帧，不取最后的样子。',
+        width: W,
+        height: H,
+        background: [251, 250, 246],
+        layers: [body(world, path)],
+        overlays: [
+          {
+            id: 'header',
+            kind: 'fixed',
+            settled: 0,
+            draw: (frame, index, time) => {
+              const rects = band.draw(frame, index, time), k = Math.floor(index / 3);
+              fillRGBA(frame, light, colours[k % colours.length]);
+              return rects;
+            },
+          },
+        ],
+        frames: frames(path.length),
+        expect: expect({
+          fragments: { body: 0 },
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
+        }),
       };
     }
     case 'fixture': {

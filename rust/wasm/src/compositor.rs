@@ -164,6 +164,7 @@ pub extern "C" fn ls_compositor_begin(
             confidence: r.f64(88),
             uncertain: r.u32(96) != 0,
             occlusions,
+            fixed: false,
         },
         f.u32(4) as usize,
         f.u32(8) as usize,

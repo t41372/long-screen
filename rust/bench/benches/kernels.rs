@@ -452,6 +452,7 @@ fn composite_frame(bencher: divan::Bencher, case: &str) {
         confidence: 0.8,
         uncertain: false,
         frame: 1,
+        latest: false,
     };
     // Every tile frame 1 covers, on empty tiles: the first paint of a frame onto the canvas.
     bencher

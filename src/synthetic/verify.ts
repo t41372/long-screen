@@ -476,14 +476,18 @@ export async function verifyLayer(result: VerifiableRun, layer: Layer, options: 
     fragmentReports,
   };
 }
-/** Static overlays must land in fixed canvases with identical pixels and zero conflicts. */
+/** Static overlays must land in fixed canvases with identical pixels and zero conflicts. A fixed overlay that changes
+ *  (`Overlay.settled`) is compared with its settled frame drawn without the dynamic overlays instead. */
 export async function verifyFixed(
   result: VerifiableRun,
   rect: { x: number; y: number; width: number; height: number },
+  settled?: number,
 ): Promise<{ canvas: CanvasMeta; mismatched: number; covered: number; conflicts: number }> {
   const { scenario, atlas, store } = result;
   const regions = result.regions.filter((r) => r.kind === 'fixed');
-  const first = renderFrame(scenario, 0).image;
+  const first = settled === undefined
+    ? renderFrame(scenario, 0).image
+    : renderFrame({ ...scenario, overlays: scenario.overlays.filter((o) => o.kind === 'fixed') }, settled).image;
   let mismatched = 0, covered = 0, conflicts = 0, best: CanvasMeta | undefined, bestOverlap = 0;
   for (const region of regions) {
     const canvas = result.canvases.find((c) => c.layer === region.id && c.fragment === 0);

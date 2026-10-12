@@ -12,7 +12,7 @@ import { iterate } from '../storage/db.ts';
 import { PoseGraph } from '../core/pose-graph.ts';
 import { Compositor } from '../core/compositor.ts';
 import { pad } from '../core/math.ts';
-import { core, type EngineDiagnostic, type RenderMeta, type RenderSessionHandle } from '../core/wasm.ts';
+import { core, type EngineDiagnostic, type RenderMeta, type RenderNeed, type RenderSessionHandle } from '../core/wasm.ts';
 import { releaseUnlessHeld } from '../media/pool.ts';
 import type { ConsistencyRecord } from './consistency.ts';
 import { t } from '../i18n/index.ts';
@@ -162,6 +162,21 @@ export class RenderPass {
       votes.push({ index, record: await ctx.store.get<ConsistencyRecord>(`consistency/${pad(index)}`) });
     }
     session.begin({ index: frame.index, time: frame.time, plan, hasPrev: !!prevImage, prevPlan, hasNext: !!nextImage, nextPlan, votes });
+    const need = await this.drive((index) => {
+      const image = index === frame.index ? frame.image : index < frame.index ? prevImage! : nextImage!;
+      const { width, height } = ctx.source.info;
+      if (image.width !== width || image.height !== height) {
+        throw new Error(`CORE_BAD_ARGUMENT: frame ${image.width}×${image.height} does not fit a ${width}×${height} ring.`);
+      }
+      return image;
+    });
+    return { observation: need.observation, latest: need.latest === undefined ? undefined : this.liveMeta(need.latest) };
+  }
+  /** Steps the session until its job is done, answering what it asks for; `frameFor` supplies the ring's frames, and
+   * without it (the finishing job) a frame request is an error and the session's counters are left out, as the
+   * native host leaves them. */
+  private async drive(frameFor?: (index: number) => RGBA): Promise<Extract<RenderNeed, { kind: 'done' }>> {
+    const ctx = this.ctx, session = this.session;
     const graph = await this.graph.engine();
     for (;;) {
       const { events, counters, need } = session.step(
@@ -171,13 +186,15 @@ export class RenderPass {
         ctx.atlas!.resident,
         performance.now(),
       );
-      ctx.skippedPaints = this.base.skippedPaints + counters.skippedPaints;
-      ctx.project.tiles = this.base.tiles + counters.tiles;
-      ctx.project.observedPixels = this.base.observedPixels + counters.observedPixels;
+      if (frameFor) {
+        ctx.skippedPaints = this.base.skippedPaints + counters.skippedPaints;
+        ctx.project.tiles = this.base.tiles + counters.tiles;
+        ctx.project.observedPixels = this.base.observedPixels + counters.observedPixels;
+      }
       for (const e of events) await this.report(e);
       switch (need.kind) {
         case 'done':
-          return { observation: need.observation, latest: need.latest === undefined ? undefined : this.liveMeta(need.latest) };
+          return need;
         case 'error':
           throw new Error(need.message);
         case 'meta': {
@@ -186,15 +203,10 @@ export class RenderPass {
           session.provideMeta(need.canvas, meta && renderMeta(meta));
           break;
         }
-        case 'frame': {
-          const image = need.index === frame.index ? frame.image : need.index < frame.index ? prevImage! : nextImage!;
-          const { width, height } = ctx.source.info;
-          if (image.width !== width || image.height !== height) {
-            throw new Error(`CORE_BAD_ARGUMENT: frame ${image.width}×${image.height} does not fit a ${width}×${height} ring.`);
-          }
-          session.provideFrame(need.index, image.data);
+        case 'frame':
+          if (!frameFor) throw new Error('CORE_BAD_ARGUMENT: the finishing job asked for a frame.');
+          session.provideFrame(need.index, frameFor(need.index).data);
           break;
-        }
         case 'tile':
           await ctx.tiles.load(need.canvas, need.x, need.y);
           break;
@@ -202,6 +214,19 @@ export class RenderPass {
           await this.compositor.loadTemporal(need.canvas);
           break;
       }
+    }
+  }
+  /** After the last frame: the session's finishing job for the fixed regions (`RenderSession::begin_finish`), answered
+   * like a frame. A failure keeps the frames already rendered and marks the run partial, as a failed frame does. */
+  private async finishFixed(): Promise<void> {
+    const ctx = this.ctx, session = this.session;
+    try {
+      if (session.beginFinish()) await this.drive();
+    } catch (error) {
+      session.cancel(this.compositor.engine);
+      ctx.partial = true;
+      if (error instanceof StorageError) this.storageFailed = true;
+      await ctx.diagnostics.emit(prefixOnly('ANALYSIS_PREFIX_ONLY', 'render', ctx.project.renderedFrames, error));
     }
   }
   /** One decoded frame's worth of work: composite its plan's placements through the session, persist the ledger
@@ -324,6 +349,7 @@ export class RenderPass {
           break;
         }
       }
+      if (this.ctx.project.renderedFrames && !this.storageFailed) await this.finishFixed();
     } finally {
       try {
         await it.return(undefined);

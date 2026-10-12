@@ -84,6 +84,7 @@ fn placement(frame: u32) -> Placement {
         confidence: 0.5,
         uncertain: false,
         occlusions: Vec::new(),
+        fixed: false,
     }
 }
 
