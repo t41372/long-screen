@@ -9,23 +9,32 @@ on:
   pull_request:
   workflow_dispatch:
 
-# No `permissions` block: CodSpeed accepts uploads from public repositories without a token, including pull requests
-# from forks (https://codspeed.io/docs/integrations/ci/github-actions).
+# Read-only token: CodSpeed accepts uploads from public repositories without a token, including pull requests from
+# forks (https://codspeed.io/docs/integrations/ci/github-actions), so the job needs nothing beyond reading the code.
+permissions:
+  contents: read
+
+# A newer push to the same pull request or branch replaces a run still in progress.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   benchmarks:
     name: Core kernels
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       # Outside rust/target so the Rust cache below neither stores nor prunes them.
       LONGSCREEN_FIXTURES: ${{ github.workspace }}/.bench-fixtures
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # Keyed on the manifest, which pins every recording, window and fixture hash: a hit needs no download.
       - name: Restore fixtures
         id: fixtures
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: .bench-fixtures
           key: bench-fixtures-${{ hashFiles('rust/bench/cases.json') }}
@@ -38,7 +47,7 @@ jobs:
         working-directory: rust
         run: rustup toolchain install
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: rust
 
@@ -55,7 +64,7 @@ jobs:
         run: cargo codspeed build --locked -p long-screen-bench --profile bench-native -m simulation
 
       - name: Run the benchmarks
-        uses: CodSpeedHQ/action@v5
+        uses: CodSpeedHQ/action@f842b9a3ffe213dbb81768fd7f7eeb4dfcf1c369 # v5.4.2
         with:
           mode: simulation
           working-directory: rust

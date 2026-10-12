@@ -19,6 +19,11 @@ on:
 permissions:
   contents: read
 
+# One run per tag or branch at a time; a release that has started is never cancelled halfway.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   check:
     name: Package on ${{ matrix.os }}
@@ -26,13 +31,15 @@ jobs:
     strategy:
       matrix:
         # The decoder has a backend per system (Media Foundation, AVFoundation, ffmpeg); each must build.
-        os: [ubuntu-24.04, macos-14, windows-2022]
+        os: [ubuntu-26.04, macos-26, windows-2025]
     defaults:
       run:
         shell: bash
         working-directory: rust
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       - name: Install the pinned Rust toolchain
         run: rustup toolchain install
@@ -75,18 +82,20 @@ jobs:
     name: Publish to crates.io
     if: startsWith(github.ref, 'refs/tags/crates-v')
     needs: check
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment:
       name: crates-io
       url: https://crates.io/crates/long-screen
     permissions:
-      contents: read
-      id-token: write
+      contents: read # check out the repository
+      id-token: write # crates.io trusted publishing: GitHub's OIDC identity token
     defaults:
       run:
         working-directory: rust
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
       # crates.io never accepts a version twice. When this one is already there (the first version, published by
       # hand), the run ends green without uploading.
@@ -113,7 +122,7 @@ jobs:
 
       # A short-lived publish token for the crate whose trusted publisher names this workflow; the action's post step
       # revokes it when the job ends.
-      - uses: rust-lang/crates-io-auth-action@v1
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
         if: steps.existing.outputs.published == 'false'
         id: auth
 

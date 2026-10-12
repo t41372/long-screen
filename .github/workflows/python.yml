@@ -17,6 +17,11 @@ on:
 permissions:
   contents: read
 
+# One run per tag or branch at a time; a release that has started is never cancelled halfway.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   MATURIN_VERSION: v1.15.0
 
@@ -27,44 +32,48 @@ jobs:
     strategy:
       matrix:
         include:
-          - { target: x86_64, runner: ubuntu-24.04 }
-          - { target: aarch64, runner: ubuntu-24.04-arm }
+          - { target: x86_64, runner: ubuntu-26.04 }
+          - { target: aarch64, runner: ubuntu-26.04-arm }
     steps:
-      - uses: actions/checkout@v5
-      - uses: PyO3/maturin-action@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           maturin-version: ${{ env.MATURIN_VERSION }}
           target: ${{ matrix.target }}
           manylinux: "2_28"
           working-directory: rust/python
           args: --release --locked --out dist
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
       - name: Test the wheel
         run: |
           python -m pip install rust/python/dist/*.whl pytest pillow
           python -m pytest rust/python/tests -q
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheels-linux-${{ matrix.target }}
           path: rust/python/dist
 
   macos:
     name: macOS ${{ matrix.target }}
-    runs-on: macos-14
+    runs-on: macos-26
     strategy:
       matrix:
         target: [aarch64-apple-darwin, x86_64-apple-darwin]
     steps:
-      - uses: actions/checkout@v5
-      - uses: PyO3/maturin-action@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           maturin-version: ${{ env.MATURIN_VERSION }}
           target: ${{ matrix.target }}
           working-directory: rust/python
           args: --release --locked --out dist
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         if: matrix.target == 'aarch64-apple-darwin'
         with:
           python-version: "3.11"
@@ -73,23 +82,25 @@ jobs:
         run: |
           python -m pip install rust/python/dist/*.whl pytest pillow
           python -m pytest rust/python/tests -q
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheels-macos-${{ matrix.target }}
           path: rust/python/dist
 
   windows:
     name: Windows x86_64
-    runs-on: windows-2022
+    runs-on: windows-2025
     steps:
-      - uses: actions/checkout@v5
-      - uses: PyO3/maturin-action@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           maturin-version: ${{ env.MATURIN_VERSION }}
           target: x64
           working-directory: rust/python
           args: --release --locked --out dist
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
       - name: Test the wheel
@@ -97,23 +108,25 @@ jobs:
         run: |
           python -m pip install rust/python/dist/*.whl pytest pillow
           python -m pytest rust/python/tests -q
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheels-windows-x86_64
           path: rust/python/dist
 
   sdist:
     name: Source distribution
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: PyO3/maturin-action@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
         with:
           maturin-version: ${{ env.MATURIN_VERSION }}
           command: sdist
           working-directory: rust/python
           args: --out dist
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: wheels-sdist
           path: rust/python/dist
@@ -122,16 +135,18 @@ jobs:
     name: Publish to PyPI
     if: startsWith(github.ref, 'refs/tags/py-v')
     needs: [linux, macos, windows, sdist]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # The PyPI project's trusted publisher names this repository, this workflow file and this environment.
     environment:
       name: pypi
       url: https://pypi.org/project/long-screen/
     permissions:
-      contents: read
-      id-token: write
+      contents: read # check out the repository
+      id-token: write # PyPI trusted publishing: GitHub's OIDC identity token
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Check the tag against the package version
         run: |
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' rust/python/Cargo.toml | head -n 1)
@@ -139,14 +154,14 @@ jobs:
             echo "tag $GITHUB_REF_NAME does not match rust/python/Cargo.toml version $version" >&2
             exit 1
           fi
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: wheels-*
           merge-multiple: true
           path: dist
       # Files go up one by one, and PyPI never takes a file name twice: rerunning this job after an upload that
       # stopped partway skips the files already there and uploads the rest.
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
         with:
           packages-dir: dist
           skip-existing: true

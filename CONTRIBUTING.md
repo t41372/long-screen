@@ -37,6 +37,14 @@ Nothing is published by merging a pull request. Each target has its own trigger:
 
 So pushing `main` updates the website straight away, and a tag sends one package to one registry. The three packages are built from the same source but versioned separately; you can release just one of them.
 
+### The workflows
+
+The four workflows in `.github/workflows` (CodSpeed benchmarks and the three release workflows) pin every action to a full commit hash, with the version in a comment next to it, run on the newest GitHub-hosted runner images, and keep the token's permissions to what each job needs. When you change one, or bump an action, run [zizmor](https://docs.zizmor.sh) and fix what it reports:
+
+```sh
+GH_TOKEN=$(gh auth token) uvx zizmor --pedantic .github/workflows
+```
+
 ### Deploying the web app
 
 Push to `main`. Cloudflare Pages runs `bash scripts/pages-build.sh` and publishes `dist/` within a few minutes; any other branch gets a preview URL instead. After a deploy, open the site and run the sample recording once. The threaded core needs the COOP/COEP headers from `static/_headers`; `curl -sI https://long-screen.yi-ting.com/` should list them. [README.md](README.md#deployment) has the details.
