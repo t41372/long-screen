@@ -83,6 +83,15 @@ pub struct OdometryInputs<'a> {
 
 /// Native mean error below which a step is tracked.
 const TRACKED_ERROR: f64 = 14.0;
+/// Matches a hypothesis needs to be refined natively.
+const MIN_SUPPORT: u32 = 4;
+/// When no hypothesis has [`MIN_SUPPORT`] matches, the best this many of the rest (three matches each, the least
+/// `translation_hypotheses` proposes) are audited and refined instead, and the native check decides. Without them a
+/// dark, sparse frame that moved fell through to the difference sample, whose blank pixels call it static: on an HDR
+/// recording of a painting (test_4, frame 1080) the frame had four matches, the true 112-px step was the one
+/// hypothesis and had three of them, the mean difference was 0.6, and every later frame was placed 111 px off,
+/// leaving seams through the mouth and eyebrows and 36 rejected loop closures.
+const FEW_MATCH_MODELS: usize = 2;
 /// A step over [`TRACKED_ERROR`] can still be rescued when the offsets around it cost clearly more (runner-up above
 /// [`RESCUE_SEPARATION`] × the error) and its trimmed error ([`NativeRefinement::trimmed`]) is a small share of what
 /// a misplaced offset costs (below [`RESCUE_SHARE`] × the runner-up). Both are ratios because the errors scale with
@@ -154,10 +163,15 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
         })
         .collect();
 
-    let models: Vec<_> = translation_hypotheses(&match_points, 16)
-        .into_iter()
-        .filter(|m| m.support >= 4)
-        .collect();
+    let hypotheses = translation_hypotheses(&match_points, 16);
+    let models: Vec<_> = if hypotheses.iter().any(|m| m.support >= MIN_SUPPORT) {
+        hypotheses
+            .into_iter()
+            .filter(|m| m.support >= MIN_SUPPORT)
+            .collect()
+    } else {
+        hypotheses.into_iter().take(FEW_MATCH_MODELS).collect()
+    };
     // Period-aliased hypotheses on repeated content audit equally well; the constant-velocity prior orders
     // them before the native decision so the true small step is never dropped in favour of a one-row-off
     // alias with more (arbitrary) matches.
@@ -575,6 +589,49 @@ mod tests {
         let (previous, current) = (rows(0.0), rows(67.5));
         for dy in [67, 68] {
             assert!(!measured(&previous, &current, dy), "repeated rows, {dy}");
+        }
+    }
+
+    /// A dark page with five dim 28 × 16 marks, scrolled by `offset`: the frame gives the matcher only a handful of
+    /// features, so the true step can be backed by three matches.
+    fn dark(offset: f64) -> Vec<u8> {
+        const MARKS: [(usize, usize); 5] =
+            [(60, 300), (250, 420), (130, 610), (300, 760), (80, 900)];
+        render(offset, |x, y, offset| {
+            let world_y = y + offset;
+            for (mx, my) in MARKS {
+                if (mx..mx + 28).contains(&x) && (my..my + 16).contains(&world_y) {
+                    let (u, v) = (x - mx, world_y - my);
+                    return if (u * 7 + v * 3 + u * v) % 11 < 5 {
+                        96
+                    } else {
+                        30
+                    };
+                }
+            }
+            18
+        })
+    }
+
+    // Failure cases for a dark, sparse frame: a real step declared static because the one hypothesis that has it is
+    // backed by three matches (fewer than the four a hypothesis needs), so every later frame inherits the missed step;
+    // a spurious hypothesis with the same support taken instead of it; and a frame that did not move measured as a
+    // step. At factor 3 the matches propose the true step and a spurious one, three matches each.
+    #[test]
+    fn a_step_backed_by_three_matches_is_still_measured() {
+        for f in [2usize, 3, 4] {
+            let result = measure(&dark(0.0), &dark(112.0), f);
+            assert_ne!(
+                result.decision,
+                super::OdometryDecision::Static,
+                "factor {f}"
+            );
+            assert_eq!(measured_step(result), Some((0.0, 112.0)), "factor {f}");
+            let still = measure(&dark(112.0), &dark(112.0), f);
+            assert!(
+                matches!(measured_step(still), None | Some((0.0, 0.0))),
+                "factor {f}"
+            );
         }
     }
 }
