@@ -235,14 +235,16 @@ function stampCommit(page: string, commit: { label: string; full: string } | und
 }
 /** Files the installed app needs offline (src/sw.ts), as paths relative to the build root (the worker's scope), plus a hash of their
  *  contents that names the build's cache. Everything in the build except what a run never loads: the service worker
- *  itself, the host's `_headers`, source maps, the test harness, and the device check page, a diagnostic tool that
- *  is opened on purpose. index.html is listed as '', the URL Cloudflare Pages serves it at. */
+ *  itself, the host's `_headers`, source maps, the test harness, the device check page, a diagnostic tool that is
+ *  opened on purpose, and hidden files such as the `.DS_Store` macOS leaves in static/: main.ts answers them 404,
+ *  and one failed fetch fails the worker's whole install. index.html is listed as '', the URL Cloudflare Pages
+ *  serves it at. */
 async function precacheList(dir: string): Promise<{ version: string; files: string[] }> {
   const skip = new Set(['sw.js', '_headers', 'harness.html', 'assets/testkit.js', 'device-check.html', 'assets/device-check.js']);
   const files: [string, string][] = [];
   for await (const entry of walk(dir, { includeDirs: false })) {
     const path = relative(dir, entry.path).replaceAll('\\', '/');
-    if (skip.has(path) || path.endsWith('.map')) continue;
+    if (skip.has(path) || path.endsWith('.map') || path.split('/').some((part) => part.startsWith('.'))) continue;
     files.push([path === 'index.html' ? '' : path, encodeHex(await crypto.subtle.digest('SHA-256', await Deno.readFile(entry.path)))]);
   }
   files.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
