@@ -2,7 +2,7 @@
 //! lookahead decode loop around the engine's `RenderSession`, answering what it asks for (plans, voting records,
 //! canvas rows, tiles, temporal rows), storing what it produces, and formatting its diagnostics.
 
-use crate::context::{pad, t, Ctx};
+use crate::context::{error_text, pad, t, Ctx};
 use crate::engine::attachments::Attachment;
 use crate::engine::catalog::{Locale, Param};
 use crate::engine::compositor::{Compositor, TemporalPolicy};
@@ -17,6 +17,7 @@ use crate::kernels::geometry::Rect;
 use crate::kernels::temporal::TemporalRecord;
 use crate::solve::kind_str;
 use crate::source::{Frame, FrameSource};
+use crate::tiles::{decode_png, encode_png};
 use crate::value::{detail, read_rect, rect, to_locale, Js, Obj};
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -580,6 +581,55 @@ impl Pass {
         }
     }
 
+    /// The framed print's chrome is the reference frame: the session paints the fixed regions' first frame without
+    /// transients over it, and the row is stored again. Presentation only: a failure is the warning a failed
+    /// reference write is at scan time.
+    fn patch_reference(&mut self, ctx: &mut Ctx) {
+        if !ctx.settings.framing_context() {
+            return;
+        }
+        let Some(Js::Obj(r)) = ctx.get("frame-reference") else {
+            return;
+        };
+        let frame = r.num("frame") as u32;
+        let result = (|| -> Result<Option<Vec<u8>>, String> {
+            let image = r
+                .get("image")
+                .and_then(Js::bytes)
+                .ok_or("reference without an image")?;
+            let (w, h, mut rgba) = decode_png(image)?;
+            if !self
+                .session
+                .patch_reference(&mut rgba, w as usize, h as usize, frame)
+            {
+                return Ok(None);
+            }
+            encode_png(&rgba, w, h)
+                .map(Some)
+                .map_err(|e| error_text(&e))
+        })();
+        match result {
+            Ok(None) => {}
+            Ok(Some(png)) => ctx.put(
+                "frame-reference",
+                Obj::new().with("frame", frame).with("image", Js::png(png)),
+            ),
+            Err(e) => {
+                let message = e;
+                ctx.emit(&|l| {
+                    Obj::new()
+                        .with("code", "PRESENTATION_REFERENCE_FAILED")
+                        .with("severity", "warning")
+                        .with("message", message.as_str())
+                        .with(
+                            "action",
+                            t(l, "diag.PRESENTATION_REFERENCE_FAILED.action", &[]),
+                        )
+                });
+            }
+        }
+    }
+
     /// One decoded frame: composite its plan, store the ledger row, report progress.
     fn process(
         &mut self,
@@ -805,6 +855,7 @@ pub fn render(ctx: &mut Ctx, source: &mut dyn FrameSource) -> Result<(), String>
     })();
     if outcome.is_ok() && ctx.rendered_frames > 0 {
         pass.finish(ctx);
+        pass.patch_reference(ctx);
     }
     // The page's `finally`: release the temporal indexes, then store what is still owed.
     pass.compositor.dispose();

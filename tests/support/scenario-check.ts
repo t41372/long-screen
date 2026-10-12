@@ -8,7 +8,7 @@ import type { Settings } from '../../src/types.ts';
  *  scripts/fingerprint-scenarios.ts always traverse exactly the same set in the same order. */
 export const SCENARIO_CATALOGUE: readonly string[] = [...SCENARIO_NAMES, 'fixture'];
 import type { FragmentReport } from '../../src/synthetic/verify.ts';
-import { type RunResult, runScenario, verifyCanvasAccounting, verifyFixed, verifyLayer } from './run.ts';
+import { type RunResult, runScenario, verifyCanvasAccounting, verifyFixed, verifyFramedChrome, verifyLayer } from './run.ts';
 export interface ScenarioReport {
   name: string;
   seconds: number;
@@ -253,6 +253,11 @@ async function checkResult(name: string, scenario: Scenario, result: RunResult):
         assertEquals(f.mismatched, 0, `${name}/${overlay.id}: fixed pixels differ from the observed band`);
         if (overlay.settled === undefined) {
           assertEquals(f.conflicts, 0, `${name}/${overlay.id}: a static band reported temporal conflicts`);
+        } else {
+          // The framed print keeps the reference frame's chrome, without the pointer that was in it.
+          const chrome = await verifyFramedChrome(result, rect);
+          assert(chrome.canvases > 0 && chrome.compared > 0, `${name}/${overlay.id}: no framed print shows the band`);
+          assertEquals(chrome.mismatched, 0, `${name}/${overlay.id}: the framed print's chrome differs from its reference frame`);
         }
         assert(f.covered >= rect.width * rect.height * .5, `${name}/${overlay.id}: fixed canvas covers too little of the band`);
       }

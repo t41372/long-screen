@@ -764,6 +764,33 @@ impl RenderSession {
         Ok(true)
     }
 
+    /// Paints every fixed region's first frame without transients into `rgba` (`width × height`, the reference frame
+    /// `frame`), after [`RenderSession::begin_finish`]; returns whether any pixel changed. Regions whose first
+    /// observation was another frame are left alone.
+    pub fn patch_reference(
+        &self,
+        rgba: &mut [u8],
+        width: usize,
+        height: usize,
+        frame: u32,
+    ) -> bool {
+        if width != self.width || height != self.height || rgba.len() != width * height * 4 {
+            return false;
+        }
+        let mut changed = false;
+        for region in &self.regions {
+            let Some(state) = self.states.get(&region.id) else {
+                continue;
+            };
+            if let (Some(first), Some(from)) = (&state.first, state.history.first_frame()) {
+                if from == frame {
+                    changed |= state.history.paint(first, rgba, width, height);
+                }
+            }
+        }
+        changed
+    }
+
     fn run_finish(&mut self, io: &mut RenderIo) -> Result<RenderStep, RenderError> {
         loop {
             let job = self.finish.as_mut().unwrap();

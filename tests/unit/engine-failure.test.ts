@@ -445,6 +445,29 @@ Deno.test('engine F23: a frame-reference write failure is a warning (PRESENTATIO
   for await (const { value } of iterate<{ id: string }>(store, 'canvas/')) if (value.id.endsWith('-framed')) framed++;
   assertEquals(framed, 0, 'without a reference frame, buildFramedCanvas must not fabricate a framed canvas');
 });
+Deno.test('engine F23: a failed write of the reference frame with its pointer taken out is a warning; the run stays complete and frames the scanned reference', async () => {
+  // menu-bar's frame 0 has a pointer in the bar, so render takes it out of the reference frame and stores it again.
+  const scenario = buildScenario('menu-bar'), db = new MemoryKV(), source = new ScenarioSource(scenario);
+  let writes = 0;
+  const flaky: KV = {
+    get: (k) => db.get(k),
+    delete: (k) => db.delete(k),
+    deleteMany: (k) => db.deleteMany(k),
+    scan: (p, o) => db.scan(p, o),
+    putMany: (r) => db.putMany(r),
+    put: (k, v) => k.endsWith('frame-reference') && ++writes > 1 ? Promise.reject(new Error('encode failed')) : db.put(k, v),
+  };
+  const diagnostics: Diagnostic[] = [];
+  const engine = makeEngine(flaky, source, { framing: 'context' }, (d) => diagnostics.push(d));
+  const project = await engine.run();
+  assertEquals(project.status, 'complete', project.error);
+  assertEquals(writes, 2, 'scan stores the reference frame and render tries to store the patched one');
+  assert(diagnostics.some((d) => d.code === 'PRESENTATION_REFERENCE_FAILED'));
+  const store = new Namespace(db, `run/${project.id}/`);
+  let framed = 0;
+  for await (const { value } of iterate<{ id: string }>(store, 'canvas/')) if (value.id.endsWith('-framed')) framed++;
+  assert(framed > 0, 'the reference frame stored at scan time still frames the print');
+});
 Deno.test('engine F23: a framing-stage failure is a warning (PRESENTATION_STAGE_FAILED) and never flips a finished core reconstruction to partial/error', async () => {
   const scenario = buildScenario('traversal'), db = new MemoryKV(), source = new ScenarioSource(scenario);
   const flaky: KV = {

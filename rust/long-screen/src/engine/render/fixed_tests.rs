@@ -362,3 +362,27 @@ fn a_region_whose_state_keeps_changing_keeps_its_first_frame() {
         "the band kept a later state"
     );
 }
+
+#[test]
+fn the_reference_frame_loses_a_pointer_parked_in_it() {
+    // The pointer sits still for the first three frames, so no mask flags it; the bar then shows clean for longer.
+    let (regions, labels) = band(16);
+    let parked = || draw(frame(16, 100), pointer(20, 4, 8, 8, 250));
+    let mut frames = vec![parked(), parked(), parked()];
+    frames.extend((0..8).map(|_| frame(16, 100)));
+    let reference = frames[0].clone();
+    let mut host = Host::new(labels, frames);
+    let mut s = session(regions);
+    host.render(&mut s);
+    let mut patched = reference.clone();
+    assert!(s.patch_reference(&mut patched, W, H, 0));
+    assert_eq!(
+        patched,
+        frame(16, 100),
+        "the reference still shows the pointer"
+    );
+    assert!(
+        !s.patch_reference(&mut patched, W, H, 1),
+        "another frame is not patched"
+    );
+}

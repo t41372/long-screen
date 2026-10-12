@@ -238,6 +238,22 @@ export class RenderSessionHandle {
   beginFinish(): boolean {
     return this.core.check(this.exports.ls_render_begin_finish(this.handle), 'renderBeginFinish') === 1;
   }
+  /** Paints the fixed regions' first frame without transients into the reference frame `frame`, in place; whether
+   *  any pixel changed (`patch_reference`). */
+  patchReference(rgba: Uint8Array | Uint8ClampedArray, width: number, height: number, frame: number): boolean {
+    const buffer = this.core.alloc(rgba.byteLength);
+    try {
+      this.core.writeBytes(buffer.ptr, new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength));
+      const changed = this.core.check(
+        this.exports.ls_render_patch_reference(this.handle, buffer.ptr, width, height, frame),
+        'renderPatchReference',
+      ) === 1;
+      if (changed) rgba.set(new Uint8Array(this.exports.memory.buffer, buffer.ptr, rgba.byteLength));
+      return changed;
+    } finally {
+      buffer.free();
+    }
+  }
   meta(canvas: string): RenderMeta | undefined {
     const [ptr, len] = new ByteWriter().str(canvas).place(this.core);
     const r = this.result(this.exports.ls_render_meta(this.handle, ptr, len), 'renderMeta');

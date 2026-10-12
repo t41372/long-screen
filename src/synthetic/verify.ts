@@ -528,6 +528,42 @@ export async function verifyFixed(
   }
   return { canvas: best, mismatched, covered, conflicts };
 }
+/** The window chrome of every framed print over `rect`, a band above the pane the print frames (where the print shows the
+ *  reference chrome at its native position), against the reference frame drawn without the dynamic overlays: the chrome
+ *  keeps the reference frame's moment, without the pointer that happened to be in it. Counts the pixels whose colour
+ *  differs. */
+export async function verifyFramedChrome(
+  result: VerifiableRun,
+  rect: { x: number; y: number; width: number; height: number },
+): Promise<{ canvases: number; mismatched: number; compared: number }> {
+  const { scenario, store } = result, size = result.tileSize;
+  const fixedOnly = { ...scenario, overlays: scenario.overlays.filter((o) => o.kind === 'fixed') };
+  let canvases = 0, mismatched = 0, compared = 0;
+  for (const canvas of result.canvases) {
+    const pane = canvas.presentation?.sourceRegion;
+    if (canvas.kind !== 'presentation' || !pane || rect.y + rect.height > pane.y) {
+      continue;
+    }
+    const truth = renderFrame(fixedOnly, canvas.presentation!.referenceFrame).image;
+    canvases++;
+    for await (const { value: t } of iterate<TileIndex>(store, `tile-index/${canvas.id}/0/`)) {
+      const stored = (await store.get<StoredTile>(`tile/${canvas.id}/0/${t.x}_${t.y}`))!,
+        pixels = await pngTileCodec.decode(stored.blob, size);
+      for (let i = 0; i < size * size; i++) {
+        const x = t.x * size + (i % size), y = t.y * size + Math.floor(i / size);
+        if (x < rect.x || y < rect.y || x >= Math.min(rect.x + rect.width, pane.x + pane.width) || y >= rect.y + rect.height) {
+          continue;
+        }
+        compared++;
+        const j = (y * scenario.width + x) * 4;
+        if (pixels[i * 4] !== truth.data[j] || pixels[i * 4 + 1] !== truth.data[j + 1] || pixels[i * 4 + 2] !== truth.data[j + 2]) {
+          mismatched++;
+        }
+      }
+    }
+  }
+  return { canvases, mismatched, compared };
+}
 /** Reads back a canvas's stored level-0 tiles and checks the coverage bitmap against the canvas's own bookkeeping: the number of
  *  indexed tile rows must equal `CanvasMeta.tileCount`, and the covered-bit count recomputed from every stored tile's coverage
  *  bitmap must equal `CanvasMeta.observedPixels`. This is content-agnostic (it never decodes pixel colour) and applies to any

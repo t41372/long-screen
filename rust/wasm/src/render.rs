@@ -462,6 +462,27 @@ pub extern "C" fn ls_render_begin_finish(handle: u32) -> i32 {
     }
 }
 
+/// Paints every fixed region's first frame without transients into the reference frame `frame` (`rgba` holds
+/// width × height × 4 bytes, patched in place; `RenderSession::patch_reference`): 1 when a pixel changed, else 0.
+#[no_mangle]
+pub extern "C" fn ls_render_patch_reference(
+    handle: u32,
+    rgba: u32,
+    width: u32,
+    height: u32,
+    frame: u32,
+) -> i32 {
+    let Some(s) = handles().get(handle) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let (w, h) = (width as usize, height as usize);
+    // SAFETY: adapter-owned buffer, bounds checked.
+    let Some(pixels) = (unsafe { slice_mut(rgba, w * h * 4) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    s.session.patch_reference(pixels, w, h, frame) as i32
+}
+
 /// Abandons the frame in progress and the compositor's placement with it.
 #[no_mangle]
 pub extern "C" fn ls_render_cancel(handle: u32, compositor_handle: u32) {

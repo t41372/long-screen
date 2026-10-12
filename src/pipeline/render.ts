@@ -14,6 +14,7 @@ import { Compositor } from '../core/compositor.ts';
 import { pad } from '../core/math.ts';
 import { core, type EngineDiagnostic, type RenderMeta, type RenderNeed, type RenderSessionHandle } from '../core/wasm.ts';
 import { releaseUnlessHeld } from '../media/pool.ts';
+import { decodePNG, encodeRGBA } from '../codec/png.ts';
 import type { ConsistencyRecord } from './consistency.ts';
 import { t } from '../i18n/index.ts';
 import { prefixOnly, type RunContext, StorageError } from './context.ts';
@@ -229,6 +230,30 @@ export class RenderPass {
       await ctx.diagnostics.emit(prefixOnly('ANALYSIS_PREFIX_ONLY', 'render', ctx.project.renderedFrames, error));
     }
   }
+  /** The framed print's chrome is the reference frame: the session paints the fixed regions' first frame without
+   * transients over it (a pointer parked in a toolbar in frame 0), and the row is stored again. Presentation only:
+   * a failure is the same warning a failed reference write is at scan time. */
+  private async patchReference(): Promise<void> {
+    const ctx = this.ctx;
+    if (ctx.project.settings.framing !== 'context') return;
+    try {
+      const reference = await ctx.store.get<{ frame: number; image: Blob }>('frame-reference');
+      if (!reference) return;
+      const image = await decodePNG(new Uint8Array(await reference.image.arrayBuffer()));
+      if (!this.session.patchReference(image.data, image.width, image.height, reference.frame)) return;
+      await ctx.store.put('frame-reference', {
+        frame: reference.frame,
+        image: new Blob([await encodeRGBA(image)], { type: 'image/png' }),
+      });
+    } catch (error) {
+      await ctx.diagnostics.emit({
+        code: 'PRESENTATION_REFERENCE_FAILED',
+        severity: 'warning',
+        message: String(error),
+        action: t('diag.PRESENTATION_REFERENCE_FAILED.action'),
+      });
+    }
+  }
   /** One decoded frame's worth of work: composite its plan's placements through the session, persist the ledger
    * row, and report progress. Sets `this.stop` (never breaks itself — run()'s loop owns the decode order) once a
    * stop was honoured or the solved prefix is fully rendered. */
@@ -349,7 +374,10 @@ export class RenderPass {
           break;
         }
       }
-      if (this.ctx.project.renderedFrames && !this.storageFailed) await this.finishFixed();
+      if (this.ctx.project.renderedFrames && !this.storageFailed) {
+        await this.finishFixed();
+        await this.patchReference();
+      }
     } finally {
       try {
         await it.return(undefined);
