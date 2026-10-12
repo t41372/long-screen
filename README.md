@@ -6,7 +6,7 @@
 
 **Use it in your browser: [long-screen.yi-ting.com](https://long-screen.yi-ting.com)** (also at [long-screen.pages.dev](https://long-screen.pages.dev)). Nothing is uploaded; the recording is processed on your own device.
 
-Record a web page, an app, a map or a design file while you move around it — scroll, pan, go diagonally, loop back, pause, shake — and Long Screen puts everything the recording showed back in place as one native-size PNG. Fixed window chrome and status bars are restored too. Everything runs on your own machine: there is no upload endpoint, cloud inference, OCR or model download.
+Record a web page, an app or a design file while you move around it — scroll, pan, go diagonally, loop back, pause, shake — and Long Screen puts everything the recording showed back in place as one native-size PNG. Fixed window chrome and status bars are restored too. Everything runs on your own machine: there is no upload endpoint, cloud inference, OCR or model download.
 
 The main form is a static web app: a thin layer of TypeScript (UI, Worker RPC, browser I/O, orchestration) wraps a Rust core compiled to WebAssembly, which holds every algorithm — motion layering, historical relocalization, an on-disk pose graph, native-resolution tile composition and quality diagnostics. The same engine also runs [outside the browser](#use-it-outside-the-browser), as a command line, a Rust library, a Python package and a TypeScript package for other web pages.
 

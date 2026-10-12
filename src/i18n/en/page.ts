@@ -36,14 +36,14 @@ export const pageSections: Catalog<typeof zh> = {
     hero: {
       heading: 'Turn a screen recording<br>into <span class="hl">one big screenshot</span>.',
       intro:
-        'Record your screen while you move around a web page, app, map or design — scroll, pan, go diagonal, circle back. Everything the recording showed is put back in place as one full-size PNG, with fixed window frames and status bars restored. It all runs in your browser; nothing is uploaded.',
+        'Record your screen while you move around a web page, app or design — scroll, pan, go diagonal, circle back. Everything the recording showed is put back in place as one full-size PNG, with fixed window frames and status bars restored. It all runs in your browser; nothing is uploaded.',
       demoLead: ' Want to see it first?',
       demoChip: 'Play a sample recording',
     },
     steps: {
       ariaLabel: 'How it works',
       recordTitle: 'Record',
-      recordBody: 'Record the screen while you move around a page, app or map, any way you like.',
+      recordBody: 'Record the screen while you move around a page or app, any way you like.',
       feedTitle: 'Feed it',
       feedBody: "Drop the video on the printer's screen and press Run.",
       takeTitle: 'Take it whole',

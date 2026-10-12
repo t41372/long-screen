@@ -34,14 +34,14 @@ export const pageSections = {
     hero: {
       heading: '把一段录屏，<br>拼成<span class="hl">一整张大截图</span>。',
       intro:
-        '对着网页、App、地图或设计稿录屏，滚动、平移、斜着走、绕回去都行。录屏里出现过的画面会被拼回原位，得到一张原尺寸 PNG，固定的窗口边框和状态栏也会还原。全程在浏览器本地完成，不上传。',
+        '对着网页、App 或设计稿录屏，滚动、平移、斜着走、绕回去都行。录屏里出现过的画面会被拼回原位，得到一张原尺寸 PNG，固定的窗口边框和状态栏也会还原。全程在浏览器本地完成，不上传。',
       demoLead: '想先看看效果？',
       demoChip: '放一段示例录屏',
     },
     steps: {
       ariaLabel: '怎么用',
       recordTitle: '录一段',
-      recordBody: '在网页、App 或地图上录屏，随便怎么移动都行。',
+      recordBody: '在网页或 App 上录屏，随便怎么移动都行。',
       feedTitle: '喂进去',
       feedBody: '把视频拖到打印机的屏幕上，按「运行」。',
       takeTitle: '拿整张',
