@@ -158,7 +158,10 @@ pub fn detect_bands(
             let scale = factor;
             let cross_from = native_height.min((top as f64 * factor).ceil());
             let cross_to = native_height.min((bottom as f64 * factor).floor());
-            exact_left = if left > 0 && (left as f64) < width as f64 * 0.45 {
+            // A walk that reached the 45% cap may have crossed an empty margin beside the sidebar, which stands just
+            // as still (test_2: the chat's dark margin ran it to x 1584); the sidebar's own edge is still looked
+            // for before the cap, and the texture test below still decides whether what it bounds is a sidebar.
+            exact_left = if left > 0 {
                 stationary_boundary(
                     img.data,
                     img.width,
@@ -173,7 +176,7 @@ pub fn detect_bands(
             } else {
                 None
             };
-            exact_right = if right < width && (right as f64) > width as f64 * 0.55 {
+            exact_right = if right < width {
                 stationary_boundary(
                     img.data,
                     img.width,

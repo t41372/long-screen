@@ -390,9 +390,11 @@ export function referenceFinish(
     }
     // Refine appearance edges BEFORE testing texture, otherwise wide empty page gutters dilute the
     // sidebar's visible structure and cause asymmetrical left/right classifications.
+    // A walk that reached the cap still looks for the sidebar's own edge before it: an empty margin beside the
+    // sidebar stands just as still (rust/long-screen/src/kernels/regions/bands.rs).
     if (reference) {
       const scale = factor;
-      exactLeft = left > 0 && left < width * .45
+      exactLeft = left > 0
         ? stationaryBoundary(
           reference,
           'x',
@@ -403,7 +405,7 @@ export function referenceFinish(
           'last',
         )
         : undefined;
-      exactRight = right < width && right > width * .55
+      exactRight = right < width
         ? stationaryBoundary(
           reference,
           'x',

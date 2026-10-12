@@ -267,3 +267,68 @@ fn a_sparse_pane_that_moves_in_most_frames_is_not_a_band() {
         "the moving pane was frozen as a right band: {fixed_right:?}"
     );
 }
+
+/// A 100×60 window seen at factor 1: a sidebar over x 0..20 (lines of text in `sidebar_text`, else blank) with its
+/// edge at x 20, an empty dark margin over x 20..60 that never changes, and page content over x 60..100 that moves in
+/// every informative frame. Returns the bands.
+fn wide_margin_bands(sidebar_text: bool) -> super::bands::Bands {
+    let (w, h) = (100usize, 60usize);
+    let mut rgba = vec![255u8; w * h * 4];
+    for y in 0..h {
+        for x in 0..w {
+            let v = if x < 20 {
+                if sidebar_text && y % 6 == 0 && (3..17).contains(&x) {
+                    200
+                } else {
+                    60
+                }
+            } else if x < 60 {
+                10
+            } else if (y + x) % 7 < 3 {
+                230
+            } else {
+                40
+            };
+            rgba[(y * w + x) * 4..(y * w + x) * 4 + 3].fill(v);
+        }
+    }
+    let reference = Rgba {
+        width: w,
+        height: h,
+        data: &rgba,
+    };
+    let frames = 10.0;
+    let row_change = vec![frames; h];
+    let col_moving: Vec<f64> = (0..w).map(|x| if x < 60 { 0.0 } else { frames }).collect();
+    let col_mean = vec![0.0; w];
+    super::bands::detect_bands(
+        w as i64,
+        h as i64,
+        frames,
+        &row_change,
+        &col_moving,
+        &col_mean,
+        Some(&reference),
+        w as f64,
+        h as f64,
+        1.0,
+    )
+}
+
+// test_2: the browser's tab panel and ChatGPT's sidebar stand still, and so does the empty dark margin of the chat
+// beside them, so the walk over stationary columns ran past 45% of the width and the whole left band was thrown
+// away; the sidebar stayed in the moving layer and tore. At the cap, the sidebar's own edge is still looked for.
+#[test]
+fn a_sidebar_beside_an_empty_margin_wider_than_the_cap_is_a_left_band() {
+    let bands = wide_margin_bands(true);
+    assert_eq!(bands.left, 20);
+    assert_eq!(bands.exact_left, Some(20.0));
+}
+
+// A blank strip with an edge is still page geometry, not a sidebar (§十: 侧边带要有可见结构).
+#[test]
+fn a_blank_strip_beside_an_empty_margin_is_not_a_left_band() {
+    let bands = wide_margin_bands(false);
+    assert_eq!(bands.left, 0);
+    assert_eq!(bands.exact_left, None);
+}
