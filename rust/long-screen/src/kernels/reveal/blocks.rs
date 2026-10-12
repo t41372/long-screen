@@ -665,9 +665,9 @@ impl Output {
         // widest partial cover. Blocks a cover misses keep the best earlier cover.
         for comp in self.components.iter_mut() {
             let mut covered = Vec::new();
-            // A frame showing a small blob that is not there in the consensus in the component's static margin
-            // carries a transient (a cursor passing over the widget's edge): it is the component's moment only
-            // when no other frame covers the component.
+            // A frame showing something in the component's static blocks that is not there in the consensus
+            // carries a transient (a cursor passing over the widget's edge, or a status bubble over whole blocks):
+            // it is the component's moment only when no other frame covers the component.
             let mut tainted = false;
             for yy in 0..comp.bh {
                 for xx in 0..comp.bw {
@@ -681,7 +681,7 @@ impl Output {
                         if t >= TIER_VEIL {
                             if !comp.dynamic[k] {
                                 let off = compare(&sig, &c.sig[b * CELLS..(b + 1) * CELLS]).2;
-                                tainted |= (1..=CELLS as u32 * 3 / 8).contains(&off);
+                                tainted |= off > 0;
                             }
                             covered.push(b);
                         }
@@ -972,5 +972,121 @@ impl Output {
             }
         }
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kernels::reveal::stats::CellMap;
+    use crate::kernels::reveal::CanvasView;
+
+    const W: usize = 64;
+    const H: usize = 64;
+
+    /// A white page with a dark rule in every block, a block at (16..32, 16..32) that shows a different picture in
+    /// every frame (content that really changes), and in `transient` frames a dark bubble over the whole block at
+    /// (0..16, 0..16).
+    fn frame(k: usize, transient: bool) -> Vec<u8> {
+        let mut rgba = vec![255u8; W * H * 4];
+        for y in 0..H {
+            for x in 0..W {
+                let v = if (16..32).contains(&x) && (16..32).contains(&y) {
+                    ((k * 60 + x * 3) % 256) as u8
+                } else if transient && x < 16 && y < 16 {
+                    40
+                } else if y % 16 == 7 && x % 16 < 10 {
+                    30
+                } else {
+                    250
+                };
+                rgba[(y * W + x) * 4..(y * W + x) * 4 + 3].fill(v);
+            }
+        }
+        rgba
+    }
+
+    /// Which frame each block of the component took, over `frames` voting in order (all whole, clean, at pose 0).
+    fn moments(frames: &[Vec<u8>]) -> Vec<i32> {
+        let mask = vec![1u8; W * H];
+        let footprint = Footprint {
+            x: 0,
+            y: 0,
+            width: W,
+            height: H,
+            mask: &mask,
+        };
+        let clean = vec![TIER_CLEAN; (W / CELL) * (H / CELL)];
+        let tiers = TierMap {
+            x: 0,
+            y: 0,
+            cw: W / CELL,
+            ch: H / CELL,
+            tier: &clean,
+        };
+        let mut c = Consensus::new(Grid::covering(0, 0, W, H));
+        for f in frames {
+            let f = Frame {
+                rgba: f,
+                width: W,
+                height: H,
+            };
+            c.observe(&f, &footprint, &tiers, (0, 0));
+        }
+        let comps = components(&c);
+        assert_eq!(comps.len(), 1, "one dynamic component");
+        let mut out = Output::new(&c, comps);
+        let coverage = vec![255u8; W * H / 8];
+        let main = CellMap::from_canvas(&CanvasView {
+            x: 0,
+            y: 0,
+            width: W,
+            height: H,
+            rgba: &frames[0],
+            coverage: &coverage,
+        });
+        let mut writes = Vec::new();
+        for (i, f) in frames.iter().enumerate() {
+            let f = Frame {
+                rgba: f,
+                width: W,
+                height: H,
+            };
+            out.emit(
+                &c,
+                &f,
+                &footprint,
+                &tiers,
+                (0, 0),
+                24,
+                i as u32,
+                &main,
+                &mut writes,
+            );
+        }
+        out.frame.clone()
+    }
+
+    // A dynamic component takes one moment, the latest frame that covers it. Chrome's link-status bubble, shown
+    // in 1 of 8 clean views of a sticky table of contents (owner_1.53.20), covered whole blocks of the component's
+    // static margin in that latest frame, and the taint test only caught small blobs, so the bubble was copied in
+    // over the page the compositor had. A frame whose static blocks disagree with what every other view shows is
+    // not the component's moment while another frame covers it.
+    #[test]
+    fn a_dynamic_component_does_not_take_a_moment_with_a_whole_block_transient() {
+        let frames: Vec<Vec<u8>> = (0..8).map(|k| frame(k, k == 7)).collect();
+        let m = moments(&frames);
+        assert_eq!(m[0], 6, "the bubble's block");
+        assert_eq!(m[4 + 1], 6, "the dynamic block");
+    }
+
+    // Content that changes (loading, expanding) settles in its final state: without a transient the component
+    // still takes the latest frame (0-1's thumbnails, §十 揭示).
+    #[test]
+    fn a_dynamic_component_takes_its_latest_moment() {
+        let frames: Vec<Vec<u8>> = (0..8).map(|k| frame(k, false)).collect();
+        let m = moments(&frames);
+        assert_eq!(m[4 + 1], 7);
+        assert_eq!(m[0], 7);
     }
 }
