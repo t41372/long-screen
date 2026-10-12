@@ -2,7 +2,7 @@
  * faceted keys. The recording goes onto the printer's screen, the LCD and the progress gauge report the run, the keys and the
  * settings dial sit on the device, and the print comes out as an instant photo (the tile viewer).
  *
- * Body classes drive the states: `is-processing` (src/ui/run.ts, a run or an export is busy), `is-paused` (src/ui/run.ts,
+ * Body classes drive the states: `is-processing` (src/ui/run.ts, a run is busy), `is-paused` (src/ui/run.ts,
  * the run is paused), `has-result` (src/ui/canvases.ts, a canvas is on the print) and `receipt-open` (src/ui/main.ts, the
  * print is spread over the page).
  * Wide screens (≥ 1080px) put the printer and the print side by side; narrower ones stack them. */
@@ -172,6 +172,26 @@ button:disabled {
 .secondary:disabled,
 .chip:disabled {
   opacity: .45;
+}
+/* The key whose export is running (src/ui/export.ts): locked like the others, but not faded, and filling from the left
+   as the worker reports progress. The printer stays at rest; its print is done. */
+.primary[aria-busy="true"],
+.secondary[aria-busy="true"] {
+  opacity: 1;
+  cursor: progress;
+  background-image: linear-gradient(90deg, var(--export-fill) var(--export-done, 0%), transparent 0);
+  animation: export-busy 1.2s ease-in-out infinite;
+}
+.primary[aria-busy="true"] {
+  --export-fill: #ffffff33;
+}
+.secondary[aria-busy="true"] {
+  --export-fill: #3d353038;
+}
+@keyframes export-busy {
+  50% {
+    opacity: .75;
+  }
 }
 
 /* ---------- selects ---------- */

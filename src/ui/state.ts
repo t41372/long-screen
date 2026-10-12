@@ -29,8 +29,7 @@ export function createState(): AppState {
 
 /** The one place every control whose disabled state depends only on `state.busy` plus one other current-value
  *  check gets synced, instead of `run.ts`'s `setBusy`, `canvases.ts`'s `selectCanvas` and `export.ts`'s
- *  `doExport` each re-deriving the same checks. Called directly from the first two; `doExport` reaches it
- *  through `run.setBusy`. */
+ *  `setWorking` each re-deriving the same checks. */
 export function syncControls(state: AppState, viewer: TiledViewer): void {
   const busy = state.busy;
   $<HTMLButtonElement>('start-btn').disabled = busy || !state.selectedFile;

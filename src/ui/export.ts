@@ -1,12 +1,11 @@
 /** "下载大截图" (one native-size PNG) and "导出完整项目" (the archival ZIP), plus "复制大截图" to the clipboard. Both
  *  downloads prefer a native save-file picker and fall back to an anchor download / OPFS temporary copy. */
-import type { AppState } from './state.ts';
-import { $, humanBytes, setProgress, shownProgress, toast } from './dom.ts';
+import { type AppState, syncControls } from './state.ts';
+import { $, humanBytes, toast } from './dom.ts';
 import { call } from './rpc.ts';
 import { t } from '../i18n/page.ts';
 import type { ExportResult } from '../export/project.ts';
 import type { Diagnostic } from '../types.ts';
-import type { Run } from './run.ts';
 import type { TiledViewer } from './viewer.ts';
 import type { Crop } from './crop.ts';
 import { canvasRect } from '../export/crop.ts';
@@ -19,8 +18,23 @@ function imageFileName(state: AppState): string {
 
 type ExportKind = 'project' | 'png' | 'sheets';
 
-export function createExport(state: AppState, viewer: TiledViewer, run: Run, addDiagnostic: (d: Diagnostic) => void, crop: Crop) {
+export function createExport(state: AppState, viewer: TiledViewer, addDiagnostic: (d: Diagnostic) => void, crop: Crop) {
   let downloadURL: string | undefined;
+  // The key whose export is running. The print is finished, so the printer stays at rest: the controls lock as they
+  // do during a run, and the export shows its progress on this key instead of the printer's gauge.
+  let working: HTMLElement | undefined;
+  function setWorking(key: HTMLElement | undefined): void {
+    working?.removeAttribute('aria-busy');
+    working?.style.removeProperty('--export-done');
+    working = key;
+    key?.setAttribute('aria-busy', 'true');
+    state.busy = key !== undefined;
+    syncControls(state, viewer);
+  }
+  /** The worker's export progress, from 0 to 1, as the busy key's fill. */
+  function progress(fraction: number): void {
+    working?.style.setProperty('--export-done', `${Math.max(0, Math.min(1, fraction)) * 100}%`);
+  }
 
   function cleanupTemporary(key?: string): void {
     if (key) void call('cleanup-export', { key }).catch(() => {});
@@ -34,10 +48,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
     const format = kind === 'png' ? 'png' : kind === 'sheets' ? 'png' : 'project';
     const name = kind === 'png' ? imageFileName(state) : kind === 'sheets' ? 'long-screen-sheets.zip' : 'long-screen-project.zip';
     const isZip = kind !== 'png';
-    // The export reports through the printer's gauge; afterwards it shows the print's own progress again.
-    const shown = shownProgress();
-    run.setBusy(true);
-    $('run-controls').hidden = true;
+    setWorking($(kind === 'png' ? 'export-png' : kind === 'sheets' ? 'export-sheets' : 'export-project'));
     try {
       if ('showSaveFilePicker' in window) {
         try {
@@ -114,8 +125,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
         action: t('ui.export.exportErrorAction'),
       });
     } finally {
-      setProgress(shown.fraction, shown.stage);
-      run.setBusy(false);
+      setWorking(undefined);
     }
   }
   /** Copies the current canvas as one PNG. The clipboard write starts synchronously inside the click (Safari
@@ -129,9 +139,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
       toast(t('ui.export.clipboardUnsupported'), true);
       return;
     }
-    const shown = shownProgress();
-    run.setBusy(true);
-    $('run-controls').hidden = true;
+    setWorking($('copy-png'));
     let temporary: string | undefined;
     const project = state.project;
     const png = call('export', { projectId: project.id, canvasId: c.id, format: 'png', layout: 'single' }).then((r) => {
@@ -144,8 +152,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
       item = new ClipboardItem({ 'image/png': png });
     } catch (error) {
       png.then((b) => b, () => undefined).finally(() => cleanupTemporary(temporary));
-      setProgress(shown.fraction, shown.stage);
-      run.setBusy(false);
+      setWorking(undefined);
       toast(t('ui.export.copyFailedCtor', { error: String(error) }), true);
       return;
     }
@@ -154,8 +161,7 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
       .catch((error) => toast(t('ui.export.copyFailed', { error: String(error) }), true))
       .finally(() => {
         void png.catch(() => {}).finally(() => cleanupTemporary(temporary));
-        setProgress(shown.fraction, shown.stage);
-        run.setBusy(false);
+        setWorking(undefined);
       });
   }
   function wire(): void {
@@ -164,5 +170,5 @@ export function createExport(state: AppState, viewer: TiledViewer, run: Run, add
     $('export-sheets').onclick = () => void doExport('sheets');
     $('copy-png').onclick = () => doCopy();
   }
-  return { doExport, doCopy, wire };
+  return { doExport, doCopy, progress, wire };
 }

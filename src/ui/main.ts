@@ -34,15 +34,14 @@ const viewer = new TiledViewer(
 
 // Dependency order: crop needs only the viewer; canvases tells crop when the canvas changes; diagnostics needs the
 // viewer; source-file needs diagnostics' addDiagnostic; run composes resetView/updateProject out of
-// canvases+diagnostics+crop; export needs run for setBusy/resetView and crop for the size it copies; regions is
-// independent.
+// canvases+diagnostics+crop; export needs crop for the size it copies; regions is independent.
 const crop = createCrop(state, viewer);
 const canvases = createCanvases(state, viewer, () => crop.show());
 const diagnostics = createDiagnostics(state, viewer, canvases);
 const sourceFile = createSourceFile(state, { addDiagnostic: diagnostics.addDiagnostic });
 const run = createRun(state, viewer, canvases, diagnostics, crop);
 const regions = createRegions(state);
-const exporter = createExport(state, viewer, run, diagnostics.addDiagnostic, crop);
+const exporter = createExport(state, viewer, diagnostics.addDiagnostic, crop);
 
 crop.wire();
 canvases.wire();
@@ -179,9 +178,7 @@ on('fatal', (m) => {
 });
 on('export-progress', (m) => {
   $('progress-message').textContent = m.data.message;
-  if (m.data.fraction) {
-    setProgress(m.data.fraction, m.data.message);
-  }
+  exporter.progress(m.data.fraction);
 });
 onError((message) => {
   flightEnd();

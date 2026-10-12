@@ -9,6 +9,9 @@ import '../support/core.ts';
 // src/export/project.ts's 'sheets' layout). Failure modes: a ZIP or sheets instead of one image, an image of a
 // different size than the canvas, a generic file name, a clipboard write that silently does nothing, the copy
 // leaving the panel disabled, or "分页导出" producing something other than a ZIP with at least one PNG and a manifest.
+// While an export or copy works, the finished printer must not look as if it ran again: no `is-processing` (the hum,
+// scan line, paper feed and blinking light), the gauge kept at the print's own state, the other controls locked, and
+// the pressed key marked busy until it is done.
 /** Entry names from a ZIP archive's central directory, read with a real reader (fflate, same approach as
  *  tests/unit/export.test.ts's zipEntries, duplicated here since browser tests don't share unit test helpers) —
  *  client-zip only emits ZIP64 records when the archive actually needs them, so a fixed-offset ZIP64 EOCD reader
@@ -34,15 +37,51 @@ Deno.test({
       const selected = await page.evaluate(
         '({ w: Math.round(longScreen.viewer.current.bounds.width), h: Math.round(longScreen.viewer.current.bounds.height) })',
       ) as { w: number; h: number };
+      // Snapshots the page when `selector`'s key turns busy, and what the gauge showed before the click.
+      const watch = (selector: string) =>
+        page.evaluate((selector) => {
+          const key = document.querySelector(selector)!, w = window as unknown as { seen?: unknown; before?: unknown };
+          const gauge = () => ({
+            pct: document.querySelector('#progress-pct')!.textContent,
+            done: document.querySelector('#gauge')!.classList.contains('done'),
+          });
+          w.seen = undefined;
+          w.before = gauge();
+          const observer = new MutationObserver(() => {
+            if (key.getAttribute('aria-busy') !== 'true') return;
+            w.seen = {
+              processing: document.body.classList.contains('is-processing'),
+              printer: getComputedStyle(document.querySelector('.printer')!).animationName,
+              gauge: gauge(),
+              unlocked: ['#start-btn', '#clear-btn', '#export-png', '#copy-png', '#export-sheets', '#export-project']
+                .filter((s) => !document.querySelector<HTMLButtonElement>(s)!.disabled),
+            };
+            observer.disconnect();
+          });
+          observer.observe(key, { attributes: true });
+        }, selector);
+      const seen = async (selector: string) => {
+        const { seen, before } = await page.evaluate('({ seen: window.seen, before: window.before })') as {
+          seen: unknown;
+          before: unknown;
+        };
+        assertEquals(seen, { processing: false, printer: 'none', gauge: before, unlocked: [] }, selector);
+        assertEquals(await page.evaluate((s) => document.querySelector(s)!.hasAttribute('aria-busy'), selector), false, selector);
+      };
+      await watch('#export-png');
       const [download] = await Promise.all([page.waitForEvent('download', { timeout: 180000 }), page.click('#export-png')]);
+      await seen('#export-png');
       assertEquals(download.suggestedFilename(), 'demo-comic-大截图.png');
       const path = `${root}test-results/export-ui.png`;
       await download.saveAs(path);
       const image = await decodePNG(await Deno.readFile(path));
       assertEquals([image.width, image.height], [selected.w, selected.h]);
       await page.waitForFunction('!document.querySelector("#copy-png").disabled', null, { timeout: 30000 });
+      await watch('#copy-png');
       await page.click('#copy-png');
       await page.waitForFunction(`/已复制|复制失败/.test(document.querySelector('#toast').textContent)`, null, { timeout: 120000 });
+      await page.waitForFunction('!document.querySelector("#copy-png").hasAttribute("aria-busy")', null, { timeout: 30000 });
+      await seen('#copy-png');
       const toast = await page.evaluate(`document.querySelector('#toast').textContent`) as string;
       assert(toast.includes('已复制'), toast);
       const copied = await page.evaluate(async () => {
