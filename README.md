@@ -1,5 +1,7 @@
 # Long Screen
 
+[![crates.io](https://img.shields.io/crates/v/long-screen)](https://crates.io/crates/long-screen) [![docs.rs](https://img.shields.io/docsrs/long-screen)](https://docs.rs/long-screen) [![PyPI](https://img.shields.io/pypi/v/long-screen)](https://pypi.org/project/long-screen/) [![npm](https://img.shields.io/npm/v/long-screen)](https://www.npmjs.com/package/long-screen) [![License: MIT](https://img.shields.io/github/license/t41372/long-screen)](LICENSE)
+
 **Recover a sparse 2D canvas from a local screen recording.**
 
 **Use it in your browser: [long-screen.yi-ting.com](https://long-screen.yi-ting.com)** (also at [long-screen.pages.dev](https://long-screen.pages.dev)). Nothing is uploaded; the recording is processed on your own device.
@@ -60,14 +62,23 @@ Trade-offs: a `file://` page can't be cross-origin isolated, so the Rust core on
 
 ## Use it outside the browser
 
-The same reconstruction comes in four other forms. Each runs the engine the web app runs (the `long-screen` crate in `rust/long-screen`), with native decoders or the browser's WebCodecs in front of it. None of them is published to a package registry yet: build them from this repository as described below.
+The same reconstruction comes in four other forms. Each runs the engine the web app runs (the `long-screen` crate in `rust/long-screen`), with native decoders or the browser's WebCodecs in front of it.
+
+| Form               | Install                                                                      | Registry                                          | Docs                                           |
+| ------------------ | ---------------------------------------------------------------------------- | ------------------------------------------------- | ---------------------------------------------- |
+| Command line       | `cargo install long-screen`                                                  | [crates.io](https://crates.io/crates/long-screen) | `long-screen --help`, [below](#command-line)   |
+| Rust library       | `cargo add long-screen --no-default-features --features driver,decode,rayon` | [crates.io](https://crates.io/crates/long-screen) | [docs.rs](https://docs.rs/long-screen)         |
+| Python package     | `pip install long-screen`                                                    | [PyPI](https://pypi.org/project/long-screen/)     | [rust/python/README.md](rust/python/README.md) |
+| TypeScript package | `npm install long-screen`                                                    | [npm](https://www.npmjs.com/package/long-screen)  | [src/package/README.md](src/package/README.md) |
+
+The four version independently; [CONTRIBUTING.md](CONTRIBUTING.md#releasing) explains how they are released.
 
 ### Command line
 
-`long-screen` reads a video file and writes the print as a PNG, without a browser. Install it from source with Rust (rustup picks up the pinned toolchain):
+`long-screen` reads a video file and writes the print as a PNG, without a browser. Install it with Rust from crates.io (or from a checkout with `cd rust && cargo install --path long-screen`, which uses the pinned toolchain):
 
 ```sh
-cd rust && cargo install --path long-screen
+cargo install long-screen
 long-screen recording.mov -o print.png --json report.json
 ```
 
@@ -77,11 +88,11 @@ On macOS and Windows it decodes with the system decoder (AVFoundation, Media Fou
 
 ### Rust library
 
-The command line is a thin layer over the `long-screen` crate (`rust/long-screen`), which a desktop app or another binding can drive the same way. It is one crate: the algorithms (`long_screen::kernels`), the run's state machine (`long_screen::engine`) and native decoding (`long_screen::decode`) are modules inside it, and the web app's WebAssembly is built from the same crate without its native features. Use it as a git or path dependency; leaving out the `cli` feature drops the command line's argument parser:
+The command line is a thin layer over the `long-screen` crate (`rust/long-screen`), which a desktop app or another binding can drive the same way. It is one crate: the algorithms (`long_screen::kernels`), the run's state machine (`long_screen::engine`) and native decoding (`long_screen::decode`) are modules inside it, and the web app's WebAssembly is built from the same crate without its native features. Leaving out the `cli` feature drops the command line's argument parser:
 
 ```toml
 [dependencies]
-long-screen = { git = "https://github.com/t41372/long-screen", default-features = false, features = ["driver", "decode", "rayon"] }
+long-screen = { version = "0.1", default-features = false, features = ["driver", "decode", "rayon"] }
 ```
 
 Then, inside a function that returns a `Result`:
@@ -99,11 +110,15 @@ if let Some(print) = result.print() {
 }
 ```
 
-`RawSource` takes RGBA frames you decoded yourself instead of a video file. The crate documentation (`cd rust && cargo doc -p long-screen --open`) describes the rest.
+`RawSource` takes RGBA frames you decoded yourself instead of a video file. The [crate documentation on docs.rs](https://docs.rs/long-screen) describes the rest.
 
 ### Python package
 
-`rust/python` wraps the native driver as a Python package, `long-screen` (CPython 3.11+, one abi3 wheel per platform, NumPy). Build and test it with `deno task test:python` (needs [uv](https://docs.astral.sh/uv/)); `cd rust/python && maturin build --release` makes just the wheel.
+`rust/python` wraps the native driver as a Python package, [`long-screen` on PyPI](https://pypi.org/project/long-screen/) (CPython 3.11+, one abi3 wheel per platform for Linux x86_64/aarch64, macOS Intel/Apple silicon and Windows x86_64, NumPy):
+
+```sh
+pip install long-screen   # or: uv add long-screen
+```
 
 ```python
 import long_screen
@@ -113,11 +128,15 @@ result.save("print.png")  # fragments: result.fragments; NumPy: result.print_ima
 print(result.status, [d["code"] for d in result.diagnostics if d["severity"] != "info"])
 ```
 
-It decodes the way the command line does, and `reconstruct_frames` takes frames you decoded yourself. The engine runs with the GIL released; Ctrl-C stops it at the next step. On macOS its rows are identical to the command line's and the web app's (`rust/python/tests/parity_*.py` check this). The package's own README (`rust/python/README.md`) has the API.
+It decodes the way the command line does, and `reconstruct_frames` takes frames you decoded yourself. The engine runs with the GIL released; Ctrl-C stops it at the next step. On macOS its rows are identical to the command line's and the web app's (`rust/python/tests/parity_*.py` check this). The package's own README ([rust/python/README.md](rust/python/README.md)) has the API. From a checkout, `deno task test:python` builds and tests it (needs [uv](https://docs.astral.sh/uv/)), and `cd rust/python && maturin build --release` makes just the wheel.
 
 ### TypeScript package
 
-`src/package` is the same reconstruction as a package for other web pages; `deno task build:package` builds it into `dist-package/`, ready for npm.
+`src/package` is the same reconstruction as a package for other web pages, [`long-screen` on npm](https://www.npmjs.com/package/long-screen):
+
+```sh
+npm install long-screen
+```
 
 ```js
 import { reconstruct } from 'long-screen';
@@ -126,7 +145,7 @@ const run = reconstruct(file, { locale: 'en', onProgress: (p) => console.log(p.p
 const { status, prints, diagnostics } = await run.result; // prints[i].png is a native-size PNG Blob
 ```
 
-It runs the app's worker and Wasm core unchanged, in a Worker next to `index.js`; `run.pause()`, `resume()`, `stop()` and `cancel()` control it. Each call keeps its working rows in an IndexedDB database of its own and deletes it before `result` settles. Vite and webpack pick up the worker and Wasm files by themselves; without a bundler, serve the package folder from your own origin. A cross-origin-isolated page (COOP/COEP, see [Deployment](#deployment)) runs the threaded core, any other page the single-thread one, with the same result; its PNGs match the app's byte for byte in Chrome and WebKit (`tests/browser/package.test.ts`). The package's own README (`src/package/README.md`) has the details.
+It runs the app's worker and Wasm core unchanged, in a Worker next to `index.js`; `run.pause()`, `resume()`, `stop()` and `cancel()` control it. Each call keeps its working rows in an IndexedDB database of its own and deletes it before `result` settles. Vite and webpack pick up the worker and Wasm files by themselves; without a bundler, serve the package folder from your own origin. A cross-origin-isolated page (COOP/COEP, see [Deployment](#deployment)) runs the threaded core, any other page the single-thread one, with the same result; its PNGs match the app's byte for byte in Chrome and WebKit (`tests/browser/package.test.ts`). The package's own README ([src/package/README.md](src/package/README.md)) has the details. From a checkout, `deno task build:package` builds it into `dist-package/`.
 
 ## How it works
 
@@ -188,7 +207,17 @@ deno task fixtures       # generates missing encoded test fixtures with ffmpeg (
 deno task fingerprint    # byte-level fingerprinting tool per scenario, per persisted row; see docs/TESTING.md
 ```
 
-Browser tests (`deno task test:browser`) require Google Chrome (the Chromium bundled with Playwright doesn't include H.264) and Playwright's WebKit: `npx playwright@1.58.2 install webkit` (requires Node.js; the version matches the `playwright` entry in `deno.json`). `deno task fixtures` requires ffmpeg. [AGENTS.md](AGENTS.md) collects the project's rules and the commands for running a single test.
+Browser tests (`deno task test:browser`) require Google Chrome (the Chromium bundled with Playwright doesn't include H.264) and Playwright's WebKit: `npx playwright@1.58.2 install webkit` (requires Node.js; the version matches the `playwright` entry in `deno.json`). `deno task fixtures` requires ffmpeg. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to propose a change and how releases work; [AGENTS.md](AGENTS.md) collects the project's rules and the commands for running a single test.
+
+### Documentation
+
+- [Capabilities](docs/CAPABILITIES.md): what is tested and what is not implemented.
+- [Architecture](docs/ARCHITECTURE.md): the pipeline, its invariants, and which module owns what.
+- [Testing](docs/TESTING.md): scenario ground truth, ratchets, fingerprints and the known browser failures.
+- [Export format](docs/FORMAT.md): the exported package and the persisted rows.
+- [Releasing](docs/RELEASING.md): the registries, step by step.
+
+The files under `docs/` are in Chinese.
 
 ## Deployment
 

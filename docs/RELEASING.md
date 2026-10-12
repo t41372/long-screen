@@ -1,6 +1,6 @@
 # 發布套件：第一次發布的步驟
 
-這份文件說明怎麼把 Long Screen 的三個套件第一次發布到 crates.io、PyPI 和 npm，以及之後每個版本怎麼發。內容依 2026-10-11 各註冊表（registry）自己的文件寫成，來源列在文末；這些網站的設定頁面常常改版，按鈕名稱和這裡不一樣時，以網站上的為準，並回頭更新這份文件。
+這份文件說明怎麼把 Long Screen 的三個套件第一次發布到 crates.io、PyPI 和 npm（2026-10-12 已照著做完一次），以及之後每個版本怎麼發。內容依 2026-10-11 各註冊表（registry）自己的文件寫成，來源列在文末；這些網站的設定頁面常常改版，按鈕名稱和這裡不一樣時，以網站上的為準，並回頭更新這份文件。
 
 整份文件用同一個記號標出不能撤回的動作：**【不可撤回】**。看到這個記號的步驟，做之前先把該步驟前面的檢查全部做完。
 
@@ -12,7 +12,7 @@
 | PyPI      | `long-screen` | `rust/python`                                                    | `py-v<版本>`     | `.github/workflows/python.yml`         | 由工作流程自動發（pending publisher） |
 | npm       | `long-screen` | `src/package`，由 `deno task build:package` 建進 `dist-package/` | `npm-v<版本>`    | `.github/workflows/release-npm.yml`    | 從 GitHub 建好的 tarball 在本機手動發 |
 
-三個名字在 2026-10-11 都還沒有人用（`https://crates.io/api/v1/crates/long-screen`、`https://pypi.org/pypi/long-screen/json`、`https://registry.npmjs.org/long-screen` 都回 404）。名字在你真正發布之前都沒有保留，任何人都可能先搶走，所以準備好之後不要拖太久。
+三個 0.1.0 已在 2026-10-12 從 `748a0ac` 發布，名字都已經是這個專案的。之後的例行發布，`CONTRIBUTING.md` 的維護者指南有白話的簡短版本；這份文件留著完整的步驟和第一次發布的紀錄。
 
 不發布的：網頁版本身（由 Cloudflare Pages 從 `main` 部署）、`long-screen-wasm`、`long-screen-bench`、`long-screen-py`（它們的 `Cargo.toml` 都寫了 `publish = false`）。TypeScript 套件只發 npm，不發 JSR。
 
@@ -205,7 +205,7 @@ npm 的可信發布設定在套件自己的設定頁裡，套件還不存在就�
 
 ## 8. 發布之後
 
-- 更新 README 的「Use it outside the browser」：目前寫著「None of them is published to a package registry yet」，發布後改成 `cargo install long-screen`、`pip install long-screen`、`npm install long-screen` 的安裝方式；`docs/ARCHITECTURE.md` 路線圖第 8 項也一併更新。這是一般的文件 commit，推 `main` 會重新部署網站。
+- 更新 README 的「Use it outside the browser」（安裝方式、註冊表連結、badge）和 `docs/ARCHITECTURE.md` 路線圖第 8 項。0.1.0 發布後已經做過。這是一般的文件 commit，推 `main` 會重新部署網站。
 - 可以在 GitHub 的 **Releases** 頁面替標籤寫發布說明，這一步不影響任何註冊表。
 
 ## 9. 哪些事不能撤回

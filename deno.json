@@ -42,7 +42,7 @@
     "noUncheckedIndexedAccess": false
   },
   "fmt": {
-    "include": ["src/", "main.ts", "scripts/", "tests/", "README.md", "docs/"],
+    "include": ["src/", "main.ts", "scripts/", "tests/", "README.md", "CONTRIBUTING.md", "docs/"],
     "lineWidth": 140,
     "singleQuote": true,
     "semiColons": true,
