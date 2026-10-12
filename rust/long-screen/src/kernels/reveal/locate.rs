@@ -6,7 +6,7 @@
 //! so a flat window never matches a template with structure. An object not found anywhere leaves its home cells
 //! at the veil tier rather than clean: it may be fading, and a fading overlay matches neither itself nor the page.
 
-use super::model::{Kind, LayerModel, Object};
+use super::model::{Kind, LayerModel, Object, Track};
 use super::{luma, Frame, CELL, TIER_CLEAN, TIER_FRINGE, TIER_OPAQUE, TIER_VEIL};
 
 /// Where a layer's cell tiers sit on screen.
@@ -261,6 +261,28 @@ fn find(cells: &Cells, o: &Object, tau: i32) -> (f64, i32, i32) {
     best
 }
 
+/// Whether a vertical strip's key colour `c` is, in this frame, the colour of the page beside its track: more than
+/// half of the cells just left and right of its zone show it. Keying it would then find the page, not the strip. A
+/// real thumb differs from the page beside it however long it is.
+fn page_coloured(cells: &Cells, o: &Object, c: [u8; 3], tau: i32) -> bool {
+    if o.track() != Track::Vertical {
+        return false;
+    }
+    let (x0, x1, y0, y1) = o.zone(cells.cw, cells.ch);
+    let (mut total, mut same) = (0usize, 0usize);
+    for cx in [x0.checked_sub(1), (x1 < cells.cw).then_some(x1)]
+        .into_iter()
+        .flatten()
+    {
+        for cy in y0..y1 {
+            let v = cells.rgb[cy * cells.cw + cx];
+            total += 1;
+            same += (0..3).all(|k| (v[k] as i32 - c[k] as i32).abs() <= tau) as usize;
+        }
+    }
+    same * 2 > total
+}
+
 /// Places every object of the layer in this frame and returns the tier of each cell.
 pub fn tiers(frame: &Frame<'_>, model: &mut LayerModel, tau: i32) -> Vec<u8> {
     let (cw, ch) = (model.cw, model.ch);
@@ -312,7 +334,13 @@ pub fn tiers(frame: &Frame<'_>, model: &mut LayerModel, tau: i32) -> Vec<u8> {
                     ));
                 }
                 let mut keyed = 0;
-                if let Some(c) = o.flat {
+                // A fixed strip beside the page can be learned as a flat object of the page's own colour (the page's
+                // margin, seen where the rendered canvas still carried a burned-in scroll indicator). Keyed along
+                // its column, it made every clean page cell there opaque, and the indicator, ranked fringe beside
+                // them, won the per-pixel fallback from a minority of frames (test_7, test_8). Such a key finds the
+                // page, not the strip. A page-coloured band across the layer is left keyed: there it is a toolbar
+                // or composer background that really covers the page (a, e).
+                if let Some(c) = o.flat.filter(|&c| !page_coloured(&cells, o, c, tau)) {
                     // A uniformly coloured object may have a template smeared over its whole travel (a scrollbar
                     // thumb), so a placement can miss part of it: every cell of its zone that shows its colour is
                     // the object in this frame. An elongated object's zone runs along its long axis to the layer
@@ -394,4 +422,142 @@ pub fn tiers(frame: &Frame<'_>, model: &mut LayerModel, tau: i32) -> Vec<u8> {
         }
     }
     tier
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const W: usize = 80;
+    const H: usize = 240;
+    const PAGE: u8 = 255;
+    const THUMB: u8 = 128;
+
+    /// A flat, featureless object learned in cells (bx..bx+bw, by..by+bh).
+    fn flat(colour: u8, bx: usize, by: usize, bw: usize, bh: usize) -> Object {
+        Object {
+            kind: Kind::Opaque,
+            bx,
+            by,
+            bw,
+            bh,
+            mask: vec![true; bw * bh],
+            tpl: vec![[colour; 3]; bw * bh],
+            stable: (0..(bw * bh) as u32).collect(),
+            coarse: (0..(bw * bh) as u32).collect(),
+            textured: false,
+            last: (0, 0),
+            flat: Some([colour; 3]),
+        }
+    }
+
+    fn layer(objects: Vec<Object>) -> LayerModel {
+        LayerModel {
+            x: 0,
+            y: 0,
+            cw: W / CELL,
+            ch: H / CELL,
+            objects,
+        }
+    }
+
+    /// A flat object learned in the layer's right-hand column, cells (36..39, by..by+bh): tall and thin, so its zone
+    /// runs the whole column.
+    fn strip(colour: u8, by: usize, bh: usize) -> Object {
+        flat(colour, 36, by, 3, bh)
+    }
+
+    /// A white page with a line of dark text every 12 rows, and grey paint over native rows `thumb` of the strip's
+    /// column (x 72..78).
+    fn page(thumb: std::ops::Range<usize>) -> Vec<u8> {
+        let mut rgba = vec![255u8; W * H * 4];
+        for y in 0..H {
+            for x in 0..W {
+                let v = if (72..78).contains(&x) && thumb.contains(&y) {
+                    THUMB
+                } else if y % 12 < 2 && (8..60).contains(&x) {
+                    20
+                } else {
+                    PAGE
+                };
+                rgba[(y * W + x) * 4..(y * W + x) * 4 + 3].fill(v);
+            }
+        }
+        rgba
+    }
+
+    fn tier_of(model: &mut LayerModel, rgba: &[u8]) -> Vec<u8> {
+        tiers(
+            &Frame {
+                rgba,
+                width: W,
+                height: H,
+            },
+            model,
+            24,
+        )
+    }
+
+    // A fixed white strip beside the page is learned as an opaque flat object whose colour is the page's own. Keyed
+    // along its whole column, it made every clean page cell there opaque, and the real scroll indicator travelling
+    // the same column, ranked fringe beside them, won the per-pixel fallback from a minority of frames (test_7,
+    // test_8). Cells along the track that look like the page beside it are page.
+    #[test]
+    fn a_page_coloured_strip_does_not_key_the_page_along_its_column() {
+        let mut model = layer(vec![strip(PAGE, 80, 40)]);
+        let tier = tier_of(&mut model, &page(0..0));
+        let cw = W / CELL;
+        for cy in 0..78 {
+            for cx in 36..39 {
+                assert_ne!(
+                    tier[cy * cw + cx],
+                    TIER_OPAQUE,
+                    "page cell ({cx}, {cy}) keyed as the strip"
+                );
+            }
+        }
+    }
+
+    // A page-coloured band across the layer keeps its key: there it is a toolbar or composer background that really
+    // covers the page (in a, a dark band above the Dock; in e, a dark strip along the layer's bottom), and releasing
+    // it let blocks from the wrong moment in.
+    #[test]
+    fn a_page_coloured_band_across_the_layer_keeps_its_key() {
+        let mut model = layer(vec![flat(PAGE, 4, 100, 30, 6)]);
+        let tier = tier_of(&mut model, &page(0..0));
+        let cw = W / CELL;
+        for cy in 99..107 {
+            for cx in 36..40 {
+                assert_eq!(tier[cy * cw + cx], TIER_OPAQUE, "band cell ({cx}, {cy})");
+            }
+        }
+    }
+
+    // A scrollbar thumb's learned mask is smeared over its travel; it is found along its whole track by colour,
+    // wherever it is in this frame, beside a page-coloured strip or not.
+    #[test]
+    fn a_thumb_is_keyed_anywhere_along_its_track() {
+        let mut model = layer(vec![strip(PAGE, 80, 40), strip(THUMB, 80, 40)]);
+        let tier = tier_of(&mut model, &page(20..60));
+        let cw = W / CELL;
+        for cy in 10..30 {
+            for cx in 36..39 {
+                assert_eq!(tier[cy * cw + cx], TIER_OPAQUE, "thumb cell ({cx}, {cy})");
+            }
+        }
+    }
+
+    // On a short page the thumb fills most of its track; it is still the thumb, because the page beside the track
+    // does not share its colour.
+    #[test]
+    fn a_thumb_longer_than_half_its_track_is_still_keyed() {
+        let mut model = layer(vec![strip(PAGE, 80, 40), strip(THUMB, 0, 40)]);
+        let tier = tier_of(&mut model, &page(40..220));
+        let cw = W / CELL;
+        for cy in 20..110 {
+            for cx in 36..39 {
+                assert_eq!(tier[cy * cw + cx], TIER_OPAQUE, "thumb cell ({cx}, {cy})");
+            }
+        }
+    }
 }

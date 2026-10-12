@@ -45,19 +45,36 @@ impl Object {
         self.mask.iter().filter(|&&m| m).count()
     }
 
+    /// The axis an elongated object may travel along (a scrollbar thumb's track), if any.
+    pub fn track(&self) -> Track {
+        if self.bh >= 3 * self.bw {
+            Track::Vertical
+        } else if self.bw >= 3 * self.bh {
+            Track::Horizontal
+        } else {
+            Track::None
+        }
+    }
+
     /// Cells where this object may appear in a frame: its box, run along the long axis to the layer edge when
     /// it is elongated (a scrollbar thumb travels its whole track). `(x0, x1, y0, y1)`, half-open, in cells.
     pub fn zone(&self, cw: usize, ch: usize) -> (usize, usize, usize, usize) {
         let (bx0, bx1) = (self.bx.saturating_sub(1), (self.bx + self.bw + 1).min(cw));
         let (by0, by1) = (self.by.saturating_sub(1), (self.by + self.bh + 1).min(ch));
-        if self.bh >= 3 * self.bw {
-            (bx0, bx1, 0, ch)
-        } else if self.bw >= 3 * self.bh {
-            (0, cw, by0, by1)
-        } else {
-            (bx0, bx1, by0, by1)
+        match self.track() {
+            Track::Vertical => (bx0, bx1, 0, ch),
+            Track::Horizontal => (0, cw, by0, by1),
+            Track::None => (bx0, bx1, by0, by1),
         }
     }
+}
+
+/// See [`Object::track`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Track {
+    None,
+    Vertical,
+    Horizontal,
 }
 
 impl LayerModel {
