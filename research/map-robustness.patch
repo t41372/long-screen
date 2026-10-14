@@ -1,0 +1,59 @@
+diff --git a/rust/long-screen/src/kernels/track/odometry.rs b/rust/long-screen/src/kernels/track/odometry.rs
+index 4a17c2f..0000000 100644
+--- a/rust/long-screen/src/kernels/track/odometry.rs
++++ b/rust/long-screen/src/kernels/track/odometry.rs
+@@ -252,6 +252,40 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
+         .filter(|(_, _, n, _)| n.error.is_finite())
+         .collect();
+     refined.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
++
++    // Native-only research probe. It is compiled out of Wasm and does no work unless explicitly enabled.
++    // Keep it next to the final evidence bundle so a failed real recording can be diagnosed without changing
++    // any decision, score, ordering or persisted output.
++    #[cfg(not(target_arch = "wasm32"))]
++    if std::env::var_os("LONG_SCREEN_TRACE_ODOMETRY").is_some() {
++        match refined.first() {
++            Some((m, audit, n, key)) => eprintln!(
++                concat!(
++                    "LS_ODO f={:.3} velocity=({:.3},{:.3}) points={} ",
++                    "model=({:.3},{:.3}) support={} model_conf={:.6} model_ambiguous={} ",
++                    "audit_overlap={:.6} audit_error={:.6} audit_mismatch={:.6} ",
++                    "audit_agreement={:.6} audit_agreeing={} audit_agreeing_error={:.6} audit_blocks={} ",
++                    "native=({},{}) native_error={:.6} native_trimmed={:.6} ",
++                    "native_runner_up={:.6} native_samples={} key={:.6}"
++                ),
++                f,
++                velocity.0,
++                velocity.1,
++                points.len(),
++                m.x,
++                m.y,
++                m.support,
++                m.confidence,
++                m.ambiguous,
++                audit.overlap,
++                audit.error,
++                audit.mismatch,
++                audit.agreement,
++                audit.agreeing,
++                audit.agreeing_error,
++                audit.blocks,
++                n.x,
++                n.y,
++                n.error,
++                n.trimmed,
++                n.runner_up,
++                n.samples,
++                key,
++            ),
++            None => eprintln!(
++                "LS_ODO f={f:.3} velocity=({:.3},{:.3}) points={} no_refined_hypothesis",
++                velocity.0,
++                velocity.1,
++                points.len(),
++            ),
++        }
++    }
+ 
+     let mut rescue = None;
+     if let Some(best_index) = (!refined.is_empty()).then_some(0usize) {
