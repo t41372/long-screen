@@ -1,0 +1,57 @@
+# Isolated research: no release, deployment or write token.
+name: Reconstruction web-core baseline
+on:
+  push:
+    branches: [research/reconstruction-20261014]
+    paths: [.github/workflows/reconstruction-web-tests.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    env:
+      DENO_DIR: /tmp/research-deno-cache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install and record Deno from its official release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/research-web /tmp/research-deno
+          curl --fail --location --retry 3 https://api.github.com/repos/denoland/deno/releases/latest -o /tmp/research-web/deno-release.json
+          url=$(python3 -c 'import json; d=json.load(open("/tmp/research-web/deno-release.json")); print(next(a["browser_download_url"] for a in d["assets"] if a["name"] == "deno-x86_64-unknown-linux-gnu.zip"))')
+          curl --fail --location --retry 3 "$url" -o /tmp/deno.zip
+          unzip -q /tmp/deno.zip -d /tmp/research-deno
+          cp /tmp/research-deno/deno /tmp/research-web/deno
+          echo /tmp/research-deno >> "$GITHUB_PATH"
+          /tmp/research-deno/deno --version > /tmp/research-web/deno-version.txt
+      - name: Install pinned Rust toolchain
+        working-directory: rust
+        run: rustup toolchain install
+      - name: Build the three production cores
+        run: deno task build:core > /tmp/research-web/build.log 2>&1
+      - name: Cache all typed sources and test imports
+        run: deno task check > /tmp/research-web/check.log 2>&1
+      - name: Run all unit and synthetic scenario tests
+        run: deno test --allow-read --allow-write --allow-env --parallel tests/unit > /tmp/research-web/unit-tests.log 2>&1
+      - name: Fingerprint the unmodified algorithms
+        run: deno task fingerprint /tmp/research-web/baseline-fingerprint.json > /tmp/research-web/fingerprint.log 2>&1
+      - name: Package offline cache and exact baseline cores
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          git rev-parse HEAD > /tmp/research-web/revision.txt
+          if [ -d "$DENO_DIR" ]; then tar -I 'gzip -1' -cf /tmp/research-web/deno-cache.tar.gz -C "$DENO_DIR" .; fi
+          tar -I 'gzip -1' -cf /tmp/research-web/baseline-wasm.tar.gz rust/target/scalar/wasm32-unknown-unknown/release/long_screen_wasm.wasm rust/target/simd/wasm32-unknown-unknown/release/long_screen_wasm.wasm rust/target/threads/wasm32-unknown-unknown/release/long_screen_wasm.wasm
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: research-web-core-baseline
+          path: /tmp/research-web
+          compression-level: 0
+          retention-days: 7
