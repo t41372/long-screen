@@ -1,0 +1,336 @@
+diff --git a/rust/long-screen/src/decode/ffmpeg.rs b/rust/long-screen/src/decode/ffmpeg.rs
+index e10a9c0..26f8939 100644
+--- a/rust/long-screen/src/decode/ffmpeg.rs
++++ b/rust/long-screen/src/decode/ffmpeg.rs
+@@ -237,10 +237,13 @@ impl FfmpegDecoder {
+ 
+         let ffmpeg = resolve(&options.ffmpeg, "LONGSCREEN_FFMPEG", "ffmpeg");
+         // A source outside the four 4:2:0 layouts is converted to limited range, so the tags stay true.
++        // Only timestamps are consumed below. showinfo's default also scans every plane for checksums and
++        // per-plane statistics, on every frame of every replay. Disabling those diagnostics changes neither
++        // the decoded planes nor frame order/PTS (including variable-frame-rate recordings).
+         let filter = if converted {
+-            format!("scale=out_range=limited:flags=accurate_rnd+full_chroma_int,format={pix_fmt},showinfo")
++            format!("scale=out_range=limited:flags=accurate_rnd+full_chroma_int,format={pix_fmt},showinfo=checksum=0")
+         } else {
+-            "showinfo".into()
++            "showinfo=checksum=0".into()
+         };
+         let mut child = Command::new(&ffmpeg)
+             .args([
+diff --git a/rust/long-screen/src/engine/solve/region.rs b/rust/long-screen/src/engine/solve/region.rs
+index 78a9f15..d0bd3ad 100644
+--- a/rust/long-screen/src/engine/solve/region.rs
++++ b/rust/long-screen/src/engine/solve/region.rs
+@@ -128,6 +128,7 @@ struct KeyLocals {
+ /// One region's frame-local state.
+ pub(super) struct Step {
+     own: Vec<Feature>,
++    prior: Vec<MatchPoints>,
+     textured: bool,
+     zoom_change: bool,
+     roi: Rect,
+@@ -304,6 +305,7 @@ impl SolveSession {
+         let zoom_change = track::zoom_changed(zoom, ctx.scan.zoom);
+         Step {
+             own,
++            prior,
+             textured,
+             zoom_change,
+             roi,
+@@ -358,24 +360,27 @@ impl SolveSession {
+             .expect("gated on a previous frame");
+         let previous_slot = self.previous_slot.expect("gated on a previous frame");
+         #[allow(unused_mut)]
+-        let mut est = track::odometry(track::OdometryInputs {
+-            f: self.factor as f64,
+-            radius: self.radius,
+-            mask: Some((labels, r.code)),
+-            roi: s.roi,
+-            rect: r.shape.rect,
+-            region: Some(&r.shape),
+-            image_width: self.width as f64,
+-            image_height: self.height as f64,
+-            previous: &self.frames[previous_slot],
+-            current: &self.frames[self.current_slot],
+-            previous_gray: gray(previous_gray),
+-            g: gray(&ctx.gray),
+-            velocity: state.velocity,
+-            previous_features: state.previous_features.as_deref().unwrap_or(&[]),
+-            own_features: &s.own,
+-            confidence: s.confidence,
+-        });
++        let mut est = track::odometry_with_matches(
++            track::OdometryInputs {
++                f: self.factor as f64,
++                radius: self.radius,
++                mask: Some((labels, r.code)),
++                roi: s.roi,
++                rect: r.shape.rect,
++                region: Some(&r.shape),
++                image_width: self.width as f64,
++                image_height: self.height as f64,
++                previous: &self.frames[previous_slot],
++                current: &self.frames[self.current_slot],
++                previous_gray: gray(previous_gray),
++                g: gray(&ctx.gray),
++                velocity: state.velocity,
++                previous_features: state.previous_features.as_deref().unwrap_or(&[]),
++                own_features: &s.own,
++                confidence: s.confidence,
++            },
++            &s.prior,
++        );
+         #[cfg(test)]
+         if let Some(seam) = self.seams.odometry.as_mut() {
+             self.seams.reacquire_fails |= seam(ctx.index, &mut est);
+diff --git a/rust/long-screen/src/kernels/track/odometry.rs b/rust/long-screen/src/kernels/track/odometry.rs
+index 4a17c2f..847eeb2 100644
+--- a/rust/long-screen/src/kernels/track/odometry.rs
++++ b/rust/long-screen/src/kernels/track/odometry.rs
+@@ -7,7 +7,7 @@ use crate::kernels::features::{match_features, Feature};
+ use crate::kernels::geometry::{js_ceil, js_hypot, Rect};
+ use crate::kernels::motion::{
+     audit_translation, refine_native_at, sampling_insensitive_error, select_native_points,
+-    translation_hypotheses, Gray, MatchPoints, NativeRefinement, Point,
++    translation_hypotheses, Audit, Gray, MatchPoints, Motion, NativeRefinement, Point,
+ };
+ use crate::kernels::region::Region;
+ 
+@@ -122,12 +122,56 @@ fn rescuable(n: &NativeRefinement) -> bool {
+ /// either. Their insensitive cost is 0–12.5 (median 0.17) at the plain mean's offset and 22.8–34.7 more than two
+ /// pixels away; on the same recording at full size the plain mean tracks 392 of the 393 steps. The insensitive
+ /// cost's bottom is flat within a pixel, so the plain mean still places the step.
+-fn measured_between_pixels(error: f64, runner_up: f64) -> bool {
+-    error < TRACKED_ERROR && runner_up >= TRACKED_ERROR && runner_up > RESCUE_SEPARATION * error
++fn measured_between_pixels(error: f64, runner_up: f64, independent_support: bool) -> bool {
++    error < TRACKED_ERROR
++        && runner_up > RESCUE_SEPARATION * error
++        && (runner_up >= TRACKED_ERROR || (independent_support && runner_up - error >= 2.0))
++}
++
++/// Independent evidence required only when low contrast makes every native rival cheaper than 14.
++/// Feature support must be distinctive and spread out (the hypothesis confidence includes spatial spread),
++/// and the held-out audit must pass its strict GLOBAL branch. A local unchanged island in an otherwise
++/// changing page is not enough. Do not add a second threshold on the fraction of agreeing blocks: the global
++/// error/mismatch already measures that evidence, and soft map labels can cross many block boundaries.
++fn independent_translation(m: &Motion, a: &Audit) -> bool {
++    m.unique >= 12
++        && m.unique * 2 >= m.support
++        && !m.ambiguous
++        && m.confidence >= 0.7
++        && a.error < TRACKED_ERROR
++        && a.mismatch < 0.2
++        && a.agreeing >= 4
++        && a.overlap >= 0.25
+ }
+ 
+ /// `track.ts::odometry`.
+ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
++    let raw_matches = match_features(inputs.previous_features, inputs.own_features, true);
++    let match_points: Vec<MatchPoints> = raw_matches
++        .iter()
++        .map(|m| {
++            let a = &inputs.previous_features[m.a as usize];
++            let b = &inputs.own_features[m.b as usize];
++            MatchPoints {
++                ax: a.x as f64,
++                ay: a.y as f64,
++                bx: b.x as f64,
++                by: b.y as f64,
++                unique: m.unique,
++            }
++        })
++        .collect();
++
++    odometry_with_matches(inputs, &match_points)
++}
++
++/// The same odometry with the caller's already-computed matches. The engine uses precisely these matches to
++/// check for scale changes before entering this function; matching the same BRIEF descriptors again is redundant.
++/// Keep the slice's order unchanged: hypothesis ties depend on the stable insertion order.
++pub fn odometry_with_matches(
++    inputs: OdometryInputs,
++    match_points: &[MatchPoints],
++) -> OdometryEstimate {
+     let OdometryInputs {
+         f,
+         radius,
+@@ -142,28 +186,12 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
+         previous_gray,
+         g,
+         velocity,
+-        previous_features,
+-        own_features,
++        previous_features: _,
++        own_features: _,
+         confidence,
+     } = inputs;
+ 
+-    let raw_matches = match_features(previous_features, own_features, true);
+-    let match_points: Vec<MatchPoints> = raw_matches
+-        .iter()
+-        .map(|m| {
+-            let a = &previous_features[m.a as usize];
+-            let b = &own_features[m.b as usize];
+-            MatchPoints {
+-                ax: a.x as f64,
+-                ay: a.y as f64,
+-                bx: b.x as f64,
+-                by: b.y as f64,
+-                unique: m.unique,
+-            }
+-        })
+-        .collect();
+-
+-    let hypotheses = translation_hypotheses(&match_points, 16);
++    let hypotheses = translation_hypotheses(match_points, 16);
+     let models: Vec<_> = if hypotheses.iter().any(|m| m.support >= MIN_SUPPORT) {
+         hypotheses
+             .into_iter()
+@@ -259,7 +287,11 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
+                     radius,
+                     &points,
+                 );
+-                measured_between_pixels(error, runner_up)
++                measured_between_pixels(
++                    error,
++                    runner_up,
++                    independent_translation(best_m, best_audit),
++                )
+             };
+         if measured {
+             let delta = (best_n.x as f64, best_n.y as f64);
+@@ -359,7 +391,7 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
+ 
+ #[cfg(test)]
+ mod tests {
+-    use super::{measured_between_pixels, rescuable};
++    use super::{independent_translation, measured_between_pixels, rescuable};
+     use crate::kernels::geometry::Rect;
+     use crate::kernels::motion::{
+         sampling_insensitive_error, select_native_points, NativeRefinement,
+@@ -568,7 +600,7 @@ mod tests {
+                 3,
+                 &points,
+             );
+-            measured_between_pixels(error, runner_up)
++            measured_between_pixels(error, runner_up, false)
+         };
+         let (previous, current) = (page(0.0, 0), page(67.5, 0));
+         for dy in [67, 68] {
+@@ -634,4 +666,114 @@ mod tests {
+             );
+         }
+     }
++
++    // A coherent translation must not depend on the rival exceeding an absolute display-brightness threshold.
++    // Failure cases: strongly supported low-contrast, half-pixel motion refused; no independent evidence;
++    // repeated offsets with equal cost; a near-tie within quantization/noise; and non-finite costs.
++    #[test]
++    fn low_contrast_phase_requires_independent_support_and_a_clear_rival() {
++        for (error, rival) in [
++            (3.118577, 10.161006),
++            (2.98298, 10.13975),
++            (3.26875, 9.99267),
++        ] {
++            assert!(
++                measured_between_pixels(error, rival, true),
++                "{error} {rival}"
++            );
++            assert!(!measured_between_pixels(error, rival, false));
++        }
++        for (error, rival) in [
++            (9.9006, 10.0582),
++            (6.9, 10.1),
++            (0.1, 0.2),
++            (0., 0.),
++            (f64::NAN, 10.),
++            (f64::INFINITY, 10.),
++        ] {
++            assert!(
++                !measured_between_pixels(error, rival, true),
++                "{error} {rival}"
++            );
++        }
++        // The historical well-separated, higher-contrast evidence needs no feature-based relaxation.
++        assert!(measured_between_pixels(8., 25., false));
++        assert!(!measured_between_pixels(15., 30., true));
++    }
++    // Low contrast cannot excuse repeated features, a small static island, thin overlap, or an audit which
++    // only passes the local-content-change branch. Conversely, an 80%-block threshold would reject a
++    // globally well-aligned translation solely because a few labels cross block boundaries.
++    #[test]
++    fn low_contrast_support_is_global_distinctive_and_spatially_spread() {
++        use crate::kernels::motion::{Audit, Motion};
++        let motion = Motion {
++            x: 13.,
++            y: -6.,
++            support: 91,
++            unique: 75,
++            confidence: 0.908535,
++            error: 0.,
++            ambiguous: false,
++        };
++        let audit = Audit {
++            error: 7.6306,
++            mismatch: 0.111333,
++            overlap: 0.950817,
++            samples: 951,
++            blocks: 101,
++            agreeing: 80,
++            agreement: 80. / 101.,
++            agreeing_error: 2.21376,
++        };
++        assert!(independent_translation(&motion, &audit));
++        assert!(measured_between_pixels(
++            6.626871,
++            11.448704,
++            independent_translation(&motion, &audit)
++        ));
++        for invalid in [
++            Motion {
++                unique: 11,
++                ..motion.clone()
++            },
++            Motion {
++                unique: 40,
++                ..motion.clone()
++            },
++            Motion {
++                ambiguous: true,
++                ..motion.clone()
++            },
++            Motion {
++                confidence: 0.49,
++                ..motion.clone()
++            },
++        ] {
++            assert!(!independent_translation(&invalid, &audit));
++        }
++        for invalid in [
++            Audit {
++                error: 15.,
++                ..audit
++            },
++            Audit {
++                mismatch: 0.21,
++                ..audit
++            },
++            Audit {
++                overlap: 0.24,
++                ..audit
++            },
++            Audit {
++                agreeing: 3,
++                ..audit
++            },
++            Audit {
++                error: f64::NAN,
++                ..audit
++            },
++        ] {
++            assert!(!independent_translation(&motion, &invalid));
++        }
++    }
+ }
