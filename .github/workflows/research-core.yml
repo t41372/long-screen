@@ -26,7 +26,7 @@ jobs:
       - name: Apply the current research transform
         run: |
           python3 research/apply-map-robustness.py
-          python3 research/add-odometry-audit-trace.py
+          python3 research/add-near-miss-fallback.py
 
       - name: Install the pinned Rust toolchain
         working-directory: rust
