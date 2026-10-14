@@ -23,6 +23,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Apply the current research patch
+        run: |
+          if [[ -f research/map-robustness.patch ]]; then
+            git apply --check research/map-robustness.patch
+            git apply research/map-robustness.patch
+          fi
+
       - name: Install the pinned Rust toolchain
         working-directory: rust
         run: rustup toolchain install
@@ -47,6 +54,8 @@ jobs:
           research-bin/long-screen --version | tee research-bin/version.txt
           ldd research-bin/long-screen | tee research-bin/ldd.txt
           sha256sum research-bin/long-screen | tee research-bin/sha256.txt
+          git diff --stat | tee research-bin/patch-stat.txt
+          git diff > research-bin/applied.patch
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -57,6 +66,7 @@ jobs:
 
   public-recordings:
     name: Public ${{ matrix.case.id }}
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[public]')
     needs: build-and-test
     runs-on: ubuntu-26.04
     timeout-minutes: 70
