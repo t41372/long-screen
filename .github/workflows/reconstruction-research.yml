@@ -1,0 +1,87 @@
+# Isolated research infrastructure; never deploys or publishes a package.
+name: Reconstruction research environment
+on:
+  push:
+    branches: [research/reconstruction-20261014]
+    paths: [.github/workflows/reconstruction-research.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  prepare:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    env:
+      RUSTUP_TOOLCHAIN: 1.94.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned compiler
+        run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy --component rust-src --target wasm32-unknown-unknown
+      - name: Prepare source, dependencies, compiler and baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/research/env /tmp/research/cases
+          git archive --format=tar.gz HEAD > /tmp/research/env/source.tar.gz
+          git rev-parse HEAD > /tmp/research/env/revision.txt
+          cd rust
+          cargo build --release --locked -p long-screen
+          cp target/release/long-screen /tmp/research/env/long-screen-baseline
+          cargo test --locked --lib -p long-screen > /tmp/research/env/baseline-tests.txt 2>&1
+          cargo vendor --locked /tmp/research/vendor > /tmp/research/env/vendor-config.toml
+          tar -I 'gzip -1' -cf /tmp/research/env/vendor.tar.gz -C /tmp/research vendor
+          compiler=$(rustup which --toolchain 1.94.0 rustc)
+          toolchain=$(dirname "$(dirname "$compiler")")
+          tar -I 'gzip -1' -cf /tmp/research/env/toolchain.tar.gz -C "$toolchain" bin lib libexec
+          rustc --version --verbose > /tmp/research/env/compiler.txt
+      - name: Download and verify only the already-public recordings
+        shell: python
+        run: |
+          import concurrent.futures, hashlib, json, pathlib, urllib.request
+          manifest = json.loads(pathlib.Path('rust/bench/cases.json').read_text())
+          root = pathlib.Path('/tmp/research/cases')
+          def fetch(case):
+              path = root / case['file']
+              url = manifest['release']['url'].replace('{file}', case['file'])
+              urllib.request.urlretrieve(url, path)
+              assert path.stat().st_size == case['bytes'], case['id']
+              digest = hashlib.file_digest(path.open('rb'), 'sha256').hexdigest()
+              assert digest == case['sha256'], case['id']
+              print(case['id'], digest, flush=True)
+          with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+              list(pool.map(fetch, manifest['cases']))
+          (root / 'cases.json').write_text(json.dumps(manifest, indent=2))
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: research-environment
+          path: /tmp/research/env
+          compression-level: 0
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: research-public-desktop-sdr
+          path: /tmp/research/cases/test_[12]*
+          compression-level: 0
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: research-public-monalisa
+          path: /tmp/research/cases/test_4*
+          compression-level: 0
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: research-public-hdr-desktop
+          path: /tmp/research/cases/test_[35]*
+          compression-level: 0
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: research-public-phones
+          path: |
+            /tmp/research/cases/test_[678]*
+            /tmp/research/cases/cases.json
+          compression-level: 0
+          retention-days: 7
