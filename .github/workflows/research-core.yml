@@ -23,12 +23,8 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Apply the current research patch
-        run: |
-          if [[ -f research/map-robustness.patch ]]; then
-            git apply --check research/map-robustness.patch
-            git apply research/map-robustness.patch
-          fi
+      - name: Apply the current research transform
+        run: python3 research/apply-map-robustness.py
 
       - name: Install the pinned Rust toolchain
         working-directory: rust
