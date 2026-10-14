@@ -1,0 +1,162 @@
+# Research only: exact pinned baseline, isolated A/B machines, public fixtures only. No deployment or publication.
+name: Reconstruction A-B v3
+on:
+  push:
+    branches: [research/reconstruction-20261014]
+    paths: [.github/workflows/reconstruction-ab-v3.yml, research/contrast-perf-v3.patch]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  recordings:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [test_1, test_2, test_3, test_4, test_5, test_6, test_7, test_8]
+    env:
+      CASE_ID: ${{ matrix.case }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: control
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 7dd7a380f20fcf6bc4289b1eff7af15579077f1a
+          path: work
+          persist-credentials: false
+      - name: Install decoder and pinned compiler
+        working-directory: work/rust
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg python3-pil
+          rustup toolchain install
+      - name: Prepare baseline and candidate binaries
+        working-directory: work
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/research-result
+          uname -a > /tmp/research-result/host.txt
+          lscpu >> /tmp/research-result/host.txt
+          ffmpeg -version >> /tmp/research-result/host.txt
+          git rev-parse HEAD > /tmp/research-result/baseline-revision.txt
+          sha256sum ../control/research/contrast-perf-v3.patch > /tmp/research-result/patch-sha256.txt
+          cd rust
+          cargo build --release --locked -p long-screen
+          cp target/release/long-screen /tmp/research-baseline
+          cd ..
+          git apply --check ../control/research/contrast-perf-v3.patch
+          git apply ../control/research/contrast-perf-v3.patch
+          cd rust
+          cargo build --release --locked -p long-screen
+          cp target/release/long-screen /tmp/research-candidate
+      - name: Verify the entire public recording and run the paired pipelines
+        working-directory: work
+        shell: python
+        run: |
+          import hashlib, json, os, pathlib, subprocess, time, urllib.request
+          from PIL import Image
+          Image.MAX_IMAGE_PIXELS = None
+          root = pathlib.Path('/tmp/research-result')
+          manifest = json.loads(pathlib.Path('rust/bench/cases.json').read_text())
+          case = next(c for c in manifest['cases'] if c['id'] == os.environ['CASE_ID'])
+          source = pathlib.Path('/tmp') / case['file']
+          urllib.request.urlretrieve(manifest['release']['url'].replace('{file}', case['file']), source)
+          assert source.stat().st_size == case['bytes']
+          assert hashlib.file_digest(source.open('rb'), 'sha256').hexdigest() == case['sha256']
+          (root / 'case.json').write_text(json.dumps(case, indent=2))
+          runs = []
+          for name in ('baseline', 'candidate'):
+              out = root / name
+              out.mkdir()
+              cmd = [f'/tmp/research-{name}', str(source), '--threads', '2', '--store-mb', '256',
+                     '--out-dir', str(out), '--json', str(out / 'report.json')]
+              started = time.perf_counter()
+              with (out / 'run.log').open('wb') as log:
+                  p = subprocess.run(['/usr/bin/time', '-v', '-o', str(out / 'resources.txt')] + cmd, stdout=log, stderr=log)
+              measurement = {'variant': name, 'command': cmd, 'wallSeconds': time.perf_counter() - started, 'exitCode': p.returncode}
+              (out / 'measurement.json').write_text(json.dumps(measurement, indent=2))
+              assert p.returncode == 0, measurement
+              report = json.loads((out / 'report.json').read_text())
+              assert report['status'] == 'complete' and report['frames'] == case['frames'], report['status']
+              images = []
+              for canvas in report['canvases']:
+                  path = pathlib.Path(canvas['file'])
+                  with Image.open(path) as image:
+                      raw = image.convert('RGBA')
+                      digest = hashlib.sha256()
+                      for y in range(0, raw.height, 256):
+                          digest.update(raw.crop((0, y, raw.width, min(raw.height, y + 256))).tobytes())
+                      images.append({'id': canvas['id'], 'bounds': canvas['bounds'], 'observedPixels': canvas['observedPixels'],
+                                     'size': raw.size, 'rgbaSha256': digest.hexdigest()})
+                      if canvas['kind'] != 'fixed':
+                          image.resize((600, max(1, round(image.height * 600 / image.width)))).save(out / (canvas['id'] + '-overview.png'))
+              (out / 'images.json').write_text(json.dumps(images, indent=2))
+              measurement['pipelineSeconds'] = report['seconds']
+              measurement['stages'] = report['timingsSeconds']
+              measurement['images'] = images
+              runs.append(measurement)
+          summary = {'case': case['id'], 'repetitions': 1, 'exploratoryNotFinalBenchmark': True, 'runs': runs,
+                     'pixelIdentical': runs[0]['images'] == runs[1]['images'],
+                     'wallRatio': runs[1]['wallSeconds'] / runs[0]['wallSeconds']}
+          (root / 'summary.json').write_text(json.dumps(summary, indent=2))
+          print(json.dumps(summary, indent=2))
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: reconstruction-v3-${{ matrix.case }}
+          path: /tmp/research-result
+          compression-level: 1
+          retention-days: 7
+  web-core:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: research-web-core-baseline
+          run-id: 38553392890
+          github-token: ${{ github.token }}
+          path: /tmp/web-baseline
+      - name: Restore the exact Deno environment and apply the candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/deno-cache /tmp/web-results
+          chmod +x /tmp/web-baseline/deno
+          echo /tmp/web-baseline >> "$GITHUB_PATH"
+          echo DENO_DIR=/tmp/deno-cache >> "$GITHUB_ENV"
+          tar -xzf /tmp/web-baseline/deno-cache.tar.gz -C /tmp/deno-cache
+          git apply --check research/contrast-perf-v3.patch
+          git apply research/contrast-perf-v3.patch
+          cd rust
+          rustup toolchain install
+          cargo test --locked --lib -p long-screen > /tmp/web-results/rust-tests.log 2>&1
+      - name: Build all three Wasm cores and run every unit and scenario test
+        shell: bash
+        run: |
+          set -euo pipefail
+          deno task build:core > /tmp/web-results/build.log 2>&1
+          deno task check > /tmp/web-results/check.log 2>&1
+          deno test --allow-read --allow-write --allow-env --parallel tests/unit > /tmp/web-results/unit-tests.log 2>&1
+          deno task fingerprint /tmp/web-results/candidate-fingerprint.json > /tmp/web-results/fingerprint.log 2>&1
+          deno run -A scripts/compare-fingerprints.ts /tmp/web-baseline/baseline-fingerprint.json /tmp/web-results/candidate-fingerprint.json > /tmp/web-results/comparison.log 2>&1
+      - name: Preserve cores, fingerprints and exact logs
+        if: always()
+        run: |
+          cp /tmp/web-baseline/baseline-fingerprint.json /tmp/web-results/
+          git diff > /tmp/web-results/tested.patch
+          tar -czf /tmp/web-results/candidate-wasm.tar.gz rust/target/scalar/wasm32-unknown-unknown/release/long_screen_wasm.wasm rust/target/simd/wasm32-unknown-unknown/release/long_screen_wasm.wasm rust/target/threads/wasm32-unknown-unknown/release/long_screen_wasm.wasm
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: reconstruction-v3-web-core
+          path: /tmp/web-results
+          retention-days: 7
