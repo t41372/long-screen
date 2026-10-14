@@ -24,7 +24,9 @@ jobs:
           persist-credentials: false
 
       - name: Apply the current research transform
-        run: python3 research/apply-map-robustness.py
+        run: |
+          python3 research/apply-map-robustness.py
+          python3 research/add-odometry-audit-trace.py
 
       - name: Install the pinned Rust toolchain
         working-directory: rust
