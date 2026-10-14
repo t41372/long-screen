@@ -2,7 +2,7 @@ diff --git a/rust/long-screen/src/kernels/track/odometry.rs b/rust/long-screen/s
 index 4a17c2f..0000000 100644
 --- a/rust/long-screen/src/kernels/track/odometry.rs
 +++ b/rust/long-screen/src/kernels/track/odometry.rs
-@@ -252,6 +252,40 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
+@@ -252,6 +252,54 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
          .filter(|(_, _, n, _)| n.error.is_finite())
          .collect();
      refined.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
