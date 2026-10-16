@@ -7,7 +7,7 @@ use crate::kernels::features::{match_features, Feature};
 use crate::kernels::geometry::{js_ceil, js_hypot, Rect};
 use crate::kernels::motion::{
     audit_translation, refine_native_at, sampling_insensitive_error, select_native_points,
-    translation_hypotheses, Gray, MatchPoints, NativeRefinement, Point,
+    translation_hypotheses, Gray, MatchPoints, NativeRefinement, Point, TranslationAudit,
 };
 use crate::kernels::region::Region;
 
@@ -179,10 +179,17 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
     // them before the native decision so the true small step is never dropped in favour of a one-row-off
     // alias with more (arbitrary) matches.
     let prior = |mx: f64, my: f64| 0.02 * js_hypot(mx * f - velocity.0, my * f - velocity.1);
+    // Multiple tolerant candidates share the same filtered image pair. Zero or one
+    // candidate keeps the standalone path; release the buffers before native refinement.
+    let prepared =
+        (f > 1.0 && models.len() > 1).then(|| TranslationAudit::new(previous_gray, g, true));
     let mut scored: Vec<_> = models
         .into_iter()
         .map(|m| {
-            let audit = audit_translation(previous_gray, g, m.x, m.y, Some(roi), f > 1.0);
+            let audit = match &prepared {
+                Some(pair) => pair.measure(m.x, m.y, Some(roi)),
+                None => audit_translation(previous_gray, g, m.x, m.y, Some(roi), f > 1.0),
+            };
             (m, audit)
         })
         .filter(|(_, audit)| {
@@ -194,6 +201,7 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
                         && audit.agreeing_error < 8.0))
         })
         .collect();
+    drop(prepared);
     // Matches the TS original's exact left-to-right evaluation of
     // `Math.min(a.error, a.agreeingError) + prior(a.m) - Math.min(b.error, b.agreeingError) - prior(b.m)`:
     // two chained subtractions, not `(ka) - (kb)` — floating point subtraction is not associative, so grouping

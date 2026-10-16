@@ -230,135 +230,155 @@ pub fn audit_translation(
     roi: Option<Rect>,
     tolerant: bool,
 ) -> Audit {
-    // Box-downsampled frames sample a translated edge at different subpixel phases. Comparing the nearest
-    // unsmoothed value can reject the correct translation before native refinement gets to measure it.
-    let (texture_a, texture_b) = (a, b);
-    let filtered = tolerant.then(|| {
-        let mut aa = vec![0; a.data.len()];
-        let mut bb = vec![0; b.data.len()];
-        crate::kernels::features::smooth(a.data, a.width, a.height, &mut aa);
-        crate::kernels::features::smooth(b.data, b.width, b.height, &mut bb);
-        (aa, bb)
-    });
-    let (a, b) = match &filtered {
-        Some((aa, bb)) => (Gray { data: aa, ..a }, Gray { data: bb, ..b }),
-        None => (a, b),
-    };
-    let r = roi.unwrap_or(Rect {
-        x: 0.0,
-        y: 0.0,
-        width: b.width as f64,
-        height: b.height as f64,
-    });
-    let (dx, dy) = (js_round(dx) as f64, js_round(dy) as f64);
-    // Both gradients need a one-pixel margin in their own image: x+dx ≥ 1 and y+dy ≥ 1 in `a`, x,y ≥ 2 in `b`.
-    // (The historical TS sampled x+dx = 0 / y+dy = 0 and read past the buffer, turning tolerant audits into NaN.)
-    let x0 = 2f64.max(r.x.ceil()).max((r.x - dx).ceil()).max(1.0 - dx);
-    let y0 = 2f64.max(r.y.ceil()).max((r.y - dy).ceil()).max(1.0 - dy);
-    let x1 = (b.width as f64 - 2.0)
-        .min(a.width as f64 - dx - 2.0)
-        .min(r.x + r.width)
-        .min(r.x + r.width - dx);
-    let y1 = (b.height as f64 - 2.0)
-        .min(a.height as f64 - dy - 2.0)
-        .min(r.y + r.height)
-        .min(r.y + r.height - dy);
-    let overlap = (x1 - x0).max(0.0) * (y1 - y0).max(0.0) / (r.width * r.height).max(1.0);
-    const B: f64 = 32.0;
-    let bw = 1usize.max(js_ceil((x1 - x0) / B).max(0) as usize);
-    let bh = 1usize.max(js_ceil((y1 - y0) / B).max(0) as usize);
-    let mut block_error = vec![0f64; bw * bh];
-    let mut block_bad = vec![0f64; bw * bh];
-    let mut block_n = vec![0f64; bw * bh];
-    let (mut error, mut bad, mut n) = (0f64, 0u32, 0u32);
-    let (bwid, awid) = (b.width as i64, a.width as i64);
-    let (dxi, dyi) = (dx as i64, dy as i64);
-    let mut y = y0;
-    while y < y1 {
-        let mut x = x0;
-        while x < x1 {
-            let i = (y as i64 * bwid + x as i64) as usize;
-            let j = ((y as i64 + dyi) * awid + x as i64 + dxi) as usize;
-            // Filtering removes phase error, not evidence: a faint thin edge can fall below the
-            // gradient gate after smoothing even though its original contrast is sufficient.
-            let (ad, bd) = (texture_a.data, texture_b.data);
-            let gb = (bd[i + 1] as i32 - bd[i - 1] as i32).abs()
-                + (bd[i + b.width] as i32 - bd[i - b.width] as i32).abs();
-            let ga = (ad[j + 1] as i32 - ad[j - 1] as i32).abs()
-                + (ad[j + a.width] as i32 - ad[j - a.width] as i32).abs();
-            if ga.max(gb) < 20 {
+    TranslationAudit::new(a, b, tolerant).measure(dx, dy, roi)
+}
+
+/// Image-pair preparation shared by several translation hypotheses. Raw images remain
+/// available for the texture gate and for samples whose blur would cross a pane boundary.
+/// No displacement, ROI, or accumulated evidence is cached between measurements.
+pub(crate) struct TranslationAudit<'a> {
+    a: Gray<'a>,
+    b: Gray<'a>,
+    filtered: Option<(Vec<u8>, Vec<u8>)>,
+}
+
+impl<'a> TranslationAudit<'a> {
+    pub(crate) fn new(a: Gray<'a>, b: Gray<'a>, tolerant: bool) -> Self {
+        // Different box-sampling phases can disagree before native refinement. Smooth
+        // once for the pair; an untolerated audit neither allocates nor filters.
+        let filtered = tolerant.then(|| {
+            let mut aa = vec![0; a.data.len()];
+            let mut bb = vec![0; b.data.len()];
+            crate::kernels::features::smooth(a.data, a.width, a.height, &mut aa);
+            crate::kernels::features::smooth(b.data, b.width, b.height, &mut bb);
+            (aa, bb)
+        });
+        Self { a, b, filtered }
+    }
+
+    pub(crate) fn measure(&self, dx: f64, dy: f64, roi: Option<Rect>) -> Audit {
+        let (texture_a, texture_b) = (self.a, self.b);
+        let tolerant = self.filtered.is_some();
+        let (a, b) = match &self.filtered {
+            Some((aa, bb)) => (Gray { data: aa, ..self.a }, Gray { data: bb, ..self.b }),
+            None => (self.a, self.b),
+        };
+        let r = roi.unwrap_or(Rect {
+            x: 0.0,
+            y: 0.0,
+            width: b.width as f64,
+            height: b.height as f64,
+        });
+        let (dx, dy) = (js_round(dx) as f64, js_round(dy) as f64);
+        // Both gradients need a one-pixel margin in their own image: x+dx ≥ 1 and y+dy ≥ 1 in `a`, x,y ≥ 2 in `b`.
+        // (The historical TS sampled x+dx = 0 / y+dy = 0 and read past the buffer, turning tolerant audits into NaN.)
+        let x0 = 2f64.max(r.x.ceil()).max((r.x - dx).ceil()).max(1.0 - dx);
+        let y0 = 2f64.max(r.y.ceil()).max((r.y - dy).ceil()).max(1.0 - dy);
+        let x1 = (b.width as f64 - 2.0)
+            .min(a.width as f64 - dx - 2.0)
+            .min(r.x + r.width)
+            .min(r.x + r.width - dx);
+        let y1 = (b.height as f64 - 2.0)
+            .min(a.height as f64 - dy - 2.0)
+            .min(r.y + r.height)
+            .min(r.y + r.height - dy);
+        let overlap = (x1 - x0).max(0.0) * (y1 - y0).max(0.0) / (r.width * r.height).max(1.0);
+        const B: f64 = 32.0;
+        let bw = 1usize.max(js_ceil((x1 - x0) / B).max(0) as usize);
+        let bh = 1usize.max(js_ceil((y1 - y0) / B).max(0) as usize);
+        let mut block_error = vec![0f64; bw * bh];
+        let mut block_bad = vec![0f64; bw * bh];
+        let mut block_n = vec![0f64; bw * bh];
+        let (mut error, mut bad, mut n) = (0f64, 0u32, 0u32);
+        let (bwid, awid) = (b.width as i64, a.width as i64);
+        let (dxi, dyi) = (dx as i64, dy as i64);
+        let mut y = y0;
+        while y < y1 {
+            let mut x = x0;
+            while x < x1 {
+                let i = (y as i64 * bwid + x as i64) as usize;
+                let j = ((y as i64 + dyi) * awid + x as i64 + dxi) as usize;
+                // Filtering removes phase error, not evidence: a faint thin edge can fall below the
+                // gradient gate after smoothing even though its original contrast is sufficient.
+                let (ad, bd) = (texture_a.data, texture_b.data);
+                let gb = (bd[i + 1] as i32 - bd[i - 1] as i32).abs()
+                    + (bd[i + b.width] as i32 - bd[i - b.width] as i32).abs();
+                let ga = (ad[j + 1] as i32 - ad[j - 1] as i32).abs()
+                    + (ad[j + a.width] as i32 - ad[j - a.width] as i32).abs();
+                if ga.max(gb) < 20 {
+                    x += 2.0;
+                    continue;
+                }
+                // Keep border evidence, but never borrow pixels from another pane for the blur.
+                let filtered_here = tolerant
+                    && x >= r.x + 2.0
+                    && x + dx >= r.x + 2.0
+                    && y >= r.y + 2.0
+                    && y + dy >= r.y + 2.0
+                    && x < r.x + r.width - 2.0
+                    && x + dx < r.x + r.width - 2.0
+                    && y < r.y + r.height - 2.0
+                    && y + dy < r.y + r.height - 2.0;
+                let (ad, bd) = if filtered_here {
+                    (a.data, b.data)
+                } else {
+                    (texture_a.data, texture_b.data)
+                };
+                let mut difference = (ad[j] as i32 - bd[i] as i32).abs();
+                if tolerant {
+                    difference = difference
+                        .min((ad[j + 1] as i32 - bd[i] as i32).abs())
+                        .min((ad[j - 1] as i32 - bd[i] as i32).abs())
+                        .min((ad[j + a.width] as i32 - bd[i] as i32).abs())
+                        .min((ad[j - a.width] as i32 - bd[i] as i32).abs());
+                }
+                let clipped = difference.min(70) as f64;
+                let q = (((y - y0) / B).floor() as usize) * bw + ((x - x0) / B).floor() as usize;
+                error += clipped;
+                block_error[q] += clipped;
+                block_n[q] += 1.0;
+                if difference > 18 {
+                    bad += 1;
+                    block_bad[q] += 1.0;
+                }
+                n += 1;
                 x += 2.0;
+            }
+            y += 2.0;
+        }
+        let (mut blocks, mut agreeing, mut agreeing_error) = (0u32, 0u32, 0f64);
+        for q in 0..block_n.len() {
+            if block_n[q] < 12.0 {
                 continue;
             }
-            // Keep border evidence, but never borrow pixels from another pane for the blur.
-            let filtered_here = tolerant
-                && x >= r.x + 2.0
-                && x + dx >= r.x + 2.0
-                && y >= r.y + 2.0
-                && y + dy >= r.y + 2.0
-                && x < r.x + r.width - 2.0
-                && x + dx < r.x + r.width - 2.0
-                && y < r.y + r.height - 2.0
-                && y + dy < r.y + r.height - 2.0;
-            let (ad, bd) = if filtered_here {
-                (a.data, b.data)
+            blocks += 1;
+            if block_error[q] / block_n[q] < 10.0 && block_bad[q] / block_n[q] < 0.2 {
+                agreeing += 1;
+                agreeing_error += block_error[q] / block_n[q];
+            }
+        }
+        Audit {
+            error: if n >= 24 {
+                error / n as f64
             } else {
-                (texture_a.data, texture_b.data)
-            };
-            let mut difference = (ad[j] as i32 - bd[i] as i32).abs();
-            if tolerant {
-                difference = difference
-                    .min((ad[j + 1] as i32 - bd[i] as i32).abs())
-                    .min((ad[j - 1] as i32 - bd[i] as i32).abs())
-                    .min((ad[j + a.width] as i32 - bd[i] as i32).abs())
-                    .min((ad[j - a.width] as i32 - bd[i] as i32).abs());
-            }
-            let clipped = difference.min(70) as f64;
-            let q = (((y - y0) / B).floor() as usize) * bw + ((x - x0) / B).floor() as usize;
-            error += clipped;
-            block_error[q] += clipped;
-            block_n[q] += 1.0;
-            if difference > 18 {
-                bad += 1;
-                block_bad[q] += 1.0;
-            }
-            n += 1;
-            x += 2.0;
+                f64::INFINITY
+            },
+            mismatch: if n > 0 { bad as f64 / n as f64 } else { 1.0 },
+            overlap,
+            samples: n,
+            blocks,
+            agreeing,
+            agreement: if blocks > 0 {
+                agreeing as f64 / blocks as f64
+            } else {
+                0.0
+            },
+            agreeing_error: if agreeing > 0 {
+                agreeing_error / agreeing as f64
+            } else {
+                f64::INFINITY
+            },
         }
-        y += 2.0;
-    }
-    let (mut blocks, mut agreeing, mut agreeing_error) = (0u32, 0u32, 0f64);
-    for q in 0..block_n.len() {
-        if block_n[q] < 12.0 {
-            continue;
-        }
-        blocks += 1;
-        if block_error[q] / block_n[q] < 10.0 && block_bad[q] / block_n[q] < 0.2 {
-            agreeing += 1;
-            agreeing_error += block_error[q] / block_n[q];
-        }
-    }
-    Audit {
-        error: if n >= 24 {
-            error / n as f64
-        } else {
-            f64::INFINITY
-        },
-        mismatch: if n > 0 { bad as f64 / n as f64 } else { 1.0 },
-        overlap,
-        samples: n,
-        blocks,
-        agreeing,
-        agreement: if blocks > 0 {
-            agreeing as f64 / blocks as f64
-        } else {
-            0.0
-        },
-        agreeing_error: if agreeing > 0 {
-            agreeing_error / agreeing as f64
-        } else {
-            f64::INFINITY
-        },
     }
 }
 
@@ -1421,6 +1441,68 @@ pub fn resample_gray(g: Gray<'_>, scale: f64) -> (usize, usize, Vec<u8>) {
 mod tests {
     use super::*;
     use crate::kernels::features::{extract_features, match_features};
+
+    // Failure cases for reused preparation: stale displacement/ROI state, losing the raw
+    // gradient gate, sharing a filtered pair across different inputs, and empty overlap.
+    // The standalone path is also checked against the frozen TS oracle by the parity suite.
+    #[test]
+    fn prepared_audit_reuses_images_but_not_query_state() {
+        for (width, height) in [(128, 128), (131, 95)] {
+            let a: Vec<_> = (0..width * height)
+                .map(|i| if (i % width) % 16 == 8 { 45 } else { 20 })
+                .collect();
+            let b: Vec<_> = (0..width * height)
+                .map(|i| if (i % width + 3) % 16 == 8 { 45 } else { 20 })
+                .collect();
+            let ga = Gray {
+                width,
+                height,
+                data: &a,
+            };
+            let gb = Gray {
+                width,
+                height,
+                data: &b,
+            };
+            for tolerant in [false, true] {
+                let prepared = TranslationAudit::new(ga, gb, tolerant);
+                for roi in [
+                    None,
+                    Some(Rect {
+                        x: 16.0,
+                        y: 16.0,
+                        width: 96.0,
+                        height: 64.0,
+                    }),
+                    Some(Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 18.0,
+                        height: 80.0,
+                    }),
+                ] {
+                    for (dx, dy) in [(3.0, 0.0), (2.5, -0.5), (-4.0, 9.0), (200.0, 200.0)] {
+                        assert_eq!(
+                            prepared.measure(dx, dy, roi),
+                            audit_translation(ga, gb, dx, dy, roi, tolerant)
+                        );
+                    }
+                }
+                let correct = prepared.measure(3.0, 0.0, None);
+                assert!(correct.samples >= 24);
+                assert_eq!(correct.error, 0.0);
+                let other_pair = TranslationAudit::new(gb, ga, tolerant);
+                // Reversing the pair also changes the sampling lattice. A narrow edge
+                // may then provide no samples; preserve that verdict, rather than
+                // inventing evidence simply because the translation is known here.
+                assert_eq!(
+                    other_pair.measure(-3.0, 0.0, None),
+                    audit_translation(gb, ga, -3.0, 0.0, None, tolerant)
+                );
+                assert_eq!(prepared.measure(3.0, 0.0, None), correct);
+            }
+        }
+    }
 
     // Phase filtering must not erase the evidence that a faint, narrow line is textured.
     // Its unfiltered gradient clears the texture gate; its blurred gradient does not.
