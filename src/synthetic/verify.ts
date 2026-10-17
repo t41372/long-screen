@@ -3,7 +3,7 @@ import type { KV } from '../storage/db.ts';
 import { iterate } from '../storage/db.ts';
 import type { RegionAtlas } from '../core/layers.ts';
 import { countCovered, pngTileCodec, type StoredTile, type TileIndex } from '../storage/tiles.ts';
-import { type Layer, renderFrame, type Scenario } from './world.ts';
+import { type Layer, layerTranslation, renderFrame, type Scenario, viewportAt } from './world.ts';
 export interface Observation {
   frame: number;
   time: number;
@@ -159,18 +159,19 @@ async function verifyCanvas(
   originFrame: number,
   tolerance: number,
 ): Promise<CanvasCheck> {
-  const { scenario, atlas, store } = result, v = layer.viewport, W = scenario.width, worldW = layer.world.width;
+  const { scenario, atlas, store } = result, baseViewport = layer.viewport, W = scenario.width, worldW = layer.world.width;
   const origin = entries.find((e) => e.frame === originFrame);
   const originWorld = origin
-    ? { x: layer.path[originFrame].x - origin.placement.x, y: layer.path[originFrame].y - origin.placement.y }
-    : layer.path[originFrame];
+    ? { x: layerTranslation(layer, originFrame).x - origin.placement.x, y: layerTranslation(layer, originFrame).y - origin.placement.y }
+    : layerTranslation(layer, originFrame);
   const errors: number[] = [];
   for (const e of entries) {
     const zoom = layer.zoom?.[e.frame] ?? 1;
     errors.push(
-      zoom !== 1
-        ? Infinity
-        : Math.hypot(e.placement.x - (layer.path[e.frame].x - originWorld.x), e.placement.y - (layer.path[e.frame].y - originWorld.y)),
+      zoom !== 1 ? Infinity : Math.hypot(
+        e.placement.x - (layerTranslation(layer, e.frame).x - originWorld.x),
+        e.placement.y - (layerTranslation(layer, e.frame).y - originWorld.y),
+      ),
     );
   }
   // A magnified frame resamples the page onto a different pixel grid; pixel identity against the lossless world is not
@@ -222,8 +223,10 @@ async function verifyCanvas(
     rects.some((r) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
   for (const e of entries) {
     const p = layer.path[e.frame],
-      px = p.x - originWorld.x,
-      py = p.y - originWorld.y,
+      v = viewportAt(layer, e.frame),
+      pose = layerTranslation(layer, e.frame),
+      px = pose.x - originWorld.x,
+      py = pose.y - originWorld.y,
       rendered = renderFrame(scenario, e.frame),
       img = rendered.image;
     const dynamicRects = rendered.dynamicRects[layer.id] || [];
@@ -319,7 +322,7 @@ async function verifyCanvas(
         continue;
       }
       expected[ey * bw + ex] = 2;
-      const wx = cx + originWorld.x - v.x, wy = cy + originWorld.y - v.y;
+      const wx = cx + originWorld.x - baseViewport.x, wy = cy + originWorld.y - baseViewport.y;
       const versions = wx >= 0 && wy >= 0 && wx < layer.world.width && wy < layer.world.height
         ? layer.world.versions(wx, wy)
         : [scenario.background];
