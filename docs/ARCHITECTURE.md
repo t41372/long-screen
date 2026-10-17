@@ -595,6 +595,12 @@ PyO3 绑定（`long-screen-py`，cdylib，导入名 `long_screen._native`；依�
 
 Rust 核心的完整迁移时间线（哪一轮做了什么、每一步的验证方式）记录在 [docs/history/2026-09-rust-migration-log.md](history/2026-09-rust-migration-log.md)；上表只给当前状态与理由，不重复过程。
 
+### Packed HDR 色码的重复计算
+
+`rust/long-screen/src/kernels/yuv/hdr.rs` 对 packed RGB8／RGB10A2 的 256／1024 种通道色码预先计算原有 EOTF 线性插值，逐像素只查表；这不是改用最近邻 EOTF，也不改变 BT.2020→BT.709 的乘加次序、sRGB 映射或高亮计数。YUV 矩阵后的值是连续数，仍走连续插值。PQ／HLG 在 scalar、SIMD、threads 上各穷举全部 RGB8，并核对 1,010,240 个 RGB10A2 样本，输出与计数保持原语义。
+
+同机完整 public test_5 的隔离配对为 292.69 → 138.29 秒，处理同样 1,852 帧、12,760 次转换；累计转换调用时间约 170.76 → 60.62 秒。这是 Chrome 的 WebGPU 外部纹理读回加 CPU HDR 核心路径，不能外推为所有浏览器固定加速率。
+
 ## 十三、Rust 引擎库：边界与迁移
 
 目标：把 `src/pipeline/` 里的流程搬进 Rust，让一个 crate 自己就能从一串帧得到长截图；网页、命令行、桌面版和 Python 共用同一份引擎。§三的原则不变（算法在 Rust，TS 只做外壳），变的是“外壳”的范围：今天的 TS 外壳还负责三遍的顺序、逐区域的追踪状态机和记录的组装，迁移之后这些都在 Rust，TS 只剩解码、存储、界面和驱动引擎的循环。
