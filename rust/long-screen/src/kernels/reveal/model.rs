@@ -199,8 +199,11 @@ pub fn build(stats: &LayerStats, tau: i32) -> LayerModel {
         let vr = srr[i] as f64 / nn - mr * mr;
         let cov = sro[i] as f64 / nn - mr * mo;
         let vo = soo[i] as f64 / nn - mo * mo;
-        // Upper confidence bound of the page→observation slope; no page texture means no slope evidence.
-        let hi = if vr > 1.0 {
+        // A slope is meaningful only when reference contrast exceeds the same noise floor
+        // used for agreeing source views. Otherwise quantization or burned-in faint ghosts
+        // on a flat reference would make a clean, flat observation look opaque.
+        let noise = (tau / 4).max(2) as f64;
+        let hi = if vr > noise * noise {
             let slope = cov / vr;
             let resid = (vo - cov * cov / vr).max(0.0);
             let se = ((resid + 4.0) / (nn * vr)).sqrt();
@@ -208,10 +211,28 @@ pub fn build(stats: &LayerStats, tau: i32) -> LayerModel {
         } else {
             f64::INFINITY
         };
-        if frac > 0.3 || hi < 0.15 {
+        // A misplaced or differently sampled reference can lose covariance without losing contrast.
+        // A low slope needs independent contrast or brightness evidence to establish an overlay.
+        let opaque_gain = 0.15;
+        let veil_gain = 0.85;
+        // A moving/animated opaque replacement can add its own variance. Repeated visible disagreements
+        // support that candidate even without contrast loss; sub-noise decorrelation alone does not.
+        let repeated_disagreement = stats.cells[i].bad >= 4;
+        if frac > 0.3
+            || (hi < opaque_gain && (vo < vr * opaque_gain * opaque_gain || repeated_disagreement))
+        {
             opaque[i] = true;
-        } else if hi < 0.85 {
-            veil[i] = true;
+        } else if hi < veil_gain {
+            // Switching a translucent control on and off can increase total variance. Its
+            // mean brightness shift is independent evidence; registration phase alone has
+            // no consistent signed shift. Use the local view count, not pooled pixels,
+            // when bounding uncertainty: neighbouring samples are not independent views.
+            let difference_variance = (vr + vo - 2.0 * cov).max(0.0);
+            let mean_error = (difference_variance / stats.cells[i].n as f64).sqrt();
+            let shifted = repeated_disagreement && (mo - mr).abs() > noise + 2.0 * mean_error;
+            if vo < vr * veil_gain * veil_gain || shifted {
+                veil[i] = true;
+            }
         }
     }
     let enough: Vec<bool> = stats.cells.iter().map(|a| a.n >= ENOUGH).collect();
@@ -425,5 +446,236 @@ mod tests {
             }
         }
         assert_eq!(tier[0], TIER_CLEAN);
+    }
+    #[test]
+    fn decorrelation_without_contrast_loss_is_not_attenuation() {
+        struct Pattern;
+        const VALUES: [u8; 6] = [90, 99, 99, 90, 81, 81];
+        impl CellRef for Pattern {
+            fn cell(&self, x: i64, _y: i64) -> Option<[u8; 3]> {
+                Some([VALUES[x.rem_euclid(6) as usize]; 3])
+            }
+            fn cells(&self) -> (i64, i64, i64, i64) {
+                (-1000, -1000, 10000, 10000)
+            }
+        }
+        let (width, height) = (96, 64);
+        let mask = vec![1; width * height];
+        let fp = Footprint {
+            x: 0,
+            y: 0,
+            width,
+            height,
+            mask: &mask,
+        };
+        let model_for = |phase: usize, attenuate: bool, opaque: bool| {
+            let mut stats = LayerStats::new(0, 0, width, height);
+            for step in 0..48 {
+                let mut rgba = vec![255; width * height * 4];
+                for y in 0..height {
+                    for x in 0..width {
+                        let value = VALUES[(x / 2 + step + phase) % 6];
+                        let value = if opaque {
+                            90
+                        } else if attenuate {
+                            ((value as u16 + 90) / 2) as u8
+                        } else {
+                            value
+                        };
+                        rgba[(y * width + x) * 4..(y * width + x) * 4 + 3].fill(value);
+                    }
+                }
+                let frame = Frame {
+                    rgba: &rgba,
+                    width,
+                    height,
+                };
+                stats.accumulate_cells(&frame, &fp, &Pattern, ((step * 2) as i64, 0), 24);
+            }
+            build(&stats, 24)
+        };
+        // A translated copy has identical contrast but lower covariance. It is registration uncertainty,
+        // not a screen-fixed veil or opaque object; every difference stays below decode tolerance.
+        for phase in [1, 2] {
+            assert!(
+                model_for(phase, false, false).objects.is_empty(),
+                "a shifted same-contrast pattern cannot establish an overlay"
+            );
+        }
+        assert!(
+            model_for(0, true, false)
+                .objects
+                .iter()
+                .any(|o| o.kind == Kind::Veil),
+            "true attenuation remains detectable"
+        );
+        assert!(
+            model_for(0, false, true)
+                .objects
+                .iter()
+                .any(|o| o.kind == Kind::Opaque),
+            "a truly fixed replacement remains detectable"
+        );
+    }
+    #[test]
+    fn a_moving_replacement_can_keep_or_raise_the_observed_variance() {
+        // A rendered reference can already contain sparse burned-in copies of a moving thumb.
+        // The real thumb has repeated above-noise appearances but is not an attenuated copy of that reference.
+        struct BurnedReference;
+        impl CellRef for BurnedReference {
+            fn cell(&self, x: i64, _y: i64) -> Option<[u8; 3]> {
+                Some([if x.rem_euclid(20) == 0 { 170 } else { 90 }; 3])
+            }
+            fn cells(&self) -> (i64, i64, i64, i64) {
+                (-1000, -1000, 10000, 10000)
+            }
+        }
+        let (width, height) = (96, 64);
+        let mask = vec![1; width * height];
+        let fp = Footprint {
+            x: 0,
+            y: 0,
+            width,
+            height,
+            mask: &mask,
+        };
+        let mut stats = LayerStats::new(0, 0, width, height);
+        for step in 0..60 {
+            let mut rgba = vec![255; width * height * 4];
+            for y in 0..height {
+                for x in 0..width {
+                    let phase = (x / 2 + step) % 20;
+                    let v = if phase == 5 || phase == 6 { 170 } else { 90 };
+                    rgba[(y * width + x) * 4..(y * width + x) * 4 + 3].fill(v);
+                }
+            }
+            stats.accumulate_cells(
+                &Frame {
+                    rgba: &rgba,
+                    width,
+                    height,
+                },
+                &fp,
+                &BurnedReference,
+                ((step * 2) as i64, 0),
+                24,
+            );
+        }
+        let model = build(&stats, 24);
+        assert!(
+            model.objects.iter().any(|o| o.kind == Kind::Opaque),
+            "replacement appearance is not required to lose variance"
+        );
+    }
+    #[test]
+    fn an_intermittent_veil_can_raise_variance_without_being_an_opaque_replacement() {
+        // Native sampling phase changes contrast locally. A pale control is present in one fifth
+        // of observations: switching it on and off increases total variance, despite transmission loss.
+        const VALUES: [u8; 6] = [30, 40, 60, 70, 60, 40];
+        struct Pattern;
+        impl CellRef for Pattern {
+            fn cell(&self, x: i64, _y: i64) -> Option<[u8; 3]> {
+                Some([VALUES[x.rem_euclid(6) as usize]; 3])
+            }
+            fn cells(&self) -> (i64, i64, i64, i64) {
+                (-1000, -1000, 10000, 10000)
+            }
+        }
+        let (width, height) = (48, 32);
+        let mask = vec![1; width * height];
+        let footprint = Footprint {
+            x: 0,
+            y: 0,
+            width,
+            height,
+            mask: &mask,
+        };
+        for control in [false, true] {
+            let mut stats = LayerStats::new(0, 0, width, height);
+            for step in 0..120 {
+                let mut rgba = vec![255; width * height * 4];
+                for y in 0..height {
+                    for x in 0..width {
+                        let background = VALUES[(x / 2 + step + 1) % VALUES.len()];
+                        let value = if control && step % 5 == 0 {
+                            ((background as u16 + 230) / 2) as u8
+                        } else {
+                            background
+                        };
+                        rgba[(y * width + x) * 4..(y * width + x) * 4 + 3].fill(value);
+                    }
+                }
+                stats.accumulate_cells(
+                    &Frame {
+                        rgba: &rgba,
+                        width,
+                        height,
+                    },
+                    &footprint,
+                    &Pattern,
+                    ((step * 2) as i64, 0),
+                    24,
+                );
+            }
+            let model = build(&stats, 24);
+            if control {
+                assert!(
+                    model.objects.iter().any(|o| o.kind == Kind::Veil),
+                    "a repeatedly observed translucent control must remain suspect"
+                );
+                assert!(
+                    !model.objects.iter().any(|o| o.kind == Kind::Opaque),
+                    "intermittent transmission is not fixed opaque replacement"
+                );
+            } else {
+                assert!(
+                    model.objects.is_empty(),
+                    "phase noise alone does not establish an overlay"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_flat_page_is_not_an_overlay_of_subnoise_reference_variation() {
+        // The rendered reference can contain a few quantization levels of variation on a
+        // flat page margin. Zero observed variance is not evidence of an opaque control
+        // when the reference contrast itself lies inside the measured noise tolerance.
+        struct NoisyWhite;
+        impl CellRef for NoisyWhite {
+            fn cell(&self, x: i64, _y: i64) -> Option<[u8; 3]> {
+                const VALUES: [u8; 6] = [250, 253, 255, 253, 250, 247];
+                Some([VALUES[x.rem_euclid(6) as usize]; 3])
+            }
+            fn cells(&self) -> (i64, i64, i64, i64) {
+                (-1000, -1000, 10000, 10000)
+            }
+        }
+        let (width, height) = (48, 32);
+        let mask = vec![1; width * height];
+        let footprint = Footprint {
+            x: 0,
+            y: 0,
+            width,
+            height,
+            mask: &mask,
+        };
+        let mut rgba = vec![252; width * height * 4];
+        for pixel in rgba.chunks_exact_mut(4) {
+            pixel[3] = 255;
+        }
+        let frame = Frame {
+            rgba: &rgba,
+            width,
+            height,
+        };
+        let mut stats = LayerStats::new(0, 0, width, height);
+        for step in 0..120 {
+            stats.accumulate_cells(&frame, &footprint, &NoisyWhite, (step * 2, 0), 24);
+        }
+        assert!(
+            build(&stats, 24).objects.is_empty(),
+            "noise in the reference cannot make clean page pixels opaque"
+        );
     }
 }

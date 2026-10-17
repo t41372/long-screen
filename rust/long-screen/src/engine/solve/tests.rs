@@ -64,15 +64,19 @@ fn window(page: &[u8], offset: usize) -> &[u8] {
 }
 
 fn session(moving: bool) -> SolveSession {
+    session_sized(moving, W, H)
+}
+
+fn session_sized(moving: bool, width: usize, height: usize) -> SolveSession {
     let rect = Rect {
         x: 0.0,
         y: 0.0,
-        width: W as f64,
-        height: H as f64,
+        width: width as f64,
+        height: height as f64,
     };
     SolveSession::new(SolveConfig {
-        width: W,
-        height: H,
+        width,
+        height,
         factor: 2,
         radius: 3,
         noise: 0.0,
@@ -134,7 +138,7 @@ impl Host {
             Begin::Duplicate(_) => panic!("not a duplicate"),
         }
         s.frame_mut().copy_from_slice(pixels);
-        let labels = vec![1u8; W * H];
+        let labels = vec![1u8; s.width() * s.height()];
         let mut poll = s.run_frame(None, None, &labels);
         loop {
             self.take(s);
@@ -443,6 +447,7 @@ fn rejected(rescue: bool) -> (Host, Vec<FrameDone>) {
         done = true;
         est.decision = OdometryDecision::Lost;
         est.rescue = rescue.then_some(Rescue {
+            phase_support: false,
             delta: est.delta,
             confidence: est.confidence,
             ambiguous: est.ambiguous,
@@ -484,6 +489,7 @@ fn reacquired(found: ReacquireEstimate) -> (Host, Vec<FrameDone>) {
         done = true;
         est.decision = OdometryDecision::Lost;
         est.rescue = Some(Rescue {
+            phase_support: false,
             delta: est.delta,
             confidence: 0.3,
             ambiguous: false,
@@ -553,4 +559,90 @@ fn frames_still_in_the_ring_are_finalised_by_the_drain() {
         "every observed frame is finalised once"
     );
     assert!(drained.iter().all(|r| r.voted_layers <= 1));
+}
+
+// A phase hypothesis is not permission to change an already recovered tracking path.
+#[test]
+fn registration_support_activates_only_when_the_phase_rescue_is_used() {
+    for fail_anchor in [false, true] {
+        let page = page();
+        let mut host = Host::default();
+        let mut s = session(true);
+        s.seams.odometry = Some(Box::new(move |frame, est| {
+            if frame != 3 {
+                return false;
+            }
+            est.decision = OdometryDecision::Lost;
+            est.rescue = Some(Rescue {
+                phase_support: true,
+                delta: est.delta,
+                confidence: 0.3,
+                ambiguous: false,
+                weak_step: false,
+                step_error: 20.0,
+            });
+            fail_anchor
+        }));
+        if !fail_anchor {
+            s.seams.reacquire = Some(Box::new(|top| {
+                *top = Some(ReacquireEstimate {
+                    x: 0,
+                    y: 21,
+                    ambiguous: false,
+                    confidence: 0.9,
+                    error: 1.0,
+                });
+            }));
+        }
+        scroll(&mut host, &mut s, &page, 4, 7);
+        assert_eq!(s.states[0].phase_support, fail_anchor);
+    }
+}
+
+#[test]
+fn registration_support_preserves_a_thin_overlap_step() {
+    let original = page();
+    let (w, h) = (W * 4, H * 4);
+    let mut page = vec![0; w * PAGE * 4 * 4];
+    for y in 0..PAGE * 4 {
+        for x in 0..w {
+            let from = ((y / 4) * W + x / 4) * 4;
+            let to = (y * w + x) * 4;
+            page[to..to + 4].copy_from_slice(&original[from..from + 4]);
+        }
+    }
+    for active in [false, true] {
+        for jump in [200usize, 300, 420] {
+            let mut host = Host::default();
+            let mut s = session_sized(true, w, h);
+            let support = Rect {
+                x: 64.0,
+                y: 48.0,
+                width: 512.0,
+                height: 384.0,
+            };
+            if active {
+                s.states[0].phase_support = true;
+                s.states[0].registration_support = Some(support);
+            }
+            for (i, offset) in [0, 28, 56, 56 + jump, 84 + jump].into_iter().enumerate() {
+                let pixels = &page[offset * w * 4..(offset + h) * w * 4];
+                let done = host.frame(&mut s, i as u32, pixels);
+                if active && i == 0 {
+                    assert!(s.states[0]
+                        .previous_features
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .all(|p| support.contains(p.x as f64 * 2.0, p.y as f64 * 2.0)));
+                }
+                assert_eq!(done.placements[0].x, 0.0);
+                assert_eq!(
+                    done.placements[0].y, offset as f64,
+                    "support {active}, jump {jump}, frame {i}"
+                );
+            }
+            assert_eq!(host.canvases().len(), 1);
+        }
+    }
 }

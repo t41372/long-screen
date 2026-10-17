@@ -1,22 +1,17 @@
-//! Per-region, per-frame tracking decisions: the *stateless* verdicts and stateful-shell-facing kernels of
-//! `src/pipeline/solve/track.ts`, byte-for-byte ports of the frozen oracle in
-//! `tests/support/reference/track.ts`. Every function is pure: plain scalars/tuples in, a plain result out, no
-//! I/O, no state carried between calls (the stateful per-region tracker — previous features, velocity, anchor
-//! patches — stays in TS; a stateful core-side tracker was measured and showed no gain).
-//!
-//! Split into one module per concern,
-//! mirroring `regions/`'s precedent: `verdicts` (small stateless decisions), `odometry` (frame-to-frame
-//! tracking), `reacquire` (anchor re-acquisition + drift correction), `keyframes` (candidate scoring). Every
-//! item is re-exported here so `crate::kernels::track::X` paths elsewhere (the ABI layer, this module's own tests) are
-//! unchanged by the split.
+//! Per-region tracking kernels: translation evidence, keyframe scoring and stateless verdicts.
+//! Stateful sequencing and registration-window lifetime belong to `engine::solve`; these kernels do no I/O.
+//! `phase` supplies the additional evidence and geometry support used only after a phase rescue is needed.
+//! The historical TS implementations remain parity references for unchanged paths.
 
 mod keyframes;
 mod odometry;
+mod phase;
 mod reacquire;
 mod verdicts;
 
 pub use keyframes::*;
 pub use odometry::*;
+pub use phase::{registration_features, registration_support};
 pub use reacquire::*;
 pub use verdicts::*;
 

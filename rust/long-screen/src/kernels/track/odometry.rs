@@ -26,10 +26,12 @@ pub struct ContentChange {
     pub blocks: u32,
 }
 
-/// A step the plain native error rejected but `rescuable` or `measured_between_pixels` measured as unambiguous: what
-/// `Tracked` would have carried. The caller takes it only where the frame would otherwise start a new fragment (after
-/// re-acquiring the anchor and relocalising have both failed), so every frame those already place stays as it was.
+/// A measured step kept behind anchor re-acquisition and relocalization. It may recover a
+/// phase-sensitive native rejection or an overlap that the interior registration window missed.
+/// The caller uses it only where the frame would otherwise start a new fragment.
 pub struct Rescue {
+    /// This rescue has additional phase and spatial evidence; registration may use a separate support window.
+    pub phase_support: bool,
     pub delta: (f64, f64),
     pub confidence: f64,
     pub ambiguous: bool,
@@ -60,6 +62,7 @@ pub struct OdometryEstimate {
 /// fallback path (`track.ts::odometry`'s `regionContains` loop) and may be omitted when the caller knows
 /// the fast path always succeeds in practice — omitting it on a frame that actually needs it just treats
 /// every sample as "contained", matching `regionContains`'s own `!region.mask` shortcut.
+#[derive(Clone, Copy)]
 pub struct OdometryInputs<'a> {
     pub f: f64,
     pub radius: i32,
@@ -244,6 +247,7 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
     refined.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut rescue = None;
+    let mut phase_support = false;
     if let Some(best_index) = (!refined.is_empty()).then_some(0usize) {
         let (best_m, best_audit, best_n, _) = &refined[best_index];
         let measured = best_n.error < TRACKED_ERROR
@@ -259,7 +263,26 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
                     radius,
                     &points,
                 );
-                measured_between_pixels(error, runner_up)
+                measured_between_pixels(error, runner_up) || {
+                    phase_support = !best_m.ambiguous
+                        && !refined.iter().enumerate().any(|(i, (_, _, n, _))| {
+                            i != best_index
+                                && js_hypot(
+                                    n.x as f64 - best_n.x as f64,
+                                    n.y as f64 - best_n.y as f64,
+                                ) > 2.0
+                                && n.error < best_n.error + 4.0
+                        })
+                        && super::phase::supports_translation(
+                            error,
+                            runner_up,
+                            best_m,
+                            best_audit,
+                            &match_points,
+                            roi,
+                        );
+                    phase_support
+                }
             };
         if measured {
             let delta = (best_n.x as f64, best_n.y as f64);
@@ -309,6 +332,7 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
                 };
             }
             rescue = Some(Rescue {
+                phase_support,
                 delta,
                 confidence,
                 ambiguous,

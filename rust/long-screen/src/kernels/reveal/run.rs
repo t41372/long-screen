@@ -11,7 +11,8 @@ use super::blocks::{
     self, BlockWrite, Consensus, Deferred, Grid, Output, CONSENSUS_BLOCK_BYTES, FALLBACK_BYTES,
     OUTPUT_BLOCK_BYTES,
 };
-use super::locate::{self, TierMap};
+use super::controls::{self, ControlTracks};
+use super::locate::{self, Cells, TierMap};
 use super::model::{self, LayerModel};
 use super::stats::Acc;
 use super::stats::{CellMap, LayerStats};
@@ -75,6 +76,7 @@ pub fn admitted(plans: &[Vec<(Decision, bool)>]) -> Vec<Vec<bool>> {
 }
 
 pub struct Layer {
+    controls: Option<ControlTracks>,
     pub x: i64,
     pub y: i64,
     pub width: usize,
@@ -197,7 +199,12 @@ pub fn canvas_bytes(width: usize, height: usize) -> usize {
 /// per-cell sums its model is built from.
 pub fn layer_bytes(width: usize, height: usize) -> usize {
     let cells = width.div_ceil(CELL) * height.div_ceil(CELL);
-    width * height + cells * (std::mem::size_of::<Acc>() + 8 * std::mem::size_of::<u64>())
+    let blocks = (width / BLOCK + 2) * (height / BLOCK + 2);
+    // A complete component's temporary signature fits one observed viewport, even on a large canvas.
+    width * height
+        + cells * (std::mem::size_of::<Acc>() + 8 * std::mem::size_of::<u64>())
+        + blocks * blocks::CELLS * std::mem::size_of::<[u8; 3]>()
+        + controls::memory_bound(cells)
 }
 
 impl Reveal {
@@ -215,6 +222,9 @@ impl Reveal {
 
     pub fn add_layer(&mut self, x: i64, y: i64, width: usize, height: usize, code: u8) -> usize {
         self.layers.push(Layer {
+            controls: Some(ControlTracks::new(
+                width.div_ceil(CELL) * height.div_ceil(CELL),
+            )),
             x,
             y,
             width,
@@ -499,9 +509,33 @@ impl Reveal {
         let Some(m) = self.layers[d.layer].model.as_mut() else {
             return;
         };
-        let mut tiers = locate::tiers(&frame, m, tau);
+        let cells =
+            (self.pass == Pass::Agree && controls::needs_cells(m)).then(|| Cells::bin(&frame, m));
+        let mut tiers = match &cells {
+            Some(cells) => locate::classify(cells, m, tau),
+            None => locate::tiers(&frame, m, tau),
+        };
+        let mut tracks = self.layers[d.layer].controls.take().unwrap();
         let layer = &self.layers[d.layer];
         let m = layer.model.as_ref().unwrap();
+        let mask = layer_mask(layer, d);
+        let fp = footprint(layer, &mask);
+        if let Some(cells) = &cells {
+            tracks.observe(
+                cells,
+                m,
+                &fp,
+                tau,
+                controls::View {
+                    index,
+                    canvas: d.canvas,
+                    pose: (d.x, d.y),
+                },
+            );
+        }
+        if self.pass == Pass::Write {
+            tracks.apply(index, m, &layer.zone, &mut tiers);
+        }
         if let Some(b) = before {
             let noise = (self.tau / 4).max(2);
             for cy in 0..m.ch {
@@ -536,9 +570,6 @@ impl Reveal {
             tier: &tiers,
         };
         let _ = labels;
-        let layer = &self.layers[d.layer];
-        let mask = layer_mask(layer, d);
-        let fp = footprint(layer, &mask);
         let c = &mut self.canvases[d.canvas];
         match self.pass {
             Pass::Agree => {
@@ -549,9 +580,15 @@ impl Reveal {
             Pass::Write => {
                 if let (Some(cons), Some(out)) = (c.consensus.as_ref(), c.output.as_mut()) {
                     let start = self.writes.len();
+                    let still_previous = before.map(|rgba| Frame {
+                        rgba,
+                        width: w,
+                        height: h,
+                    });
                     out.emit(
                         cons,
                         &frame,
+                        still_previous.as_ref(),
                         &fp,
                         &tm,
                         (d.x, d.y),
@@ -567,6 +604,8 @@ impl Reveal {
             }
             _ => {}
         }
+        drop(mask);
+        self.layers[d.layer].controls = Some(tracks);
     }
 
     /// Drains the block copies owed since the last call. Each copies from the frame the vote used: the previous
