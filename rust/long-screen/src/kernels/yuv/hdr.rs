@@ -131,6 +131,11 @@ pub fn rgb_to_rgba(
         Packing::Rgba8 => 255,
         Packing::Rgb10a2 => 1023,
     };
+    // Packed RGB has only 256 or 1024 possible channel values. Reuse the exact
+    // interpolated EOTF value per code rather than dividing and interpolating per pixel.
+    let linear: Vec<f32> = (0..=top)
+        .map(|code| linear_value(code as f32 / top as f32, eotf))
+        .collect();
     let grey: Vec<([u8; 4], bool)> = (0..=top)
         .map(|c| pixel([c as f32 / top as f32; 3], eotf, oetf))
         .collect();
@@ -148,7 +153,7 @@ pub fn rgb_to_rgba(
             let (p, bright) = if codes[0] == codes[1] && codes[1] == codes[2] {
                 grey[codes[0] as usize]
             } else {
-                pixel(codes.map(|v| v as f32 / top as f32), eotf, oetf)
+                pixel_linear(codes.map(|v| linear[v as usize]), oetf)
             };
             px.copy_from_slice(&p);
             above += bright as usize;
@@ -234,11 +239,17 @@ fn hlg_inverse_oetf(e: f64) -> f64 {
 /// One pixel: coded R'G'B' → sRGB RGBA, and whether it lies above `ABOVE_WHITE`.
 #[inline]
 fn pixel(rgb: [f32; 3], eotf: &[f32], srgb: &[u8]) -> ([u8; 4], bool) {
-    let lin = rgb.map(|v| {
-        let at = v.clamp(0.0, 1.0) * (EOTF_SIZE - 1) as f32;
-        let i = (at as usize).min(EOTF_SIZE - 2);
-        eotf[i] + (at - i as f32) * (eotf[i + 1] - eotf[i])
-    });
+    pixel_linear(rgb.map(|v| linear_value(v, eotf)), srgb)
+}
+
+/// Interpolated transfer value; YUV-derived values remain continuous.
+fn linear_value(v: f32, eotf: &[f32]) -> f32 {
+    let at = v.clamp(0.0, 1.0) * (EOTF_SIZE - 1) as f32;
+    let i = (at as usize).min(EOTF_SIZE - 2);
+    eotf[i] + (at - i as f32) * (eotf[i + 1] - eotf[i])
+}
+
+fn pixel_linear(lin: [f32; 3], srgb: &[u8]) -> ([u8; 4], bool) {
     let out = BT2020_TO_709.map(|m| {
         let l = m[0] * lin[0] + m[1] * lin[1] + m[2] * lin[2];
         srgb[(l.clamp(0.0, 1.0) * (SRGB_SIZE - 1) as f32 + 0.5) as usize]

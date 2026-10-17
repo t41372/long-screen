@@ -128,6 +128,9 @@ struct KeyLocals {
 /// One region's frame-local state.
 pub(super) struct Step {
     own: Vec<Feature>,
+    /// Native screen-space registration window; `roi` remains relative to the full output region.
+    registration_rect: Rect,
+    full_overlap_rescue: bool,
     textured: bool,
     zoom_change: bool,
     roi: Rect,
@@ -177,16 +180,25 @@ fn gray(p: &Plane) -> Gray<'_> {
     }
 }
 
-fn patches(k: &Keyframe) -> Vec<Patch<'_>> {
-    k.patches
-        .iter()
-        .map(|p| Patch {
+fn patches(k: &Keyframe, support: Option<Rect>) -> Vec<Patch<'_>> {
+    let mut out = Vec::with_capacity(k.patches.len());
+    for p in &k.patches {
+        if support.is_some_and(|r| {
+            p.x < r.x
+                || p.y < r.y
+                || p.x + p.size as f64 > r.x + r.width
+                || p.y + p.size as f64 > r.y + r.height
+        }) {
+            continue;
+        }
+        out.push(Patch {
             x: p.x as i32,
             y: p.y as i32,
             size: p.size,
             data: &p.data,
-        })
-        .collect()
+        });
+    }
+    out
 }
 
 /// `String(n).padStart(10, '0')`.
@@ -263,6 +275,16 @@ impl SolveSession {
     }
 
     /// The region's read-mostly values and the mutable locals at their starting values.
+    fn patch_support(&self, i: usize, s: &Step) -> Option<Rect> {
+        let full = self.regions[i].shape.rect;
+        (s.registration_rect != full).then_some(Rect {
+            x: s.registration_rect.x - full.x,
+            y: s.registration_rect.y - full.y,
+            width: s.registration_rect.width,
+            height: s.registration_rect.height,
+        })
+    }
+
     fn setup(&self, i: usize, ctx: &FrameCtx) -> Step {
         let r = &self.regions[i];
         let state = &self.states[i];
@@ -281,6 +303,8 @@ impl SolveSession {
             self.width as f64,
             self.height as f64,
         );
+        let (registration_rect, own) =
+            track::registration_features(rect, self.states[i].registration_support, own, f);
         let textured = own.len() >= TEXTURED_FEATURES;
         let prior: Vec<MatchPoints> = if r.moving {
             let previous = state.previous_features.as_deref().unwrap_or(&[]);
@@ -304,6 +328,8 @@ impl SolveSession {
         let zoom_change = track::zoom_changed(zoom, ctx.scan.zoom);
         Step {
             own,
+            registration_rect,
+            full_overlap_rescue: false,
             textured,
             zoom_change,
             roi,
@@ -357,13 +383,17 @@ impl SolveSession {
             .as_ref()
             .expect("gated on a previous frame");
         let previous_slot = self.previous_slot.expect("gated on a previous frame");
-        #[allow(unused_mut)]
-        let mut est = track::odometry(track::OdometryInputs {
+        let inputs = track::OdometryInputs {
             f: self.factor as f64,
             radius: self.radius,
             mask: Some((labels, r.code)),
-            roi: s.roi,
-            rect: r.shape.rect,
+            roi: Rect {
+                x: s.registration_rect.x / self.factor as f64,
+                y: s.registration_rect.y / self.factor as f64,
+                width: s.registration_rect.width / self.factor as f64,
+                height: s.registration_rect.height / self.factor as f64,
+            },
+            rect: s.registration_rect,
             region: Some(&r.shape),
             image_width: self.width as f64,
             image_height: self.height as f64,
@@ -375,7 +405,56 @@ impl SolveSession {
             previous_features: state.previous_features.as_deref().unwrap_or(&[]),
             own_features: &s.own,
             confidence: s.confidence,
-        });
+        };
+        #[allow(unused_mut)]
+        let mut est = track::odometry(inputs);
+        // A large jump may leave texture only at the output region's edge. The support
+        // window must not turn that observable overlap into a new fragment.
+        if s.registration_rect != r.shape.rect
+            && est.decision == OdometryDecision::Lost
+            && est.rescue.is_none()
+        {
+            let own = filter_features(
+                &r.shape,
+                &ctx.features,
+                self.factor as f64,
+                self.width as f64,
+                self.height as f64,
+            );
+            let previous = filter_features(
+                &r.shape,
+                self.previous_features
+                    .as_deref()
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]),
+                self.factor as f64,
+                self.width as f64,
+                self.height as f64,
+            );
+            let full = track::odometry(track::OdometryInputs {
+                roi: s.roi,
+                rect: r.shape.rect,
+                previous_features: &previous,
+                own_features: &own,
+                ..inputs
+            });
+            // Keep normal anchor/relocalization priority; a full-window measurement is
+            // used only if those also fail. A screen-fixed zero shift cannot replace a lost step.
+            if full.decision == OdometryDecision::Tracked && full.delta != (0.0, 0.0) {
+                s.full_overlap_rescue = true;
+                est.rescue = Some(Rescue {
+                    phase_support: false,
+                    delta: full.delta,
+                    confidence: full.confidence,
+                    ambiguous: full.ambiguous,
+                    weak_step: full.weak_step,
+                    step_error: full.step_error,
+                });
+            } else if full.rescue.as_ref().is_some_and(|r| r.delta != (0.0, 0.0)) {
+                s.full_overlap_rescue = true;
+                est.rescue = full.rescue;
+            }
+        }
         #[cfg(test)]
         if let Some(seam) = self.seams.odometry.as_mut() {
             self.seams.reacquire_fails |= seam(ctx.index, &mut est);
@@ -421,12 +500,13 @@ impl SolveSession {
             self.width,
             self.height,
         );
+        let anchor_patches = patches(&anchor, self.patch_support(i, s));
         let native = Gray {
             width: w,
             height: h,
             data: self.native(),
         };
-        let top = track::reacquire_refine(&models, &patches(&anchor), native, rect, f, radius);
+        let top = track::reacquire_refine(&models, &anchor_patches, native, rect, f, radius);
         #[cfg(test)]
         #[allow(unused_mut)]
         let mut top = top.filter(|_| !std::mem::take(&mut self.seams.reacquire_fails));
@@ -457,6 +537,7 @@ impl SolveSession {
     /// Tracked: advances the pose (through the re-acquired anchor, or by the odometry step plus drift control).
     fn apply_tracked(&mut self, i: usize, ctx: &FrameCtx, s: &mut Step) {
         let rect = self.regions[i].shape.rect;
+        let support = self.patch_support(i, s);
         if let Some((vx, vy)) = s.via_anchor {
             let state = &mut self.states[i];
             let anchor = state
@@ -480,7 +561,7 @@ impl SolveSession {
                     };
                     #[allow(unused_mut)]
                     let mut drift = track::drift_correction(
-                        &patches(&anchor),
+                        &patches(&anchor, support),
                         native,
                         rect,
                         (anchor.x, anchor.y),
@@ -509,19 +590,28 @@ impl SolveSession {
             );
         }
         if s.uncertain {
-            self.diagnostic(
-                Diagnostic::new("LOW_CONFIDENCE_PLACEMENT", Severity::Warning)
-                    .at(ctx.index, ctx.time)
-                    .canvas(&canvas_id)
-                    .confidence(s.confidence)
-                    .region(Rect {
-                        x: pose.0 + rect.x,
-                        y: pose.1 + rect.y,
-                        width: rect.width,
-                        height: rect.height,
-                    })
-                    .param("ambiguous", s.ambiguous as u8 as f64),
-            );
+            let mut diagnostic = Diagnostic::new("LOW_CONFIDENCE_PLACEMENT", Severity::Warning)
+                .at(ctx.index, ctx.time)
+                .canvas(&canvas_id)
+                .confidence(s.confidence)
+                .region(Rect {
+                    x: pose.0 + rect.x,
+                    y: pose.1 + rect.y,
+                    width: rect.width,
+                    height: rect.height,
+                })
+                .param("ambiguous", s.ambiguous as u8 as f64);
+            if s.registration_rect != rect {
+                let mut detail = vec![
+                    ("registrationScreenRect", Value::rect(s.registration_rect)),
+                    ("outputScreenRect", Value::rect(rect)),
+                ];
+                if s.full_overlap_rescue && s.via_anchor.is_none() && !s.relocalized {
+                    detail.push(("fullRegionFallback", Value::Bool(true)));
+                }
+                diagnostic = diagnostic.detail(Value::Object(detail));
+            }
+            self.diagnostic(diagnostic);
         }
     }
 
@@ -597,6 +687,22 @@ impl SolveSession {
             s.ambiguous = rescue.ambiguous;
             s.weak_step = rescue.weak_step;
             s.step_error = rescue.step_error;
+            if rescue.phase_support && !self.states[i].phase_support {
+                self.states[i].registration_support = track::registration_support(
+                    self.regions[i].shape.rect,
+                    &s.own,
+                    self.factor as f64,
+                );
+                self.states[i].phase_support = true;
+                let (rect, own) = track::registration_features(
+                    self.regions[i].shape.rect,
+                    self.states[i].registration_support,
+                    std::mem::take(&mut s.own),
+                    self.factor as f64,
+                );
+                s.registration_rect = rect;
+                s.own = own;
+            }
             self.apply_tracked(i, ctx, s);
         } else {
             // Name the cause: a magnification change is a different pixel grid, not a lost trajectory.
@@ -746,7 +852,10 @@ impl SolveSession {
             let idx = *interned.entry(canvas).or_insert(next);
             resolved.push((idx, shift));
         }
-        let patch_lists: Vec<Vec<Patch>> = keyframes.iter().map(|k| patches(k)).collect();
+        let patch_lists: Vec<Vec<Patch>> = keyframes
+            .iter()
+            .map(|k| patches(k, self.patch_support(i, s)))
+            .collect();
         let candidates: Vec<track::CandidateKeyframe> = keyframes
             .iter()
             .zip(&patch_lists)

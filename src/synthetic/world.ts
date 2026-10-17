@@ -218,8 +218,10 @@ export function makeWorld(width: number, height: number, seed: number, style: Wo
 }
 export interface Layer {
   id: string;
-  /** Screen rectangle this layer occupies in every frame. */
+  /** Base screen rectangle and coordinate convention for this layer. */
   viewport: Rect;
+  /** Optional actual viewport per frame, for changing browser chrome. */
+  viewports?: Rect[];
   world: World;
   /** World offset of the viewport's top-left per frame. */
   path: Point[];
@@ -231,6 +233,17 @@ export interface Layer {
    *  not page content, so the verifier never expects it and counts any of it on the canvas as invented. */
   pageEdges?: boolean;
 }
+/** Actual screen membership; absent per-frame geometry retains the base viewport. */
+export function viewportAt(layer: Layer, frame: number): Rect {
+  return layer.viewports?.[frame] ?? layer.viewport;
+}
+/** Page translation in the base viewport's coordinates. A viewport origin change
+ * moves its world top-left by the same amount without implying page motion. */
+export function layerTranslation(layer: Layer, frame: number): Point {
+  const viewport = viewportAt(layer, frame), p = layer.path[frame];
+  return { x: p.x + (layer.viewport.x - viewport.x), y: p.y + (layer.viewport.y - viewport.y) };
+}
+
 export interface Overlay {
   id: string;
   kind: 'fixed' | 'dynamic';
@@ -358,7 +371,7 @@ export function renderFrame(s: Scenario, index: number): RenderedFrame {
   fillRGBA(image, { x: 0, y: 0, width, height }, s.background);
   const dynamicRects: Record<string, Rect[]> = {};
   for (const layer of s.layers) {
-    const p = layer.path[index], zoom = layer.zoom?.[index] ?? 1, v = layer.viewport;
+    const p = layer.path[index], zoom = layer.zoom?.[index] ?? 1, v = viewportAt(layer, index);
     let data = layer.world.at(index);
     dynamicRects[layer.id] = [];
     for (const d of layer.dynamics || []) {

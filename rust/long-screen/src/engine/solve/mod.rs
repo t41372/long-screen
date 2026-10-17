@@ -244,6 +244,10 @@ impl From<PoseGraphError> for SolveError {
 
 /// Per-region tracking state carried from frame to frame.
 struct RegionState {
+    /// Set only when the additional phase rescue actually places a frame. An anchor that already
+    /// recovers the step keeps the legacy path. None is a valid sparse-feature fallback.
+    phase_support: bool,
+    registration_support: Option<Rect>,
     canvas_id: String,
     fragment: u32,
     pose: (f64, f64),
@@ -374,6 +378,8 @@ impl SolveSession {
         let states = regions
             .iter()
             .map(|_| RegionState {
+                phase_support: false,
+                registration_support: None,
                 canvas_id: String::new(),
                 fragment: 0,
                 pose: (0.0, 0.0),

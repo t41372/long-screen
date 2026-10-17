@@ -724,39 +724,27 @@ export function buildScenario(name: ScenarioName | string): Scenario {
       const path = linearPath([{ x: 0, y: 0 }, { x: 0, y: 1400 }], [50]);
       const tall = fixedBand('header', { x: 0, y: 0, width: W, height: 96 }, 25),
         short = fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 25);
-      const layer: Layer = { id: 'body', viewport: { x: 0, y: 96, width: W, height: H - 96 }, world, path };
+      const viewports = path.map((_, index) => {
+        const y = index < 30 ? 96 : HEADER;
+        return { x: 0, y, width: W, height: H - y };
+      });
+      const layer: Layer = {
+        id: 'body',
+        viewport: viewports[0],
+        viewports,
+        world,
+        path: path.map((p, index) => ({ x: p.x, y: p.y + viewports[index].y - viewports[0].y })),
+      };
       const header: Overlay = {
         id: 'header',
         kind: 'dynamic',
         draw: (frame, index, time) => index < 30 ? tall.draw(frame, index, time) : short.draw(frame, index, time),
       };
-      const collapse: Overlay = {
-        id: 'collapse',
-        kind: 'dynamic',
-        draw: (frame, index) => {
-          if (index < 30) return [];
-          const r = { x: 0, y: HEADER, width: W, height: 96 - HEADER };
-          const p = path[index];
-          for (let y = 0; y < r.height; y++) {
-            frame.data.set(
-              world.data.subarray(((p.y - r.height + y) * world.width + p.x) * 4, ((p.y - r.height + y) * world.width + p.x + W) * 4),
-              ((r.y + y) * frame.width) * 4,
-            );
-          }
-          return [r];
-        },
-      };
       // maxInvented ratchets the known-limitation reconstruction: today's measured invented 48,360px (test-results/scenarios-d.json), +~5%.
-      // maxProvisional, raised from 21,115 with the coordinator's explicit authorisation (issue #1):
-      // measured 40,722px, +~5%. The cause is this scenario's declared limitation, not a detection
-      // regression. The body viewport GROWS at frame 30, so the engine's learned region (x 20, y 18, 620×430)
-      // matches neither half of the recording, and the same world position lands on different screen rows
-      // before and after the collapse; the ±1-frame check therefore disagrees across that boundary even on
-      // pixels that are perfectly correct. Compositor.add()'s demotion rule then marks the matching covered
-      // pixels provisional. Traced: every sampled provisional pixel here holds the RIGHT value (mean |ΔRGB| = 0
-      // against the generating world over all 36,762 of them, e.g. world (343, 55) = #fbfaf6, exactly the page)
-      // — they are correct pixels the engine can no longer certify once the viewport geometry moves underneath
-      // it, which is the honest report for a scenario that already declares 48,360 invented pixels.
+      // maxProvisional is back at its default 0: the measured provisionalPixels is 0. The old 42,759 (measured
+      // 40,722) was left over from an earlier engine. The per-frame viewports did not remove it: the 51 frames are
+      // byte-identical to the earlier description with a fixed body viewport and a `collapse` overlay painting the
+      // exposed rows, so the viewports change only what the verifier expects, not what the engine sees.
       return {
         name,
         description: '地址栏收起：正文可视区在录制中途变大。已知局限，只要求不崩溃、不伪造。',
@@ -764,13 +752,12 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         height: H,
         background: [251, 250, 246],
         layers: [layer],
-        overlays: [header, collapse],
+        overlays: [header],
         frames: frames(path.length),
         expect: expect({
           fragments: { body: -1 },
           limitation: true,
           maxInvented: 50800,
-          maxProvisional: 42759,
           diagnostics: { present: ['TEMPORAL_OR_ALIGNMENT_CONFLICT'], absent: ['PROCESSING_ERROR', 'NONFINITE_POSE'] },
         }),
       };
