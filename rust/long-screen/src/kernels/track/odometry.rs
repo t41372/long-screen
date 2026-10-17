@@ -7,7 +7,7 @@ use crate::kernels::features::{match_features, Feature};
 use crate::kernels::geometry::{js_ceil, js_hypot, Rect};
 use crate::kernels::motion::{
     audit_translation, refine_native_at, sampling_insensitive_error, select_native_points,
-    translation_hypotheses, Gray, MatchPoints, NativeRefinement, Point,
+    translation_hypotheses, Gray, MatchPoints, NativeRefinement, Point, TranslationAudit,
 };
 use crate::kernels::region::Region;
 
@@ -26,10 +26,12 @@ pub struct ContentChange {
     pub blocks: u32,
 }
 
-/// A step the plain native error rejected but `rescuable` or `measured_between_pixels` measured as unambiguous: what
-/// `Tracked` would have carried. The caller takes it only where the frame would otherwise start a new fragment (after
-/// re-acquiring the anchor and relocalising have both failed), so every frame those already place stays as it was.
+/// A measured step kept behind anchor re-acquisition and relocalization. It may recover a
+/// phase-sensitive native rejection or an overlap that the interior registration window missed.
+/// The caller uses it only where the frame would otherwise start a new fragment.
 pub struct Rescue {
+    /// This rescue has additional phase and spatial evidence; registration may use a separate support window.
+    pub phase_support: bool,
     pub delta: (f64, f64),
     pub confidence: f64,
     pub ambiguous: bool,
@@ -60,6 +62,7 @@ pub struct OdometryEstimate {
 /// fallback path (`track.ts::odometry`'s `regionContains` loop) and may be omitted when the caller knows
 /// the fast path always succeeds in practice — omitting it on a frame that actually needs it just treats
 /// every sample as "contained", matching `regionContains`'s own `!region.mask` shortcut.
+#[derive(Clone, Copy)]
 pub struct OdometryInputs<'a> {
     pub f: f64,
     pub radius: i32,
@@ -176,10 +179,17 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
     // them before the native decision so the true small step is never dropped in favour of a one-row-off
     // alias with more (arbitrary) matches.
     let prior = |mx: f64, my: f64| 0.02 * js_hypot(mx * f - velocity.0, my * f - velocity.1);
+    // Multiple tolerant candidates share the same filtered image pair. Zero or one
+    // candidate keeps the standalone path; release the buffers before native refinement.
+    let prepared =
+        (f > 1.0 && models.len() > 1).then(|| TranslationAudit::new(previous_gray, g, true));
     let mut scored: Vec<_> = models
         .into_iter()
         .map(|m| {
-            let audit = audit_translation(previous_gray, g, m.x, m.y, Some(roi), f > 1.0);
+            let audit = match &prepared {
+                Some(pair) => pair.measure(m.x, m.y, Some(roi)),
+                None => audit_translation(previous_gray, g, m.x, m.y, Some(roi), f > 1.0),
+            };
             (m, audit)
         })
         .filter(|(_, audit)| {
@@ -191,6 +201,7 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
                         && audit.agreeing_error < 8.0))
         })
         .collect();
+    drop(prepared);
     // Matches the TS original's exact left-to-right evaluation of
     // `Math.min(a.error, a.agreeingError) + prior(a.m) - Math.min(b.error, b.agreeingError) - prior(b.m)`:
     // two chained subtractions, not `(ka) - (kb)` — floating point subtraction is not associative, so grouping
@@ -244,6 +255,7 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
     refined.sort_by(|a, b| a.3.partial_cmp(&b.3).unwrap_or(std::cmp::Ordering::Equal));
 
     let mut rescue = None;
+    let mut phase_support = false;
     if let Some(best_index) = (!refined.is_empty()).then_some(0usize) {
         let (best_m, best_audit, best_n, _) = &refined[best_index];
         let measured = best_n.error < TRACKED_ERROR
@@ -259,7 +271,26 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
                     radius,
                     &points,
                 );
-                measured_between_pixels(error, runner_up)
+                measured_between_pixels(error, runner_up) || {
+                    phase_support = !best_m.ambiguous
+                        && !refined.iter().enumerate().any(|(i, (_, _, n, _))| {
+                            i != best_index
+                                && js_hypot(
+                                    n.x as f64 - best_n.x as f64,
+                                    n.y as f64 - best_n.y as f64,
+                                ) > 2.0
+                                && n.error < best_n.error + 4.0
+                        })
+                        && super::phase::supports_translation(
+                            error,
+                            runner_up,
+                            best_m,
+                            best_audit,
+                            &match_points,
+                            roi,
+                        );
+                    phase_support
+                }
             };
         if measured {
             let delta = (best_n.x as f64, best_n.y as f64);
@@ -309,6 +340,7 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
                 };
             }
             rescue = Some(Rescue {
+                phase_support,
                 delta,
                 confidence,
                 ambiguous,

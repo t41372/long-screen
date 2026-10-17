@@ -7,7 +7,7 @@
 use crate::kernels::features::{match_features, Feature};
 use crate::kernels::geometry::{js_hypot, Rect};
 use crate::kernels::motion::{
-    audit_translation, refine_patches, translation_hypotheses, Gray, MatchPoints, Patch, Point,
+    refine_patches, translation_hypotheses, Gray, MatchPoints, Patch, Point, TranslationAudit,
 };
 
 /// One keyframe `evaluate_candidates_audit`/`_refine`/`select_candidate` score a query against — the parts of
@@ -70,12 +70,17 @@ pub fn evaluate_candidates_audit(
             })
             .collect();
         let models = translation_hypotheses(&match_points, 16);
+        // The pair is fixed across hypotheses. Prepare it only when a supported
+        // candidate needs an audit, then reuse its filtered images for the rest.
+        let mut prepared = None;
         for m in models.iter().take(8) {
             if m.support < 6 {
                 continue;
             }
             // Analysis-scale audit tolerates sub-factor misalignment; the decision is made on native pixels.
-            let audit = audit_translation(k.gray, gray, m.x, m.y, Some(roi), factor > 1.0);
+            let pair =
+                prepared.get_or_insert_with(|| TranslationAudit::new(k.gray, gray, factor > 1.0));
+            let audit = pair.measure(m.x, m.y, Some(roi));
             if audit.overlap < 0.22
                 || !audit.error.is_finite()
                 || (audit.mismatch > 0.12 && audit.agreement < 0.5)

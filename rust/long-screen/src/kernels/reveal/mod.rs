@@ -18,6 +18,7 @@
 //! Pixel values are always copied from one decoded observation; nothing is averaged into the output.
 
 pub mod blocks;
+mod controls;
 pub mod locate;
 pub mod model;
 pub mod run;

@@ -153,7 +153,8 @@ impl<'a> Template<'a> {
     }
 }
 
-/// Agreement of `o` placed at offset (dy, dx) cells: min(value agreement, luma correlation) over the template's cells.
+/// Agreement at an offset: value agreement and shape correlation. Structured templates use the luma whose
+/// stability trained them; colour remains necessary for a featureless template with no shape to corroborate it.
 fn score(cells: &Cells, o: &Object, tpl: &Template<'_>, dy: i32, dx: i32, tau: i32) -> f64 {
     let (y0, x0) = (o.by as i64 + dy as i64, o.bx as i64 + dx as i64);
     if y0 < 0
@@ -171,10 +172,17 @@ fn score(cells: &Cells, o: &Object, tpl: &Template<'_>, dy: i32, dx: i32, tau: i
         let (xx, yy) = (j % o.bw, j / o.bw);
         let at = (y0 as usize + yy) * cells.cw + x0 as usize + xx;
         let (c, t) = (cells.rgb[at], o.tpl[j]);
-        if (0..3).all(|k| (c[k] as i32 - t[k] as i32).abs() <= tau) {
+        let lw = cells.luma[at] as f64;
+        // Stable cells were selected by luma spread. A translucent object's hue can change with its backdrop.
+        // Require its luma pattern as corroboration; a flat object still needs its learned colour.
+        let matches_value = if o.textured {
+            (lw - lt).abs() <= tau as f64
+        } else {
+            (0..3).all(|k| (c[k] as i32 - t[k] as i32).abs() <= tau)
+        };
+        if matches_value {
             agree += 1;
         }
-        let lw = cells.luma[at] as f64;
         sw += lw;
         sww += lw * lw;
         stw += lt * lw;
@@ -264,7 +272,7 @@ fn find(cells: &Cells, o: &Object, tau: i32) -> (f64, i32, i32) {
 /// Whether a vertical strip's key colour `c` is, in this frame, the colour of the page beside its track: more than
 /// half of the cells just left and right of its zone show it. Keying it would then find the page, not the strip. A
 /// real thumb differs from the page beside it however long it is.
-fn page_coloured(cells: &Cells, o: &Object, c: [u8; 3], tau: i32) -> bool {
+pub(super) fn page_coloured(cells: &Cells, o: &Object, c: [u8; 3], tau: i32) -> bool {
     if o.track() != Track::Vertical {
         return false;
     }
@@ -285,12 +293,20 @@ fn page_coloured(cells: &Cells, o: &Object, c: [u8; 3], tau: i32) -> bool {
 
 /// Places every object of the layer in this frame and returns the tier of each cell.
 pub fn tiers(frame: &Frame<'_>, model: &mut LayerModel, tau: i32) -> Vec<u8> {
+    if model.objects.is_empty() {
+        return vec![TIER_CLEAN; model.cw * model.ch];
+    }
+    let cells = Cells::bin(frame, model);
+    classify(&cells, model, tau)
+}
+
+/// Classifies an already binned frame so other evidence can reuse the same cells.
+pub(super) fn classify(cells: &Cells, model: &mut LayerModel, tau: i32) -> Vec<u8> {
     let (cw, ch) = (model.cw, model.ch);
     let mut tier = vec![TIER_CLEAN; cw * ch];
     if model.objects.is_empty() {
         return tier;
     }
-    let cells = Cells::bin(frame, model);
     let mark = |tier: &mut [u8], o: &Object, dy: i32, dx: i32, t: u8| {
         for yy in 0..o.bh {
             let cy = o.by as i64 + yy as i64 + dy as i64;
@@ -318,7 +334,7 @@ pub fn tiers(frame: &Frame<'_>, model: &mut LayerModel, tau: i32) -> Vec<u8> {
                 let (s, dy, dx) = if o.stable.is_empty() {
                     (0.0, 0, 0)
                 } else {
-                    find(&cells, o, tau)
+                    find(cells, o, tau)
                 };
                 let placed = s >= 0.8;
                 if placed {
@@ -340,7 +356,7 @@ pub fn tiers(frame: &Frame<'_>, model: &mut LayerModel, tau: i32) -> Vec<u8> {
                 // them, won the per-pixel fallback from a minority of frames (test_7, test_8). Such a key finds the
                 // page, not the strip. A page-coloured band across the layer is left keyed: there it is a toolbar
                 // or composer background that really covers the page (a, e).
-                if let Some(c) = o.flat.filter(|&c| !page_coloured(&cells, o, c, tau)) {
+                if let Some(c) = o.flat.filter(|&c| !page_coloured(cells, o, c, tau)) {
                     // A uniformly coloured object may have a template smeared over its whole travel (a scrollbar
                     // thumb), so a placement can miss part of it: every cell of its zone that shows its colour is
                     // the object in this frame. An elongated object's zone runs along its long axis to the layer
@@ -559,5 +575,68 @@ mod tests {
                 assert_eq!(tier[cy * cw + cx], TIER_OPAQUE, "thumb cell ({cx}, {cy})");
             }
         }
+    }
+    #[test]
+    fn a_luma_stable_template_survives_chroma_changes_but_requires_its_shape() {
+        let side = 8;
+        let tpl: Vec<[u8; 3]> = (0..side * side)
+            .map(|i| {
+                if i % side == 3 || i / side == 3 {
+                    [240; 3]
+                } else {
+                    [100, 50, 50]
+                }
+            })
+            .collect();
+        let rgb: Vec<[u8; 3]> = (0..side * side)
+            .map(|i| {
+                if i % side == 3 || i / side == 3 {
+                    [240; 3]
+                } else {
+                    [30, 65, 140]
+                }
+            })
+            .collect();
+        let object = Object {
+            kind: Kind::Opaque,
+            bx: 0,
+            by: 0,
+            bw: side,
+            bh: side,
+            mask: vec![true; side * side],
+            tpl,
+            stable: (0..side * side).map(|x| x as u32).collect(),
+            coarse: vec![],
+            textured: true,
+            last: (0, 0),
+            flat: None,
+        };
+        let mut cells = Cells {
+            cw: side,
+            ch: side,
+            luma: rgb.iter().map(|c| luma(c[0], c[1], c[2]) as u8).collect(),
+            rgb,
+        };
+        let template = Template::new(&object, &object.stable);
+        assert!(
+            score(&cells, &object, &template, 0, 0, 10) > 0.95,
+            "matching must use the quantity whose stability the model measured"
+        );
+        cells.rgb.fill([30, 65, 140]);
+        cells.luma.fill(luma(30, 65, 140) as u8);
+        assert_eq!(
+            score(&cells, &object, &template, 0, 0, 10),
+            0.0,
+            "a flat patch must not impersonate a structured overlay"
+        );
+        let mut flat = object.clone();
+        flat.textured = false;
+        flat.tpl.fill([100, 50, 50]);
+        let template = Template::new(&flat, &flat.stable);
+        assert_eq!(
+            score(&cells, &flat, &template, 0, 0, 10),
+            0.0,
+            "without a shape, colour is still necessary evidence"
+        );
     }
 }

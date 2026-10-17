@@ -43,6 +43,7 @@ export function solveDiagnostic(d: EngineDiagnostic): Diagnostic {
             ? t('diag.LOW_CONFIDENCE_PLACEMENT.messageAmbiguous')
             : t('diag.LOW_CONFIDENCE_PLACEMENT.messageLowConfidence'),
           action: t('diag.LOW_CONFIDENCE_PLACEMENT.action'),
+          ...(detail ? { detail } : {}),
         }
         : { code, severity: 'warning', time, frame, canvasId, confidence, message: t('diag.LOW_CONFIDENCE_PLACEMENT.messageStatic') };
     case 'UNOBSERVABLE_FRAME':

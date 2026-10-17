@@ -186,6 +186,7 @@ fn solve_diagnostic(d: &EngineDiagnostic, l: Locale) -> Obj {
                         },
                     )
                     .with("action", msg("action"))
+                    .with("detail", det)
             } else {
                 base.with("severity", "warning")
                     .with("time", time)
@@ -690,4 +691,44 @@ pub fn solve(
     );
     ctx.persist();
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::diagnostic::{Severity, Value};
+    use crate::kernels::geometry::Rect;
+
+    // Failure cases: a tracked placement's registration window lost from the native row (the page keeps it);
+    // a static placement, which has no rectangle, gaining one.
+    #[test]
+    fn a_low_confidence_placement_keeps_its_detail_as_the_page_does() {
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 640.0,
+            height: 480.0,
+        };
+        let detail = Value::Object(vec![
+            ("registrationScreenRect", Value::rect(rect)),
+            ("fullRegionFallback", Value::Bool(true)),
+        ]);
+        let tracked = EngineDiagnostic::new("LOW_CONFIDENCE_PLACEMENT", Severity::Warning)
+            .at(3, 0.1)
+            .canvas("canvas-1")
+            .confidence(0.3)
+            .region(rect)
+            .param("ambiguous", 0.0)
+            .detail(detail.clone());
+        let row = solve_diagnostic(&tracked, Locale::Zh);
+        let mut json = String::new();
+        crate::value::write_json(row.get("detail").unwrap(), &mut json);
+        assert_eq!(
+            json,
+            r#"{"registrationScreenRect":{"x":0,"y":0,"width":640,"height":480},"fullRegionFallback":true}"#
+        );
+        let mut still = tracked.clone();
+        still.region = None;
+        assert!(solve_diagnostic(&still, Locale::Zh).get("detail").is_none());
+    }
 }
