@@ -125,6 +125,8 @@ fn finish_falls_back_to_one_solid_pane_with_no_evidence() {
         pixel_moving: &zeros,
         native_row_change: None,
         native_col_change: None,
+        row_fixed: None,
+        row_moving: None,
         reference: None,
     };
     let regions = finish(&input, 96.0, 96.0, 24);
@@ -188,6 +190,8 @@ fn learn(width: usize, height: usize, frames: &[Vec<u8>]) -> Vec<RegionOut> {
         pixel_moving: &learner.pixel_moving,
         native_row_change: None,
         native_col_change: None,
+        row_fixed: None,
+        row_moving: None,
         reference: None,
     };
     finish(&input, width as f64, height as f64, 1)
@@ -310,6 +314,8 @@ fn wide_margin_bands(sidebar_text: bool) -> super::bands::Bands {
         h as i64,
         frames,
         &row_change,
+        None,
+        (&[], &[]),
         &col_moving,
         &col_mean,
         Some(&reference),
@@ -418,6 +424,8 @@ fn learn_fields_seeing(
             height,
             data: &rgba,
         }),
+        row_fixed: None,
+        row_moving: None,
     };
     finish(&input, width as f64, height as f64, 1)
 }
@@ -564,4 +572,150 @@ fn a_second_pane_that_mostly_scrolls_stays_a_scroll_layer() {
         2,
         "expected both panes as scroll layers, got {moving:?}"
     );
+}
+
+// Translucent chrome: every row of an iOS 26 glass bar changes as the page scrolls beneath it, so the change test
+// finds no band on that side. The bar's own icons and text still stand still, which the row votes record
+// (`Learner::row_fixed` against `Learner::row_moving`). `fixed`/`moving` are per-frame vote counts for the rows of
+// `[0, chrome)`; every other row votes like scrolling content.
+fn glass_bands(chrome: usize, fixed: f64, moving: f64, still_rows: usize) -> super::bands::Bands {
+    glass_bands_over(chrome, fixed, moving, still_rows, &[])
+}
+
+/// `glass_bands`, with fixed objects floating on the page: in the rows of each `(from, to, samples)`, that many of
+/// the row's sampled pixels stand still in every frame and never follow the page, while the rows' totals still vote
+/// like scrolling content (the page around the objects is far larger than they are).
+fn glass_bands_over(
+    chrome: usize,
+    fixed: f64,
+    moving: f64,
+    still_rows: usize,
+    objects: &[(usize, usize, usize)],
+) -> super::bands::Bands {
+    let (w, h) = (204usize, 300usize);
+    let frames = 10.0;
+    let samples = ((w - 4).div_ceil(4)) as f64;
+    let row_change: Vec<f64> = (0..h)
+        .map(|y| if y < still_rows { 0.0 } else { 5.0 * frames })
+        .collect();
+    let row_fixed: Vec<f64> = (0..h)
+        .map(|y| frames * if y < chrome { fixed } else { 0.02 * samples })
+        .collect();
+    let row_moving: Vec<f64> = (0..h)
+        .map(|y| frames * if y < chrome { moving } else { 0.3 * samples })
+        .collect();
+    let col_moving = vec![frames; w];
+    let col_mean = vec![0.0; w];
+    let mut pixel_fixed = vec![0.0; w * h];
+    let pixel_moving = vec![0.0; w * h];
+    for &(from, to, samples) in objects {
+        for y in from..to {
+            for k in 0..samples {
+                pixel_fixed[y * w + 2 + 4 * k] = frames;
+            }
+        }
+    }
+    super::bands::detect_bands(
+        w as i64,
+        h as i64,
+        frames,
+        &row_change,
+        Some((&row_fixed, &row_moving)),
+        (&pixel_fixed, &pixel_moving),
+        &col_moving,
+        &col_mean,
+        None,
+        w as f64,
+        h as f64,
+        1.0,
+    )
+}
+
+#[test]
+fn a_glass_bar_whose_icons_stand_still_is_a_top_band() {
+    let bands = glass_bands(40, 15.0, 2.0, 0);
+    assert_eq!((bands.top, bands.bottom), (40, 300));
+}
+
+#[test]
+fn rows_that_mostly_follow_the_page_are_not_a_band() {
+    // Standing still wins at some pixels of scrolling content too (sub-pixel steps, loading images), but not
+    // 1.5 times as often as the motion does.
+    let bands = glass_bands(40, 15.0, 12.0, 0);
+    assert_eq!(bands.top, 0);
+}
+
+#[test]
+fn a_handful_of_still_pixels_in_a_bare_row_is_not_a_band() {
+    // 1 vote per frame in a row of 50 samples is under the 3% floor, however few the moving votes.
+    let bands = glass_bands(40, 1.0, 0.0, 0);
+    assert_eq!(bands.top, 0);
+}
+
+#[test]
+fn a_fade_over_the_page_without_icons_is_not_a_band() {
+    // Standing still wins at a fade because each row dims the page differently, but on no row at the density of
+    // a bar's icons and text (5 of 50 samples here, against a fifth or more).
+    let bands = glass_bands(40, 5.0, 1.0, 0);
+    assert_eq!(bands.top, 0);
+}
+
+#[test]
+fn a_side_the_change_test_already_bounds_keeps_its_edge() {
+    // Rows 0..12 pass the change test, so the votes of rows 12..40 are not consulted on that side.
+    let bands = glass_bands(40, 15.0, 2.0, 12);
+    assert_eq!(bands.top, 12);
+}
+
+// The lower part of an iOS 26 glass bar: the blur fades out downwards, the page shows through ever more clearly and
+// votes for the motion, so the row votes stop the band early (new_ip_2 at 285 of 480 px, new_ip_3 at 155), while
+// the bar's buttons, avatar and name capsule still float there. Counted per sampled pixel, they stand still.
+
+#[test]
+fn objects_floating_right_under_a_glass_band_belong_to_it() {
+    let bands = glass_bands_over(40, 15.0, 2.0, 0, &[(40, 110, 8)]);
+    assert_eq!(bands.top, 110);
+}
+
+#[test]
+fn a_short_gap_between_the_objects_does_not_end_the_band() {
+    let bands = glass_bands_over(40, 15.0, 2.0, 0, &[(40, 70, 8), (85, 110, 8)]);
+    assert_eq!(bands.top, 110);
+}
+
+#[test]
+fn a_float_button_past_a_stretch_of_page_stays_out_of_the_band() {
+    // A button floating on the page past a stretch of rows with no standing-still pixels (25 rows at factor 1 here)
+    // is not part of the bar above it.
+    let bands = glass_bands_over(40, 15.0, 2.0, 0, &[(40, 105, 8), (130, 134, 8)]);
+    assert_eq!(bands.top, 105);
+}
+
+#[test]
+fn a_bar_soft_edge_of_a_few_rows_does_not_move_the_band() {
+    // The halo above new_ip_3's input bar: dense standing-still rows right past the band's edge, 35 px of them,
+    // where the page shows through sharply. Only objects as tall as `FIXED_ROW_RUN` move the band.
+    let bands = glass_bands_over(40, 15.0, 2.0, 0, &[(40, 75, 40)]);
+    assert_eq!(bands.top, 40);
+}
+
+#[test]
+fn a_few_still_pixels_in_a_row_do_not_extend_the_band() {
+    // Under an icon's width of samples: a scrollbar or a stray still pixel of the page.
+    let bands = glass_bands_over(40, 15.0, 2.0, 0, &[(40, 110, 4)]);
+    assert_eq!(bands.top, 40);
+}
+
+#[test]
+fn a_band_found_by_the_change_test_is_not_extended() {
+    let bands = glass_bands_over(40, 15.0, 2.0, 12, &[(12, 110, 8)]);
+    assert_eq!(bands.top, 12);
+}
+
+#[test]
+fn still_pixels_down_the_whole_screen_do_not_extend_the_band() {
+    // A sidebar (or anything else fixed beside the page) stands still in every row; a walk that reaches the 45 % cap
+    // has found no bar edge, and the band stays as the votes found it.
+    let bands = glass_bands_over(40, 15.0, 2.0, 0, &[(0, 300, 8)]);
+    assert_eq!((bands.top, bands.bottom), (40, 300));
 }

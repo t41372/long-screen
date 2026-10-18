@@ -67,6 +67,10 @@ pub struct FinishInput<'a> {
     pub pixel_moving: &'a [f64],
     pub native_row_change: Option<&'a [f64]>,
     pub native_col_change: Option<&'a [f64]>,
+    /// `Learner::row_fixed` / `Learner::row_moving`: per analysis row, the sampled pixels at which the stationary
+    /// hypothesis beat the main motion by more than 6 levels, and the reverse. `None` keeps the change-only bands.
+    pub row_fixed: Option<&'a [f64]>,
+    pub row_moving: Option<&'a [f64]>,
     pub reference: Option<Rgba<'a>>,
 }
 
@@ -151,6 +155,8 @@ pub fn finish(
         height,
         input.informative_frames,
         input.row_change,
+        input.row_fixed.zip(input.row_moving),
+        (input.pixel_fixed, input.pixel_moving),
         input.col_moving,
         input.col_mean,
         reference,

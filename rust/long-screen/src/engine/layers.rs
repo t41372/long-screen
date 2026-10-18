@@ -125,6 +125,8 @@ impl RegionLearner {
             pixel_moving: &l.pixel_moving,
             native_row_change: optional(&l.native_row_change),
             native_col_change: optional(&l.native_col_change),
+            row_fixed: Some(&l.row_fixed),
+            row_moving: Some(&l.row_moving),
             reference,
         };
         regions::finish(&input, native_width, native_height, factor)
