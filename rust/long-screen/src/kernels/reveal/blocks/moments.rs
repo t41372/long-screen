@@ -5,7 +5,10 @@
 //! Growing every context ring before grouping has the opposite failure: roads and
 //! labels become a group that no frame ever covers. A witnessed join has a complete
 //! source now, and the ordinary component ranking keeps it complete afterwards.
-use super::{compare, view, Component, Consensus, MomentRank, Output, BLOCK, CELLS, CENTRAL};
+use super::{
+    compare, contradicts, settled, view, Component, Consensus, MomentRank, Output, BLOCK, CELLS,
+    CENTRAL,
+};
 use crate::kernels::reveal::locate::TierMap;
 use crate::kernels::reveal::{Footprint, Frame, TIER_CLEAN, TIER_VEIL};
 
@@ -66,11 +69,12 @@ fn witness(component: &Component, consensus: &Consensus, input: &View<'_>) -> Op
             if !component.dynamic[local] {
                 // As in emit: a cleaner relearned view is not contradicted by a weaker first-pass reference.
                 if observed as i8 <= consensus.vote[block].tier
-                    && compare(
+                    && contradicts(
                         &signature,
                         &consensus.sig[block * CELLS..(block + 1) * CELLS],
+                        tau,
+                        || settled(&signature, previous, footprint, tiers, pose, wx, wy, tau),
                     )
-                    .2 > 0
                 {
                     return None;
                 }

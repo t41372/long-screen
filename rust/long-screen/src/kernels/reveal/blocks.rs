@@ -361,6 +361,53 @@ fn small_phase_agrees(a: &[[u8; 3]; CELLS], b: &[[u8; 3]]) -> bool {
     false
 }
 
+/// Whether a whole view of a block the consensus holds as static shows something else there: a luma outlier (a
+/// cursor tip, a status bubble), or what [`vote`] would count as a structural change that a small sampling phase
+/// does not explain. A component's moment that contradicts its static context has an object extending past the
+/// blocks the moment will write: a low-contrast card still growing when its outer rows left the viewport would
+/// otherwise be written cut along block boundaries, next to the consensus's view of the same rows. A structural
+/// difference the stationary run's previous frame shows as well (`settled`) is the context's settled state, not an
+/// object in motion: a scrollbar thumb present in most views but faded by the end of the recording.
+pub(super) fn contradicts(
+    sig: &[[u8; 3]; CELLS],
+    reference: &[[u8; 3]],
+    tau: i32,
+    settled: impl FnOnce() -> bool,
+) -> bool {
+    let d = compare(sig, reference);
+    if d.2 > 0 {
+        return true;
+    }
+    // Only a smooth reference proves a low-contrast object: on textured context (map imagery that refines as
+    // tiles load, a photo) a sub-outlier difference is as likely the same content resampled.
+    let (lo, hi) = reference.iter().fold((i32::MAX, i32::MIN), |(lo, hi), &c| {
+        let l = cell_luma(c);
+        (lo.min(l), hi.max(l))
+    });
+    hi - lo <= 2 * (tau / 4).max(2)
+        && (d.0 > CHANGED || d.1 > SHIFTED)
+        && !small_phase_agrees(sig, reference)
+        && !settled()
+}
+
+/// Whether the stationary run's previous frame shows block (wx0, wy0) as `sig` does, within codec noise.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn settled(
+    sig: &[[u8; 3]; CELLS],
+    previous: Option<&Frame<'_>>,
+    footprint: &Footprint<'_>,
+    tiers: &TierMap<'_>,
+    pose: (i64, i64),
+    wx0: i64,
+    wy0: i64,
+    tau: i32,
+) -> bool {
+    let mut prior = [[0u8; 3]; CELLS];
+    previous
+        .and_then(|before| view(before, footprint, tiers, pose, wx0, wy0, &mut prior))
+        .is_some_and(|t| t >= TIER_VEIL && agrees(compare(sig, &prior), tau))
+}
+
 /// One whole-block view's vote.
 fn vote(
     cand: &mut [[u8; 3]],
@@ -1000,8 +1047,9 @@ impl Output {
             let mut tier = TIER_CLEAN;
             let mut inset = i64::MAX;
             // A frame showing something in the component's static blocks that is not there in the consensus
-            // carries a transient (a cursor passing over the widget's edge, or a status bubble over whole blocks):
-            // it is the component's moment only when no other frame covers the component.
+            // carries a transient (a cursor passing over the widget's edge, or a status bubble over whole blocks)
+            // or an object larger than the component's blocks: it is the component's moment only when no other
+            // frame covers the component.
             let mut tainted = false;
             for yy in 0..comp.bh {
                 for xx in 0..comp.bw {
@@ -1020,8 +1068,23 @@ impl Output {
                             tier = tier.min(t);
                             // A cleaner relearned observation is not contradicted by a weaker first-pass reference.
                             if !comp.dynamic[k] && t as i8 <= c.vote[b].tier {
-                                let off = compare(&sig, &c.sig[b * CELLS..(b + 1) * CELLS]).2;
-                                tainted |= off > 0;
+                                tainted |= contradicts(
+                                    &sig,
+                                    &c.sig[b * CELLS..(b + 1) * CELLS],
+                                    tau,
+                                    || {
+                                        settled(
+                                            &sig,
+                                            still_previous,
+                                            footprint,
+                                            tiers,
+                                            pose,
+                                            wx0,
+                                            wy0,
+                                            tau,
+                                        )
+                                    },
+                                );
                             }
                             if comp.dynamic[k] && may_complete {
                                 let mut prior = [[0u8; 3]; CELLS];
@@ -3002,5 +3065,43 @@ mod tests {
             );
             assert_eq!(output.frame[target], 1);
         }
+    }
+
+    // Failure cases for a component's static context: a low-contrast object overflowing the component must
+    // count against the moment; a stationary run's settled context, codec noise, or a flat page must not;
+    // a luma outlier always does.
+    #[test]
+    fn context_contradiction_cases() {
+        let page = [[239u8, 235, 227]; CELLS];
+        let card = [[250u8, 248, 244]; CELLS];
+        let noisy = [[241u8, 236, 228]; CELLS];
+        let mut cursor = page;
+        cursor[9] = [0, 0, 0];
+        assert!(!contradicts(&page, &page, 24, || false));
+        assert!(!contradicts(&noisy, &page, 24, || false), "codec noise");
+        assert!(
+            contradicts(&card, &page, 24, || false),
+            "a low-contrast card edge in a context block"
+        );
+        assert!(
+            !contradicts(&card, &page, 24, || true),
+            "the same difference confirmed by the stationary run's previous frame"
+        );
+        assert!(contradicts(&cursor, &page, 24, || true), "a luma outlier");
+        let mut texture = [[0u8; 3]; CELLS];
+        let mut refined = [[0u8; 3]; CELLS];
+        for k in 0..CELLS {
+            let v = if (k % SIDE + k / SIDE).is_multiple_of(2) {
+                100
+            } else {
+                140
+            };
+            texture[k] = [v; 3];
+            refined[k] = [v + 12; 3];
+        }
+        assert!(
+            !contradicts(&refined, &texture, 24, || false),
+            "a sub-outlier change of textured context (map imagery refining)"
+        );
     }
 }

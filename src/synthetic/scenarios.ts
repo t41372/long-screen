@@ -1311,10 +1311,11 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         frames: frames(n),
         // Measured on main (c65e33e): the whole card as of its last moment, torn 0 — this scenario does not reproduce the
         // real staircase (test-results/opt-20261018/synth/REPORT.md) and guards the behaviour instead. The scaled card
-        // differs from the unscaled page by 105,696 px, which the page-space dynamic is allowed to keep.
+        // differed from the unscaled page by 105,696 px, which the page-space dynamic is allowed to keep; since the
+        // reveal ranks moments that overflow their component below clean ones it is 62,820 (+5 % here).
         expect: expect({
           fragments: { body: 0 },
-          maxContaminatedDynamic: 105696,
+          maxContaminatedDynamic: 65961,
           diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
         }),
       };
