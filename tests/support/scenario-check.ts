@@ -30,6 +30,7 @@ export interface ScenarioReport {
       unobservableProvisional: number;
       analyticUnobservable: number;
       contaminatedDynamic: number;
+      torn: number;
       provisionalPixels: number;
       skipped: number;
       fragments: number;
@@ -37,7 +38,7 @@ export interface ScenarioReport {
       fragmentReports: FragmentReport[];
     }
   >;
-  fixed: Record<string, { mismatched: number; conflicts: number; covered: number }>;
+  fixed: Record<string, { mismatched: number; conflicts: number; covered: number; learned?: false }>;
   codes: string[];
   memory: RunResult['memory'];
 }
@@ -110,6 +111,7 @@ async function checkResult(name: string, scenario: Scenario, result: RunResult):
       unobservableProvisional: v.unobservableProvisional,
       analyticUnobservable: v.analyticUnobservable,
       contaminatedDynamic: v.contaminatedDynamic,
+      torn: v.torn,
       provisionalPixels: v.mainCanvas.provisionalPixels,
       skipped: v.skipped,
       fragments: v.fragments.length,
@@ -195,6 +197,7 @@ async function checkResult(name: string, scenario: Scenario, result: RunResult):
       v.mainCanvas.provisionalPixels <= (e.maxProvisional ?? 0),
       `${name}/${layer.id}: provisionalPixels ${v.mainCanvas.provisionalPixels} exceeds ratchet ${e.maxProvisional ?? 0}`,
     );
+    assert(v.torn <= (e.maxTorn ?? 0), `${name}/${layer.id}: torn ${v.torn} exceeds ratchet ${e.maxTorn ?? 0}`);
     assert(
       v.framesOnMain + v.framesOnFragments + v.skipped === result.project.renderedFrames,
       `${name}/${layer.id}: every frame accounted for`,
@@ -230,6 +233,7 @@ async function checkResult(name: string, scenario: Scenario, result: RunResult):
         f.mismatched <= (e.maxMismatched ?? 0),
         `${name}/${layer.id}/${f.canvasId}: mismatched ${f.mismatched} exceeds ratchet ${e.maxMismatched ?? 0}`,
       );
+      assert(f.torn <= (e.maxTorn ?? 0), `${name}/${layer.id}/${f.canvasId}: torn ${f.torn} exceeds ratchet ${e.maxTorn ?? 0}`);
       assert(
         f.contaminatedOverlay <= maxOverlay,
         `${name}/${layer.id}/${f.canvasId}: contaminatedOverlay ${f.contaminatedOverlay} exceeds ratchet ${maxOverlay}`,
@@ -250,7 +254,18 @@ async function checkResult(name: string, scenario: Scenario, result: RunResult):
       if (rect.width * rect.height < 4000) {
         continue;
       }
-      const f = await verifyFixed(result, rect, overlay.settled);
+      const unlearned = e.unlearnedFixed?.includes(overlay.id) ?? false;
+      let f: Awaited<ReturnType<typeof verifyFixed>>;
+      try {
+        f = await verifyFixed(result, rect, overlay.settled);
+      } catch (error) {
+        if (!unlearned || !(error instanceof Error) || !error.message.startsWith('No fixed canvas overlaps')) {
+          throw error;
+        }
+        report.fixed[overlay.id] = { mismatched: 0, conflicts: 0, covered: 0, learned: false };
+        continue;
+      }
+      assert(!unlearned, `${name}/${overlay.id}: a fixed canvas now covers this overlay; remove it from expect.unlearnedFixed`);
       report.fixed[overlay.id] = { mismatched: f.mismatched, conflicts: f.conflicts, covered: f.covered };
       if (!e.limitation) {
         assertEquals(f.mismatched, 0, `${name}/${overlay.id}: fixed pixels differ from the observed band`);

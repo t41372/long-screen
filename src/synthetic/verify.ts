@@ -3,7 +3,7 @@ import type { KV } from '../storage/db.ts';
 import { iterate } from '../storage/db.ts';
 import type { RegionAtlas } from '../core/layers.ts';
 import { countCovered, pngTileCodec, type StoredTile, type TileIndex } from '../storage/tiles.ts';
-import { type Layer, layerTranslation, renderFrame, type Scenario, viewportAt } from './world.ts';
+import { type Layer, layerTranslation, renderFrame, type Scenario, viewportAt, World } from './world.ts';
 export interface Observation {
   frame: number;
   time: number;
@@ -79,6 +79,8 @@ export interface FragmentReport {
   /** The `contaminated` subset explained only by a page-space dynamic (animated widget, live counter, caret,
    *  playing video). Legitimately allowed to keep one moment (docs/ARCHITECTURE.md §七). */
   contaminatedDynamic: number;
+  /** Pixels of an `atomic` dynamic that disagree with the single frame that best explains it (rows from other moments). */
+  torn: number;
   covered: number;
   /** False when the fragment contains a magnified (zoom ≠ 1) frame: content is resampled, so only frame accounting
    *  and `CanvasMeta.observedPixels > 0` are meaningful; pixel-set/value checks are not attempted. */
@@ -120,6 +122,8 @@ export interface LayerReport {
   /** The `contaminated` subset explained only by a page-space dynamic (`rendered.dynamicRects[layer.id]`): an
    *  animated widget, a live counter, a blinking caret, a playing video. Legitimately allowed to keep one moment. */
   contaminatedDynamic: number;
+  /** See FragmentReport.torn. */
+  torn: number;
   covered: number;
   expected: number;
   /** Body pixels the atlas assigned to this region (per frame). */
@@ -139,6 +143,7 @@ interface CanvasCheck {
   contaminatedOverlayRecoverable: number;
   unobservableProvisional: number;
   analyticUnobservable: number;
+  torn: number;
   covered: number;
   expected: number;
   pixelChecked: boolean;
@@ -189,6 +194,7 @@ async function verifyCanvas(
       contaminatedOverlayRecoverable: 0,
       unobservableProvisional: 0,
       analyticUnobservable: 0,
+      torn: 0,
       covered: 0,
       expected: 0,
       pixelChecked: false,
@@ -304,6 +310,8 @@ async function verifyCanvas(
     expectedCount += expected[i];
   }
   const size = result.tileSize;
+  // What the canvas holds inside each `atomic` dynamic, per world pixel, to be matched against one frame at a time below.
+  const atomic = (layer.dynamics || []).filter((d) => d.atomic), atomicSeen = atomic.map(() => new Map<number, number>());
   for await (const { value: t } of iterate<TileIndex>(store, `tile-index/${canvas.id}/0/`)) {
     const stored = await store.get<StoredTile>(`tile/${canvas.id}/0/${t.x}_${t.y}`);
     if (!stored) {
@@ -327,6 +335,11 @@ async function verifyCanvas(
         ? layer.world.versions(wx, wy)
         : [scenario.background];
       const r = pixels[i * 4], g = pixels[i * 4 + 1], bl = pixels[i * 4 + 2];
+      atomic.forEach((d, k) => {
+        if (wx >= d.rect.x && wy >= d.rect.y && wx < d.rect.x + d.rect.width && wy < d.rect.y + d.rect.height) {
+          atomicSeen[k].set((wy - d.rect.y) * d.rect.width + wx - d.rect.x, (r << 16) | (g << 8) | bl);
+        }
+      });
       const ok = pixels[i * 4 + 3] === 255 &&
         versions.some((c) => Math.abs(c[0] - r) <= tolerance && Math.abs(c[1] - g) <= tolerance && Math.abs(c[2] - bl) <= tolerance);
       if (ok) {
@@ -360,6 +373,28 @@ async function verifyCanvas(
       missing++;
     }
   }
+  // Torn: of the atomic rect's pixels on this canvas, those that disagree with the frame (among this canvas's frames)
+  // whose drawing of the rect matches the most of them.
+  let torn = 0;
+  atomic.forEach((d, k) => {
+    const seen = atomicSeen[k];
+    if (!seen.size) return;
+    let best = 0;
+    for (const e of entries) {
+      const data = layer.world.at(e.frame), scratch = new World(d.rect.width, d.rect.height);
+      for (let y = 0; y < d.rect.height; y++) {
+        const from = ((d.rect.y + y) * worldW + d.rect.x) * 4;
+        scratch.data.set(data.subarray(from, from + d.rect.width * 4), y * d.rect.width * 4);
+      }
+      if (!d.every || e.frame % d.every === 0) d.draw(scratch, e.frame, scenario.frames[e.frame].time);
+      let agree = 0;
+      for (const [i, packed] of seen) {
+        if (((scratch.data[i * 4] << 16) | (scratch.data[i * 4 + 1] << 8) | scratch.data[i * 4 + 2]) === packed) agree++;
+      }
+      best = Math.max(best, agree);
+    }
+    torn += seen.size - best;
+  });
   let analyticUnobservable = 0;
   for (const wi of everVisible) {
     if (!everClean.has(wi)) {
@@ -378,6 +413,7 @@ async function verifyCanvas(
     contaminatedOverlayRecoverable,
     unobservableProvisional,
     analyticUnobservable,
+    torn,
     covered,
     expected: expectedCount,
     pixelChecked: true,
@@ -454,6 +490,7 @@ export async function verifyLayer(result: VerifiableRun, layer: Layer, options: 
       unobservableProvisional: check.unobservableProvisional,
       analyticUnobservable: check.analyticUnobservable,
       contaminatedDynamic: check.contaminatedDynamic,
+      torn: check.torn,
       covered: check.covered,
       pixelChecked: check.pixelChecked,
     });
@@ -479,6 +516,7 @@ export async function verifyLayer(result: VerifiableRun, layer: Layer, options: 
     unobservableProvisional: main.unobservableProvisional,
     analyticUnobservable: main.analyticUnobservable,
     contaminatedDynamic: main.contaminatedDynamic,
+    torn: main.torn,
     covered: main.covered,
     expected: main.expected,
     regionPixels,

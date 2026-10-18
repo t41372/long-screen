@@ -228,7 +228,15 @@ export interface Layer {
   /** Per-frame magnification (1 = native pixels). Values ≠ 1 resample the world, so pixel identity is not expected there. */
   zoom?: number[];
   /** World-space rectangles redrawn every frame (animation, playing video, live counters). */
-  dynamics?: { rect: Rect; draw: (scratch: World, frame: number, time: number) => void; every?: number }[];
+  dynamics?: {
+    rect: Rect;
+    draw: (scratch: World, frame: number, time: number) => void;
+    every?: number;
+    /** The rect is one object mid-animation (a card growing on hover): the canvas must show all of it as of a single
+     *  frame, not rows stitched from several moments. The verifier counts the pixels that disagree with the frame that
+     *  best explains the rect as `torn`. */
+    atomic?: boolean;
+  }[];
   /** The world's border is the page's edge: what a viewport shows past it is the browser's overscroll background,
    *  not page content, so the verifier never expects it and counts any of it on the canvas as invented. */
   pageEdges?: boolean;
@@ -321,6 +329,13 @@ export interface Expectations {
    *  finishes: unhealed world-consistency mask flags still standing in the final result. Defaults to 0 (exact) —
    *  a scenario with overlays/dynamics that a one-frame lookahead cannot fully heal declares a measured value. */
   maxProvisional?: number;
+  /** Fixed overlays the engine is known not to learn as fixed (a measured limitation): a run in which no fixed canvas
+   *  overlaps one is recorded in the report instead of failing. Once a fixed canvas covers it, the check fails until
+   *  the id is removed from this list, so the list only shrinks. */
+  unlearnedFixed?: string[];
+  /** Ratchet on `torn` (pixels of an `atomic` dynamic stitched from more than one moment), main canvas and every
+   *  fragment. Defaults to 0. */
+  maxTorn?: number;
 }
 export interface RenderedFrame {
   image: RGBA;

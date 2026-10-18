@@ -10,6 +10,7 @@ import {
   type Overlay,
   type RGB,
   type Scenario,
+  viewportAt,
   World,
 } from './world.ts';
 const expect = (partial: Partial<Expectations> = {}): Expectations => ({
@@ -142,6 +143,106 @@ export function jitter(path: Point[], seed: number, amplitude = 1, every = 3): P
     i % every === 1 ? { x: p.x + Math.round((random() - .5) * 2 * amplitude), y: p.y + Math.round((random() - .5) * 2 * amplitude) } : p
   );
 }
+/** A translucent bar pinned to the screen (iOS tab bar, input bar, glass navigation bar): the page scrolling under it
+ *  shows through blurred and washed out, and the bar's own icons and labels sit on top, opaque. `layer`'s world
+ *  continues past its viewport under the bar, so what shows through is the page beyond the viewport's edge. Nothing
+ *  seen through the glass is page content the print should hold. */
+export function glassBar(id: string, rect: Rect, layer: () => Layer, ink: (band: World) => void, tint: RGB = [246, 246, 248]): Overlay {
+  const INK_KEY: RGB = [1, 2, 3], RADIUS = 7, SHOW = .3;
+  const marks = new World(rect.width, rect.height, INK_KEY);
+  ink(marks);
+  const pw = rect.width + 2 * RADIUS, ph = rect.height + 2 * RADIUS;
+  return {
+    id,
+    kind: 'fixed',
+    // Content keeps moving under the glass, so the band never settles: its canvas keeps frame 0 (as `live-bar`).
+    settled: 0,
+    draw: (frame, index) => {
+      const l = layer(), v = viewportAt(l, index), p = l.path[index], data = l.world.at(index), ww = l.world.width;
+      // The page under the bar and RADIUS around it, then a separable box blur.
+      const src = new Float32Array(pw * ph * 3);
+      for (let y = 0; y < ph; y++) {
+        const wy = p.y + rect.y - RADIUS + y - v.y;
+        for (let x = 0; x < pw; x++) {
+          const wx = p.x + rect.x - RADIUS + x - v.x, o = (y * pw + x) * 3;
+          if (wx < 0 || wy < 0 || wx >= ww || wy >= l.world.height) {
+            src[o] = 251, src[o + 1] = 250, src[o + 2] = 246;
+            continue;
+          }
+          const i = (wy * ww + wx) * 4;
+          src[o] = data[i], src[o + 1] = data[i + 1], src[o + 2] = data[i + 2];
+        }
+      }
+      const tmp = new Float32Array(pw * ph * 3), k = 2 * RADIUS + 1;
+      for (let y = 0; y < ph; y++) {
+        for (let x = RADIUS; x < pw - RADIUS; x++) {
+          for (let c = 0; c < 3; c++) {
+            let s = 0;
+            for (let d = -RADIUS; d <= RADIUS; d++) s += src[(y * pw + x + d) * 3 + c];
+            tmp[(y * pw + x) * 3 + c] = s / k;
+          }
+        }
+      }
+      for (let y = 0; y < rect.height; y++) {
+        for (let x = 0; x < rect.width; x++) {
+          const m = (y * rect.width + x) * 4, o = ((rect.y + y) * frame.width + rect.x + x) * 4;
+          if (marks.data[m] !== INK_KEY[0] || marks.data[m + 1] !== INK_KEY[1] || marks.data[m + 2] !== INK_KEY[2]) {
+            frame.data[o] = marks.data[m], frame.data[o + 1] = marks.data[m + 1], frame.data[o + 2] = marks.data[m + 2];
+            continue;
+          }
+          for (let c = 0; c < 3; c++) {
+            let s = 0;
+            for (let d = 0; d < k; d++) s += tmp[((y + d) * pw + x + RADIUS) * 3 + c];
+            frame.data[o + c] = Math.round(tint[c] * (1 - SHOW) + (s / k) * SHOW);
+          }
+        }
+      }
+      return [rect];
+    },
+  };
+}
+/** A schematic street map: flat land-use blocks, parks and water cut by white roads of several widths, with a few
+ *  place labels. Little texture away from the roads, as on a vector map. */
+export function mapWorld(width: number, height: number, seed: number): World {
+  const world = new World(width, height, [236, 233, 225]), random = rng(seed);
+  for (let k = 0; k < 60; k++) {
+    const w = 60 + Math.floor(random() * 260), h = 60 + Math.floor(random() * 260), roll = random();
+    world.fill(
+      { x: Math.floor(random() * width), y: Math.floor(random() * height), width: w, height: h },
+      roll < .2 ? [197, 226, 187] : roll < .3 ? [170, 205, 238] : roll < .65 ? [242, 239, 233] : [228, 224, 216],
+    );
+  }
+  for (let k = 0; k < 16; k++) {
+    const thick = [4, 6, 10, 14][Math.floor(random() * 4)], at = Math.floor(random() * (k % 2 ? width : height));
+    const road: RGB = thick >= 14 ? [252, 221, 140] : [255, 255, 255];
+    if (k % 2) {
+      world.fill({ x: at, y: 0, width: thick, height }, road);
+    } else {
+      world.fill({ x: 0, y: at, width, height: thick }, road);
+    }
+  }
+  for (let k = 0; k < 5; k++) {
+    // Diagonal avenues so the street grid is not a pure lattice.
+    const x0 = Math.floor(random() * width), slope = (random() - .5) * 1.6, thick = 5 + Math.floor(random() * 5);
+    for (let y = 0; y < height; y++) world.fill({ x: Math.round(x0 + slope * y), y, width: thick, height: 1 }, [255, 255, 255]);
+  }
+  for (let k = 0; k < 24; k++) {
+    world.textLine(
+      Math.floor(random() * (width - 120)),
+      Math.floor(random() * (height - 20)),
+      40 + random() * 80,
+      Math.floor(random() * 1e6),
+      [92, 98, 104],
+      .9,
+    );
+  }
+  for (let k = 0; k < 10; k++) {
+    // Map pins: small saturated discs (squares here).
+    const x = Math.floor(random() * width), y = Math.floor(random() * height);
+    world.fill({ x, y, width: 12, height: 12 }, [[219, 68, 55], [66, 133, 244], [15, 157, 88], [244, 160, 0]][k % 4] as RGB);
+  }
+  return world;
+}
 export const SCENARIO_NAMES = [
   'traversal',
   'vertical',
@@ -169,6 +270,11 @@ export const SCENARIO_NAMES = [
   'menu-bar',
   'live-bar',
   'overscroll',
+  'large-title-collapse',
+  'glass-tab-bar',
+  'sticky-toc-later',
+  'hover-card-grow',
+  'map-pan-chips',
 ] as const;
 export type ScenarioName = typeof SCENARIO_NAMES[number];
 /** Deterministic recordings with exact ground truth. Each one isolates a behaviour named in the requirements. */
@@ -979,6 +1085,317 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           fragments: { body: 0 },
           bounds: { x: 0, y: HEADER, width: 900, height: 1800 },
           diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
+        }),
+      };
+    }
+    case 'large-title-collapse': {
+      // An iOS large-title navigation bar (new_ip_1): in the first frames of the scroll the large title rides up with the
+      // content and is clipped away while the small centred title fades in, and the bar loses 44 px, the content under it
+      // gaining those rows; from then on the bar stays
+      // pinned for the rest of the recording. The bar's pixels move inside it during the collapse, so it is not one
+      // static band from frame 0, and the rows it gives up become page rows. Ideal: the status bar and the collapsed
+      // bar are fixed canvases, the page is one canvas.
+      const PW = 390, PH = 844, TOP = 44, TALL = 96, SHORT = 52, COLLAPSE = 8, n = 140;
+      const world = makeWorld(PW, 4400, 261, 'cards');
+      const progress = (i: number) => Math.min(1, i / COLLAPSE), barHeight = (i: number) => Math.round(TALL - (TALL - SHORT) * progress(i));
+      const scroll: number[] = [];
+      for (let i = 0, y = 200; i < n; i++) {
+        scroll.push(y);
+        y += Math.min(26, 4 + i * 2);
+      }
+      const viewports = scroll.map((_, i) => {
+        const top = TOP + barHeight(i);
+        return { x: 0, y: top, width: PW, height: PH - top };
+      });
+      const layer: Layer = {
+        id: 'body',
+        viewport: viewports[0],
+        viewports,
+        world,
+        path: scroll.map((s, i) => ({ x: 0, y: s + viewports[i].y - viewports[0].y })),
+      };
+      const ink: RGB = [28, 28, 30], paper: RGB = [247, 247, 245];
+      const mix = (a: RGB, b: RGB, t: number) => a.map((v, c) => Math.round(v * (1 - t) + b[c] * t)) as RGB;
+      const header: Overlay = {
+        id: 'header',
+        kind: 'fixed',
+        settled: n - 1,
+        draw: (frame, index) => {
+          const t = progress(index), h = barHeight(index), band = new World(PW, h, paper);
+          band.fill({ x: 12, y: 14, width: 14, height: 22 }, [10, 132, 255]);
+          if (t > 0) band.textLine(150, 16, 90, 2611, mix(paper, ink, t));
+          // The large title rides up with the content until the shrinking bar clips it away.
+          if (t < 1) band.textLine(16, TALL - 44 - (scroll[index] - scroll[0]), 210, 2612, ink, 2.2);
+          band.fill({ x: 0, y: h - 1, width: PW, height: 1 }, [198, 198, 200]);
+          frame.data.set(band.data, TOP * frame.width * 4);
+          return [{ x: 0, y: TOP, width: PW, height: h }];
+        },
+      };
+      return {
+        name,
+        description: 'iOS 大标题导航栏：开始滚动的几帧里大标题缩成小标题、栏变矮，之后一直钉在屏幕上。',
+        width: PW,
+        height: PH,
+        background: [251, 250, 246],
+        layers: [layer],
+        overlays: [fixedBand('status', { x: 0, y: 0, width: PW, height: TOP }, 262, [20, 20, 24]), header],
+        frames: frames(n),
+        // Measured on main (c65e33e): the collapsing bar is learned as part of the page region (fixed region only the
+        // 48 px status bar), so the bar's frames land on top of the print: invented 35,490, mismatched 1,214,
+        // provisional 610; ratchets are those +5 %. Ideal: all 0, and the status bar plus the collapsed bar fixed.
+        expect: expect({
+          fragments: { body: -1 },
+          limitation: true,
+          maxInvented: 37300,
+          maxMismatched: 1280,
+          maxProvisional: 650,
+          diagnostics: { present: [], absent: ['PROCESSING_ERROR', 'NONFINITE_POSE'] },
+        }),
+      };
+    }
+    case 'glass-tab-bar': {
+      // Frosted-glass bars at both ends of a phone screen (new_ip_9's tab bar, new_ip_3's navigation bar): the page
+      // scrolls under them and shows through blurred and washed out (30 % of a 15 px box blur over a light tint), with
+      // the bars' own title, icons and labels opaque on top. What shows through is not page content: the print holds the
+      // page from the clear area between the bars only. Ideal: both bars are fixed canvases (kept as of frame 0, as
+      // `live-bar`), the page is one canvas with nothing of the glass in it.
+      const PW = 390, PH = 844, TOP = 100, TAB = 116;
+      const world = makeWorld(PW, 4000, 271, 'cards');
+      const path = jitter(linearPath([{ x: 0, y: 200 }, { x: 0, y: 1500 }, { x: 0, y: 1300 }, { x: 0, y: 2900 }], [50, 10, 50]), 27, 1, 5);
+      const layer: Layer = { id: 'body', viewport: { x: 0, y: TOP, width: PW, height: PH - TOP - TAB }, world, path };
+      const dark: RGB = [20, 20, 24];
+      return {
+        name,
+        description: '毛玻璃导航栏与 tab bar：页面在它们下面滚动、模糊透出，栏上的图标文字不动；透出来的不是长图内容。',
+        width: PW,
+        height: PH,
+        background: [251, 250, 246],
+        layers: [layer],
+        overlays: [
+          glassBar('header', { x: 0, y: 0, width: PW, height: TOP }, () => layer, (band) => {
+            band.textLine(24, 12, 40, 2711, dark);
+            band.fill({ x: 300, y: 16, width: 64, height: 12 }, dark);
+            band.textLine(140, 58, 110, 2712, dark, 1.3);
+            band.fill({ x: 0, y: TOP - 1, width: PW, height: 1 }, [205, 205, 208]);
+          }),
+          glassBar('tabs', { x: 0, y: PH - TAB, width: PW, height: TAB }, () => layer, (band) => {
+            band.fill({ x: 0, y: 0, width: PW, height: 1 }, [205, 205, 208]);
+            for (let k = 0; k < 4; k++) {
+              const colour: RGB = k ? [142, 142, 147] : [10, 132, 255];
+              band.fill({ x: 34 + k * 92, y: 14, width: 30, height: 26 }, colour);
+              band.textLine(28 + k * 92, 46, 42, 2713 + k, colour, .8);
+            }
+            band.fill({ x: 128, y: TAB - 14, width: 134, height: 5 }, dark);
+          }),
+        ],
+        frames: frames(path.length),
+        // Measured on main (c65e33e): no bar is learned as fixed (the only fixed regions are the page's empty 20 px side
+        // margins); the top bar is learned as part of the page region, putting 35,000 px seen through the glass on the
+        // print (invented), and the tab bar becomes a second moving region with two canvases (UNPLACED_FRAGMENT).
+        // maxInvented is that +5 %. Ideal: invented 0, both bars fixed, one moving region.
+        expect: expect({
+          fragments: { body: -1 },
+          limitation: true,
+          maxInvented: 36750,
+          diagnostics: { present: [], absent: ['PROCESSING_ERROR', 'NONFINITE_POSE'] },
+        }),
+      };
+    }
+    case 'sticky-toc-later': {
+      // A docs page on a desktop browser (new_mac_3): a full-bleed hero first, then an article column; for the last third
+      // of the recording a table of contents is pinned in the left margin (part of the viewport's height), not moving
+      // with the page. Full-bleed bands and margin notes keep the margin moving page content; every page pixel under the
+      // TOC was seen clean further down the screen before it got there. Ideal: nothing of the TOC on the page canvas.
+      const DW = 864, DH = 560, CHROME = 56, n = 150, TOC_FROM = 100;
+      const world = new World(DW, 4300), random = rng(281);
+      world.picture({ x: 0, y: 0, width: DW, height: 460 }, 2811);
+      for (let y = 500; y < 4300 - 80;) {
+        const roll = random();
+        if (roll < .1) {
+          // Full-bleed bands and margin notes keep the left margin moving page content, as on the real page.
+          world.picture({ x: 0, y, width: DW, height: Math.min(110, 4300 - y - 8) }, Math.floor(random() * 1e9));
+          y += 126;
+        } else if (roll < .2) {
+          world.paragraph(24, y, 200, 3, Math.floor(random() * 1e6), .85);
+          y += world.paragraph(260, y, 560, 3, Math.floor(random() * 1e6)) + 12;
+        } else if (roll < .3) {
+          world.textLine(260, y, 380, Math.floor(random() * 1e6), [30, 34, 30], 1.8);
+          y += 40;
+        } else if (roll < .4) {
+          const h = 120 + Math.floor(random() * 100);
+          world.picture({ x: 260, y, width: 560, height: Math.min(h, 4300 - y - 8) }, Math.floor(random() * 1e9));
+          y += h + 16;
+        } else {
+          y += world.paragraph(260, y, 560, 2 + Math.floor(random() * 5), Math.floor(random() * 1e6)) + 12;
+        }
+      }
+      const path = linearPath([{ x: 0, y: 0 }, { x: 0, y: 3500 }], [n - 1]);
+      const tocRect = { x: 24, y: CHROME + 48, width: 196, height: 300 }, toc = new World(tocRect.width, tocRect.height, [243, 243, 240]);
+      toc.stroke({ x: 0, y: 0, width: tocRect.width, height: tocRect.height }, [214, 214, 210]);
+      toc.textLine(14, 12, 110, 2812, [30, 34, 30], 1.2);
+      for (let k = 0; k < 12; k++) toc.textLine(14 + (k % 3 ? 12 : 0), 44 + k * 21, 120 + (k * 37) % 50, 2813 + k, [90, 94, 90], .85);
+      toc.fill({ x: 4, y: 44 + 3 * 21, width: 3, height: 14 }, [10, 110, 220]);
+      const tocOverlay: Overlay = {
+        id: 'toc',
+        kind: 'dynamic',
+        draw: (frame, index) => {
+          if (index < TOC_FROM) return [];
+          for (let y = 0; y < tocRect.height; y++) {
+            frame.data.set(
+              toc.data.subarray(y * tocRect.width * 4, (y + 1) * tocRect.width * 4),
+              ((tocRect.y + y) * frame.width + tocRect.x) * 4,
+            );
+          }
+          return [tocRect];
+        },
+      };
+      return {
+        name,
+        description: '桌面文档页：先是满版大图，最后三分之一时间左侧出现钉在屏幕上的目录（部分高度）；目录不属于页面。',
+        width: DW,
+        height: DH,
+        background: [251, 250, 246],
+        layers: [{ id: 'body', viewport: { x: 0, y: CHROME, width: DW, height: DH - CHROME }, world, path }],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: DW, height: CHROME }, 282), tocOverlay],
+        frames: frames(n),
+        // Measured on main (c65e33e): 39,231 px of the TOC stay on the page canvas, every one of them over page content
+        // seen clean before the TOC arrived (recoverable); 7,774 px are left provisional. Ratchets are those +5 %.
+        // Ideal: contaminatedOverlay 0.
+        expect: expect({
+          fragments: { body: 0 },
+          maxContaminatedOverlay: 41200,
+          maxContaminatedOverlayRecoverable: 41200,
+          maxProvisional: 8170,
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
+        }),
+      };
+    }
+    case 'hover-card-grow': {
+      // A low-contrast card (13 levels darker than the page) on a desktop page (new_mac_2): as it crosses the middle of
+      // the screen a hover animation scales it about its centre over eight frames, 636 → 828 px wide and 240 → 314 px
+      // tall, and it stays scaled. Rows pass the screen's middle while it grows, so rows taken from different frames
+      // would record different widths, the staircase seen on the real recording. Ideal: the card as of one moment (the
+      // `atomic` dynamic's torn count is 0). The text inside does not scale here, so the pixels stay exact.
+      const DW = 864, DH = 560, CHROME = 56, n = 105, GROW_FROM = 50, GROW = 8;
+      const world = makeWorld(DW, 3200, 291, 'article');
+      const card = { y: 1500, height: 240 }, narrow = 636, wide = 828, page: RGB = [251, 250, 246], tone: RGB = [238, 237, 233];
+      world.fill({ x: 0, y: card.y - 64, width: DW, height: card.height + 128 }, page);
+      world.fill({ x: (DW - narrow) / 2, y: card.y, width: narrow, height: card.height }, tone);
+      world.textLine((DW - narrow) / 2 + 40, card.y + 30, 300, 2911, [30, 34, 30], 1.6);
+      world.paragraph((DW - narrow) / 2 + 40, card.y + 80, narrow - 80, 5, 2912);
+      const tall = card.height + 2 * Math.round(card.height * (wide - narrow) / narrow / 2), padY = (tall - card.height) / 2;
+      const grow: NonNullable<Layer['dynamics']>[number] = {
+        rect: { x: (DW - wide) / 2, y: card.y - padY, width: wide, height: tall },
+        atomic: true,
+        draw: (scratch, frame) => {
+          const t = Math.min(1, Math.max(0, (frame - GROW_FROM + 1) / GROW));
+          const w = Math.round(narrow + (wide - narrow) * t), h = Math.round(card.height + (tall - card.height) * t);
+          // Whole pixels only: World.fill takes integer rectangles.
+          const sx = Math.floor((w - narrow) / 2), sy = Math.floor((h - card.height) / 2), ex = (wide - narrow) / 2;
+          const left = ex - sx, top = padY - sy;
+          scratch.fill({ x: left, y: top, width: w, height: sy }, tone);
+          scratch.fill({ x: left, y: padY + card.height, width: w, height: h - card.height - sy }, tone);
+          scratch.fill({ x: left, y: padY, width: sx, height: card.height }, tone);
+          scratch.fill({ x: ex + narrow, y: padY, width: w - narrow - sx, height: card.height }, tone);
+        },
+      };
+      const path = linearPath([{ x: 0, y: 0 }, { x: 0, y: 2600 }], [n - 1]);
+      return {
+        name,
+        description: '低对比卡片在滚入视野时被 hover 动画八帧内左右展宽，之后不变：卡片要整张取同一时刻，不拼出阶梯。',
+        width: DW,
+        height: DH,
+        background: [251, 250, 246],
+        layers: [{ id: 'body', viewport: { x: 0, y: CHROME, width: DW, height: DH - CHROME }, world, path, dynamics: [grow] }],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: DW, height: CHROME }, 292)],
+        frames: frames(n),
+        // Measured on main (c65e33e): the whole card as of its last moment, torn 0 — this scenario does not reproduce the
+        // real staircase (test-results/opt-20261018/synth/REPORT.md) and guards the behaviour instead. The scaled card
+        // differs from the unscaled page by 105,696 px, which the page-space dynamic is allowed to keep.
+        expect: expect({
+          fragments: { body: 0 },
+          maxContaminatedDynamic: 105696,
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
+        }),
+      };
+    }
+    case 'map-pan-chips': {
+      // A vector map panned on a phone (new_ip_7): diagonal drags, flings that decelerate by a constant ratio (so the
+      // rounded per-frame steps are irregular), and pauses. A status bar, a search field and a row of filter chips float
+      // over the top 154 px of the map, pinned to the screen, with the map showing between the chips. Ideal: the status
+      // bar and the search field are fixed canvases, the map one canvas with nothing of the chips in it.
+      const PW = 390, PH = 844, TOP = 44;
+      const world = mapWorld(1800, 2400, 301);
+      const path: Point[] = [];
+      let x = 700, y = 900;
+      const step = (dx: number, dy: number) => {
+        x += dx, y += dy;
+        path.push({ x: Math.round(x), y: Math.round(y) });
+      };
+      path.push({ x, y });
+      const drag = (frames: number, dx: number, dy: number) => {
+        for (let i = 0; i < frames; i++) step(dx, dy);
+      };
+      const fling = (frames: number, dx: number, dy: number, decay: number) => {
+        for (let i = 0; i < frames; i++) step(dx * decay ** i, dy * decay ** i);
+      };
+      drag(14, -9, 14);
+      fling(22, -26, 40, .86);
+      drag(8, 0, 0);
+      drag(12, 18, -6);
+      fling(20, 34, -12, .85);
+      drag(6, 0, 0);
+      drag(16, -12, -18);
+      fling(18, -20, -30, .87);
+      const search = { x: 16, y: 54, width: 296, height: 48 };
+      const chips = [{ x: 16, width: 84 }, { x: 116, width: 92 }, { x: 226, width: 80 }, { x: 322, width: 68 }].map((c) => ({
+        x: c.x,
+        y: 112,
+        width: c.width,
+        height: 34,
+      }));
+      const floating: Overlay = {
+        id: 'search',
+        kind: 'fixed',
+        draw: (frame) => {
+          fillRGBA(frame, search, [255, 255, 255]);
+          fillRGBA(frame, { x: search.x, y: search.y + search.height - 2, width: search.width, height: 2 }, [210, 210, 214]);
+          fillRGBA(frame, { x: search.x + 14, y: search.y + 14, width: 20, height: 20 }, [66, 133, 244]);
+          fillRGBA(frame, { x: search.x + 48, y: search.y + 19, width: 150, height: 10 }, [112, 117, 122]);
+          fillRGBA(frame, { x: search.x + search.width - 40, y: search.y + 10, width: 28, height: 28 }, [94, 151, 108]);
+          chips.forEach((c, k) => {
+            fillRGBA(frame, c, [255, 255, 255]);
+            fillRGBA(frame, { x: c.x, y: c.y + c.height - 2, width: c.width, height: 2 }, [210, 210, 214]);
+            fillRGBA(
+              frame,
+              { x: c.x + 10, y: c.y + 10, width: 14, height: 14 },
+              [[219, 68, 55], [66, 133, 244], [15, 157, 88], [244, 160, 0]][k] as RGB,
+            );
+            fillRGBA(frame, { x: c.x + 30, y: c.y + 13, width: c.width - 42, height: 8 }, [60, 64, 67]);
+          });
+          return [search, ...chips];
+        },
+      };
+      return {
+        name,
+        description:
+          '手机上平移矢量地图：斜向拖动、按比例减速的甩动（取整后步长不规则）、停顿；状态栏、搜索框和一排筛选 chips 浮在地图上方钉在屏幕上。',
+        width: PW,
+        height: PH,
+        background: [251, 250, 246],
+        layers: [{ id: 'body', viewport: { x: 0, y: 0, width: PW, height: PH }, world, path }],
+        overlays: [fixedBand('status', { x: 0, y: 0, width: PW, height: TOP }, 302, [32, 33, 36]), floating],
+        frames: frames(path.length),
+        // Measured on main (c65e33e): the search field and chips were not learned as fixed; their 148 px band became a
+        // second moving region (MULTIPLE_SCROLL_LAYERS) holding the map seen between the chips. Since a region
+        // whose pixels mostly stay put is frozen into fixed UI, a fixed canvas covers `search`, but that canvas
+        // is the whole 148 px band, map seen between the chips included, so its tiles carry temporal conflicts (173)
+        // where a pure chrome band would carry none: a known limitation of rectangular region masks. The map's own
+        // region is exact.
+        expect: expect({
+          limitation: true,
+          fragments: { body: 0 },
+          diagnostics: { present: [], absent: ['PROCESSING_ERROR', 'NONFINITE_POSE'] },
         }),
       };
     }
