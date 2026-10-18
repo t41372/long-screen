@@ -51,7 +51,8 @@ export const pageSections: Catalog<typeof zh> = {
     },
     press: {
       ariaLabel: 'The printer',
-      build: 'Build',
+      core: 'Core library version',
+      build: 'Commit this page was built from',
     },
     screen: {
       dropTitle: 'Drop a recording here',

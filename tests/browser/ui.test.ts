@@ -18,17 +18,27 @@ Deno.test({
       await page.goto(h.base + '/');
       await page.waitForFunction('!!window.longScreen');
       await page.screenshot({ path: `${results}desktop-empty.png`, fullPage: true });
-      // The printer's plate names the commit dist-test/ was built from (scripts/build.ts), linked to it on GitHub. That
-      // is a commit of this checkout, not necessarily HEAD: dist-test/ is only rebuilt when a build input changes.
+      // The printer's plate names the core library's version and the commit dist-test/ was built from
+      // (scripts/build.ts), linked to it on GitHub. That is a commit of this checkout, not necessarily HEAD: dist-test/
+      // is only rebuilt when a build input changes, and the version is the crate's at that build.
       const build = await page.evaluate(() => {
         const line = document.querySelector<HTMLElement>('#build-id')!, link = document.querySelector<HTMLAnchorElement>('#build-commit')!;
-        return { hidden: line.hidden, label: link.textContent ?? '', href: link.href };
+        const version = document.querySelector<HTMLElement>('#build-version')!;
+        return {
+          hidden: line.hidden,
+          linkHidden: link.hidden,
+          version: version.textContent ?? '',
+          label: link.textContent ?? '',
+          href: link.href,
+        };
       });
       const full = build.href.match(/^https:\/\/github\.com\/t41372\/long-screen\/commit\/([0-9a-f]{40})$/)?.[1];
       assert(
-        !build.hidden && full && /^[0-9a-f]{7,}(-dirty)?$/.test(build.label) && full.startsWith(build.label.replace('-dirty', '')),
+        !build.hidden && !build.linkHidden && full && /^[0-9a-f]{7,}(-dirty)?$/.test(build.label) &&
+          full.startsWith(build.label.replace('-dirty', '')),
         JSON.stringify(build),
       );
+      assert(/^v\d+\.\d+\.\d+(-[0-9A-Za-z.]+)?$/.test(build.version), JSON.stringify(build));
       assert(
         (await new Deno.Command('git', { args: ['cat-file', '-e', `${full}^{commit}`] }).output()).success,
         `${full} is not a commit here`,

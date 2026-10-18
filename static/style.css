@@ -570,8 +570,12 @@ button:disabled {
   letter-spacing: 1px;
   color: #ffffffaa;
 }
-/* The commit this page was built from (filled in by scripts/build.ts) is the printer's model number, so a report can
-   name the version. */
+/* The core library's version and the commit this page was built from (both filled in by scripts/build.ts) are the
+   printer's model number, so a report can name the version. */
+.build-id {
+  display: inline-flex;
+  gap: 6px;
+}
 .build-id a {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   color: inherit;

@@ -49,7 +49,8 @@ export const pageSections = {
     },
     press: {
       ariaLabel: '打印机',
-      build: '版本',
+      core: '核心算法库版本',
+      build: '这一版网页的提交',
     },
     screen: {
       dropTitle: '把录屏拖到这里',
