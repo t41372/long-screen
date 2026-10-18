@@ -326,6 +326,47 @@ fn row_stats_simd(
     )
 }
 
+/// `row_stats_simd` without WebAssembly SIMD: the same per-pixel masks built with plain loops over the block row's
+/// 16 pixels, which the compiler can unroll without the general loop's per-pixel label option, occlusion test and
+/// bounds checks. A channel sum above 75 is exactly the general loop's `sum / 3.0 > 25.0` for an integer sum.
+#[cfg(not(target_feature = "simd128"))]
+#[inline]
+fn row_stats_scalar(
+    obs: &Observation<'_>,
+    pixels: &[u8],
+    coverage: &[u8],
+    dst0: usize,
+    src0: usize,
+) -> (u32, u32, u32, u32) {
+    const N: usize = QUALITY_BLOCK;
+    let (t, o) = (
+        &pixels[dst0 * 4..(dst0 + N) * 4],
+        &obs.rgba[src0 * 4..(src0 + N) * 4],
+    );
+    let inside: u32 = match obs.labels {
+        None => (1 << N) - 1,
+        Some((labels, code)) => labels[src0..src0 + N]
+            .iter()
+            .enumerate()
+            .fold(0, |m, (i, &l)| m | ((l == code) as u32) << i),
+    };
+    let cov = coverage[dst0 >> 3] as u32 | (coverage[(dst0 >> 3) + 1] as u32) << 8;
+    let (mut eq, mut mism) = (0u32, 0u32);
+    for (i, (a, b)) in t.chunks_exact(4).zip(o.chunks_exact(4)).enumerate() {
+        eq |= ((a == b) as u32) << i;
+        let sum =
+            a[0].abs_diff(b[0]) as u32 + a[1].abs_diff(b[1]) as u32 + a[2].abs_diff(b[2]) as u32;
+        mism |= ((sum > 75) as u32) << i;
+    }
+    let ov = cov & inside;
+    (
+        inside.count_ones(),
+        ov.count_ones(),
+        (ov & eq).count_ones(),
+        (ov & mism).count_ones(),
+    )
+}
+
 fn composite_block(geo: &Geometry<'_, '_>, t: &mut Rows<'_>, bx: i64, by: i64, sum: &mut Part) {
     let obs = geo.obs;
     let world = geo.world;
@@ -350,9 +391,12 @@ fn composite_block(geo: &Geometry<'_, '_>, t: &mut Rows<'_>, bx: i64, by: i64, s
             continue;
         }
         let occluded_row = row_occluded(obs.occlusions, sy);
-        #[cfg(target_feature = "simd128")]
         if full && !occluded_row {
-            let (c, o, i, m) = row_stats_simd(
+            #[cfg(target_feature = "simd128")]
+            let row_stats = row_stats_simd;
+            #[cfg(not(target_feature = "simd128"))]
+            let row_stats = row_stats_scalar;
+            let (c, o, i, m) = row_stats(
                 obs,
                 t.pixels,
                 t.coverage,
@@ -365,7 +409,6 @@ fn composite_block(geo: &Geometry<'_, '_>, t: &mut Rows<'_>, bx: i64, by: i64, s
             mismatch += m;
             continue;
         }
-        let _ = full;
         for x in cx0..cx1 {
             let sx = x + geo.dx;
             if occluded_row && occluded(obs.occlusions, sx, sy) {
@@ -563,6 +606,98 @@ fn composite_block(geo: &Geometry<'_, '_>, t: &mut Rows<'_>, bx: i64, by: i64, s
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Failure cases for the block-row fast path: a label outside the region counted, a coverage bit read from the
+    // wrong byte or bit order, an identical pixel also counted as a mismatch, a channel sum of exactly 75 (a third
+    // of it is not above 25) counted as a mismatch, alpha ignored in "identical", and rows away from offset 0.
+    #[cfg(not(target_feature = "simd128"))]
+    #[test]
+    fn block_row_stats_match_the_per_pixel_rule() {
+        let mut seed = 0x1234_5678u32;
+        let mut next = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed
+        };
+        let n = QUALITY_BLOCK;
+        for round in 0..2000 {
+            let (dst0, src0) = (n * (round % 3), 5 + round % 7);
+            let mut pixels = vec![0u8; (dst0 + n) * 4];
+            let mut rgba = vec![0u8; (src0 + n) * 4];
+            for v in pixels.iter_mut().chain(rgba.iter_mut()) {
+                *v = next() as u8;
+            }
+            for i in 0..n {
+                let (a, b) = ((dst0 + i) * 4, (src0 + i) * 4);
+                match next() % 5 {
+                    // Identical, identical but alpha, and channel sums of exactly 75 and 76.
+                    0 => pixels[a..a + 4].copy_from_slice(&rgba[b..b + 4]),
+                    1 => {
+                        pixels[a..a + 4].copy_from_slice(&rgba[b..b + 4]);
+                        pixels[a + 3] ^= 1;
+                    }
+                    k @ (2 | 3) => {
+                        let base = [100u8, 120, 140, 255];
+                        rgba[b..b + 4].copy_from_slice(&base);
+                        let d = if k == 2 { 75 } else { 76 };
+                        pixels[a..a + 4].copy_from_slice(&[
+                            100 + 25,
+                            120 - 25,
+                            140 + (d - 50) as u8,
+                            255,
+                        ]);
+                    }
+                    _ => {}
+                }
+            }
+            let coverage: Vec<u8> = (0..(dst0 + n) / 8).map(|_| next() as u8).collect();
+            let labels: Vec<u8> = (0..src0 + n).map(|_| (next() % 3) as u8).collect();
+            for with_labels in [false, true] {
+                let obs = Observation {
+                    rgba: &rgba,
+                    width: src0 + n,
+                    height: 1,
+                    labels: with_labels.then_some((&labels[..], 1)),
+                    occlusions: &[],
+                    consistent: None,
+                    confidence: 1.0,
+                    uncertain: false,
+                    frame: 0,
+                    latest: false,
+                };
+                let mut want = (0, 0, 0, 0);
+                for i in 0..n {
+                    let (dst, src) = (dst0 + i, src0 + i);
+                    if with_labels && labels[src] != 1 {
+                        continue;
+                    }
+                    want.0 += 1;
+                    if bit(&coverage, dst) {
+                        want.1 += 1;
+                        if px32(&pixels, dst) == px32(&rgba, src) {
+                            want.2 += 1;
+                            continue;
+                        }
+                        let (i, j) = (dst * 4, src * 4);
+                        let diff = ((pixels[i] as i32 - rgba[j] as i32).abs()
+                            + (pixels[i + 1] as i32 - rgba[j + 1] as i32).abs()
+                            + (pixels[i + 2] as i32 - rgba[j + 2] as i32).abs())
+                            as f64
+                            / 3.0;
+                        if diff > 25.0 {
+                            want.3 += 1;
+                        }
+                    }
+                }
+                assert_eq!(
+                    row_stats_scalar(&obs, &pixels, &coverage, dst0, src0),
+                    want,
+                    "round {round} labels {with_labels}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn fresh_pixels_are_written_and_counted() {

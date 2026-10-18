@@ -84,7 +84,7 @@ pub fn planes_to_rgba(
         Format::I422 => (1, 1),
         Format::I420 | Format::Nv12 => (1, 2),
     };
-    rows(width, height, out, |y, row| {
+    rows(width, height, out, |y, row, memo| {
         let line =
             |i: usize, r: usize, len: usize| &src[planes[i].offset + r * planes[i].stride..][..len];
         let cw = if shift == 0 { width } else { width.div_ceil(2) };
@@ -106,8 +106,11 @@ pub fn planes_to_rgba(
             let (p, bright) = if u == 128 && v == 128 {
                 grey[ls[x] as usize]
             } else {
-                let (yy, u, v) = (luma[ls[x] as usize], u as f32 - 128.0, v as f32 - 128.0);
-                pixel([yy + rv * v, yy - gu * u - gv * v, yy + bu * u], eotf, oetf)
+                let key = (ls[x] as u32) << 16 | (u as u32) << 8 | v as u32;
+                memo.get(key, || {
+                    let (yy, u, v) = (luma[ls[x] as usize], u as f32 - 128.0, v as f32 - 128.0);
+                    pixel([yy + rv * v, yy - gu * u - gv * v, yy + bu * u], eotf, oetf)
+                })
             };
             px.copy_from_slice(&p);
             above += bright as usize;
@@ -139,7 +142,7 @@ pub fn rgb_to_rgba(
     let grey: Vec<([u8; 4], bool)> = (0..=top)
         .map(|c| pixel([c as f32 / top as f32; 3], eotf, oetf))
         .collect();
-    rows(width, height, pixels, |_, row| {
+    rows(width, height, pixels, |_, row, _| {
         let mut above = 0;
         for px in row.chunks_exact_mut(4) {
             let s = [px[0], px[1], px[2], px[3]];
@@ -260,8 +263,35 @@ fn pixel_linear(lin: [f32; 3], srgb: &[u8]) -> ([u8; 4], bool) {
     )
 }
 
-/// Runs `row(y, out_row)` for every output row across the pool; returns the sum of what the rows return.
-fn rows<F: Fn(usize, &mut [u8]) -> usize + Sync>(
+/// Entries of the per-chunk memo of converted colours.
+const MEMO_SIZE: usize = 4096;
+
+/// A direct-mapped memo of `pixel`'s result by Y'CbCr bytes, kept per pool chunk. A screen recording holds few
+/// distinct non-neutral colours (about 7,000 to 12,000 per 3456 × 2234 frame of an iPhone recording), repeated
+/// over many pixels, so most of them are looked up here instead of interpolated and matrixed again. An entry is the
+/// key plus one in the high word (0 is empty) and the RGB bytes and the above-white flag in the low word; a hit
+/// returns exactly what the computation returned for that key, so the output does not depend on what was cached.
+pub(crate) struct Memo([u64; MEMO_SIZE]);
+
+impl Memo {
+    #[inline]
+    fn get(&mut self, key: u32, compute: impl FnOnce() -> ([u8; 4], bool)) -> ([u8; 4], bool) {
+        let slot = (key.wrapping_mul(0x9e37_79b1) >> (32 - MEMO_SIZE.trailing_zeros())) as usize;
+        let e = self.0[slot];
+        if (e >> 32) as u32 == key + 1 {
+            let [r, g, b, bright] = (e as u32).to_le_bytes();
+            return ([r, g, b, 255], bright != 0);
+        }
+        let (p, bright) = compute();
+        self.0[slot] =
+            ((key + 1) as u64) << 32 | u32::from_le_bytes([p[0], p[1], p[2], bright as u8]) as u64;
+        (p, bright)
+    }
+}
+
+/// Runs `row(y, out_row, memo)` for every output row across the pool, with one empty memo per chunk; returns the
+/// sum of what the rows return.
+fn rows<F: Fn(usize, &mut [u8], &mut Memo) -> usize + Sync>(
     width: usize,
     height: usize,
     out: &mut [u8],
@@ -272,13 +302,14 @@ fn rows<F: Fn(usize, &mut [u8]) -> usize + Sync>(
     let above = AtomicUsize::new(0);
     crate::kernels::pool::par_for(chunks, |c| {
         let mut count = 0;
+        let mut memo = Memo([0; MEMO_SIZE]);
         for y in crate::kernels::pool::split(height, chunks, c)
             ..crate::kernels::pool::split(height, chunks, c + 1)
         {
             // SAFETY: output row `y` belongs to this chunk alone.
             let line =
                 unsafe { std::slice::from_raw_parts_mut(dst.get().add(y * width * 4), width * 4) };
-            count += row(y, line);
+            count += row(y, line, &mut memo);
         }
         above.fetch_add(count, Ordering::Relaxed);
     });
@@ -296,6 +327,32 @@ mod tests {
     // I422, I444, NV12, strides wider than the row, odd sizes, frames split across pool threads); HLG's reference
     // white not at 75 %; the planes and RGB entry points disagreeing on the same pixel; RGB10A2's channel order.
     // The expected bytes come from the formulas evaluated in f64 here, never from the module's tables.
+
+    // Failure cases for the colour memo: a hit returning another key's colour after a slot collision, losing the
+    // above-white flag or a channel in the packing, or treating the empty slot as key 0.
+    #[test]
+    fn memo_returns_what_the_computation_returned_for_every_key() {
+        let colour = |key: u32| {
+            let h = key.wrapping_mul(0x85eb_ca6b) ^ key >> 7;
+            (
+                [h as u8, (h >> 8) as u8, (h >> 16) as u8, 255],
+                h >> 24 & 1 == 1,
+            )
+        };
+        let mut memo = Memo([0; MEMO_SIZE]);
+        let mut seed = 0x2545_f491u32;
+        let mut keys = vec![0, 0, 0xff_ffff, 0xff_ffff, 0x80_8080];
+        for _ in 0..200_000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            // A few thousand keys, revisited in a random order, so slots both hit and collide.
+            keys.push((seed % 6000 * 2797) & 0xff_ffff);
+        }
+        for key in keys {
+            assert_eq!(memo.get(key, || colour(key)), colour(key), "{key:06x}");
+        }
+    }
 
     const KR_KB: [(f64, f64); 3] = [(0.2126, 0.0722), (0.299, 0.114), (0.2627, 0.0593)];
     const M709_TO_2020: [[f64; 3]; 3] = [

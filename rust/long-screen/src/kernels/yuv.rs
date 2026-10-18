@@ -408,17 +408,59 @@ mod simd {
     }
 }
 
-/// Without SIMD every pixel goes through the scalar loop.
+/// Without WebAssembly SIMD the same whole groups go through a plain indexed loop over chroma samples, which the
+/// compiler can unroll and vectorize itself: each pair of pixels sharing a sample is packed into two little-endian
+/// words with `yuv_pixel`'s integer arithmetic (the luma product stays below 2^32 as in the SIMD lanes), so the
+/// bytes are the same. The callers' per-pixel loop, with its closure and four-byte copies per pixel, was a third of
+/// a native run's samples.
 #[cfg(not(target_feature = "simd128"))]
 mod simd {
     use super::Coeffs;
 
-    pub fn planar(_: &[u8], _: &[u8], _: &[u8], _: &Coeffs, _: &mut [u8]) -> usize {
-        0
+    /// Two RGBA pixels from two Y values and one chroma sample, as little-endian words.
+    #[inline(always)]
+    fn pair(y0: u8, y1: u8, u: u8, v: u8, c: &Coeffs) -> (u32, u32) {
+        let (ui, vi) = (u as i32 - 128, v as i32 - 128);
+        let (r, g, b) = (vi * c.vr, ui * c.ug + vi * c.vg, ui * c.ub);
+        let k = 0x0101 * c.yg;
+        let byte = |t: i32| (t >> 6).clamp(0, 255) as u32;
+        let px = |y: u8| {
+            let l = ((y as u32 * k) >> 16) as i32 + c.yb;
+            byte(l + r) | byte(l - g) << 8 | byte(l + b) << 16 | 0xff00_0000
+        };
+        (px(y0), px(y1))
     }
 
-    pub fn nv12(_: &[u8], _: &[u8], _: &Coeffs, _: &mut [u8]) -> usize {
-        0
+    #[inline(always)]
+    fn store(row: &mut [u8], k: usize, (a, b): (u32, u32)) {
+        let o: &mut [u8; 8] = (&mut row[8 * k..8 * k + 8]).try_into().unwrap();
+        o[..4].copy_from_slice(&a.to_le_bytes());
+        o[4..].copy_from_slice(&b.to_le_bytes());
+    }
+
+    pub fn planar(ys: &[u8], us: &[u8], vs: &[u8], c: &Coeffs, row: &mut [u8]) -> usize {
+        let n = (ys.len() / 2)
+            .min(us.len())
+            .min(vs.len())
+            .min(row.len() / 8);
+        let (ys, us, vs, row) = (&ys[..2 * n], &us[..n], &vs[..n], &mut row[..8 * n]);
+        for k in 0..n {
+            store(row, k, pair(ys[2 * k], ys[2 * k + 1], us[k], vs[k], c));
+        }
+        2 * n
+    }
+
+    pub fn nv12(ys: &[u8], uv: &[u8], c: &Coeffs, row: &mut [u8]) -> usize {
+        let n = (ys.len() / 2).min(uv.len() / 2).min(row.len() / 8);
+        let (ys, uv, row) = (&ys[..2 * n], &uv[..2 * n], &mut row[..8 * n]);
+        for k in 0..n {
+            store(
+                row,
+                k,
+                pair(ys[2 * k], ys[2 * k + 1], uv[2 * k], uv[2 * k + 1], c),
+            );
+        }
+        2 * n
     }
 }
 
