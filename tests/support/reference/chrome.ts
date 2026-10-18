@@ -1,5 +1,7 @@
 /** FROZEN TypeScript chrome evidence (`stationaryBoundary`, `stickyOcclusions`), lifted verbatim as the parity
- *  oracle for rust/long-screen/src/kernels/chrome.rs (tests/unit/parity/). Not used by production code. Do not "fix". */
+ *  oracle for rust/long-screen/src/kernels/chrome.rs (tests/unit/parity/). Not used by production code. Do not "fix".
+ *  One deliberate change since the freeze, made in Rust first and mirrored here: a sticky band may also agree with the
+ *  previous frame at a small vertical shift of its own (a header collapsing at its own speed, new_ip_8). */
 import type { Rect, Region, RGBA } from '../../../src/types.ts';
 /** Strong persistent appearance boundary within a stationary run. Never infer a pane edge from its first glyph.
  * Returns the boundary coordinate in native pixels, or undefined if the image offers no boundary evidence. */
@@ -35,8 +37,10 @@ export function stationaryBoundary(
 }
 
 /** A sticky navigation band can move initially and become screen-fixed later. Its geometry is per-observation,
- * not a second scroll world. Only exclude an edge band when native texture agrees with zero motion and clearly
- * disagrees with the accepted page translation; uniform gutters alone never provide this evidence. */
+ * not a second scroll world. Only exclude an edge band when native texture agrees with the previous frame at zero
+ * shift, or at a small shift of its own (|k| <= min(16, |dy| / 4) and |dy - k| >= 8, only where the row's page partner
+ * y + dy lies inside the region), and clearly disagrees with the accepted page translation; uniform gutters alone
+ * never provide this evidence. */
 export function stickyOcclusions(
   previous: RGBA,
   current: RGBA,
@@ -60,10 +64,12 @@ export function stickyOcclusions(
   const dx = Math.round(motion.x), dy = Math.round(motion.y);
   const end = Math.min(h - 2, Math.floor(r.y + Math.min(288, r.height * .23))), start = Math.max(2, Math.floor(r.y));
   const step = Math.max(1, Math.floor(r.width / 700));
+  const window = Math.min(16, Math.floor(Math.abs(dy) / 4));
   let lastFixed = -1, strongRows = 0, matched = 0;
   for (let y = start; y < end; y++) {
     if (y + dy < 2 || y + dy >= h - 2) continue;
-    let n = 0, zero = 0, shifted = 0;
+    let zero = 0, shifted = 0;
+    const samples: number[] = [];
     for (let x = Math.max(2, Math.ceil(r.x)); x < Math.min(w - 2, r.x + r.width); x += step) {
       if (x + dx < 2 || x + dx >= w - 2) continue;
       const i = (y * w + x) * 4;
@@ -71,9 +77,19 @@ export function stickyOcclusions(
       const j = ((y + dy) * w + x + dx) * 4;
       zero += Math.abs(a[i] - b[i]);
       shifted += Math.abs(a[j] - b[i]);
-      n++;
+      samples.push(i);
     }
-    if (n >= 8 && zero / n < 6 && shifted / n > 18) {
+    const n = samples.length;
+    if (n < 8 || shifted / n <= 18) continue;
+    let still = zero / n < 6;
+    const pageInside = y + dy >= r.y && y + dy < r.y + r.height;
+    for (let k = pageInside ? -window : window + 1; !still && k <= window; k++) {
+      if (k === 0 || Math.abs(dy - k) < 8 || y + k < 2 || y + k >= h - 2) continue;
+      let sum = 0;
+      for (const i of samples) sum += Math.abs(a[i + k * w * 4] - b[i]);
+      still = sum / n < 6;
+    }
+    if (still) {
       lastFixed = y;
       strongRows++;
       matched += n;

@@ -11,7 +11,10 @@ import * as chromeReference from '../../support/reference/chrome.ts';
  *  `undefined` and found nothing — must stay "nothing", not snap to a pixel); sampling step for spans > 160; carried
  *  bands kept only while every pixel under them is unchanged, dropped when out of bounds; motion < 2 returning the
  *  carry; row thresholds (n ≥ 8, zero < 6, shifted > 18) and the 4-row / 64-sample gate; the 23 % edge distance
- *  cap; wide regions with step > 1; resident vs JS frames. */
+ *  cap; wide regions with step > 1; resident vs JS frames. The band's own small shift (new_ip_8): a band sliding
+ *  2, 5 or 12 px over a fast page; one sliding down while the page scrolls back; one just outside the window
+ *  (|k| > |dy| / 4) and one too close to the page's step (|dy − k| < 8); shifts whose partner row is off the frame; rows
+ *  whose page partner is outside the region (scrolling back under a strip) taking no shift. */
 Deno.test('core parity: stationaryBoundary and stickyOcclusions match the frozen TS chrome evidence', async () => {
   const core = await ensureCore();
   const rnd = rng(0xc4a0);
@@ -80,6 +83,56 @@ Deno.test('core parity: stationaryBoundary and stickyOcclusions match the frozen
       chromeReference.stickyOcclusions(p, q, r, motion, carry),
       `sticky ${JSON.stringify(motion)} carry ${carry?.length ?? 'none'}`,
     );
+  }
+  // A band with texture in every row (anti-aliased text, icons) sliding at its own speed: `lift` px up from the top.
+  const slid = (dy: number, lift: number): RGBA => {
+    const data = new Uint8ClampedArray(W * H * 4);
+    for (let y = 0; y < H; y++) {
+      const by = y + lift;
+      for (let x = 0; x < W; x++) {
+        let v: number;
+        if (by >= 0 && by < 64) v = by === 63 ? 20 : (((x * 7 + by * 13) % 23) < 9 ? 40 : 225) + ((x * by) % 11);
+        else {
+          const sy = y + dy;
+          v = ((((x * 5) >> 4) + ((sy * 7) >> 5)) * 53 + ((x ^ sy) & 15)) & 255;
+        }
+        data.set([v, (v * 3) & 255, 255 - v, 255], (y * W + x) * 4);
+      }
+    }
+    return { width: W, height: H, data };
+  };
+  const base = slid(0, 0);
+  const moving: [RGBA, RGBA, number, number][] = [
+    [base, slid(48, 2), 48, 62],
+    [base, slid(48, 5), 48, 59],
+    [base, slid(60, 12), 60, 52],
+    [slid(40, -20), slid(0, -23), -40, 87],
+    [base, slid(40, 11), 40, 0],
+    [base, slid(9, 2), 9, 0],
+    [base, slid(10, 2), 10, 62],
+    [base, slid(40, -3), 40, 67],
+  ];
+  // Scrolling back under a strip outside the region: the first rows' page partner is that strip; no shift of their own.
+  const strip = (img: RGBA): RGBA => {
+    const data = img.data.slice();
+    data.fill(30, 0, 40 * W * 4);
+    for (let i = 3; i < 40 * W * 4; i += 4) data[i] = 255;
+    return { width: W, height: H, data };
+  };
+  const under: Region = { ...region, rect: { x: 0, y: 40, width: W, height: H - 40 } };
+  for (
+    const [prev, cur, dy] of [[strip(slid(0, -40)), strip(slid(-37, -49)), -37], [
+      strip(make(0, false)),
+      strip(make(-37, false)),
+      -37,
+    ]] as const
+  ) {
+    assertEquals(stickyOcclusions(prev, cur, under, { x: 0, y: dy }), chromeReference.stickyOcclusions(prev, cur, under, { x: 0, y: dy }));
+  }
+  for (const [prev, cur, dy, bottom] of moving) {
+    const want = chromeReference.stickyOcclusions(prev, cur, region, { x: 0, y: dy });
+    assertEquals(want.length ? want[0].y + want[0].height : 0, bottom, `oracle on a band shifted under page step ${dy}`);
+    assertEquals(stickyOcclusions(prev, cur, region, { x: 0, y: dy }), want, `sliding band, page step ${dy}`);
   }
   // Random small frames: every threshold branch against arbitrary content.
   for (let trial = 0; trial < 40; trial++) {

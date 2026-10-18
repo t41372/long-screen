@@ -275,6 +275,7 @@ export const SCENARIO_NAMES = [
   'sticky-toc-later',
   'hover-card-grow',
   'map-pan-chips',
+  'header-lag-collapse',
 ] as const;
 export type ScenarioName = typeof SCENARIO_NAMES[number];
 /** Deterministic recordings with exact ground truth. Each one isolates a behaviour named in the requirements. */
@@ -1150,6 +1151,100 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           maxMismatched: 1280,
           maxProvisional: 650,
           diagnostics: { present: [], absent: ['PROCESSING_ERROR', 'NONFINITE_POSE'] },
+        }),
+      };
+    }
+    case 'header-lag-collapse': {
+      // A phone feed whose header collapses late and at its own speed (new_ip_8, Bilibili): under a pinned status bar a
+      // search row and a tab row sit over the page. The page starts scrolling first while the header stays put for two
+      // frames, then the header slides up 2 → 12 px a frame, far slower than the page, until the search row is gone under
+      // the status bar and the tab row stays pinned; later the page scrolls back and the header slides down again at its
+      // own speed. Right under the expanded header the page has a carousel that changes every frame. Ideal: nothing of
+      // the header on the page canvas, and the carousel as of one clean moment.
+      const PW = 390, PH = 844, TOP = 48, SEARCH = 52, TABS = 40, HEADER = SEARCH + TABS;
+      const world = makeWorld(PW, 4200, 301, 'cards');
+      const carousel = { x: 12, y: HEADER - 8, width: PW - 24, height: 260 };
+      world.fill({ x: 0, y: 0, width: PW, height: carousel.y + carousel.height + 16 }, [251, 250, 246]);
+      world.paragraph(16, 12, PW - 32, 3, 3011);
+      // Per-frame header steps (screen px, upward) and page steps: six still frames with the carousel playing; the page
+      // moving on frames 6 and 7 with the header still; then both moving, the header at under a fifth of the page's
+      // speed, until it is collapsed; a long scroll with the tab row pinned; a scroll back up while the header expands
+      // again at its own speed (so the pinned rows are not a fixed band, as on the real page); and still frames.
+      const slide = [2, 3, 4, 5, 6, 8, 10, 12, 2], fast = [24, 28, 32, 36, 40, 44, 48, 52, 52];
+      const headerSteps = [...Array(8).fill(0), ...slide, ...Array(33).fill(0), ...slide.map((v) => -v), ...Array(8).fill(0)];
+      const pageSteps = [
+        ...Array(6).fill(0),
+        20,
+        22,
+        ...fast,
+        ...Array(33).fill(40),
+        ...fast.toReversed().map((v) => -v),
+        ...Array(8).fill(0),
+      ];
+      const n = headerSteps.length, lift: number[] = [], scroll: number[] = [];
+      for (let i = 0, u = 0, y = 0; i < n; i++) {
+        u += headerSteps[i];
+        y += pageSteps[i];
+        lift.push(u);
+        scroll.push(y);
+      }
+      const paper: RGB = [247, 247, 245], band = new World(PW, HEADER, paper);
+      // Avatar, search field and icon; tab labels as dense glyph strips (pictures), whose rows all differ from the rows a
+      // couple of pixels away, as anti-aliased text does: the header moving 2 px is no longer a zero-motion band.
+      band.picture({ x: 12, y: 10, width: 32, height: 32 }, 3012);
+      band.fill({ x: 54, y: 10, width: PW - 112, height: 32 }, [232, 232, 236]);
+      band.textLine(70, 20, 150, 3013, [120, 120, 126]);
+      band.picture({ x: PW - 46, y: 12, width: 28, height: 28 }, 3014);
+      for (let k = 0; k < 5; k++) band.picture({ x: 16 + k * 74, y: SEARCH + 10, width: 48, height: 18 }, 3015 + k);
+      band.fill({ x: 16 + 74, y: SEARCH + TABS - 5, width: 48, height: 3 }, [251, 114, 153]);
+      band.fill({ x: 0, y: HEADER - 1, width: PW, height: 1 }, [198, 198, 200]);
+      const header: Overlay = {
+        id: 'header',
+        kind: 'dynamic',
+        draw: (frame, index) => {
+          const top = TOP - lift[index], from = Math.max(TOP, top);
+          for (let y = from; y < top + HEADER; y++) {
+            frame.data.set(band.data.subarray((y - top) * PW * 4, (y - top + 1) * PW * 4), y * frame.width * 4);
+          }
+          return [{ x: 0, y: from, width: PW, height: top + HEADER - from }];
+        },
+      };
+      return {
+        name,
+        description: '手机信息流：页面先滚，顶栏晚两帧才以自己的小速度往上收，之后标签栏钉在状态栏下；顶栏下面是每帧都在换的轮播图。',
+        width: PW,
+        height: PH,
+        background: [251, 250, 246],
+        layers: [{
+          id: 'body',
+          viewport: { x: 0, y: TOP, width: PW, height: PH - TOP },
+          world,
+          path: scroll.map((y) => ({ x: 0, y })),
+          dynamics: [playingVideo(carousel, 3020)],
+        }],
+        overlays: [header, fixedBand('status', { x: 0, y: 0, width: PW, height: TOP }, 302, [20, 20, 24])],
+        frames: frames(n),
+        // Measured before sticky bands could slide: no STICKY_OCCLUSION while the header is in motion (frames 8–16 and 50–57), nor on frames 6–7
+        // where it is still over a scrolling page, so its rows reach the compositor; 56 px of it stay on the page canvas
+        // over rows seen clean (recoverable). The other 17,336 px of contaminatedOverlay are the 44 rows under the tab row
+        // at pose 0, never seen without the header (unobservable; the analytic ceiling, 91,824, also counts the carousel,
+        // a page-space dynamic that is never "clean"). The carousel keeps frame 5, the last still frame, so new_ip_8's
+        // duplicated tab row (its carousel took a frame with the header over it) does not reproduce here; and unlike
+        // new_ip_8 the pinned tab row is learned as a fixed band (screen 48–96). contaminatedDynamic is the carousel
+        // keeping one moment. Ratchets are the measured values +5 % (the analytic ceiling exactly).
+        // Since sticky_occlusions accepts a band moving at a small speed of its own, frames 12–16 and 54, 55, 57 and 58
+        // get their band. Frames 6–11 still do not, although the kernel finds the band there with the true page step
+        // (on new_ip_8 the same gap is the pose coming through the anchor, which hands sticky_occlusions a zero step);
+        // nor do 50–53 and 56, whose header rows have their page partner in the status bar. Measured contaminatedOverlay
+        // 17,304, recoverable 32, provisional 62,342, contaminatedDynamic 92,120 (+64, under its ratchet).
+        expect: expect({
+          fragments: { body: 0 },
+          maxContaminatedOverlay: 18170,
+          maxContaminatedOverlayRecoverable: 34,
+          maxContaminatedOverlayUnobservable: 91824,
+          maxContaminatedDynamic: 96659,
+          maxProvisional: 65460,
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
         }),
       };
     }

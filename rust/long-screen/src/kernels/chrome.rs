@@ -90,6 +90,14 @@ pub fn stationary_boundary(
 
 /// Sticky-band evidence for one observation. `carry` are the previous observation's bands, retained while
 /// every native pixel under them is unchanged. Returns the bands to exclude from the moving canvas.
+///
+/// A row is band evidence when its textured samples disagree with the accepted page translation and agree with the
+/// previous frame at a small vertical shift of their own: zero (a header pinned to the screen), or any `k` with
+/// `|k| <= min(16, |dy| / 4)` and `|dy - k| >= 8`. A header that collapses or expands at its own speed while the page
+/// scrolls far faster (new_ip_8: 2–12 px against 60–135 px a frame) is still screen chrome for that observation; the
+/// window stays a quarter of the page's step so content moving at a large share of the page's speed is not, and
+/// at least 8 px from the page's own step so a slow scroll cannot match the page itself. A row whose page partner
+/// (`y + dy`) falls outside the region takes no shift of its own: its page comparison reads screen chrome.
 #[allow(clippy::too_many_arguments)]
 pub fn sticky_occlusions(
     previous: &[u8],
@@ -135,11 +143,14 @@ pub fn sticky_occlusions(
     let (mut last_fixed, mut strong_rows, mut matched) = (-1i64, 0u32, 0u32);
     let x_start = 2i64.max(js_ceil(r.x) as i64);
     let x_end = (w - 2) as f64;
+    let window = (dy.abs() / 4).min(16);
+    let mut samples: Vec<usize> = Vec::new();
     for y in start..end {
         if y + dy < 2 || y + dy >= h - 2 {
             continue;
         }
-        let (mut n, mut zero, mut shifted) = (0u32, 0i64, 0i64);
+        let (mut zero, mut shifted) = (0i64, 0i64);
+        samples.clear();
         let mut x = x_start;
         // `x < Math.min(w - 2, r.x + r.width)` compares against a real bound.
         while (x as f64) < x_end.min(r.x + r.width) {
@@ -155,11 +166,34 @@ pub fn sticky_occlusions(
             let j = (((y + dy) * w + x + dx) * 4) as usize;
             zero += (previous[i] as i64 - current[i] as i64).abs();
             shifted += (previous[j] as i64 - current[i] as i64).abs();
-            n += 1;
+            samples.push(i);
             x += step;
         }
+        let n = samples.len() as u32;
         let nf = n as f64;
-        if n >= 8 && (zero as f64) / nf < 6.0 && (shifted as f64) / nf > 18.0 {
+        if n < 8 || (shifted as f64) / nf <= 18.0 {
+            continue;
+        }
+        // Agreement with the previous frame at zero shift, or at a small shift of the band's own. A shift of its own
+        // needs the page's own position of this row inside the region: above it (scrolling back at the region's top
+        // edge) the page-shift comparison reads fixed chrome, which never matches, and says nothing about the page.
+        let mut still = (zero as f64) / nf < 6.0;
+        let page_inside = (y + dy) as f64 >= r.y && ((y + dy) as f64) < r.y + r.height;
+        let mut k = if page_inside { -window } else { window + 1 };
+        while !still && k <= window {
+            if k != 0 && (dy - k).abs() >= 8 && y + k >= 2 && y + k < h - 2 {
+                let offset = k * w * 4;
+                let sum: i64 = samples
+                    .iter()
+                    .map(|&i| {
+                        (previous[(i as i64 + offset) as usize] as i64 - current[i] as i64).abs()
+                    })
+                    .sum();
+                still = (sum as f64) / nf < 6.0;
+            }
+            k += 1;
+        }
+        if still {
             last_fixed = y;
             strong_rows += 1;
             matched += n;
@@ -269,6 +303,211 @@ pub fn visible_structure(
 
 #[cfg(test)]
 mod tests {
+    //! Ways the sticky-band test can fail, written before widening it to bands that move at their own small speed
+    //! (new_ip_8: the page scrolls 60–135 px a frame while the header slides 2–12 px):
+    //! - a band that holds still is no longer found (the historical case);
+    //! - a band sliding 2, 5 or 12 px a frame over a fast page is still missed;
+    //! - page content, moving at the page's speed, is taken for a band, including vertically periodic content that
+    //!   matches itself at a small shift;
+    //! - a band moving at a large share of the page's speed (a parallax hero at half speed) is taken for sticky, or a
+    //!   slow scroll lets the shift window reach the page's own displacement;
+    //! - a shift window reaching above the frame's top reads out of bounds;
+    //! - a band sliding down while the page scrolls back (the header expanding again) is missed.
+    use super::*;
+
+    const W: usize = 400;
+    const H: usize = 600;
+    const BAND: i64 = 64;
+
+    /// Textured value with vertical and horizontal structure at every pixel, like anti-aliased glyphs or a photo.
+    fn noise(x: i64, y: i64, seed: u32) -> u8 {
+        let mut v =
+            (x as u32).wrapping_mul(0x9e37_79b9) ^ (y as u32).wrapping_mul(0x85eb_ca6b) ^ seed;
+        v ^= v >> 15;
+        v = v.wrapping_mul(0x2c1b_3c6d);
+        v ^= v >> 12;
+        (v & 0xff) as u8
+    }
+
+    fn put(frame: &mut [u8], x: usize, y: usize, v: u8) {
+        let i = (y * W + x) * 4;
+        frame[i..i + 4].copy_from_slice(&[v, v.wrapping_mul(3), 255 - v, 255]);
+    }
+
+    /// A frame of the page at `page` (world row of screen row 0) under a 64-row band whose top is at screen row
+    /// `band_top` (rows above 0 clipped); the band's last row is a uniform rule. `page_row` maps a world row to the
+    /// texture row, so a periodic page can be drawn.
+    fn frame(page: i64, band_top: Option<i64>, page_row: &dyn Fn(i64) -> i64) -> Vec<u8> {
+        let mut out = vec![0u8; W * H * 4];
+        for y in 0..H as i64 {
+            for x in 0..W as i64 {
+                let v = match band_top {
+                    Some(top) if y >= top && y < top + BAND => {
+                        if y - top == BAND - 1 {
+                            30
+                        } else {
+                            noise(x, y - top, 7)
+                        }
+                    }
+                    _ => noise(x, page_row(y + page), 1),
+                };
+                put(&mut out, x as usize, y as usize, v);
+            }
+        }
+        out
+    }
+
+    fn region() -> Rect {
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width: W as f64,
+            height: H as f64,
+        }
+    }
+
+    fn plain(y: i64) -> i64 {
+        y
+    }
+
+    fn bands(previous: &[u8], current: &[u8], dy: f64) -> Vec<Rect> {
+        sticky_occlusions(previous, current, W, H, region(), 0.0, dy, &[])
+    }
+
+    fn band_bottom(found: &[Rect]) -> Option<f64> {
+        found.first().map(|b| b.y + b.height)
+    }
+
+    #[test]
+    fn a_still_band_over_a_scrolling_page_is_found() {
+        let previous = frame(0, Some(0), &plain);
+        let current = frame(40, Some(0), &plain);
+        assert_eq!(band_bottom(&bands(&previous, &current, 40.0)), Some(64.0));
+    }
+
+    #[test]
+    fn a_band_sliding_at_its_own_small_speed_is_found() {
+        for (k, dy) in [(2, 60.0), (5, 60.0), (12, 60.0), (3, 135.0)] {
+            let previous = frame(0, Some(0), &plain);
+            let current = frame(dy as i64, Some(-k), &plain);
+            assert_eq!(
+                band_bottom(&bands(&previous, &current, dy)),
+                Some((BAND - k) as f64),
+                "band sliding {k} px over a page moving {dy} px"
+            );
+        }
+    }
+
+    #[test]
+    fn a_band_sliding_down_while_the_page_scrolls_back_is_found() {
+        // The header expands again: it moves 6 px down while the page moves 40 px back. The band starts below a
+        // 20-row status strip, so the shift window reaches rows above the band but stays inside the frame.
+        let previous = frame(-40, Some(20), &plain);
+        let current = frame(-80, Some(26), &plain);
+        let region = Rect {
+            x: 0.0,
+            y: 20.0,
+            width: W as f64,
+            height: H as f64 - 20.0,
+        };
+        let found = sticky_occlusions(&previous, &current, W, H, region, 0.0, -40.0, &[]);
+        assert_eq!(band_bottom(&found), Some(26.0 + BAND as f64));
+    }
+
+    #[test]
+    fn page_content_is_never_a_band() {
+        let previous = frame(0, None, &plain);
+        let current = frame(40, None, &plain);
+        assert!(bands(&previous, &current, 40.0).is_empty());
+        // Vertically periodic content (period 6, page step 40 not a multiple of it) matches itself at a small shift
+        // (k = 4 or −2), but it also matches the page's own displacement, so it is still page content.
+        let periodic = |y: i64| y.rem_euclid(6);
+        let previous = frame(0, None, &periodic);
+        let current = frame(40, None, &periodic);
+        assert!(bands(&previous, &current, 40.0).is_empty());
+    }
+
+    #[test]
+    fn rows_whose_page_partner_is_chrome_above_the_region_take_no_shift() {
+        // Scrolling back under a 40-row status strip (outside the region): the page partner of the region's first
+        // rows is the strip, so their page comparison fails for any content. Content that repeats every 9 rows there
+        // (card borders, list rules) matches itself at k = −9 and would make a band of page content.
+        let periodic = |y: i64| y.rem_euclid(9);
+        let strip = |f: &mut Vec<u8>| {
+            for y in 0..40 {
+                for x in 0..W {
+                    put(f, x, y, 30);
+                }
+            }
+        };
+        let mut previous = frame(0, None, &periodic);
+        let mut current = frame(-37, None, &periodic);
+        strip(&mut previous);
+        strip(&mut current);
+        let region = Rect {
+            x: 0.0,
+            y: 40.0,
+            width: W as f64,
+            height: H as f64 - 40.0,
+        };
+        assert!(sticky_occlusions(&previous, &current, W, H, region, 0.0, -37.0, &[]).is_empty());
+    }
+
+    #[test]
+    fn content_at_a_large_share_of_the_page_speed_is_not_a_band() {
+        // A parallax hero at half the page's speed: its shift (20) is beyond the window (|dy| / 4 = 10).
+        let previous = frame(0, Some(0), &plain);
+        let current = frame(40, Some(-20), &plain);
+        assert!(bands(&previous, &current, 40.0).is_empty());
+        // Just past the window: 11 px over a 40 px step.
+        let current = frame(40, Some(-11), &plain);
+        assert!(bands(&previous, &current, 40.0).is_empty());
+    }
+
+    #[test]
+    fn content_slower_than_a_quarter_of_the_page_is_a_band() {
+        // The known cost of the window: content in the top 23 % moving at a fifth of the page's speed (a slow parallax
+        // hero) is excluded from this observation like a sticky header.
+        let previous = frame(0, Some(0), &plain);
+        let current = frame(40, Some(-8), &plain);
+        assert_eq!(
+            band_bottom(&bands(&previous, &current, 40.0)),
+            Some((BAND - 8) as f64)
+        );
+    }
+
+    #[test]
+    fn a_slow_scroll_keeps_the_shift_away_from_the_page() {
+        // Page step 10: the window is ±2 and |10 − k| ≥ 8 leaves k ∈ {−2..2}; a band moving 2 px is found.
+        let previous = frame(0, Some(0), &plain);
+        let current = frame(10, Some(-2), &plain);
+        assert_eq!(
+            band_bottom(&bands(&previous, &current, 10.0)),
+            Some((BAND - 2) as f64)
+        );
+        // Page step 9: |9 − 2| < 8, so a 2 px move is too close to the page's own to count; zero shift only.
+        let current = frame(9, Some(-2), &plain);
+        assert!(bands(&previous, &current, 9.0).is_empty());
+        // Page step 8: the window is ±2 but only k ≤ 0 keep |8 − k| ≥ 8; a band moving up 2 px is not found.
+        let current = frame(8, Some(-2), &plain);
+        assert!(bands(&previous, &current, 8.0).is_empty());
+    }
+
+    #[test]
+    fn the_shift_window_never_reads_above_the_frame() {
+        // Rows from 2 with the window reaching k = −10 (page step 40): a band at the very top moving down 3 px against
+        // the page's direction has rows 2.. whose shifted partner is above row 0; those shifts are skipped, not read.
+        let previous = frame(0, Some(0), &plain);
+        let current = frame(40, Some(3), &plain);
+        assert_eq!(
+            band_bottom(&bands(&previous, &current, 40.0)),
+            Some((BAND + 3) as f64)
+        );
+    }
+}
+
+#[cfg(test)]
+mod structure_tests {
     use super::*;
 
     /// A grey `w × h` RGBA frame at factor 1 with `paint(x, y)` as its level.
