@@ -100,7 +100,7 @@ This repository deploys through Cloudflare Pages' Git integration: on a push to 
 
 Version 0.1.0 of all three packages went out on 2026-10-12, from commit `748a0ac`. The first release of each needed one-off manual steps; those are written up in [docs/RELEASING.md](docs/RELEASING.md) (in Chinese), together with every settings page and button. From now on a release is the same short routine for each package.
 
-**1. Pick the version and write it down.** Each package keeps its version in one file:
+**1. Pick the version and write it down.** Between releases `main` carries the next version with a `-dev` suffix (now `0.1.1-dev`; `rust/wasm/Cargo.toml` follows the core crate), which is what the web page's printer plate shows next to the commit. For a release, drop the `-dev` (or change the number if this release is a different one); right after the release, move to the next `-dev` (after `0.1.1`, `0.1.2-dev`). A `-dev` version never matches a tag, so a release workflow stops before uploading if you forget. Each package keeps its version in one file:
 
 | Package | File                                                   | Tag             |
 | ------- | ------------------------------------------------------ | --------------- |
