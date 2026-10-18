@@ -6,8 +6,9 @@
 use crate::kernels::features::{match_features, Feature};
 use crate::kernels::geometry::{js_ceil, js_hypot, Rect};
 use crate::kernels::motion::{
-    audit_translation, refine_native_at, sampling_insensitive_error, select_native_points,
-    translation_hypotheses, Gray, MatchPoints, NativeRefinement, Point, TranslationAudit,
+    audit_translation, refine_native_at, sampling_insensitive_error, screen_fixed_split_error,
+    select_native_points, translation_hypotheses, Gray, MatchPoints, NativeRefinement, Point,
+    TranslationAudit,
 };
 use crate::kernels::region::Region;
 
@@ -127,6 +128,23 @@ fn rescuable(n: &NativeRefinement) -> bool {
 /// cost's bottom is flat within a pixel, so the plain mean still places the step.
 fn measured_between_pixels(error: f64, runner_up: f64) -> bool {
     error < TRACKED_ERROR && runner_up >= TRACKED_ERROR && runner_up > RESCUE_SEPARATION * error
+}
+
+/// Whether a step is measured once the region may hold a screen-fixed part ([`screen_fixed_split_error`]): the offset
+/// explains more of the points than zero does, the split cost clears the tracked bar, and the offsets more than two
+/// pixels away cost [`RESCUE_SEPARATION`] times as much and at least 4 more. A part that stays on screen inside a
+/// moving region is the smaller part; when most of the region stayed put, the region did not move and the part that
+/// did is something inside it (a nested pane, an animation), as on a Mac recording (own_a, frames 1024–1040) where 58 %
+/// of the features stayed and the rest moved by 54 px a frame. The bar on the runner-up is relative, not
+/// [`TRACKED_ERROR`], because the screen-fixed points lower every offset's split cost by their share: on new_ip_7
+/// (status bar, search bar and chips over a map, about a third of the points) the 122 true steps that reached this
+/// check split to 0.3–4.1 with runner-ups of 6.2–10.8, and none of the 83 wrong candidates had a runner-up above 1.07
+/// times its own cost.
+fn split_measured(error: f64, runner_up: f64, moved: f64) -> bool {
+    moved > 0.5
+        && error < TRACKED_ERROR
+        && runner_up > RESCUE_SEPARATION * error
+        && runner_up >= error + 4.0
 }
 
 /// `track.ts::odometry`.
@@ -346,6 +364,57 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
                 ambiguous,
                 weak_step,
                 step_error,
+            });
+        }
+    }
+
+    // A region that holds a screen-fixed part keeps a zero-offset hypothesis alive on every frame, and the plain mean
+    // then charges the true step for every point of that part. When nothing else measured the step, or only a zero
+    // offset did, a non-zero candidate is still measured if splitting the points between it and zero clears the
+    // tracked bar while offsets more than two pixels from it do not (see `split_measured`).
+    if rescue.as_ref().is_none_or(|r| r.delta == (0.0, 0.0)) {
+        let split: Vec<(usize, f64, f64, f64)> = refined
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, _, n, _))| (n.x, n.y) != (0, 0))
+            .map(|(i, (_, _, n, _))| {
+                let (error, runner_up, moved) = screen_fixed_split_error(
+                    previous,
+                    current,
+                    image_width as usize,
+                    image_height as usize,
+                    (n.x, n.y),
+                    mask,
+                    radius,
+                    &points,
+                );
+                (i, error, runner_up, moved)
+            })
+            .collect();
+        let chosen = split
+            .iter()
+            .filter(|(_, error, runner_up, moved)| split_measured(*error, *runner_up, *moved))
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        if let Some(&(i, error, _, _)) = chosen {
+            let (m, audit, n, _) = &refined[i];
+            let ambiguous = split.iter().any(|&(j, other, _, _)| {
+                let o = &refined[j].2;
+                j != i
+                    && js_hypot(o.x as f64 - n.x as f64, o.y as f64 - n.y as f64) > 2.0
+                    && other < error + 2.0
+            }) || (m.ambiguous && refined.len() > 1);
+            let weak_step = audit.overlap < 0.25;
+            let confidence = m.confidence.max(0.05)
+                * libm::exp(-n.error / 20.0)
+                * if ambiguous { 0.6 } else { 1.0 }
+                * if weak_step { 0.5 } else { 1.0 };
+            rescue = Some(Rescue {
+                phase_support: false,
+                delta: (n.x as f64, n.y as f64),
+                confidence,
+                ambiguous,
+                weak_step,
+                step_error: n.error,
             });
         }
     }
@@ -621,6 +690,51 @@ mod tests {
         let (previous, current) = (rows(0.0), rows(67.5));
         for dy in [67, 68] {
             assert!(!measured(&previous, &current, dy), "repeated rows, {dy}");
+        }
+    }
+
+    /// A textured map under a screen-fixed bar of `toolbar` rows (dense, high contrast, like a search bar and status bar
+    /// over a map), panned by `offset` native pixels; the map is two thirds of the frame or more.
+    fn map(offset: f64, toolbar: usize) -> Vec<u8> {
+        render(offset, |x, y, offset| {
+            if y < toolbar && x > 40 && x < 360 {
+                return if (x * 13 + y * 73 + x * y % 79) % 47 < 23 {
+                    20
+                } else {
+                    240
+                };
+            }
+            let (bx, by) = (x / 3, (y + offset) / 3);
+            (150 + (bx.wrapping_mul(73_856_093) ^ by.wrapping_mul(19_349_663)) % 97) as u8
+        })
+    }
+
+    // Failure cases for a moving region that holds a screen-fixed part (a search bar, status bar and chips over a map,
+    // new_ip_7): the fixed part's points match at zero on every frame, so the plain mean puts the zero offset ahead of
+    // the true step and keeps it as the rescue, also when the map moved by a fraction of a pixel; a frame that did not
+    // move measured as a step; and, when the fixed part is the larger one, the part that moved taken for the region.
+    #[test]
+    fn a_step_under_a_screen_fixed_part_is_still_measured() {
+        for f in [2usize, 3, 4] {
+            for (offset, steps) in [(67.0, [67.0, 67.0]), (67.5, [67.0, 68.0])] {
+                let result = measure(&map(0.0, 300), &map(offset, 300), f);
+                let step = measured_step(result);
+                assert!(
+                    step == Some((0.0, steps[0])) || step == Some((0.0, steps[1])),
+                    "factor {f}, offset {offset}: {step:?}"
+                );
+            }
+            let still = measure(&map(67.0, 300), &map(67.0, 300), f);
+            assert!(
+                matches!(measured_step(still), None | Some((0.0, 0.0))),
+                "factor {f}"
+            );
+            // The bar is now most of the frame: what moved is something inside a region that stayed put.
+            let inside = measured_step(measure(&map(0.0, 700), &map(67.0, 700), f));
+            assert!(
+                matches!(inside, None | Some((0.0, 0.0))),
+                "factor {f}: {inside:?}"
+            );
         }
     }
 

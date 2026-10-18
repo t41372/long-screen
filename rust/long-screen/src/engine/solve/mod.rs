@@ -52,6 +52,9 @@ pub fn is_valid_pose(x: f64, y: f64) -> bool {
     x.is_finite() && y.is_finite() && x.abs() < POSE_BOUND && y.abs() < POSE_BOUND
 }
 
+/// The label a registration plane gives a moving region's screen-fixed pixels: the atlas uses 0 and 1–254.
+pub(super) const UNREGISTERED: u8 = 255;
+
 /// One non-ignored region the pass tracks.
 pub struct SolveRegion {
     pub id: String,
@@ -248,6 +251,8 @@ struct RegionState {
     /// recovers the step keeps the legacy path. None is a valid sparse-feature fallback.
     phase_support: bool,
     registration_support: Option<Rect>,
+    /// Cells of a moving region that stay on screen while it moves; registration leaves them out.
+    screen_fixed: Option<crate::kernels::track::ScreenFixed>,
     canvas_id: String,
     fragment: u32,
     pose: (f64, f64),
@@ -314,6 +319,10 @@ pub struct SolveSession {
     previous_gray: Option<Arc<Plane>>,
     previous_features: Option<Arc<Vec<Feature>>>,
     previous_plan: Option<Vec<Placement>>,
+    /// The atlas label plane with every moving region's screen-fixed cells recoded to [`UNREGISTERED`], and the
+    /// plane it was made from; rebuilt when a region's left-out cells change.
+    registration_labels: Option<(Arc<Vec<u8>>, Vec<u8>)>,
+    registration_stale: bool,
     stage: Stage,
     effects: Vec<Effect>,
     /// Test seams that replace a core decision, to reach the recovery paths real input rarely does.
@@ -377,9 +386,20 @@ impl SolveSession {
         );
         let states = regions
             .iter()
-            .map(|_| RegionState {
+            .map(|r| RegionState {
                 phase_support: false,
                 registration_support: None,
+                screen_fixed: r.moving.then(|| {
+                    let rect = r.shape.rect;
+                    let f = factor as f64;
+                    let (x0, y0) = ((rect.x / f).floor(), (rect.y / f).floor());
+                    crate::kernels::track::ScreenFixed::new(
+                        x0 as i64,
+                        y0 as i64,
+                        (((rect.x + rect.width) / f).ceil() - x0).max(0.0) as usize,
+                        (((rect.y + rect.height) / f).ceil() - y0).max(0.0) as usize,
+                    )
+                }),
                 canvas_id: String::new(),
                 fragment: 0,
                 pose: (0.0, 0.0),
@@ -415,6 +435,8 @@ impl SolveSession {
             previous_gray: None,
             previous_features: None,
             previous_plan: None,
+            registration_labels: None,
+            registration_stale: false,
             stage: Stage::Idle,
             effects: Vec::new(),
             #[cfg(test)]

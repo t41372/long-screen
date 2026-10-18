@@ -1128,6 +1128,102 @@ pub fn sampling_insensitive_error(
     (cost(ox as i64, oy as i64), runner_up)
 }
 
+/// The cost of the points at `offset` and its runner-up (the lowest cost more than two pixels away, within `radius`),
+/// when the region may hold a screen-fixed part: each point costs the smaller of its plain error at zero
+/// ([`refine_native_at`]'s per-point cost) and its sampling-insensitive error at the offset
+/// ([`sampling_insensitive_error`]'s per-point cost). A point that stayed where it was on screen (a search bar or
+/// status bar floating over a map, a sticky panel) then does not count against the offset the rest moved by, and the
+/// rest may have moved by a fraction of a pixel, as a decelerating fling does. A frame that did not move matches at
+/// zero everywhere, so every offset then costs about the same as the runner-up. Infinite where fewer than 12 points
+/// fall inside both frames, as in the plain cost. The third value is the share of the points the offset explains
+/// better than zero, among those one of the two explains better: the part that moved, against the part that stayed.
+#[allow(clippy::too_many_arguments)]
+pub fn screen_fixed_split_error(
+    a: &[u8],
+    b: &[u8],
+    width: usize,
+    height: usize,
+    offset: (i32, i32),
+    mask: Option<(&[u8], u8)>,
+    radius: i32,
+    points: &[i64],
+) -> (f64, f64, f64) {
+    let (w, h) = (width as i64, height as i64);
+    let inside =
+        |x: i64, y: i64| mask.is_none_or(|(labels, code)| labels[(y * w + x) as usize] == code);
+    let stride = width * 4;
+    let span = |image: &[u8], k: usize| {
+        let v = image[k] as i32;
+        [k - 4, k + 4, k - stride, k + stride]
+            .iter()
+            .fold((2 * v, 2 * v), |(low, high), &n| {
+                (low.min(v + image[n] as i32), high.max(v + image[n] as i32))
+            })
+    };
+    let outside = |v: i32, (low, high): (i32, i32)| (v - high).max(low - v).max(0);
+    let at = |p: i64, dx: i64, dy: i64| -> Option<(usize, usize)> {
+        let (x, y) = (p % w, p / w);
+        let (xx, yy) = (x + dx, y + dy);
+        if xx < 1 || yy < 1 || xx >= w - 1 || yy >= h - 1 || !inside(xx, yy) {
+            return None;
+        }
+        Some(((p * 4) as usize, ((yy * w + xx) * 4) as usize))
+    };
+    let still: Vec<Option<f64>> = points
+        .iter()
+        .map(|&p| {
+            at(p, 0, 0).map(|(i, j)| {
+                let d = (a[j] as i32 - b[i] as i32).abs()
+                    + (a[j + 1] as i32 - b[i + 1] as i32).abs()
+                    + (a[j + 2] as i32 - b[i + 2] as i32).abs();
+                (90.0f64).min(d as f64 / 3.0)
+            })
+        })
+        .collect();
+    let cost = |dx: i64, dy: i64| -> (f64, u32, u32) {
+        let (mut error, mut n, mut moved, mut stayed) = (0f64, 0u32, 0u32, 0u32);
+        for (&p, zero) in points.iter().zip(&still) {
+            if let Some((i, j)) = at(p, dx, dy) {
+                let d: i32 = (0..3)
+                    .map(|c| {
+                        outside(2 * b[i + c] as i32, span(a, j + c))
+                            .min(outside(2 * a[j + c] as i32, span(b, i + c)))
+                    })
+                    .sum();
+                let e = (90.0f64).min(d as f64 / 6.0);
+                if let Some(z) = *zero {
+                    moved += (e < z) as u32;
+                    stayed += (z < e) as u32;
+                }
+                error += zero.map_or(e, |z| e.min(z));
+                n += 1;
+            }
+        }
+        let mean = if n >= 12 {
+            error / n as f64
+        } else {
+            f64::INFINITY
+        };
+        (mean, moved, stayed)
+    };
+    let (ox, oy) = offset;
+    let mut runner_up = f64::INFINITY;
+    for y in oy - radius..=oy + radius {
+        for x in ox - radius..=ox + radius {
+            if (x - ox).abs().max((y - oy).abs()) > 2 {
+                runner_up = runner_up.min(cost(x as i64, y as i64).0);
+            }
+        }
+    }
+    let (error, moved, stayed) = cost(ox as i64, oy as i64);
+    let share = if moved + stayed > 0 {
+        moved as f64 / (moved + stayed) as f64
+    } else {
+        0.0
+    };
+    (error, runner_up, share)
+}
+
 /// Native-pixel refinement on textured luma edges of `b` inside `region`, matching against `a` at
 /// integer offsets. `labels`/`code` (region atlas membership) restrict both frames when given. Composes
 /// [`select_native_points`] and [`refine_native_at`]; a caller evaluating several candidates over the same

@@ -7,12 +7,14 @@ mod keyframes;
 mod odometry;
 mod phase;
 mod reacquire;
+mod screen_fixed;
 mod verdicts;
 
 pub use keyframes::*;
 pub use odometry::*;
 pub use phase::{registration_features, registration_support};
 pub use reacquire::*;
+pub use screen_fixed::ScreenFixed;
 pub use verdicts::*;
 
 #[cfg(test)]

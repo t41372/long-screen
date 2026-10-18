@@ -19,7 +19,9 @@ use crate::kernels::features::{match_features, Feature};
 use crate::kernels::geometry::{js_round, Rect};
 use crate::kernels::motion::{extract_patches, probe_scale, Gray, MatchPoints, Patch};
 use crate::kernels::region::filter_features;
-use crate::kernels::track::{self, FragmentCauseGate, LoopVerdict, OdometryDecision, Rescue};
+use crate::kernels::track::{
+    self, FragmentCauseGate, LoopVerdict, OdometryDecision, Rescue, ScreenFixed,
+};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -39,6 +41,9 @@ const DRIFT_DIFFERENCE: f64 = 0.12;
 const REVISIT_AFTER: u32 = 3;
 /// A region needs this many own features to be trackable.
 const TEXTURED_FEATURES: usize = 8;
+/// Features a moving region must keep outside its screen-fixed cells for registration to leave those out; with
+/// fewer (a blurred frame whose only sharp texture is the floating UI) the frame registers on all of them.
+const REGISTERED_FEATURES: usize = 3 * TEXTURED_FEATURES;
 /// Candidate scales a lost region's scale probe tries.
 const PROBE_SCALES: [f64; 8] = [
     1.1,
@@ -180,7 +185,14 @@ fn gray(p: &Plane) -> Gray<'_> {
     }
 }
 
-fn patches(k: &Keyframe, support: Option<Rect>) -> Vec<Patch<'_>> {
+/// The keyframe's patches inside `support`, less those centred on a screen-fixed cell (`exclude`: the region's
+/// cells, its native rect and the analysis factor). Patches sit on the strongest texture, and a keyframe minted before
+/// the cells were known can hold the floating UI.
+fn patches<'a>(
+    k: &'a Keyframe,
+    support: Option<Rect>,
+    exclude: Option<(&ScreenFixed, Rect, f64)>,
+) -> Vec<Patch<'a>> {
     let mut out = Vec::with_capacity(k.patches.len());
     for p in &k.patches {
         if support.is_some_and(|r| {
@@ -188,6 +200,12 @@ fn patches(k: &Keyframe, support: Option<Rect>) -> Vec<Patch<'_>> {
                 || p.y < r.y
                 || p.x + p.size as f64 > r.x + r.width
                 || p.y + p.size as f64 > r.y + r.height
+        }) {
+            continue;
+        }
+        if exclude.is_some_and(|(cells, rect, f)| {
+            let half = p.size as f64 / 2.0;
+            cells.excludes((rect.x + p.x + half) / f, (rect.y + p.y + half) / f)
         }) {
             continue;
         }
@@ -215,9 +233,11 @@ impl SolveSession {
         labels: &[u8],
     ) -> Result<Outcome, SolveError> {
         let mut s = self.setup(i, ctx);
+        let registration = self.registration_plane(labels);
+        let registration_labels = registration.as_deref().map_or(labels, Vec::as_slice);
         // 0. Which branch this frame takes before any tracking math runs.
         match self.gate(i, ctx, &s) {
-            Gate::Odometry => self.odometry_step(i, ctx, &mut s, labels),
+            Gate::Odometry => self.odometry_step(i, ctx, &mut s, registration_labels),
             Gate::Start => {
                 self.states[i].started = true;
                 self.states[i].canvas_id = String::new();
@@ -274,6 +294,61 @@ impl SolveSession {
         }
     }
 
+    /// The region's screen-fixed cells for [`patches`], when it has any.
+    fn patch_exclusion(&self, i: usize) -> Option<(&ScreenFixed, Rect, f64)> {
+        self.states[i]
+            .screen_fixed
+            .as_ref()
+            .filter(|cells| cells.any())
+            .map(|cells| (cells, self.regions[i].shape.rect, self.factor as f64))
+    }
+
+    /// The label plane registration reads: the atlas's, with each moving region's screen-fixed pixels recoded to
+    /// [`super::UNREGISTERED`] so that the native points and their shifted partners skip them. `None` while no region
+    /// leaves anything out.
+    fn registration_plane(&mut self, labels: &[u8]) -> Option<Arc<Vec<u8>>> {
+        if !self
+            .states
+            .iter()
+            .any(|s| s.screen_fixed.as_ref().is_some_and(ScreenFixed::any))
+        {
+            self.registration_labels = None;
+            return None;
+        }
+        let current = !self.registration_stale
+            && self
+                .registration_labels
+                .as_ref()
+                .is_some_and(|(_, base)| base.as_slice() == labels);
+        if !current {
+            let (w, h, f) = (self.width, self.height, self.factor as f64);
+            let mut plane = labels.to_vec();
+            for (r, state) in self.regions.iter().zip(&self.states) {
+                let Some(cells) = state.screen_fixed.as_ref().filter(|c| c.any()) else {
+                    continue;
+                };
+                let rect = r.shape.rect;
+                let (x0, y0) = (rect.x.max(0.0) as usize, rect.y.max(0.0) as usize);
+                let x1 = ((rect.x + rect.width).ceil().max(0.0) as usize).min(w);
+                let y1 = ((rect.y + rect.height).ceil().max(0.0) as usize).min(h);
+                for y in y0..y1 {
+                    let ay = y as f64 / f;
+                    for x in x0..x1 {
+                        let k = y * w + x;
+                        if plane[k] == r.code && cells.excludes(x as f64 / f, ay) {
+                            plane[k] = super::UNREGISTERED;
+                        }
+                    }
+                }
+            }
+            self.registration_labels = Some((Arc::new(plane), labels.to_vec()));
+            self.registration_stale = false;
+        }
+        self.registration_labels
+            .as_ref()
+            .map(|(plane, _)| plane.clone())
+    }
+
     /// The region's read-mostly values and the mutable locals at their starting values.
     fn patch_support(&self, i: usize, s: &Step) -> Option<Rect> {
         let full = self.regions[i].shape.rect;
@@ -305,6 +380,21 @@ impl SolveSession {
         );
         let (registration_rect, own) =
             track::registration_features(rect, self.states[i].registration_support, own, f);
+        let own = match state.screen_fixed.as_ref().filter(|c| c.any()) {
+            Some(cells) => {
+                let kept: Vec<Feature> = own
+                    .iter()
+                    .filter(|p| !cells.excludes(p.x as f64, p.y as f64))
+                    .cloned()
+                    .collect();
+                if kept.len() >= REGISTERED_FEATURES {
+                    kept
+                } else {
+                    own
+                }
+            }
+            None => own,
+        };
         let textured = own.len() >= TEXTURED_FEATURES;
         let prior: Vec<MatchPoints> = if r.moving {
             let previous = state.previous_features.as_deref().unwrap_or(&[]);
@@ -500,7 +590,7 @@ impl SolveSession {
             self.width,
             self.height,
         );
-        let anchor_patches = patches(&anchor, self.patch_support(i, s));
+        let anchor_patches = patches(&anchor, self.patch_support(i, s), self.patch_exclusion(i));
         let native = Gray {
             width: w,
             height: h,
@@ -547,11 +637,15 @@ impl SolveSession {
             state.pose = (anchor.x + vx, anchor.y + vy);
             state.velocity = (0.0, 0.0);
         } else if ctx.index > 0 && self.previous_slot.is_some() {
+            let anchor = self.states[i].anchor.clone();
+            let anchor_patches = anchor
+                .as_ref()
+                .map(|a| patches(a, support, self.patch_exclusion(i)));
             let state = &mut self.states[i];
             state.pose = (state.pose.0 + s.delta.0, state.pose.1 + s.delta.1);
             state.velocity = s.delta;
             // Drift control: re-measure the pose against the anchor's native patches while they are in view.
-            if let Some(anchor) = state.anchor.clone() {
+            if let (Some(anchor), Some(anchor_patches)) = (anchor.as_ref(), anchor_patches) {
                 if ctx.scan.difference >= DRIFT_DIFFERENCE {
                     let (pose, radius, w, h) = (state.pose, self.radius, self.width, self.height);
                     let native = Gray {
@@ -561,7 +655,7 @@ impl SolveSession {
                     };
                     #[allow(unused_mut)]
                     let mut drift = track::drift_correction(
-                        &patches(&anchor, support),
+                        &anchor_patches,
                         native,
                         rect,
                         (anchor.x, anchor.y),
@@ -650,7 +744,7 @@ impl SolveSession {
                     confidence: m.confidence,
                 }),
                 s.zoom_change,
-            )
+            ) && !self.relocalization_contradicts_rescue(i, s, m)
         });
         if let (true, Some(m)) = (verdict, found) {
             let canvas = resolve_target(&self.attachments, &m.keyframe.canvas_id).to_string();
@@ -750,6 +844,27 @@ impl SolveSession {
                     .confidence(s.confidence),
             );
         }
+    }
+
+    /// Whether a relocalization onto the region's own canvas places the frame somewhere the step odometry's rescue
+    /// measured contradicts, by the distance [`track::reacquisition_contradicts_rescue`] uses for the anchor. Keyframe
+    /// patches sit on the strongest texture, and a screen-fixed part of the moving region (a search bar over a map) is
+    /// the same in every keyframe, so it matches whichever keyframe is retrieved at zero offset and pulls the pose back
+    /// to that keyframe's.
+    fn relocalization_contradicts_rescue(&self, i: usize, s: &Step, m: &Found) -> bool {
+        let Some(rescue) = s.rescue.as_ref() else {
+            return false;
+        };
+        let state = &self.states[i];
+        if resolve_target(&self.attachments, &m.keyframe.canvas_id) != state.canvas_id {
+            return false;
+        }
+        let shift = attachment_shift(&self.attachments, &m.keyframe.canvas_id);
+        let target = track::target_pose((m.keyframe.x, m.keyframe.y), m.offset, shift);
+        track::reacquisition_contradicts_rescue(
+            (target.0 - state.pose.0, target.1 - state.pose.1),
+            rescue.delta,
+        )
     }
 
     /// A pose that ended up non-finite or out of range isolates the observation into a fresh fragment.
@@ -854,7 +969,7 @@ impl SolveSession {
         }
         let patch_lists: Vec<Vec<Patch>> = keyframes
             .iter()
-            .map(|k| patches(k, self.patch_support(i, s)))
+            .map(|k| patches(k, self.patch_support(i, s), self.patch_exclusion(i)))
             .collect();
         let candidates: Vec<track::CandidateKeyframe> = keyframes
             .iter()
@@ -1251,6 +1366,39 @@ impl SolveSession {
             self.voting
                 .observe(slot, canvas, pose.0, pose.1, &ctx.gray.data);
             observed = true;
+        }
+        // A step the region measured itself shows which of its cells stayed on screen instead of following it.
+        if moving
+            && !s.skip
+            && s.decision == Decision::Tracked
+            && s.via_anchor.is_none()
+            && !s.relocalized
+        {
+            if let Some(previous) = self.previous_gray.clone() {
+                let (f, factor) = (self.factor as f64, self.factor as i64);
+                let (w, h) = (self.width as f64, self.height as f64);
+                let shape = &self.regions[i].shape;
+                if let Some(cells) = self.states[i].screen_fixed.as_mut() {
+                    let inside = |x: i64, y: i64| {
+                        shape.contains(
+                            (x * factor + factor / 2) as f64,
+                            (y * factor + factor / 2) as f64,
+                            w,
+                            h,
+                        )
+                    };
+                    if cells.observe(
+                        &previous.data,
+                        &ctx.gray.data,
+                        previous.width,
+                        previous.height,
+                        (s.delta.0 / f, s.delta.1 / f),
+                        inside,
+                    ) {
+                        self.registration_stale = true;
+                    }
+                }
+            }
         }
         let has_previous = self.previous_slot.is_some();
         let canvas_id = self.states[i].canvas_id.clone();
