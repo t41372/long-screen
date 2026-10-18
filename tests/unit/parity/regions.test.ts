@@ -95,6 +95,8 @@ Deno.test('core parity: finishRegions matches the frozen oracle over real learne
       rowChange: expected.rowChange,
       colChange: expected.colChange,
       colMoving: expected.colMoving,
+      pixelFixed: expected.pixelFixed,
+      pixelMoving: expected.pixelMoving,
       colMean: expected.colMean,
       colGain: expected.colGain,
       horizontalGain: expected.horizontalGain,
@@ -165,33 +167,49 @@ Deno.test('core parity: finishRegions matches the frozen oracle on randomized an
       evidence: rand(n * 2, informativeFrames + 1),
       activity: rand(n, informativeFrames * 3),
       observations: rand(n, informativeFrames + 1),
+      pixelFixed: rand(c.width * c.height, informativeFrames),
+      pixelMoving: rand(c.width * c.height, informativeFrames),
       nativeRowChange: c.withRef ? rand(c.nativeH, nativeFrames + 1) : undefined,
       nativeColChange: c.withRef ? rand(c.nativeW, nativeFrames + 1) : undefined,
       reference,
     };
-    const oracleRegions = referenceFinish(acc, c.nativeW, c.nativeH, [], c.factor);
-    const coreRegions = core.finishRegions(
-      c.width,
-      c.height,
-      cell,
-      acc,
-      c.nativeW,
-      c.nativeH,
-      c.factor,
-      reference,
-    );
-    const label = `${c.width}×${c.height} native ${c.nativeW}×${c.nativeH} f${c.factor} frames=${c.frames} ref=${c.withRef}`;
-    assertEquals(strip(coreRegions), strip(oracleRegions), `${label} regions`);
-    assertEquals(keyOrder(coreRegions), keyOrder(oracleRegions), `${label} key order`);
-    const { resident, counts } = core.labelAtlasResident(coreRegions, c.nativeW, c.nativeH);
-    try {
-      const atlasOracle = referenceLabelAtlas(oracleRegions, c.nativeW, c.nativeH);
-      assertEquals([...resident.bytes()], [...atlasOracle], `${label} atlas labels`);
-      const expectedCounts = new Uint32Array(coreRegions.length + 1);
-      for (const code of atlasOracle) if (code) expectedCounts[code]++;
-      assertEquals([...counts], [...expectedCounts], `${label} atlas counts`);
-    } finally {
-      resident.free();
+    // With a reference, the same accumulators again with half the moving votes, so the votes would freeze every
+    // region but the main one (merge.rs, freeze_stationary_regions), over the same frame and over it with a flat
+    // red channel, which the structure test of those regions reads: they are fixed UI in the first, moving in the
+    // second.
+    const variants: { ref: RGBA | undefined; acc: FinishAccumulators; name: string }[] = [{ ref: reference, acc, name: `${c.withRef}` }];
+    if (reference) {
+      const still = { ...acc, pixelMoving: acc.pixelMoving.map((v) => v / 2) };
+      const data = Uint8ClampedArray.from(reference.data);
+      for (let i = 0; i < data.length; i += 4) data[i] = 0;
+      variants.push({ ref: reference, acc: still, name: 'still' });
+      variants.push({ ref: { width: c.nativeW, height: c.nativeH, data }, acc: still, name: 'still, flat red' });
+    }
+    for (const { ref, acc, name } of variants) {
+      const oracleRegions = referenceFinish({ ...acc, reference: ref }, c.nativeW, c.nativeH, [], c.factor);
+      const coreRegions = core.finishRegions(
+        c.width,
+        c.height,
+        cell,
+        acc,
+        c.nativeW,
+        c.nativeH,
+        c.factor,
+        ref,
+      );
+      const label = `${c.width}×${c.height} native ${c.nativeW}×${c.nativeH} f${c.factor} frames=${c.frames} ref=${name}`;
+      assertEquals(strip(coreRegions), strip(oracleRegions), `${label} regions`);
+      assertEquals(keyOrder(coreRegions), keyOrder(oracleRegions), `${label} key order`);
+      const { resident, counts } = core.labelAtlasResident(coreRegions, c.nativeW, c.nativeH);
+      try {
+        const atlasOracle = referenceLabelAtlas(oracleRegions, c.nativeW, c.nativeH);
+        assertEquals([...resident.bytes()], [...atlasOracle], `${label} atlas labels`);
+        const expectedCounts = new Uint32Array(coreRegions.length + 1);
+        for (const code of atlasOracle) if (code) expectedCounts[code]++;
+        assertEquals([...counts], [...expectedCounts], `${label} atlas counts`);
+      } finally {
+        resident.free();
+      }
     }
   }
 });
@@ -239,6 +257,8 @@ Deno.test('core parity: manual regions (kind combinations, overlap, full coverag
       evidence: new Float64Array(2),
       activity: new Float64Array(1),
       observations: new Float64Array(1),
+      pixelFixed: new Float64Array(100),
+      pixelMoving: new Float64Array(100),
     };
     const oracleRegions = referenceFinish(acc, nativeW, nativeH, manual, 4);
     const coreRegions = learner.finish(nativeW, nativeH, manual, 4);

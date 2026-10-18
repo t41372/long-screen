@@ -506,14 +506,14 @@ export const MATCH_POINT_BYTES = 40,
   MOTION_CELL = 24;
 export const COMPOSITE_HEADER = 24, VOTING_REGION_BYTES = 64, LEARNER_MOTION_BYTES = 32, LEARNER_FIELD_BYTES = 40;
 /** `ls_regions_finish` request descriptor, and one output region header (`rust/wasm/src/regions.rs`). */
-export const REGIONS_FINISH_DESC_BYTES = 112, REGION_HEADER_BYTES = 88;
+export const REGIONS_FINISH_DESC_BYTES = 120, REGION_HEADER_BYTES = 88;
 /** One hand-placed region descriptor (`rust/wasm/src/regions.rs::MANUAL_REGION_BYTES`): rect, u32 kind, padding. */
 export const MANUAL_REGION_BYTES = 40;
 /** One serialised `framing::Layout` (`rust/wasm/src/framing.rs`). */
 export const LAYOUT_BYTES = 104;
 /** Named accumulator arrays `rust/wasm/src/layers.rs::learner_array` recognises — must match
  *  `./learner.ts`'s `LEARNER_ARRAYS.length` (selector 14, "counts", is separate and not part of this count). */
-export const LEARNER_ARRAY_COUNT = 15;
+export const LEARNER_ARRAY_COUNT = 17;
 /** `ls_extract_patches`'/`ls_probe_scale`'s serialised `(x, y)` feature point: f64, f64. */
 export const POINT_BYTES = 16;
 /** One `ls_extract_patches` output patch header, immediately followed by its `size × size` data bytes. */

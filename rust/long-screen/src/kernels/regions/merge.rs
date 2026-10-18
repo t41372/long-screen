@@ -1,9 +1,14 @@
 //! Stage: merge slivers into the nearest large moving region, absorb sticky/collapsing header edge regions into
-//! the main pane, and the final filter + single-full-pane fallback.
+//! the main pane, turn regions whose pixels mostly stay put into fixed UI, and the final filter + single-full-pane
+//! fallback.
 
 use super::{intersect, Kind, RegionOut, Rgba};
-use crate::kernels::chrome::{stationary_boundary, Axis, Choose};
+use crate::kernels::chrome::{stationary_boundary, visible_structure, Axis, Choose};
 use crate::kernels::geometry::Rect;
+
+/// Distinct sampled rows, and as many columns, a region's own structure must reach before its votes can make it
+/// fixed UI (`freeze_stationary_regions`): one line, horizontal or vertical, reaches two at most.
+const VISIBLE_STRUCTURE_LINES: u32 = 3;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Stage: merge slivers into the nearest large moving region, then absorb sticky/collapsing header edge regions
@@ -151,6 +156,91 @@ pub fn cleanup_sticky_headers(
                 }
             }
             regions[edge].rect.width = 0.0;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------
+// Stage: a moving region whose pixels mostly stay put while the page moves is screen-fixed UI, not a second
+// scroll layer.
+// ---------------------------------------------------------------------------------------------------------------
+/// Turns every moving region but the main one into fixed UI when, in the frames the page moved, its own sampled pixels
+/// were more often explained by staying put than by following the page (`Learner::pixel_fixed` against
+/// `pixel_moving`, summed over the region's mask). The main region is the moving one with the most mask pixels; its
+/// bounding rect can be smaller than an L-shaped bar's.
+///
+/// The band walks look at whole rows and columns and miss bars whose pixels change while they stay on screen: the
+/// page showing through a translucent bar (iOS 26's tab bar changes in 92 % of new_ip_9's frames), a large title
+/// collapsing (new_ip_1's header), or a sidebar with no visible edge beside the page's empty margin, whose band the
+/// edge search then stops at the browser's own sidebar (new_mac_1). Split from the page by their different motion,
+/// such bars became moving regions that the solve tore into one unplaced fragment per state (132, 4 and 3). Slivers
+/// and sticky headers have been merged into the main region by now, so only regions that would otherwise be scroll
+/// layers of their own are looked at. The evidence is per pixel, not per analysis cell: a cell that straddles a
+/// band edge would lend the region the band's evidence.
+///
+/// With an appearance reference, the region must also show structure of its own, spread over
+/// `VISIBLE_STRUCTURE_LINES` sampled rows and as many columns (`chrome::visible_structure`): an empty margin is not
+/// UI (§十), and its votes come only from the line where it meets something else. pub_2's black chat margin had
+/// all 48 of its structured samples on one row, the line under the app's top bar, and became a fixed canvas of an
+/// empty image; the bars it is meant for have theirs on 7 to 107 rows and 10 to 278 columns. Such a region stays
+/// moving, as before the votes were read. Without a reference the votes decide alone.
+pub fn freeze_stationary_regions(
+    regions: &mut [RegionOut],
+    valid: &[usize],
+    pixel_fixed: &[f64],
+    pixel_moving: &[f64],
+    reference: Option<&Rgba>,
+    factor: f64,
+) {
+    let moving: Vec<usize> = valid
+        .iter()
+        .copied()
+        .filter(|&i| regions[i].kind == Kind::Moving && regions[i].rect.width > 0.0)
+        .collect();
+    if moving.len() < 2 {
+        return;
+    }
+    // (mask pixels, stayed put, followed the page) per moving region.
+    let evidence: Vec<(usize, f64, f64)> = moving
+        .iter()
+        .map(|&i| {
+            let (mut pixels, mut still, mut follows) = (0usize, 0.0, 0.0);
+            for (p, &m) in regions[i].mask.as_ref().unwrap().iter().enumerate() {
+                if m != 0 {
+                    pixels += 1;
+                    still += pixel_fixed[p];
+                    follows += pixel_moving[p];
+                }
+            }
+            (pixels, still, follows)
+        })
+        .collect();
+    // First region with the most mask pixels is the main one.
+    let mut main = 0;
+    for k in 1..moving.len() {
+        if evidence[k].0 > evidence[main].0 {
+            main = k;
+        }
+    }
+    let shows_structure = |region: &RegionOut| match reference {
+        None => true,
+        Some(img) => {
+            let s = visible_structure(
+                img.data,
+                img.width,
+                img.height,
+                region.mask.as_ref().unwrap(),
+                region.mask_width,
+                region.mask_height,
+                factor,
+            );
+            s.rows >= VISIBLE_STRUCTURE_LINES && s.cols >= VISIBLE_STRUCTURE_LINES
+        }
+    };
+    for (k, &i) in moving.iter().enumerate() {
+        if k != main && evidence[k].1 > evidence[k].2 && shows_structure(&regions[i]) {
+            regions[i].kind = Kind::Fixed;
+            regions[i].name = "固定界面".into();
         }
     }
 }

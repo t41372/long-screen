@@ -60,6 +60,11 @@ pub struct Learner {
     pub observations: Vec<f64>,
     pub row_fixed: Vec<f64>,
     pub row_moving: Vec<f64>,
+    /// `row_fixed`/`row_moving` per analysis pixel (`y * width + x`, only the sampled pixels ever count): how often
+    /// staying put explained the pixel better than the strongest moving model, and the other way round. A region
+    /// whose pixels are mostly the former is screen-fixed UI (`regions::merge::freeze_stationary_regions`).
+    pub pixel_fixed: Vec<f64>,
+    pub pixel_moving: Vec<f64>,
     pub informative_frames: u32,
     pub row_change: Vec<f64>,
     pub col_change: Vec<f64>,
@@ -97,6 +102,8 @@ impl Learner {
             observations: vec![0.0; n],
             row_fixed: vec![0.0; height],
             row_moving: vec![0.0; height],
+            pixel_fixed: vec![0.0; width * height],
+            pixel_moving: vec![0.0; width * height],
             informative_frames: 0,
             row_change: vec![0.0; height],
             col_change: vec![0.0; width],
@@ -250,9 +257,11 @@ impl Learner {
                         (prev[((y + dy) * w + x + dx) as usize] as i32 - current[i] as i32).abs();
                     if stationary + 6 < motion {
                         self.row_fixed[y as usize] += 1.0;
+                        self.pixel_fixed[i] += 1.0;
                     }
                     if motion + 6 < stationary {
                         self.row_moving[y as usize] += 1.0;
+                        self.pixel_moving[i] += 1.0;
                     }
                     x += 4;
                 }

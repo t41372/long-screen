@@ -189,3 +189,166 @@ pub fn sticky_occlusions(
         _ => carry,
     }
 }
+
+/// Visible structure of a masked area on a native frame: how many sampled points sit on an edge, across rows
+/// (`vertical`) and across columns (`horizontal`), and on how many distinct sampled rows and columns such a point
+/// lies. Sampling follows the bands' texture test: every 2nd analysis row and column, the native pixel at
+/// `floor(x·factor)`, its red channel against the pixels `round(factor)` away, an edge where they differ by more
+/// than 12. A point is sampled only where the analysis pixels on both sides of it are in the mask as well, so
+/// structure next to the area does not count for it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Structure {
+    pub vertical: u32,
+    pub horizontal: u32,
+    pub rows: u32,
+    pub cols: u32,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn visible_structure(
+    rgba: &[u8],
+    width: usize,
+    height: usize,
+    mask: &[u8],
+    mask_width: usize,
+    mask_height: usize,
+    factor: f64,
+) -> Structure {
+    let (w, h) = (width as i64, height as i64);
+    let (mw, mh) = (mask_width as i64, mask_height as i64);
+    let step = (js_round(factor) as i64).max(1);
+    let inside =
+        |x: i64, y: i64| x >= 0 && y >= 0 && x < mw && y < mh && mask[(y * mw + x) as usize] != 0;
+    let red = |x: i64, y: i64| rgba[((y * w + x) * 4) as usize] as i32;
+    let mut out = Structure::default();
+    let mut cols = vec![false; mask_width];
+    let mut y = 1i64;
+    while y < mh - 1 {
+        let ny = js_floor(y as f64 * factor) as i64;
+        let mut row_hit = false;
+        let mut x = 1i64;
+        while x < mw - 1 {
+            if inside(x, y) {
+                let nx = js_floor(x as f64 * factor) as i64;
+                let mut hit = false;
+                if inside(x, y - 1)
+                    && inside(x, y + 1)
+                    && ny - step >= 0
+                    && ny + step < h
+                    && nx < w
+                    && (red(nx, ny - step) - red(nx, ny + step)).abs() > 12
+                {
+                    out.vertical += 1;
+                    hit = true;
+                }
+                if inside(x - 1, y)
+                    && inside(x + 1, y)
+                    && nx - step >= 0
+                    && nx + step < w
+                    && ny < h
+                    && (red(nx - step, ny) - red(nx + step, ny)).abs() > 12
+                {
+                    out.horizontal += 1;
+                    hit = true;
+                }
+                if hit {
+                    row_hit = true;
+                    cols[x as usize] = true;
+                }
+            }
+            x += 2;
+        }
+        if row_hit {
+            out.rows += 1;
+        }
+        y += 2;
+    }
+    out.cols = cols.iter().filter(|&&c| c).count() as u32;
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A grey `w × h` RGBA frame at factor 1 with `paint(x, y)` as its level.
+    fn frame(w: usize, h: usize, paint: impl Fn(usize, usize) -> u8) -> Vec<u8> {
+        let mut out = vec![255u8; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                let v = paint(x, y);
+                out[(y * w + x) * 4..(y * w + x) * 4 + 3].fill(v);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_blank_area_has_no_structure() {
+        let img = frame(40, 40, |_, _| 0);
+        let s = visible_structure(&img, 40, 40, &[1; 1600], 40, 40, 1.0);
+        assert_eq!(s, Structure::default());
+    }
+
+    #[test]
+    fn a_single_horizontal_line_sits_on_at_most_two_sampled_rows() {
+        // pub_2's empty chat margin: black but for the line where it meets the bar above.
+        let img = frame(40, 40, |_, y| if y == 10 { 80 } else { 0 });
+        let s = visible_structure(&img, 40, 40, &[1; 1600], 40, 40, 1.0);
+        assert!(s.rows <= 2 && s.cols >= 15 && s.horizontal == 0, "{s:?}");
+    }
+
+    #[test]
+    fn a_single_vertical_line_sits_on_at_most_two_sampled_columns() {
+        let img = frame(40, 40, |x, _| if x == 10 { 80 } else { 0 });
+        let s = visible_structure(&img, 40, 40, &[1; 1600], 40, 40, 1.0);
+        assert!(s.cols <= 2 && s.rows >= 15 && s.vertical == 0, "{s:?}");
+    }
+
+    #[test]
+    fn icons_spread_over_the_area_have_structure_on_many_rows_and_columns() {
+        let img = frame(
+            40,
+            40,
+            |x, y| if x % 10 < 4 && y % 10 < 4 { 200 } else { 0 },
+        );
+        let s = visible_structure(&img, 40, 40, &[1; 1600], 40, 40, 1.0);
+        assert!(
+            s.rows >= 3 && s.cols >= 3 && s.vertical > 0 && s.horizontal > 0,
+            "{s:?}"
+        );
+    }
+
+    #[test]
+    fn structure_outside_the_mask_does_not_count() {
+        // Texture everywhere, but the mask is a blank 20 × 20 square in the middle that the texture never enters;
+        // the texture abuts the square on all sides.
+        let img = frame(40, 40, |x, y| {
+            if (10..30).contains(&x) && (10..30).contains(&y) {
+                0
+            } else {
+                ((x * 37 + y * 91) % 256) as u8
+            }
+        });
+        let mut mask = vec![0u8; 1600];
+        for y in 10..30 {
+            mask[y * 40 + 10..y * 40 + 30].fill(1);
+        }
+        let s = visible_structure(&img, 40, 40, &mask, 40, 40, 1.0);
+        assert_eq!(s, Structure::default());
+    }
+
+    #[test]
+    fn native_points_are_read_at_the_factor() {
+        // Factor 5: the analysis grid is 8 × 8 over a 40 × 40 native frame; 5 px icons every 15 native px.
+        let img = frame(40, 40, |x, y| {
+            if (x / 5) % 3 == 0 && (y / 5) % 3 == 0 {
+                200
+            } else {
+                0
+            }
+        });
+        let s = visible_structure(&img, 40, 40, &[1; 64], 8, 8, 5.0);
+        assert!(s.rows >= 3 && s.cols >= 3, "{s:?}");
+    }
+}

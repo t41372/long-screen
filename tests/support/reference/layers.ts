@@ -5,7 +5,7 @@
  *  `RegionAtlas` in TS until stage 2 switches them to the Rust core. Not used by production code. Do not "fix"
  *  this. */
 import type { Gray, MotionField, Rect, Region, RGBA } from '../../../src/types.ts';
-import { stationaryBoundary } from './chrome.ts';
+import { stationaryBoundary, visibleStructure } from './chrome.ts';
 import { clamp, contains, DisjointSet, intersect, norm } from './math.ts';
 export function informativeField(field: MotionField): boolean {
   return !field.unknown && field.difference >= .2 && field.motions.some((m) => norm(m) > 1 && m.confidence > .3);
@@ -21,6 +21,8 @@ export class ReferenceLayerLearner {
   observations: Float64Array;
   rowFixed: Float64Array;
   rowMoving: Float64Array;
+  pixelFixed: Float64Array;
+  pixelMoving: Float64Array;
   informativeFrames = 0;
   rowChange: Float64Array;
   colChange: Float64Array;
@@ -50,6 +52,8 @@ export class ReferenceLayerLearner {
     this.rowChange = new Float64Array(height);
     this.rowFixed = new Float64Array(height);
     this.rowMoving = new Float64Array(height);
+    this.pixelFixed = new Float64Array(width * height);
+    this.pixelMoving = new Float64Array(width * height);
   }
   add(field: MotionField, prev: Gray, current: Gray, prevNative?: RGBA, currentNative?: RGBA): void {
     const { cols, rows } = this;
@@ -161,9 +165,11 @@ export class ReferenceLayerLearner {
           const motion = Math.abs(prev.data[(y + dy) * w + x + dx] - current.data[i]);
           if (stationary + 6 < motion) {
             this.rowFixed[y]++;
+            this.pixelFixed[i]++;
           }
           if (motion + 6 < stationary) {
             this.rowMoving[y]++;
+            this.pixelMoving[i]++;
           }
         }
       }
@@ -227,6 +233,8 @@ export interface FinishAccumulators {
   evidence: Float64Array;
   activity: Float64Array;
   observations: Float64Array;
+  pixelFixed: Float64Array;
+  pixelMoving: Float64Array;
   nativeRowChange?: Float64Array;
   nativeColChange?: Float64Array;
   /** Last informative native frame sampled during accumulation (`LayerLearner.reference`), used for texture and
@@ -813,6 +821,37 @@ export function referenceFinish(
         edge.rect.width = 0;
       }
     }
+  }
+  // A moving region other than the main one (most mask pixels) whose own sampled pixels stayed put more often than
+  // they followed the page is screen-fixed UI, not a second scroll layer (rust/long-screen/src/kernels/regions/merge.rs,
+  // freeze_stationary_regions). With a reference frame, its own structure must also reach 3 sampled rows and 3
+  // sampled columns: an empty margin whose only edge is one line is not UI.
+  const stillMoving = valid.filter((r) => r.kind === 'moving' && r.rect.width > 0);
+  if (stillMoving.length >= 2) {
+    const tallies = stillMoving.map((r) => {
+      let pixels = 0, still = 0, follows = 0;
+      r.mask!.forEach((m, p) => {
+        if (m) {
+          pixels++;
+          still += acc.pixelFixed[p];
+          follows += acc.pixelMoving[p];
+        }
+      });
+      return { pixels, still, follows };
+    });
+    let primary = 0;
+    for (let k = 1; k < stillMoving.length; k++) if (tallies[k].pixels > tallies[primary].pixels) primary = k;
+    stillMoving.forEach((r, k) => {
+      const shows = () => {
+        if (!reference) return true;
+        const s = visibleStructure(reference, r.mask!, width, height, factor);
+        return s.rows >= 3 && s.cols >= 3;
+      };
+      if (k !== primary && tallies[k].still > tallies[k].follows && shows()) {
+        r.kind = 'fixed';
+        r.name = '固定界面';
+      }
+    });
   }
   const result = valid.filter((r) => r.rect.width > 0);
   const moving = result.filter((r) => r.kind === 'moving');

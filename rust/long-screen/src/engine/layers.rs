@@ -121,6 +121,8 @@ impl RegionLearner {
             evidence: &l.evidence,
             activity: &l.activity,
             observations: &l.observations,
+            pixel_fixed: &l.pixel_fixed,
+            pixel_moving: &l.pixel_moving,
             native_row_change: optional(&l.native_row_change),
             native_col_change: optional(&l.native_col_change),
             reference,

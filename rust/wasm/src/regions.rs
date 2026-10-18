@@ -25,7 +25,7 @@ use long_screen::kernels::geometry::Rect;
 use long_screen::kernels::regions::{self, AtlasMask, AtlasRegion, FinishInput, Rgba};
 
 /// `ls_layout` selector 10: bytes of one `ls_regions_finish` request descriptor (`run_finish`).
-pub(crate) const REGIONS_FINISH_DESC_BYTES: usize = 112;
+pub(crate) const REGIONS_FINISH_DESC_BYTES: usize = 120;
 /// `ls_layout` selector 11: bytes of one output region header (see the module doc comment).
 pub(crate) const REGION_HEADER_BYTES: usize = 88;
 
@@ -94,6 +94,8 @@ unsafe fn run_finish(ptr: u32) -> Option<Vec<regions::RegionOut>> {
     };
     let factor = r.u32(104);
     let col_moving = slice(r.u32(108), width * 8)?;
+    let pixel_fixed = slice(r.u32(112), width * height * 8)?;
+    let pixel_moving = slice(r.u32(116), width * height * 8)?;
     let input = FinishInput {
         width,
         height,
@@ -110,6 +112,8 @@ unsafe fn run_finish(ptr: u32) -> Option<Vec<regions::RegionOut>> {
         evidence: as_f64_slice(evidence),
         activity: as_f64_slice(activity),
         observations: as_f64_slice(observations),
+        pixel_fixed: as_f64_slice(pixel_fixed),
+        pixel_moving: as_f64_slice(pixel_moving),
         native_row_change: native_row_change_bytes.map(as_f64_slice),
         native_col_change: native_col_change_bytes.map(as_f64_slice),
         reference: reference_bytes.map(|(w, h, data)| Rgba {

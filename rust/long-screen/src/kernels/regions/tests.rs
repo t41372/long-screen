@@ -121,6 +121,8 @@ fn finish_falls_back_to_one_solid_pane_with_no_evidence() {
         evidence: &[0.0, 0.0],
         activity: &[0.0],
         observations: &[0.0],
+        pixel_fixed: &zeros,
+        pixel_moving: &zeros,
         native_row_change: None,
         native_col_change: None,
         reference: None,
@@ -182,6 +184,8 @@ fn learn(width: usize, height: usize, frames: &[Vec<u8>]) -> Vec<RegionOut> {
         evidence: &learner.evidence,
         activity: &learner.activity,
         observations: &learner.observations,
+        pixel_fixed: &learner.pixel_fixed,
+        pixel_moving: &learner.pixel_moving,
         native_row_change: None,
         native_col_change: None,
         reference: None,
@@ -331,4 +335,233 @@ fn a_blank_strip_beside_an_empty_margin_is_not_a_left_band() {
     let bands = wide_margin_bands(false);
     assert_eq!(bands.left, 0);
     assert_eq!(bands.exact_left, None);
+}
+
+/// One frame's motion field for `learn_fields`: the models (dx, dy) and each analysis cell's model index.
+type FrameField = (Vec<(f64, f64)>, Vec<u8>);
+
+/// Runs `frames` through the learner with a per-frame motion field: `field(f)` gives frame f's models (the first
+/// is the page's, whatever moves) and the model each analysis cell is labelled with. Then `finish()` at factor 1.
+fn learn_fields(
+    width: usize,
+    height: usize,
+    frames: &[Vec<u8>],
+    field: &dyn Fn(usize, usize, usize) -> FrameField,
+) -> Vec<RegionOut> {
+    learn_fields_seeing(width, height, frames, field, false)
+}
+
+/// `learn_fields`, with the last frame as the appearance reference when `with_reference` is set.
+fn learn_fields_seeing(
+    width: usize,
+    height: usize,
+    frames: &[Vec<u8>],
+    field: &dyn Fn(usize, usize, usize) -> FrameField,
+    with_reference: bool,
+) -> Vec<RegionOut> {
+    use crate::kernels::layers::{Field, FieldMotion, Learner};
+    let mut learner = Learner::new(width, height);
+    let (cols, rows) = (learner.cols, learner.rows);
+    let cells = cols * rows;
+    let (confidence, dynamic) = (vec![255u8; cells], vec![0u8; cells]);
+    for (f, pair) in frames.windows(2).enumerate() {
+        let (models, labels) = field(f + 1, cols, rows);
+        let motions: Vec<FieldMotion> = models
+            .iter()
+            .map(|&(x, y)| FieldMotion {
+                x,
+                y,
+                support: 100,
+                confidence: 1.0,
+            })
+            .collect();
+        let field = Field {
+            motions: &motions,
+            labels: &labels,
+            confidence: &confidence,
+            dynamic: &dynamic,
+            cols,
+            rows,
+            difference: 1.0,
+            unknown: false,
+        };
+        assert!(learner.add(&field, &pair[0], &pair[1], None));
+    }
+    let rgba: Vec<u8> = frames
+        .last()
+        .unwrap()
+        .iter()
+        .flat_map(|&v| [v, v, v, 255])
+        .collect();
+    let input = FinishInput {
+        width,
+        height,
+        cell: learner.cell,
+        informative_frames: learner.informative_frames as f64,
+        native_frames: 0.0,
+        row_change: &learner.row_change,
+        col_change: &learner.col_change,
+        col_moving: &learner.col_moving,
+        col_mean: &learner.col_mean,
+        col_gain: &learner.col_gain,
+        horizontal_gain: &learner.horizontal_gain,
+        split: &learner.split,
+        evidence: &learner.evidence,
+        activity: &learner.activity,
+        observations: &learner.observations,
+        pixel_fixed: &learner.pixel_fixed,
+        pixel_moving: &learner.pixel_moving,
+        native_row_change: None,
+        native_col_change: None,
+        reference: with_reference.then(|| Rgba {
+            width,
+            height,
+            data: &rgba,
+        }),
+    };
+    finish(&input, width as f64, height as f64, 1)
+}
+
+/// Textured content: a pattern that changes along both axes, sampled at world position (x, y).
+fn texture(x: usize, y: usize) -> u8 {
+    (((x * 7) ^ (y * 13)) % 97 + 60) as u8
+}
+
+/// Failure case (new_ip_1's header, new_ip_9's glass tab bar, new_mac_1's YouTube masthead and sidebar): a bar
+/// that stays on screen while the page scrolls 4 px a frame, but whose pixels still change a little every frame
+/// (the page shows through it, a title collapses), so its rows' mean change is over the band walk's 0.9 and no
+/// top band is found. The field gives its cells the page's motion in half the frames, as a field does where the
+/// page shows through, so its activity is far above 8 % of the page's. It must be learned as fixed UI, not as a
+/// second scroll layer that the solve then tears into one fragment per state.
+#[test]
+fn a_bar_that_stays_put_while_its_pixels_flicker_is_fixed_ui() {
+    for with_reference in [false, true] {
+        let (moving, fixed) = flickering_bar(&|x, y| texture(x + 500, y), with_reference);
+        assert_eq!(
+            moving.len(),
+            1,
+            "expected one scroll layer, got {moving:?} (fixed {fixed:?})"
+        );
+        assert!(
+            fixed
+                .iter()
+                .any(|r| r.y == 0.0 && r.height == 48.0 && r.width == 96.0),
+            "expected the bar as fixed UI, got fixed {fixed:?}, moving {moving:?}"
+        );
+    }
+}
+
+/// Failure case (pub_2's empty chat margin, 584 × 504 px of black under the app's top bar): an area that stays put
+/// while the page scrolls, but whose only structure is the one line where it meets the bar above. The line's pixels
+/// vote for standing still, the blank ones for nothing, so its votes alone made it a fixed canvas of an empty
+/// image. With an appearance reference it must stay what it was before: a moving region, not screen-fixed UI.
+#[test]
+fn a_blank_area_whose_only_structure_is_one_line_is_not_fixed_ui() {
+    let line = |_: usize, y: usize| if y == 20 { 200 } else { 0 };
+    let (moving, fixed) = flickering_bar(&line, true);
+    assert!(
+        fixed.is_empty() && moving.len() == 2,
+        "expected the blank area to stay a moving region, got moving {moving:?}, fixed {fixed:?}"
+    );
+    // Without a reference there is nothing to look at, and the votes decide as before.
+    let (_, fixed) = flickering_bar(&line, false);
+    assert_eq!(fixed.len(), 1, "{fixed:?}");
+}
+
+/// A 48-row bar painted by `bar(x, y)` stays on screen with a 2-level flicker on top (alternating frames) over a
+/// page scrolling 4 px a frame; the field gives the bar's cells the page's motion in half the frames, as a field
+/// does where the page shows through. Returns the (moving, fixed) region rects.
+fn flickering_bar(
+    bar_paint: &dyn Fn(usize, usize) -> u8,
+    with_reference: bool,
+) -> (Vec<Rect>, Vec<Rect>) {
+    let (w, h, bar) = (96usize, 144usize, 48usize);
+    let frames: Vec<Vec<u8>> = (0..41)
+        .map(|f| {
+            let mut g = vec![0u8; w * h];
+            for y in 0..h {
+                for x in 0..w {
+                    g[y * w + x] = if y < bar {
+                        bar_paint(x, y) + if f % 2 == 0 { 2 } else { 0 }
+                    } else {
+                        texture(x, y + f * 4)
+                    };
+                }
+            }
+            g
+        })
+        .collect();
+    let regions = learn_fields_seeing(
+        w,
+        h,
+        &frames,
+        &|f, cols, rows| {
+            let mut labels = vec![0u8; cols * rows];
+            if f % 2 == 1 {
+                labels[..cols * (bar / 24)].fill(1);
+            }
+            let _ = rows;
+            (vec![(0.0, 4.0), (0.0, 0.0)], labels)
+        },
+        with_reference,
+    );
+    let moving: Vec<_> = regions
+        .iter()
+        .filter(|r| r.kind == Kind::Moving)
+        .map(|r| r.rect)
+        .collect();
+    let fixed: Vec<_> = regions
+        .iter()
+        .filter(|r| r.kind == Kind::Fixed)
+        .map(|r| r.rect)
+        .collect();
+    (moving, fixed)
+}
+
+/// Failure case the other way: a narrower pane that scrolls on its own in more frames than it stands still, beside
+/// a wider pane that scrolls in the rest, is a second scroll layer and stays one.
+#[test]
+fn a_second_pane_that_mostly_scrolls_stays_a_scroll_layer() {
+    let (w, h, split) = (144usize, 144usize, 96usize);
+    let right_moves = |f: usize| f > 12;
+    let frames: Vec<Vec<u8>> = (0..41)
+        .map(|f| {
+            let (left_offset, right_offset) = if right_moves(f) {
+                (12 * 4, (f - 12) * 4)
+            } else {
+                (f * 4, 0)
+            };
+            let mut g = vec![0u8; w * h];
+            for y in 0..h {
+                for x in 0..w {
+                    g[y * w + x] = if x < split {
+                        texture(x, y + left_offset)
+                    } else {
+                        texture(x + 300, y + right_offset)
+                    };
+                }
+            }
+            g
+        })
+        .collect();
+    let regions = learn_fields(w, h, &frames, &|f, cols, rows| {
+        let mut labels = vec![0u8; cols * rows];
+        for y in 0..rows {
+            for x in 0..cols {
+                let right = x * 24 >= split;
+                labels[y * cols + x] = if right == right_moves(f) { 0 } else { 1 };
+            }
+        }
+        (vec![(0.0, 4.0), (0.0, 0.0)], labels)
+    });
+    let moving: Vec<_> = regions
+        .iter()
+        .filter(|r| r.kind == Kind::Moving)
+        .map(|r| r.rect)
+        .collect();
+    assert_eq!(
+        moving.len(),
+        2,
+        "expected both panes as scroll layers, got {moving:?}"
+    );
 }

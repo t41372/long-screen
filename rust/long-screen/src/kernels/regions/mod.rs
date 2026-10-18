@@ -11,8 +11,8 @@
 //! One file per construction stage (mirroring the frozen oracle's stage comments): `bands` (stationary edges +
 //! texture test), `cells` (union-find + grouping), `construct` (per-region mask painting, pane divider, band
 //! expansion, cell granularity), `crops` (native-precision edges and crop/solid), `merge` (sliver/sticky-header
-//! cleanup and the final filter), `atlas` (`RegionAtlas` pixel labelling). `finish()`, the top-level orchestrator,
-//! and the shared types/helpers stay here.
+//! cleanup, freezing stationary regions, and the final filter), `atlas` (`RegionAtlas` pixel labelling).
+//! `finish()`, the top-level orchestrator, and the shared types/helpers stay here.
 
 use crate::kernels::geometry::Rect;
 
@@ -34,7 +34,7 @@ use construct::{apply_cell_granularity, apply_pane_divider, build_regions, expan
 use crops::{
     assign_native_crops, compute_native_edges, recompute_bounding_boxes, refine_vertical_cut_crops,
 };
-use merge::{cleanup_sticky_headers, finalize, merge_small_regions};
+use merge::{cleanup_sticky_headers, finalize, freeze_stationary_regions, merge_small_regions};
 
 /// Borrowed RGBA8 image (`RGBA` in types.ts), used only for texture/appearance evidence.
 pub struct Rgba<'a> {
@@ -62,6 +62,9 @@ pub struct FinishInput<'a> {
     pub evidence: &'a [f64],
     pub activity: &'a [f64],
     pub observations: &'a [f64],
+    /// `Learner::pixel_fixed`/`pixel_moving`, per analysis pixel.
+    pub pixel_fixed: &'a [f64],
+    pub pixel_moving: &'a [f64],
     pub native_row_change: Option<&'a [f64]>,
     pub native_col_change: Option<&'a [f64]>,
     pub reference: Option<Rgba<'a>>,
@@ -287,6 +290,14 @@ pub fn finish(
         cell,
         factor as f64,
         reference,
+    );
+    freeze_stationary_regions(
+        &mut regions,
+        &valid,
+        input.pixel_fixed,
+        input.pixel_moving,
+        reference,
+        factor as f64,
     );
     finalize(regions, &valid, edges.content)
 }

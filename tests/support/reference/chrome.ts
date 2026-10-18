@@ -84,3 +84,47 @@ export function stickyOcclusions(
   if (edge === undefined || edge - start > r.height * .23) return carry;
   return [{ x: r.x, y: r.y, width: r.width, height: edge - r.y + 1 }];
 }
+/** Visible structure of a masked area on a native frame (rust/long-screen/src/kernels/chrome.rs, visible_structure):
+ *  edge points across rows and across columns, sampled every 2nd analysis row and column where the analysis pixels
+ *  on both sides are in the mask, and the distinct sampled rows and columns they lie on. */
+export function visibleStructure(
+  image: RGBA,
+  mask: Uint8Array,
+  maskWidth: number,
+  maskHeight: number,
+  factor: number,
+): { vertical: number; horizontal: number; rows: number; cols: number } {
+  const { width: w, height: h, data } = image;
+  const step = Math.max(1, Math.round(factor));
+  const inside = (x: number, y: number) => x >= 0 && y >= 0 && x < maskWidth && y < maskHeight && mask[y * maskWidth + x] !== 0;
+  const red = (x: number, y: number) => data[(y * w + x) * 4];
+  let vertical = 0, horizontal = 0, rows = 0;
+  const cols = new Uint8Array(maskWidth);
+  for (let y = 1; y < maskHeight - 1; y += 2) {
+    const ny = Math.floor(y * factor);
+    let rowHit = false;
+    for (let x = 1; x < maskWidth - 1; x += 2) {
+      if (!inside(x, y)) continue;
+      const nx = Math.floor(x * factor);
+      let hit = false;
+      if (inside(x, y - 1) && inside(x, y + 1) && ny - step >= 0 && ny + step < h && nx < w) {
+        if (Math.abs(red(nx, ny - step) - red(nx, ny + step)) > 12) {
+          vertical++;
+          hit = true;
+        }
+      }
+      if (inside(x - 1, y) && inside(x + 1, y) && nx - step >= 0 && nx + step < w && ny < h) {
+        if (Math.abs(red(nx - step, ny) - red(nx + step, ny)) > 12) {
+          horizontal++;
+          hit = true;
+        }
+      }
+      if (hit) {
+        rowHit = true;
+        cols[x] = 1;
+      }
+    }
+    if (rowHit) rows++;
+  }
+  return { vertical, horizontal, rows, cols: cols.reduce((n, c) => n + c, 0) };
+}

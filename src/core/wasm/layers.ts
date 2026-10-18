@@ -19,6 +19,8 @@ export interface LearnerAccumulators {
   rowChange: Float64Array;
   colChange: Float64Array;
   colMoving: Float64Array;
+  pixelFixed: Float64Array;
+  pixelMoving: Float64Array;
   colMean: Float64Array;
   colGain: Float64Array;
   horizontalGain: Float64Array;
@@ -44,8 +46,10 @@ const LEARNER_ARRAYS = [
   'nativeColChange',
   'nativeColMean',
   'colMoving',
+  'pixelFixed',
+  'pixelMoving',
 ] as const;
-// Kept in sync with `rust/wasm/src/layers.rs::learner_array`'s match arms (selectors 0..=14); their count is
+// Kept in sync with `rust/wasm/src/layers.rs::learner_array`'s match arms (selectors 0..=16); their count is
 // asserted against the Rust side once at `Core` construction (`assertLayout`, `ls_layout` selector 12), but the
 // forEach below trusts this array's *order* too, which no runtime check can see — change both sides together.
 if (LEARNER_ARRAYS.length !== LEARNER_ARRAY_COUNT) {

@@ -26,6 +26,8 @@ export interface FinishAccumulators {
   evidence: Float64Array;
   activity: Float64Array;
   observations: Float64Array;
+  pixelFixed: Float64Array;
+  pixelMoving: Float64Array;
   nativeRowChange?: Float64Array;
   nativeColChange?: Float64Array;
 }
@@ -61,6 +63,8 @@ export function finishRegions(
     acc.nativeColChange ? acc.nativeColChange.length * 8 : 0,
     referenceBytes,
     width * 8,
+    width * height * 8,
+    width * height * 8,
   ];
   const [
     desc,
@@ -77,6 +81,8 @@ export function finishRegions(
     nativeColChangePtr,
     referenceScratch,
     colMovingPtr,
+    pixelFixedPtr,
+    pixelMovingPtr,
   ] = core.scratch(sizes);
   core.writeBytes(rowChangePtr, acc.rowChange);
   core.writeBytes(colChangePtr, acc.colChange);
@@ -88,6 +94,8 @@ export function finishRegions(
   core.writeBytes(evidencePtr, acc.evidence);
   core.writeBytes(activityPtr, acc.activity);
   core.writeBytes(observationsPtr, acc.observations);
+  core.writeBytes(pixelFixedPtr, acc.pixelFixed);
+  core.writeBytes(pixelMovingPtr, acc.pixelMoving);
   if (acc.nativeRowChange) core.writeBytes(nativeRowChangePtr, acc.nativeRowChange);
   if (acc.nativeColChange) core.writeBytes(nativeColChangePtr, acc.nativeColChange);
   const referencePtr = reference ? core.placeFrame(reference, referenceScratch) : 0;
@@ -115,6 +123,8 @@ export function finishRegions(
   view.setFloat64(96, nativeHeight, true);
   view.setUint32(104, factor, true);
   view.setUint32(108, colMovingPtr, true);
+  view.setUint32(112, pixelFixedPtr, true);
+  view.setUint32(116, pixelMovingPtr, true);
   return readRegions(core, exports, core.check(exports.ls_regions_finish(desc), 'regions finish'), width, height, factor);
 }
 
