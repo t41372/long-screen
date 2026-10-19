@@ -1,24 +1,43 @@
-# Long Screen
+<h1 align="center"><img width="640" alt="Long Screen" src=".github/assets/banner.png" /></h1>
 
-[![crates.io](https://img.shields.io/crates/v/long-screen)](https://crates.io/crates/long-screen) [![docs.rs](https://img.shields.io/docsrs/long-screen)](https://docs.rs/long-screen) [![PyPI](https://img.shields.io/pypi/v/long-screen)](https://pypi.org/project/long-screen/) [![npm](https://img.shields.io/npm/v/long-screen)](https://www.npmjs.com/package/long-screen) [![License: MIT](https://img.shields.io/github/license/t41372/long-screen)](LICENSE)
+<p align="center"><b>Turn a screen recording into one big screenshot, whatever path you took.</b><br />Recover a sparse 2D canvas from a local screen recording.</p>
 
-**Recover a sparse 2D canvas from a local screen recording.**
+<p align="center">
+  <a href="https://crates.io/crates/long-screen"><img alt="crates.io" src="https://img.shields.io/crates/v/long-screen?logo=rust&logoColor=white&color=dea584" /></a>
+  <a href="https://docs.rs/long-screen"><img alt="docs.rs" src="https://img.shields.io/docsrs/long-screen?logo=docsdotrs" /></a>
+  <a href="https://pypi.org/project/long-screen/"><img alt="PyPI" src="https://img.shields.io/pypi/v/long-screen?logo=pypi&logoColor=white&color=3776ab" /></a>
+  <a href="https://www.npmjs.com/package/long-screen"><img alt="npm" src="https://img.shields.io/npm/v/long-screen?logo=npm&color=cb3837" /></a>
+  <a href="https://codspeed.io/t41372/long-screen"><img alt="CodSpeed" src="https://img.shields.io/endpoint?url=https://codspeed.io/badge.json" /></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/t41372/long-screen" /></a>
+</p>
+
+<p align="center">
+  <a href="https://long-screen.yi-ting.com"><b>Open the app</b></a> ·
+  <a href="#use-it-outside-the-browser">Command line, Rust, Python, npm</a> ·
+  <a href="#how-it-works">How it works</a> ·
+  <a href="#contributing-and-documentation">Docs</a>
+</p>
+
+<p align="center"><img width="960" height="676" alt="A screen recording of a Wikipedia article, panned in two dimensions, dropped on the app and turned into one full-size screenshot" src="https://github.com/user-attachments/assets/798bdb32-182c-4994-8958-7f5aafd5e6fa" /></p>
 
 **Use it in your browser: [long-screen.yi-ting.com](https://long-screen.yi-ting.com)** (also at [long-screen.pages.dev](https://long-screen.pages.dev)). Nothing is uploaded; the recording and the print stay on your own device, and once the page has loaded it keeps working offline. The hosted site counts anonymous visits with Cloudflare Web Analytics, and how often a print is started and how it ends with PostHog (settings, core version, the recording's codec, height and length, a rough frame count and diagnostic codes; no cookies, nothing from the recording, the print or file names, and nothing at all under Do Not Track or Global Privacy Control). Its Content Security Policy lets the page connect nowhere else, and self-hosted copies and the portable build count nothing.
 
-<img width="960" height="676" alt="A screen recording of a Wikipedia article, panned in two dimensions, dropped on the app and turned into one full-size screenshot" src="https://github.com/user-attachments/assets/798bdb32-182c-4994-8958-7f5aafd5e6fa" />
-
 Record a web page, an app or a design file while you move around it — scroll, pan, go diagonally, loop back, pause, shake — and Long Screen puts everything the recording showed back in place as one native-size PNG. Fixed window chrome and status bars are restored too. Everything runs on your own machine: there is no upload endpoint, cloud inference, OCR or model download.
+
+- **Any path.** Scroll, pan, go diagonally or circle back; the recording only has to show every part you want in the picture.
+- **Native size.** The print keeps the recording's pixels; it is never silently downscaled.
+- **Private.** Decoding and reconstruction run in your browser or on your machine.
+- **Honest about gaps.** Areas nothing showed stay transparent, and pieces it cannot place become separate fragments instead of being forced into the print.
+- **One engine, five forms.** The web app, a command line, a Rust library, a Python package and a TypeScript package all run the same Rust core.
 
 The main form is a static web app: a thin layer of TypeScript (UI, Worker RPC, browser I/O, orchestration) wraps a Rust core compiled to WebAssembly, which holds every algorithm — motion layering, historical relocalization, an on-disk pose graph, native-resolution tile composition and quality diagnostics. The same engine also runs [outside the browser](#use-it-outside-the-browser), as a command line, a Rust library, a Python package and a TypeScript package for other web pages.
 
+> [!IMPORTANT]
 > Think of this as a visual reconstruction system with inspectable evidence, not a page recoverer that can prove correctness for any arbitrary screen recording. Automatic layering, relocalization, and dynamic-region detection are still heuristic. **A completed run does not mean the result is proven correct.** For the range of what's actually tested and what's not implemented, see [Capabilities](docs/CAPABILITIES.md) and [Testing notes](docs/TESTING.md) (both in Chinese).
 
 ## Try it
 
-The quickest way is the hosted app at [long-screen.yi-ting.com](https://long-screen.yi-ting.com). To run it from a checkout instead:
-
-Requires [Deno](https://deno.com) 2.x and [rustup](https://rustup.rs). No `npm install`, no API key, and no internet connection needed at runtime. The build compiles the Rust core: `rust/rust-toolchain.toml` pins the Rust version, the wasm32 target, and the required components, which rustup downloads and installs automatically on the first build.
+The quickest way is the hosted app at [long-screen.yi-ting.com](https://long-screen.yi-ting.com). To run it from a checkout instead, you need [Deno](https://deno.com) 2.x and [rustup](https://rustup.rs):
 
 ```sh
 deno task start      # builds automatically if dist/ is missing, then serves the app on port 4173
@@ -26,19 +45,33 @@ deno task start      # builds automatically if dist/ is missing, then serves the
 
 Open `http://localhost:4173`. The “Play a sample recording” chip in the intro feeds the printer a sample recording that wanders around a page (`static/demo/sample.mp4`), or drop your own screen recording onto its screen.
 
+No `npm install`, no API key, and no internet connection needed at runtime. The build compiles the Rust core: `rust/rust-toolchain.toml` pins the Rust version, the wasm32 target, and the required components, which rustup downloads and installs automatically on the first build.
+
 ### Using the app
 
-Drop a screen recording on the printer's screen → optionally mark independent motion regions under Settings → Run → pick a canvas, check the quality mask and the log → take the PNG. The recording can move along any path, as long as it shows every part you want in the picture.
+1. Drop a screen recording on the printer's screen.
+2. Optionally, mark independent motion regions under Settings.
+3. Press Run.
+4. Pick a canvas, and check the quality mask and the log.
+5. Take the PNG.
+
+The recording can move along any path, as long as it shows every part you want in the picture.
 
 The interface language follows your browser's preferred languages (any `zh-*` variant selects Chinese, otherwise English); a language menu in the header switches it, and the choice is saved in the browser (localStorage) for later visits.
+
+The browser keeps only the latest print, for 24 hours, so a reload or a crash does not lose it; running again or pressing Clear deletes it. Download what you want to keep.
+
+<details>
+<summary><b>How the app reads and places a recording</b></summary>
 
 After you pick a file, the app decodes its first frame with WebCodecs to read the actual codec, dimensions, rotation and frame count; it doesn't rely on whether the browser's `<video>` element can render that container. The native player is only used for the “Approximate · native seek” mode and for viewing the original moment.
 
 Automatic mode keeps moving content and fixed UI separate; multiple independent panes each get their own coordinate system. Observations whose position can't be confirmed become exportable independent fragments rather than being forced onto the end of the main print; if a later revisit provides reliable evidence, the fragment is reattached as a whole and recorded. Transparent areas mean nothing was observed there, not a white page.
 
-The browser keeps only the latest print, for 24 hours, so a reload or a crash does not lose it; running again or pressing Clear deletes it. Download what you want to keep.
+</details>
 
-### Export
+<details>
+<summary><b>Export: PNG, paged export, crop and the project ZIP</b></summary>
 
 **Current canvas PNG / paged export**: if the size fits, it's streamed and encoded directly to PNG; if it exceeds the compatible size, multiple native-size PNGs are output, with world coordinates and a 32px overlap noted. It never silently downscales.
 
@@ -48,19 +81,30 @@ The browser keeps only the latest print, for 24 hours, so a reload or a crash do
 
 Exports write to a user-chosen file when possible; if that API isn't supported, they write a temporary file via OPFS and then download it. When there's no disk write path available, the export fails explicitly rather than assembling the entire output in RAM.
 
-### Install it as an app
+</details>
+
+<details>
+<summary><b>Install it as an app</b></summary>
 
 The app can be installed as a PWA: where the browser can install it, an **Install app** key appears in the header. Chrome and Edge (Android and desktop) show their own install prompt; on iPhone, iPad and Mac Safari, which have no install API, the key shows the Share → Add to Home Screen (or File → Add to Dock) steps. An installed copy opens and runs without a connection once it has been opened online once: a service worker (`src/sw.ts`) keeps a copy of the current build. Online, every load still comes from the network, so a new deploy reaches users on their next visit.
 
-### Plain HTTP and phones
+</details>
+
+<details>
+<summary><b>Plain HTTP and phones</b></summary>
 
 The app uses ES modules and Workers, so it needs a static file server — you can't just double-click `dist/index.html`. **Local development works over plain HTTP on localhost, no certificate setup needed.** A phone can also open the app over the computer's LAN HTTP IP and test a local video using “Approximate · native seek” mode (the browser must be able to play that video; frames may be dropped). Browsers generally only expose WebCodecs frame-accurate decoding and OPFS disk export on secure origins; `localhost` counts as a secure origin, a LAN IP does not, so verifying these capabilities from a phone requires HTTPS. The app enables features based on actual API capability and won't refuse to run just because it's HTTP; these browser restrictions have nothing to do with uploading — all processing still happens locally.
 
-### Without a server: the portable build
+</details>
+
+<details>
+<summary><b>Without a server: the portable build</b></summary>
 
 For situations with no server and no easy way to run one yourself (e.g. a locked-down corporate laptop), use `deno task build:portable`: it first runs `deno task build:prod --out dist-portable/.site` (leaving `dist/` alone), then inlines the page, styles, Workers, and the single-threaded Wasm core into `dist-portable/long-screen/long-screen.html`, and zips it up together with usage instructions, the license and the third-party notices. Double-click it in Chrome / Edge to open — no software install, no internet connection needed. The approach rewrites each bundled artifact from ES modules into classic scripts, and replaces `Worker` and `fetch` in the page and in Workers so they return the embedded script and Wasm directly instead of requesting files from disk (see the comment at the top of `scripts/build-portable.ts` for why).
 
 Trade-offs: a `file://` page can't be cross-origin isolated, so the Rust core only runs a single-threaded build (results are unchanged; on real screen recordings in test_case it isn't slower than the multi-threaded build — the bottleneck is decoding and I/O); OPFS isn't available, so export goes through “Save As”, falling back to an in-memory download (capped at 1 GB) if that dialog is disabled by policy; only Chromium-based browsers are supported — WebKit can't read the user's picked video file from a Worker under `file://`, so a screen recording cannot be processed there. Opened in any other browser, the page says at the top to use Chrome or Edge instead; if its script fails to load or throws during start-up, a notice at the top says so too, rather than leaving a page that does nothing (a Worker error after start-up is still reported by the app's own error message).
+
+</details>
 
 ## Use it outside the browser
 
@@ -84,7 +128,16 @@ cargo install long-screen
 long-screen recording.mov -o print.png --json report.json
 ```
 
-It writes the print, the canvas the web app shows first, as one PNG (fragments it could not place go next to it as `print-fragment-<n>.png` in the app's order, or use `--out-dir` for every canvas), progress and warnings on stderr, and with `--json` a report of the diagnostics, canvases and timings; `--lang zh`, `--threads`, `--memory-mb` and `--help` for the rest. Exit codes: 0 complete, 3 partial result, 1 the run failed, 4 the video could not be opened, 5 an output could not be written, 2 any other error.
+It writes the print, the canvas the web app shows first, as one PNG (fragments it could not place go next to it as `print-fragment-<n>.png` in the app's order, or use `--out-dir` for every canvas), progress and warnings on stderr, and with `--json` a report of the diagnostics, canvases and timings; `--lang zh`, `--threads`, `--memory-mb` and `--help` for the rest.
+
+| Exit code | Meaning                        |
+| --------- | ------------------------------ |
+| 0         | complete                       |
+| 3         | partial result                 |
+| 1         | the run failed                 |
+| 4         | the video could not be opened  |
+| 5         | an output could not be written |
+| 2         | any other error                |
 
 On macOS and Windows it decodes with the system decoder (AVFoundation, Media Foundation). On Linux, and for files the system decoder cannot read (WebM on macOS, for example), it runs a user-installed `ffmpeg` and `ffprobe` (e.g. `sudo apt install ffmpeg`); ffmpeg is not bundled. Given the same frames, its result matches the web app's exactly.
 
@@ -177,11 +230,13 @@ How the production site is set up on Cloudflare Pages is in [CONTRIBUTING.md](CO
 
 [CONTRIBUTING.md](CONTRIBUTING.md) explains how to build and test a checkout, how to propose a change, and how the web app and the packages are released. [AGENTS.md](AGENTS.md) collects the project's rules.
 
-- [Capabilities](docs/CAPABILITIES.md): what is tested and what is not implemented.
-- [Architecture](docs/ARCHITECTURE.md): the pipeline, its invariants, and which module owns what.
-- [Testing](docs/TESTING.md): scenario ground truth, ratchets, fingerprints and the known browser failures.
-- [Export format](docs/FORMAT.md): the exported package and the persisted rows.
-- [Releasing](docs/RELEASING.md): the registries, step by step.
+| Document                             | What it covers                                                            |
+| ------------------------------------ | ------------------------------------------------------------------------- |
+| [Capabilities](docs/CAPABILITIES.md) | What is tested and what is not implemented.                               |
+| [Architecture](docs/ARCHITECTURE.md) | The pipeline, its invariants, and which module owns what.                 |
+| [Testing](docs/TESTING.md)           | Scenario ground truth, ratchets, fingerprints and known browser failures. |
+| [Export format](docs/FORMAT.md)      | The exported package and the persisted rows.                              |
+| [Releasing](docs/RELEASING.md)       | The registries, step by step.                                             |
 
 The files under `docs/` are in Chinese.
 
