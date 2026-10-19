@@ -5,15 +5,32 @@
  *  symlink test, which this preserves). No caching, no upload endpoint. */
 import { serveDir } from '@std/http/file-server';
 import { fromFileUrl, isAbsolute, join, normalize, relative, resolve, SEPARATOR } from '@std/path';
+// Where the page may load code from and send data to: its own origin, plus Cloudflare Web Analytics, whose beacon
+// Cloudflare Pages injects into the deployed page (static.cloudflareinsights.com serves it, cloudflareinsights.com
+// receives the anonymous page view), and PostHog (us.i.posthog.com receives the usage events src/ui/analytics.ts
+// sends on the hosted site; its SDK is bundled into assets/analytics.js, so no script comes from there). A recording
+// and its print stay on the device; this makes the browser enforce that the page cannot send anything anywhere else. 'wasm-unsafe-eval' lets the core compile; the hashes admit the
+// `i18n-pending` scripts inlined in static/index.html and static/device-check.html (tests/unit/server.test.ts
+// recomputes them); 'unsafe-inline' styles cover one inline SVG style and style attributes set from the catalogues.
+const CONTENT_SECURITY_POLICY: string = [
+  "default-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval' 'sha256-72b/DD+w57zZTw1/sy4gku92PAJe1ygBgaDKzY/Zddk=' 'sha256-PGCb9wneg1HTtNXK0aq4Xv6WfzgUe5QpGX9e1U/Je6A=' https://static.cloudflareinsights.com",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "media-src 'self' blob:",
+  "connect-src 'self' https://cloudflareinsights.com https://us.i.posthog.com",
+  "form-action 'none'",
+].join('; ');
 // Cross-origin isolation grants SharedArrayBuffer, which the threaded core needs (src/core/wasm/loader.ts::planCore).
 // Everything the app loads is same-origin, so these cost nothing; without them the single-thread core runs. Mirrored
 // exactly in static/_headers for hosted deploys (Cloudflare Pages / Netlify).
-const RESPONSE_HEADERS = [
+export const RESPONSE_HEADERS = [
   'cross-origin-opener-policy: same-origin',
   'cross-origin-embedder-policy: require-corp',
   'cross-origin-resource-policy: same-origin',
   'cache-control: no-cache',
   'x-content-type-options: nosniff',
+  `content-security-policy: ${CONTENT_SECURITY_POLICY}`,
 ];
 export interface ServerOptions {
   /** Directory to serve. */

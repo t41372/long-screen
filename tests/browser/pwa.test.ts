@@ -27,7 +27,14 @@ await Deno.mkdir(results, { recursive: true });
  *  worker), and can change what it serves: `marker` is added to the page's body, `nextBuild` replaces the build hash in
  *  sw.js (what a new deploy looks like to the browser). */
 function server() {
-  const handler = createHandler({ root: distTest });
+  // Without the CSP: the string predicates below are evaluated in the page, which it forbids (tests/browser/support.ts).
+  const app = createHandler({ root: distTest });
+  const handler = async (request: Request) => {
+    const response = await app(request);
+    const headers = new Headers(response.headers);
+    headers.delete('content-security-policy');
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  };
   const state = { marker: '', nextBuild: '' };
   let port = 0, current: Deno.HttpServer<Deno.NetAddr> | undefined;
   const serve = () => {

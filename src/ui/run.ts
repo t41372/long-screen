@@ -7,6 +7,7 @@ import { $, NO_COMPRESSION_STREAM, phaseName, setProgress, setReceiptOpen, timeT
 import { preview } from './video.ts';
 import { call } from './rpc.ts';
 import { flightStart } from './flight.ts';
+import { runEnded, runStarted, runStopped } from './analytics.ts';
 import { storeHash } from './source-file.ts';
 import { t } from '../i18n/page.ts';
 import { DEFAULT_SETTINGS, type Project, type Settings } from '../types.ts';
@@ -174,6 +175,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
         compute: $<HTMLSelectElement>('compute').value,
         regions: demo ? [] : state.manualRegions,
       } as Settings;
+      runStarted(settings, !!demo || state.selectedFile?.name === t('ui.demo.fileName'), demo ? undefined : state.mediaInfo);
       const project = await call('start', { file: state.selectedFile, demo, settings, info: state.mediaInfo });
       // Set state.project as soon as the worker hands it back: getProject() and the viewer's tile callback
       // read state.project synchronously, and the file-hash await below must not leave them seeing the
@@ -189,6 +191,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
       }
       updateProject(state.project);
     } catch (error) {
+      runEnded('start_failed');
       setBusy(false);
       $('status-title').textContent = t('ui.run.startFailedStatus');
       $('progress-message').textContent = String(error);
@@ -240,6 +243,7 @@ export function createRun(state: AppState, viewer: TiledViewer, canvases: Canvas
     };
     $('stop-btn').onclick = () => {
       void call('stop').then(() => {
+        runStopped();
         // Stopping also resumes a paused run (it goes on to put together and save what it has): the timer runs again.
         if (paused) {
           pausedFor += performance.now() - pausedAt;

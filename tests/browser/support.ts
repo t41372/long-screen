@@ -7,8 +7,14 @@ export interface Harness {
   base: string;
   errors: string[];
   external: string[];
+  /** Every Content-Security-Policy violation the page or its workers reported (the report bodies, as sent). */
+  cspReports: string[];
   close(): Promise<void>;
 }
+/** Where the harness asks browsers to report CSP violations: every response's policy gets `report-uri` pointing here.
+ *  A blocked resource is otherwise visible only in the browser's own console, which Playwright does not expose for
+ *  workers, and the app falls back quietly from some of them (frames convert in-thread when a worker cannot start). */
+const CSP_REPORTS = '/__csp-report';
 /** The suite builds and serves its own dev build (with testkit.js and harness.html) in dist-test/, so it never
  *  replaces dist/ — a production dist/ from `deno task build:prod` stays exactly as it was built for a deploy, and a
  *  portable or production build never leaves these tests without their harness. */
@@ -36,13 +42,29 @@ export async function harness(
      *  assertions keep working against a browser whose default locale (Playwright otherwise defaults to en-US)
      *  would now select the English UI. */
     locale?: string;
+    /** Serve the app's Content-Security-Policy. Off by default, the header is left out: Playwright runs a string
+     *  predicate (`waitForFunction('…')`, used throughout the suite) by evaluating the string in the page, which the
+     *  policy forbids, and its `bypassCSP` option does not lift a header policy in WebKit. tests/browser/csp.test.ts
+     *  turns it on and waits with functions instead. */
+    csp?: boolean;
   } = {},
 ): Promise<Harness> {
   await rebuildIfStale();
-  const server = Deno.serve(
-    { port: 0, hostname: options.hostname || '127.0.0.1', onListen: () => {} },
-    createHandler({ root: distTest, mounts: { '/fixtures/': `${root}tests/fixtures`, '/test_case/': `${root}test_case` } }),
-  );
+  const handler = createHandler({ root: distTest, mounts: { '/fixtures/': `${root}tests/fixtures`, '/test_case/': `${root}test_case` } });
+  const cspReports: string[] = [];
+  const server = Deno.serve({ port: 0, hostname: options.hostname || '127.0.0.1', onListen: () => {} }, async (request) => {
+    if (new URL(request.url).pathname === CSP_REPORTS) {
+      cspReports.push(await request.text());
+      return new Response(null, { status: 204 });
+    }
+    const response = await handler(request);
+    const policy = response.headers.get('content-security-policy');
+    if (!policy) return response;
+    const headers = new Headers(response.headers);
+    if (options.csp) headers.set('content-security-policy', `${policy}; report-uri ${CSP_REPORTS}`);
+    else headers.delete('content-security-policy');
+    return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+  });
   const base = `http://${options.hostname || '127.0.0.1'}:${server.addr.port}`;
   const contextOptions = {
     viewport: options.viewport || { width: 1440, height: 1000 },
@@ -87,6 +109,7 @@ export async function harness(
     base,
     errors,
     external,
+    cspReports,
     close: async () => {
       await context.close();
       await browser.close();

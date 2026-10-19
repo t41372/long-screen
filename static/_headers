@@ -8,7 +8,13 @@
 # The `/*` block mirrors RESPONSE_HEADERS in main.ts's dev server exactly. Cross-origin isolation (COOP/COEP/CORP) is
 # required for SharedArrayBuffer, which the threaded Wasm core needs (src/core/wasm/loader.ts::planCore). Every
 # resource the app loads is same-origin, so these headers cost nothing; without them the app falls back to the
-# single-thread core.
+# single-thread core. The one cross-origin script, the Cloudflare Web Analytics beacon that Pages injects, is served
+# with `Cross-Origin-Resource-Policy: cross-origin`, so isolation admits it.
+#
+# `Content-Security-Policy` lets the page load code only from its own origin and that beacon, and send data only to its
+# own origin, Cloudflare Web Analytics and PostHog (the usage counter, src/ui/analytics.ts), so the browser enforces that a recording and its print stay on the device.
+# main.ts explains each source; tests/unit/server.test.ts checks this block against main.ts and the inline-script
+# hashes against static/*.html, and tests/browser/csp.test.ts checks that it blocks nothing the app needs.
 #
 # `Cache-Control: no-cache` lets a browser keep a copy but makes it revalidate before every use (a 304 when nothing
 # changed). dist/assets/* keep the same filenames across deploys (scripts/build.ts does not content-hash them), so
@@ -22,6 +28,7 @@
   Cross-Origin-Resource-Policy: same-origin
   X-Content-Type-Options: nosniff
   Cache-Control: no-cache
+  Content-Security-Policy: default-src 'self'; script-src 'self' 'wasm-unsafe-eval' 'sha256-72b/DD+w57zZTw1/sy4gku92PAJe1ygBgaDKzY/Zddk=' 'sha256-PGCb9wneg1HTtNXK0aq4Xv6WfzgUe5QpGX9e1U/Je6A=' https://static.cloudflareinsights.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' https://cloudflareinsights.com https://us.i.posthog.com; form-action 'none'
 
 # Belt-and-braces content type for the Wasm core builds: some hosts' built-in MIME inference falls back to
 # application/octet-stream for .wasm, which WebAssembly.instantiateStreaming() refuses to compile from directly.

@@ -19,6 +19,7 @@ import { createCrop } from './crop.ts';
 import { flightEnd, flightProgress, takeInterruptedFlight } from './flight.ts';
 import { MEMORY_EXPORT_LIMIT } from '../export/target.ts';
 import { wireInstall } from './install.ts';
+import { runEnded, runInterrupted } from './analytics.ts';
 
 translatePage();
 const state = createState();
@@ -148,6 +149,7 @@ on('project', (m) => run.updateProject(m.data));
 on('diagnostic', (m) => diagnostics.addDiagnostic(m.data));
 on('finished', (m) => {
   flightEnd();
+  runEnded('finished', m.data);
   run.updateProject(m.data);
   run.setBusy(false);
   void canvases.refreshCanvases(true).then(() => {
@@ -172,6 +174,7 @@ on('finished', (m) => {
 });
 on('fatal', (m) => {
   flightEnd();
+  runEnded('error', state.project);
   run.setBusy(false);
   toast(m.error, true);
   diagnostics.addDiagnostic({ code: 'WORKER_ERROR', severity: 'error', message: m.error });
@@ -182,6 +185,7 @@ on('export-progress', (m) => {
 });
 onError((message) => {
   flightEnd();
+  runEnded('error', state.project);
   run.setBusy(false);
   toast(t('ui.main.workerErrorToast', { message }), true);
 });
@@ -223,6 +227,7 @@ function reportInterruptedRun(): void {
   if (!interrupted) {
     return;
   }
+  runInterrupted(interrupted.phase, interrupted.frames);
   const where = interrupted.phase
     ? t('ui.main.interruptedPhaseWhere', { phase: phaseName(interrupted.phase), frames: interrupted.frames ?? 0 })
     : t('ui.main.interruptedStartPhase');

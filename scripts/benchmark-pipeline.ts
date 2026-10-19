@@ -587,7 +587,8 @@ function metricDelta(before: BrowserMetricSet, after: BrowserMetricSet, names: s
 
 async function waitForHarness(page: Page, base: string): Promise<void> {
   await page.goto(`${base}/harness.html`, { waitUntil: 'load' });
-  await page.waitForFunction('!!window.longScreenKit');
+  // A function, not a string: the page's CSP forbids evaluating strings, which is how Playwright runs a string predicate.
+  await page.waitForFunction(() => 'longScreenKit' in globalThis);
 }
 
 async function runPass(

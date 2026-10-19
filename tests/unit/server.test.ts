@@ -1,5 +1,6 @@
 import { assert, assertEquals } from '@std/assert';
-import { createHandler, newestSource, rebuildTarget } from '../../main.ts';
+import { encodeBase64 } from '@std/encoding/base64';
+import { createHandler, newestSource, rebuildTarget, RESPONSE_HEADERS } from '../../main.ts';
 const root = await Deno.makeTempDir();
 await Deno.writeTextFile(`${root}/index.html`, '<!doctype html><title>t</title>');
 await Deno.writeFile(`${root}/data.bin`, Uint8Array.from({ length: 1000 }, (_, i) => i & 255));
@@ -48,6 +49,31 @@ Deno.test('server: a 304 Not Modified answer still carries COOP/COEP/CORP and no
   assertEquals(revalidated.headers.get('cross-origin-embedder-policy'), 'require-corp');
   assertEquals(revalidated.headers.get('cross-origin-resource-policy'), 'same-origin');
   assertEquals(revalidated.headers.get('x-content-type-options'), 'nosniff');
+});
+// static/_headers is what Cloudflare Pages sends; RESPONSE_HEADERS is what the dev server sends and what
+// tests/browser/csp.test.ts runs the app under. If the two drift, that test passes against a policy that is not the
+// deployed one. The CSP admits each inline
+// <script> in static/*.html by its hash, so an edited script with a stale hash would be blocked without any error a
+// visitor sees.
+Deno.test('server: static/_headers sends exactly the dev server headers, and the CSP admits each inline script', async () => {
+  const lines = (await Deno.readTextFile(new URL('../../static/_headers', import.meta.url))).split('\n');
+  const deployed: string[] = [];
+  for (const line of lines.slice(lines.indexOf('/*') + 1)) {
+    if (!line.startsWith('  ')) break;
+    const i = line.indexOf(':');
+    deployed.push(`${line.slice(0, i).trim().toLowerCase()}: ${line.slice(i + 1).trim()}`);
+  }
+  assertEquals(deployed.sort(), [...RESPONSE_HEADERS].sort());
+  const csp = deployed.find((header) => header.startsWith('content-security-policy:'));
+  assert(csp, 'static/_headers sets a Content-Security-Policy');
+  const scriptSrc = csp.split(';').find((directive) => directive.trim().startsWith('script-src')) ?? '';
+  for (const page of ['index.html', 'device-check.html', 'harness.html']) {
+    const html = await Deno.readTextFile(new URL(`../../static/${page}`, import.meta.url));
+    for (const [, script] of html.matchAll(/<script>([\s\S]*?)<\/script>/g)) {
+      const hash = encodeBase64(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(script)));
+      assert(scriptSrc.includes(`'sha256-${hash}'`), `static/${page}: the inline script hash 'sha256-${hash}' is missing from script-src`);
+    }
+  }
 });
 Deno.test('server: byte ranges for large video files, including suffix and open-ended ranges', async () => {
   const part = await get('/data.bin', { range: 'bytes=10-19' });

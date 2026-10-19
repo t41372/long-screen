@@ -80,8 +80,9 @@ async function prepare(): Promise<void> {
   await deno(['check', '--config', config, typed]);
 }
 
-/** Serves the consumer, the built package and the sample. Without isolation, the COOP/COEP/CORP headers the dev
- *  server always sends are taken off again, as on a host that sends none. */
+/** Serves the consumer, the built package and the sample. The app's own Content-Security-Policy is taken off: the
+ *  consumer stands for someone else's site, and the test's string predicates would break under it. Without isolation,
+ *  the COOP/COEP/CORP headers the dev server always sends are taken off too, as on a host that sends none. */
 function serve(isolated: boolean): { base: string; close: () => Promise<void> } {
   const handler = createHandler({
     root: `${root}tests/package`,
@@ -89,9 +90,13 @@ function serve(isolated: boolean): { base: string; close: () => Promise<void> } 
   });
   const server = Deno.serve({ port: 0, hostname: '127.0.0.1', onListen: () => {} }, async (request) => {
     const response = await handler(request);
-    if (isolated) return response;
     const headers = new Headers(response.headers);
-    for (const name of ['cross-origin-opener-policy', 'cross-origin-embedder-policy', 'cross-origin-resource-policy']) headers.delete(name);
+    headers.delete('content-security-policy');
+    if (!isolated) {
+      for (const name of ['cross-origin-opener-policy', 'cross-origin-embedder-policy', 'cross-origin-resource-policy']) {
+        headers.delete(name);
+      }
+    }
     return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
   });
   return { base: `http://127.0.0.1:${server.addr.port}`, close: () => server.shutdown() };

@@ -289,6 +289,31 @@ async function npmCacheRoot(root: string): Promise<string> {
   return join(info.npmCache, 'registry.npmjs.org');
 }
 
+async function licenseFile(pkgDir: string): Promise<string | undefined> {
+  for (const candidate of ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'LICENSE-MIT', 'LICENSE.MIT', 'license']) {
+    const text = await Deno.readTextFile(join(pkgDir, candidate)).catch(() => undefined);
+    if (text) return text;
+  }
+}
+
+/** The license file of another bundled npm package published from the same repository. */
+async function siblingLicense(
+  npmCache: string,
+  identities: { ecosystem: 'npm' | 'jsr'; name: string; version: string }[],
+  repository: string,
+): Promise<string | undefined> {
+  const same = (url: string) => url.replace(/^git\+/, '').replace(/\.git$/, '') === repository.replace(/^git\+/, '').replace(/\.git$/, '');
+  for (const other of identities.filter((d) => d.ecosystem === 'npm')) {
+    const dir = join(npmCache, other.name, other.version);
+    const json = await Deno.readTextFile(join(dir, 'package.json')).then(JSON.parse).catch(() => undefined);
+    const url = typeof json?.repository === 'string' ? json.repository : json?.repository?.url;
+    if (typeof url === 'string' && same(url)) {
+      const text = await licenseFile(dir);
+      if (text) return text;
+    }
+  }
+}
+
 async function jsNotices(root: string, entries: readonly string[]): Promise<NoticeEntry[]> {
   const identities = await jsDependencyIdentities(root, entries);
   const results: NoticeEntry[] = [];
@@ -303,10 +328,13 @@ async function jsNotices(root: string, entries: readonly string[]): Promise<Noti
       if (!license) {
         throw new Error(`npm package ${dep.name}@${dep.version} (bundled into a JS asset) has no discoverable license in ${pkgJsonPath}.`);
       }
-      let licenseText: string | undefined;
-      for (const candidate of ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'LICENSE-MIT', 'LICENSE.MIT', 'license']) {
-        licenseText = await Deno.readTextFile(join(pkgDir, candidate)).catch(() => undefined);
-        if (licenseText) break;
+      let licenseText = await licenseFile(pkgDir);
+      const repository = typeof pkgJson?.repository === 'string' ? pkgJson.repository : pkgJson?.repository?.url;
+      // A package published from a monorepo directory sometimes leaves out the repository's LICENSE (PostHog's
+      // @posthog/browser-common does); the text is then the one a sibling from the same repository ships.
+      const directory = typeof pkgJson?.repository === 'object' ? pkgJson.repository.directory : undefined;
+      if (!licenseText && directory && typeof repository === 'string') {
+        licenseText = await siblingLicense(npmCache, identities, repository);
       }
       if (!licenseText) {
         throw new Error(
@@ -314,7 +342,6 @@ async function jsNotices(root: string, entries: readonly string[]): Promise<Noti
             `file was found in ${pkgDir} — the notices file would ship without its required text.`,
         );
       }
-      const repository = typeof pkgJson?.repository === 'string' ? pkgJson.repository : pkgJson?.repository?.url;
       // MPL-2.0 §3.2 wants the source of the exact bundled version, not just the repository's default branch, so a
       // GitHub repository is pointed at this version's tag (a bare repo URL drifts as the project moves on).
       let repositoryUrl = typeof repository === 'string'

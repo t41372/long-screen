@@ -4,7 +4,7 @@
 
 **Recover a sparse 2D canvas from a local screen recording.**
 
-**Use it in your browser: [long-screen.yi-ting.com](https://long-screen.yi-ting.com)** (also at [long-screen.pages.dev](https://long-screen.pages.dev)). Nothing is uploaded; the recording is processed on your own device.
+**Use it in your browser: [long-screen.yi-ting.com](https://long-screen.yi-ting.com)** (also at [long-screen.pages.dev](https://long-screen.pages.dev)). Nothing is uploaded; the recording and the print stay on your own device, and once the page has loaded it keeps working offline. The hosted site counts anonymous visits with Cloudflare Web Analytics, and how often a print is started and how it ends with PostHog (settings, core version, the recording's codec, height and length, a rough frame count and diagnostic codes; no cookies, nothing from the recording, the print or file names, and nothing at all under Do Not Track or Global Privacy Control). Its Content Security Policy lets the page connect nowhere else, and self-hosted copies and the portable build count nothing.
 
 <img width="960" height="676" alt="A screen recording of a Wikipedia article, panned in two dimensions, dropped on the app and turned into one full-size screenshot" src="https://github.com/user-attachments/assets/798bdb32-182c-4994-8958-7f5aafd5e6fa" />
 

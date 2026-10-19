@@ -23,6 +23,8 @@ const context = await browser.newContext({
   acceptDownloads: true,
   // The result page is served beside the app; the demo does not need the app's offline cache.
   serviceWorkers: 'block',
+  // The app's CSP would block the string predicates below and the result page's own scripts; the demo stages both.
+  bypassCSP: true,
   recordVideo: { dir: outDir, size: { width: W, height: H } },
 });
 // The save dialog cannot be driven headless; without it the page downloads the file the ordinary way.

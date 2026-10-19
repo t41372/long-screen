@@ -1,7 +1,8 @@
 /** Builds the Rust core to WebAssembly, bundles the browser adapter with `deno bundle` and copies static assets
- *  into dist/. No CDN, no upload endpoint, no network at runtime; the Rust core does compile in a handful of
+ *  into dist/. No CDN and no upload endpoint; at runtime the page sends only usage counts, and only on the hosted
+ *  site (src/ui/analytics.ts). The Rust core does compile in a handful of
  *  crates (image-rs `png` and its deflate backends, `crc32fast`) and the export path uses the npm package
- *  `client-zip` — dist/THIRD_PARTY_NOTICES.txt below is generated from those at build time. Builds into a staging
+ *  `client-zip`, and the hosted site's counter bundles `posthog-js` — dist/THIRD_PARTY_NOTICES.txt below is generated from those at build time. Builds into a staging
  *  directory and swaps it in on success, so a failed build never deletes a working dist/.
  *
  *  Every path below is resolved from this script's own location (not the process's current working directory), so
@@ -35,6 +36,8 @@ const entries: [string, string][] = [
   ['src/core/helper.ts', 'assets/core-helper.js'],
   ['src/media/convert-worker.ts', 'assets/convert-worker.js'],
   ['src/device-check.ts', 'assets/device-check.js'],
+  // The hosted site's usage counter; src/ui/analytics.ts adds it to the page only there.
+  ['src/analytics.ts', 'assets/analytics.js'],
   // At the root, not under assets/: a service worker's scope is the directory it is served from.
   ['src/sw.ts', 'sw.js'],
 ];
@@ -181,7 +184,7 @@ try {
   // previous build until this point, so a bundling failure above never leaves it deleted or half-written.
   await Deno.remove(outDir, { recursive: true }).catch(() => {});
   await Deno.rename(staging, outDir);
-  console.log(`Built ${outName}/ — no CDN, no upload endpoint, no network at runtime (see THIRD_PARTY_NOTICES.txt).`);
+  console.log(`Built ${outName}/ — no CDN, no upload endpoint (see THIRD_PARTY_NOTICES.txt).`);
 } catch (error) {
   await Deno.remove(staging, { recursive: true }).catch(() => {});
   throw error;
