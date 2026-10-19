@@ -221,6 +221,7 @@ export const pageSections = {
     },
   },
   deviceCheck: {
+    doneTitle: '设备检查 — 已完成',
     title: '设备检查',
     intro:
       '测量本机浏览器提供的能力（跨源隔离 / 线程、WebGPU 适配器）和 GPU 路径的实际开销：一帧原生 RGBA 的上传与读回、\n分析降采样在 GPU 与 Rust 核心上的耗时及逐字节一致性。可选：选一段录屏，分别以 CPU 与强制 WebGPU 跑完整流程并比较瓦片指纹。\n所有处理都在本机完成，不上传任何内容；录屏的运行数据在比较后删除。WebGPU 只在安全上下文（localhost 或 HTTPS）中可用。',

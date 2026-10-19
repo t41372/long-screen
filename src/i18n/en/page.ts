@@ -228,6 +228,7 @@ export const pageSections: Catalog<typeof zh> = {
     },
   },
   deviceCheck: {
+    doneTitle: 'Device check — complete',
     title: 'Device check',
     intro:
       "Measures what this browser and device offer (cross-origin isolation / threads, WebGPU adapter) and the real cost of the GPU path:\nuploading and reading back one native RGBA frame, and the time and byte-for-byte consistency of analysis downscaling on the GPU versus the Rust core.\nOptional: choose a recording to run the full pipeline on both CPU and forced WebGPU and compare tile fingerprints.\nAll processing happens on this device; nothing is uploaded. A chosen recording's run data is deleted after comparing. WebGPU is only available in a secure context (localhost or HTTPS).",
