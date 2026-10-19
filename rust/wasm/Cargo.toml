@@ -1,6 +1,6 @@
 [package]
 name = "long-screen-wasm"
-version = "0.1.1"
+version = "0.1.2-dev"
 edition = "2021"
 publish = false
 license = "MIT"
