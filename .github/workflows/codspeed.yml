@@ -1,12 +1,20 @@
-# Core kernel benchmarks (rust/bench) on the public test recordings, measured by CodSpeed's CPU simulation on every
-# pull request and on main (main's runs are the baseline pull requests are compared with). Deploys do not depend on it:
-# production still builds on Cloudflare Pages. See docs/TESTING.md, section "性能基准（CodSpeed）".
+# Core kernel benchmarks (rust/bench) on the public test recordings, measured by CodSpeed's CPU simulation on pull
+# requests and pushes to main that change the Rust workspace (main's runs are the baseline pull requests are compared
+# with). A change outside rust/ (the web shell, docs, workflows) cannot move these numbers, and a run takes 15-30
+# minutes, so it is skipped; Run workflow still starts one by hand. Deploys do not depend on it: production still
+# builds on Cloudflare Pages. See docs/TESTING.md, section "性能基准（CodSpeed）".
 name: CodSpeed
 
 on:
   push:
     branches: [main]
+    paths:
+      - "rust/**"
+      - ".github/workflows/codspeed.yml"
   pull_request:
+    paths:
+      - "rust/**"
+      - ".github/workflows/codspeed.yml"
   workflow_dispatch:
 
 # Read-only token: CodSpeed accepts uploads from public repositories without a token, including pull requests from

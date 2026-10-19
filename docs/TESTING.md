@@ -159,7 +159,7 @@ ffmpeg 的 RGB 转换与浏览器在锐利色边上不一样（色度插值不�
 
 ## 性能基准（CodSpeed）
 
-核心算法的性能在每个 PR 上自动测：`.github/workflows/codspeed.yml` 在 PR 和推到 `main` 时运行 `rust/bench` 的基准，结果上传到 CodSpeed，由它把 PR 与 `main` 最近一次运行对比并在 PR 里留言。这个工作流只管测量，不挡部署：生产环境仍由 Cloudflare Pages 自己构建。
+核心算法的性能在 PR 上自动测：`.github/workflows/codspeed.yml` 在改到 `rust/`（或这个工作流本身）的 PR 和推到 `main` 时运行 `rust/bench` 的基准，只改网页外壳、文档或别的工作流时跳过（这些改动不会改变内核的数字，而一次要跑 15–30 分钟；需要时可在 Actions 页手动 Run workflow），结果上传到 CodSpeed，由它把 PR 与 `main` 最近一次运行对比并在 PR 里留言。这个工作流只管测量，不挡部署：生产环境仍由 Cloudflare Pages 自己构建。
 
 **测试用例。** `rust/bench/cases.json` 列出公开测试录屏：8 段由仓库所有者专门录制、可以公开的录屏（2 段 SDR H.264 桌面录屏，6 段 HDR PQ/BT.2020 的 10-bit HEVC，含 3 段 iPhone 录屏；其中一段拍的是所有者自己的照片，test_4 是公有领域的《蒙娜丽莎》）。每段记着文件名、字节数、SHA-256、ffprobe 读出的编码、尺寸、像素格式、色彩参数和帧数（按 `-fps_mode passthrough` 逐帧计数，录屏都是可变帧率）。录屏本身作为 GitHub Release `test-cases-v1` 的附件发布，不进仓库；所有者用 `bash scripts/upload-test-cases.sh <录屏目录>` 上传，脚本先按清单核对每个文件再创建 release。
 
