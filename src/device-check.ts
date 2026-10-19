@@ -1,7 +1,7 @@
 /** Device check (static/device-check.html): what this browser and device offer the pipeline and what the GPU path
  *  costs here, as one JSON report to paste back. Nothing leaves the device; a chosen recording is processed
  *  locally and its stored run is deleted afterwards. Not loaded by the app. */
-import { translatePage } from './i18n/page.ts';
+import { t, translatePage } from './i18n/page.ts';
 import { AnalysisComputer } from './core/compute.ts';
 import { core, coreBuild, loadPlannedCore, planCore } from './core/wasm.ts';
 import { analysisFactor, downscaleGray } from './core/raster.ts';
@@ -213,6 +213,6 @@ run.onclick = async () => {
     report.finishedAt = new Date().toISOString();
     show();
     run.disabled = false;
-    document.title = 'Device check — done';
+    document.title = t('deviceCheck.doneTitle');
   }
 };

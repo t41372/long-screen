@@ -5,7 +5,8 @@ import type { AppState } from './state.ts';
 import { syncControls } from './state.ts';
 import { $, toast } from './dom.ts';
 import { call } from './rpc.ts';
-import { displayName, t } from '../i18n/page.ts';
+import { displayName, locale, t } from '../i18n/page.ts';
+import { isolateLtr } from '../i18n/locales.ts';
 import type { CanvasMeta } from '../types.ts';
 import type { TiledViewer } from './viewer.ts';
 
@@ -70,7 +71,10 @@ export function createCanvases(state: AppState, viewer: TiledViewer, onSelect: (
     const rank = (c: CanvasMeta) => c.kind === 'presentation' ? -1 : c.kind === 'fixed' ? 1 : 0;
     usable.sort((a, b) => rank(a) - rank(b) || b.observedPixels - a.observedPixels);
     select.replaceChildren(
-      ...usable.map((c) => new Option(`${displayName(c.name)} · ${Math.round(c.bounds.width)} × ${Math.round(c.bounds.height)}`, c.id)),
+      ...usable.map((c) => {
+        const dimensions = isolateLtr(`${Math.round(c.bounds.width)} × ${Math.round(c.bounds.height)}`, locale());
+        return new Option(`${displayName(c.name)} · ${dimensions}`, c.id);
+      }),
     );
     select.value = !selectionTouched && state.project?.settings.framing === 'context' && usable[0].kind === 'presentation'
       ? usable[0].id

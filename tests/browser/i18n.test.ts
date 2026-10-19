@@ -7,6 +7,7 @@
 import { assert, assertEquals } from '@std/assert';
 import { harness } from './support.ts';
 import { zh } from '../../src/i18n/zh/index.ts';
+import { CATALOGUES } from '../../src/i18n/index.ts';
 
 const HAN = /\p{Script=Han}/u;
 type Tree = { [key: string]: string | Tree };
@@ -26,11 +27,12 @@ Deno.test({
       assertEquals(await page.evaluate(() => document.documentElement.lang), 'en');
       assertEquals(await page.title(), 'Long Screen — One big screenshot from a screen recording');
       // textContent, not innerText: the closed dialogs (help, regions, source) and every <option> count too.
-      const bodyText = await page.evaluate(() => document.body.textContent || '');
-      // The language menu always lists both languages by their own name, including "中文" for the zh option —
-      // that is not untranslated UI copy, so it is excluded before checking the rest of the page for Han script.
-      const withoutLanguageOption = bodyText.replaceAll('中文', '');
-      assert(!HAN.test(withoutLanguageOption), withoutLanguageOption);
+      const bodyText = await page.evaluate(() => {
+        const body = document.body.cloneNode(true) as HTMLElement;
+        body.querySelector('#language-select')?.remove();
+        return body.textContent || '';
+      });
+      assert(!HAN.test(bodyText), bodyText);
       assertEquals(h.errors, []);
     } finally {
       await h.close();
@@ -72,7 +74,7 @@ Deno.test({
 });
 
 Deno.test({
-  name: 'browser i18n: zh-TW selects the zh catalogue (a zh region, not the default zh-CN)',
+  name: 'browser i18n: zh-TW selects Traditional Chinese',
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
@@ -81,8 +83,8 @@ Deno.test({
       const page = h.page;
       await page.goto(h.base + '/');
       await page.waitForFunction('!!window.longScreen');
-      assertEquals(await page.evaluate(() => document.documentElement.lang), 'zh-CN');
-      assertEquals(await page.title(), 'Long Screen — 把录屏拼成一整张大截图');
+      assertEquals(await page.evaluate(() => document.documentElement.lang), 'zh-Hant');
+      assertEquals(await page.title(), CATALOGUES['zh-Hant'].page.title);
       assertEquals(h.errors, []);
     } finally {
       await h.close();
@@ -91,17 +93,38 @@ Deno.test({
 });
 
 Deno.test({
-  name: 'browser i18n: an unsupported browser language (ja-JP) falls back to English',
+  name: 'browser i18n: an unsupported browser language (sv-SE) falls back to English',
   sanitizeOps: false,
   sanitizeResources: false,
   fn: async () => {
-    const h = await harness({ locale: 'ja-JP' });
+    const h = await harness({ locale: 'sv-SE' });
     try {
       const page = h.page;
       await page.goto(h.base + '/');
       await page.waitForFunction('!!window.longScreen');
       assertEquals(await page.evaluate(() => document.documentElement.lang), 'en');
       assertEquals(await page.title(), 'Long Screen — One big screenshot from a screen recording');
+      assertEquals(h.errors, []);
+    } finally {
+      await h.close();
+    }
+  },
+});
+
+Deno.test({
+  name: 'browser i18n: the first supported browser preference wins without saving an automatic choice',
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const h = await harness({ locale: 'en-US' });
+    try {
+      await h.page.addInitScript(() => {
+        Object.defineProperty(navigator, 'languages', { get: () => ['sv-SE', 'zh-Hant-HK', 'en-US'] });
+      });
+      await h.page.goto(h.base + '/');
+      await h.page.waitForFunction('!!window.longScreen');
+      assertEquals(await h.page.getAttribute('html', 'lang'), 'zh-Hant');
+      assertEquals(await h.page.evaluate(() => localStorage.getItem('long-screen.language')), null);
       assertEquals(h.errors, []);
     } finally {
       await h.close();

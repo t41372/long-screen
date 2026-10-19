@@ -1,12 +1,13 @@
 /** Page-side language selection. Importing this module picks the page's language: an explicit choice saved by the
  *  language menu wins, otherwise the first of the browser's preferred languages the app has a catalogue for, and
- *  English when there is none (any zh-* variant maps to the zh catalogue). Detection itself never saves anything,
+ *  English when there is none. Chinese script preferences are preserved. Detection itself never saves anything,
  *  so a visitor who has not chosen keeps following the browser's language; only `chooseLocale` persists.
  *
  *  Page bundles only (src/ui/main.ts, src/device-check.ts): it reads navigator and localStorage, which the shared
  *  src/i18n/index.ts must not. The worker learns the language from the page (src/ui/rpc.ts). */
 import LanguageDetector from 'i18next-browser-languagedetector';
 import { HTML_LANG, i18n, isLocale, type Locale, locale, setLocale, t, translateKey } from './index.ts';
+import { LANGUAGE_NAMES, localeDirection, LOCALES, resolveLocale } from './locales.ts';
 
 // Page code imports `t` from here rather than from ./index.ts, so language detection below has always run first.
 export { displayName } from './names.ts';
@@ -18,8 +19,7 @@ const detector = new LanguageDetector(i18n.services, {
   order: ['localStorage', 'navigator'],
   lookupLocalStorage: LANGUAGE_STORAGE_KEY,
   caches: [],
-  // Catalogues are per language, not per region: zh-TW, zh-Hant-HK and zh-CN all select zh, en-GB selects en.
-  convertDetectedLanguage: (lng: string) => lng.split('-')[0].toLowerCase(),
+  convertDetectedLanguage: (lng: string) => resolveLocale(lng) ?? lng,
 });
 // Candidates in priority order (the saved choice, then navigator.languages); English when none has a catalogue —
 // not i18next's fallbackLng, which stays zh for worker/Deno code and for missing keys.
@@ -43,6 +43,7 @@ export function translatePage(root: Document = document): void {
     }
   }
   root.documentElement.lang = HTML_LANG[locale()];
+  root.documentElement.dir = localeDirection(locale());
   // static/index.html and static/device-check.html hide the page until this has run (see the `i18n-pending` script in
   // each <head>).
   root.documentElement.classList.remove('i18n-pending');
@@ -63,6 +64,12 @@ export function chooseLocale(lng: Locale): boolean {
 
 /** Wires a <select> of locales: shows the current one and switches on change. */
 export function wireLanguageSelect(select: HTMLSelectElement, onError: (message: string) => void): void {
+  select.replaceChildren(...LOCALES.map((lng) => {
+    const option = new Option(LANGUAGE_NAMES[lng], lng);
+    option.lang = HTML_LANG[lng];
+    option.dir = localeDirection(lng);
+    return option;
+  }));
   select.value = locale();
   select.onchange = () => {
     const lng = select.value;

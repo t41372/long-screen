@@ -78,6 +78,10 @@ body {
   min-height: 100dvh;
   -webkit-font-smoothing: antialiased;
 }
+/* The bundled Baloo subsets omit Vietnamese tone marks. Use one complete font instead of mixing faces within words. */
+html:lang(vi) body {
+  font-family: system-ui, sans-serif;
+}
 .i18n-pending body {
   visibility: hidden;
 }
@@ -200,7 +204,8 @@ button:disabled {
   -webkit-appearance: none;
   min-width: 0;
   max-width: 100%;
-  padding: 8px 34px 8px 14px;
+  padding: 8px;
+  padding-inline: 14px 34px;
   border: 0;
   border-radius: 10px;
   background: var(--white)
@@ -326,7 +331,7 @@ button:disabled {
 .install-btn {
   gap: 7px;
   height: 36px;
-  margin-left: auto;
+  margin-inline-start: auto;
   padding: 0 10px 0 9px;
 }
 .install-mark {
@@ -386,19 +391,10 @@ button:disabled {
   letter-spacing: -.01em;
 }
 .intro h1 .hl {
-  position: relative;
-  white-space: nowrap;
-}
-.intro h1 .hl::after {
-  content: "";
-  position: absolute;
-  left: -2%;
-  right: -2%;
-  bottom: 6%;
-  height: 32%;
-  z-index: -1;
-  background: var(--led);
-  clip-path: polygon(1% 18%, 99% 0, 100% 84%, 0 100%);
+  /* Translated headlines can span several lines. Paint each inline fragment so the highlight wraps with it. */
+  background: linear-gradient(transparent 65%, var(--led) 65%, var(--led) 94%, transparent 94%);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
 }
 .intro .sub {
   max-width: 600px;
@@ -453,7 +449,7 @@ button:disabled {
   padding: 0;
   list-style: none;
   counter-reset: step;
-  text-align: left;
+  text-align: start;
 }
 .steps li {
   counter-increment: step;
@@ -589,7 +585,7 @@ button:disabled {
 .status-led {
   width: 11px;
   height: 11px;
-  margin-left: auto;
+  margin-inline-start: auto;
   border-radius: 50%;
   background: #7ee08a;
   box-shadow: 0 0 0 2px #3d353026, 0 0 10px #7ee08acc;
@@ -886,7 +882,7 @@ button:disabled {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin-left: auto;
+  margin-inline-start: auto;
   padding: 12px 20px 12px 16px;
   border-radius: 10px;
   background: linear-gradient(160deg, #ff9a8b 0 42%, var(--coral) 42%);
@@ -916,13 +912,13 @@ button:disabled {
   box-shadow: 0 2px 0 #cfaaa3;
 }
 .run-keys:not([hidden]) + .print-key {
-  margin-left: 0;
+  margin-inline-start: 0;
 }
 .run-keys {
   display: flex;
   gap: 8px;
   align-self: center;
-  margin-left: auto;
+  margin-inline-start: auto;
 }
 .key {
   padding: 8px 11px;
@@ -1152,7 +1148,7 @@ button:disabled {
 .canvas-badge {
   position: absolute;
   top: 10px;
-  left: 10px;
+  inset-inline-start: 10px;
   max-width: calc(100% - 70px);
   padding: 4px 10px;
   border-radius: 8px;
@@ -1174,7 +1170,7 @@ button:disabled {
 .expand-btn {
   position: absolute;
   top: 10px;
-  right: 10px;
+  inset-inline-end: 10px;
 }
 .has-result .expand-btn {
   display: inline-flex;
@@ -1356,7 +1352,7 @@ button:disabled {
   box-shadow: inset 0 0 0 2px var(--err);
 }
 #crop-apply {
-  margin-left: auto;
+  margin-inline-start: auto;
 }
 .take-row {
   flex-wrap: wrap;
@@ -1618,11 +1614,12 @@ body.receipt-open {
 }
 @keyframes sheet-left {
   from {
-    transform: translateX(100%);
+    transform: translateX(var(--sheet-enter, 100%));
   }
 }
 .setting-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -1634,10 +1631,13 @@ body.receipt-open {
   font-weight: 700;
 }
 .setting-row .pill-select {
-  max-width: 62%;
+  /* Let longer localized options use another line instead of hiding the selected setting. */
+  max-width: 100%;
+  margin-inline-start: auto;
 }
 .setting-button {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -1649,7 +1649,7 @@ body.receipt-open {
   box-shadow: 0 3px 0 #3d35301a;
   font-size: 14px;
   font-weight: 700;
-  text-align: left;
+  text-align: start;
 }
 .setting-button:disabled {
   opacity: .5;
@@ -1764,7 +1764,8 @@ body.receipt-open {
 }
 article.diagnostic {
   position: relative;
-  padding: 10px 12px 11px 34px;
+  padding: 10px 12px 11px;
+  padding-inline-start: 34px;
   border-radius: 10px;
   background: var(--desk);
   font-size: 12.5px;
@@ -1774,7 +1775,7 @@ article.diagnostic::before {
   content: "";
   position: absolute;
   top: 15px;
-  left: 13px;
+  inset-inline-start: 13px;
   width: 11px;
   height: 11px;
   clip-path: var(--hexagon);
@@ -1847,7 +1848,8 @@ article.diagnostic > button {
   z-index: 60;
   width: max-content;
   max-width: min(92vw, 560px);
-  padding: 11px 16px 11px 36px;
+  padding: 11px 16px;
+  padding-inline-start: 36px;
   border-radius: 12px;
   background: var(--paper);
   box-shadow: 0 5px 0 #3d353022, inset 0 0 0 1.5px #3d353012;
@@ -1862,7 +1864,7 @@ article.diagnostic > button {
   content: "";
   position: absolute;
   top: 16px;
-  left: 14px;
+  inset-inline-start: 14px;
   width: 11px;
   height: 11px;
   clip-path: var(--hexagon);
@@ -2035,13 +2037,13 @@ dialog::backdrop {
   }
   .intro {
     width: 100%;
-    text-align: left;
+    text-align: start;
   }
   .intro h1 {
     font-size: clamp(32px, 1.2vw + 22px, 44px);
   }
   .intro .sub {
-    margin-left: 0;
+    margin-inline-start: 0;
   }
   .printer-zone {
     width: 100%;
@@ -2062,7 +2064,8 @@ dialog::backdrop {
   }
   @supports selector(:popover-open) {
     .sheet {
-      inset: 0 0 0 auto;
+      inset-block: 0;
+      inset-inline: auto 0;
       width: min(440px, 92vw);
       height: 100dvh;
       max-height: none;
@@ -2077,6 +2080,57 @@ dialog::backdrop {
     .sheet .grab {
       display: none;
     }
+  }
+}
+
+/* Text and navigation follow the language; recordings, crop geometry and technical values never mirror. */
+canvas,
+video,
+.crop-box,
+.crop-field input,
+.zoom-controls,
+.plate,
+.part,
+.elapsed,
+.gauge-pct,
+.diagnostic-head {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+#file-title,
+#file-subtitle,
+#source-caption {
+  unicode-bidi: plaintext;
+}
+html:lang(ar),
+html:lang(ar) *,
+html:lang(th),
+html:lang(th) *,
+html:lang(hi),
+html:lang(hi) * {
+  letter-spacing: normal;
+}
+html[dir="rtl"] {
+  --sheet-enter: -100%;
+}
+html[dir="rtl"] .pill-select {
+  background-position: left 12px center;
+}
+html[dir="rtl"] .pill-select[dir="ltr"] {
+  background-position: right 12px center;
+  margin-inline: 0 auto;
+}
+@supports (position-area: bottom) {
+  @media (min-width: 601px) {
+    html[dir="rtl"] .flap {
+      position-area: bottom span-left;
+    }
+  }
+}
+@media (min-width: 1080px) {
+  html[dir="rtl"] .sheet {
+    border-radius: 0 16px 16px 0;
+    box-shadow: 8px 0 0 #3d353014, inset 0 0 0 1.5px #3d353012;
   }
 }
 

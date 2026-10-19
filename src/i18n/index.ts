@@ -8,12 +8,51 @@
 import i18next from 'i18next';
 import { zh } from './zh/index.ts';
 import { en } from './en/index.ts';
+import { ja } from './ja/index.ts';
+import { ko } from './ko/index.ts';
+import { ru } from './ru/index.ts';
+import { uk } from './uk/index.ts';
+import { fr } from './fr/index.ts';
+import { de } from './de/index.ts';
+import { es } from './es/index.ts';
+import { zhHant } from './zh-Hant/index.ts';
+import { ptBR } from './pt-BR/index.ts';
+import { ptPT } from './pt-PT/index.ts';
+import { id } from './id/index.ts';
+import { vi } from './vi/index.ts';
+import { tr } from './tr/index.ts';
+import { it } from './it/index.ts';
+import { pl } from './pl/index.ts';
+import { th } from './th/index.ts';
+import { nl } from './nl/index.ts';
+import { hi } from './hi/index.ts';
+import { ar } from './ar/index.ts';
+import { DEFAULT_LOCALE, isLocale, type Locale, LOCALES } from './locales.ts';
 
-export const LOCALES = ['zh', 'en'] as const;
-export type Locale = typeof LOCALES[number];
-export const DEFAULT_LOCALE: Locale = 'zh';
-/** The `<html lang>` value each locale's text is written in: the zh catalogue is Simplified Chinese. */
-export const HTML_LANG: Record<Locale, string> = { zh: 'zh-CN', en: 'en' };
+export { DEFAULT_LOCALE, HTML_LANG, isLocale, type Locale, LOCALES } from './locales.ts';
+export const CATALOGUES = {
+  zh,
+  'zh-Hant': zhHant,
+  en,
+  ja,
+  ko,
+  ru,
+  uk,
+  fr,
+  de,
+  es,
+  'pt-BR': ptBR,
+  'pt-PT': ptPT,
+  id,
+  vi,
+  tr,
+  it,
+  pl,
+  th,
+  nl,
+  hi,
+  ar,
+};
 
 declare module 'i18next' {
   interface CustomTypeOptions {
@@ -26,7 +65,7 @@ void i18n.init({
   lng: DEFAULT_LOCALE,
   fallbackLng: DEFAULT_LOCALE,
   supportedLngs: [...LOCALES],
-  resources: { zh: { translation: zh }, en: { translation: en } },
+  resources: Object.fromEntries(LOCALES.map((lng) => [lng, { translation: CATALOGUES[lng] }])),
   initAsync: false,
   // Every translated string lands in textContent, an attribute or a log row, never in innerHTML with an
   // interpolated value, so i18next's HTML escaping would only corrupt values such as file names.
@@ -43,8 +82,6 @@ export const translateKey = (key: string, fallback?: string): string =>
     key,
     fallback === undefined ? undefined : { defaultValue: fallback },
   );
-
-export const isLocale = (value: unknown): value is Locale => LOCALES.includes(value as Locale);
 
 export const locale = (): Locale => isLocale(i18n.language) ? i18n.language : DEFAULT_LOCALE;
 
