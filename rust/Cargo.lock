@@ -484,7 +484,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "long-screen"
-version = "0.1.1-dev"
+version = "0.1.1"
 dependencies = [
  "clap",
  "libm",
@@ -516,7 +516,7 @@ dependencies = [
 
 [[package]]
 name = "long-screen-py"
-version = "0.1.1-dev"
+version = "0.1.1"
 dependencies = [
  "long-screen",
  "pyo3",
@@ -525,7 +525,7 @@ dependencies = [
 
 [[package]]
 name = "long-screen-wasm"
-version = "0.1.1-dev"
+version = "0.1.1"
 dependencies = [
  "crc32fast",
  "long-screen",
