@@ -1,10 +1,110 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40">
-  <path d="M4 13l6-6h27l-6 6Z" fill="#c3e5fd" />
-  <path d="M31 13l6-6v21l-6 6Z" fill="#5a9fd6" />
-  <path d="M4 13h27v21H4Z" fill="#86c6f4" />
-  <path d="M7 16h14v10H7Z" fill="#2d3440" />
-  <path d="M7 16h6l-6 7Z" fill="#fff" fill-opacity=".14" />
-  <circle cx="26" cy="21" r="3" fill="#ff7a6b" />
-  <path d="M9 34h17v5H9Z" fill="#fffdf8" />
-  <path d="M9 34h17v1.4H9Z" fill="#3d3530" fill-opacity=".25" />
+<svg xmlns="http://www.w3.org/2000/svg" width="1254" height="1254" viewBox="0 0 40 40">
+  <!-- Drawn against the 1254 px design master; the wrapper preserves the site's 40-unit icon contract. -->
+  <defs>
+    <linearGradient id="printer-top" x1="470" y1="170" x2="720" y2="340" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#bee6fd" />
+      <stop offset="1" stop-color="#bce5fc" />
+    </linearGradient>
+    <linearGradient id="printer-front" x1="170" y1="370" x2="1000" y2="900" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6bc7fc" />
+      <stop offset=".5" stop-color="#69c6fb" />
+      <stop offset="1" stop-color="#6cc8fc" />
+    </linearGradient>
+    <linearGradient id="printer-side" x1="995" y1="340" x2="1160" y2="840" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#489de6" />
+      <stop offset="1" stop-color="#499de6" />
+    </linearGradient>
+    <radialGradient id="printer-screen" cx=".5" cy=".45" r=".8">
+      <stop stop-color="#382822" />
+      <stop offset="1" stop-color="#3a2b24" />
+    </radialGradient>
+    <linearGradient id="printer-slot" x1="250" y1="630" x2="850" y2="750" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3887c3" />
+      <stop offset="1" stop-color="#3079b7" />
+    </linearGradient>
+    <linearGradient id="printer-paper" x1="140" y1="850" x2="800" y2="1020" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#fdfcf8" />
+      <stop offset=".35" stop-color="#fffefa" />
+      <stop offset=".75" stop-color="#fffefa" />
+      <stop offset="1" stop-color="#faf9f5" />
+    </linearGradient>
+    <linearGradient id="printer-photo" x1="270" y1="710" x2="700" y2="920" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#bfabf8" />
+      <stop offset="1" stop-color="#c0acf8" />
+    </linearGradient>
+    <linearGradient id="printer-mountain" x1="290" y1="825" x2="420" y2="905" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ab91e0" />
+      <stop offset="1" stop-color="#a88dde" />
+    </linearGradient>
+    <linearGradient id="printer-lines" x1="220" y1="925" x2="690" y2="1025" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#bbb9ba" />
+      <stop offset="1" stop-color="#b9b7b8" />
+    </linearGradient>
+    <linearGradient id="printer-coral" x1="455" y1="510" x2="540" y2="590" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ff5c53" />
+      <stop offset="1" stop-color="#ff746b" />
+    </linearGradient>
+    <radialGradient id="printer-cheek" cx=".35" cy=".3" r=".85">
+      <stop stop-color="#ffa69f" />
+      <stop offset="1" stop-color="#ff9a93" />
+    </radialGradient>
+    <linearGradient id="printer-button" x1="835" y1="552" x2="914" y2="643" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#ff9389" />
+      <stop offset="1" stop-color="#ff7167" />
+    </linearGradient>
+    <!-- Long edges are straight. Corner handles follow their adjoining edges to avoid kinks.
+         One silhouette owns the outer stroke; face fills and seams are clipped to it. -->
+    <path id="printer-body" d="M470 169L1005 208C1088 214.05 1108.68 270 1116 329L1177 821C1181 853 1175 868.9 1154 885L1017 990C1003 1000.73 983 1008 964 1008C916 1008 852 1000 790 991L159 865C129 859 120 839 121 798L169 395C176.03 336 193 305.29 221 290L417 183C433 174.27 446 167.25 470 169Z" />
+    <clipPath id="printer-body-clip">
+      <use href="#printer-body" />
+    </clipPath>
+    <clipPath id="printer-mouth-clip">
+      <path d="M452 509c29 3 65 4 96 7 10 0 14 4 11 15-9 36-33 62-61 61-34-1-55-29-58-66-1-12 2-17 12-17Z" />
+    </clipPath>
+    <clipPath id="printer-photo-clip">
+      <path d="M305 702 707 735q28 2 23 27l-21 145q-2 21-21 18l-442-29q-17-1-13-23c6-40 16-88 31-132 9-27 19-40 41-39Z" />
+    </clipPath>
+  </defs>
+  <g transform="scale(.0318979266348)" stroke-linecap="round" stroke-linejoin="round">
+    <g clip-path="url(#printer-body-clip)">
+      <use href="#printer-body" fill="url(#printer-front)" />
+      <path d="M917 338 1110 260H1254V1254H964V1008C995 1001 1005.78 975 1004 918L988 406C986.53 359 966 341.09 917 338Z" fill="url(#printer-side)" />
+      <path d="M0 0H1254V200L1140 257.87388 966.71196 352.475C955.334825 343.78205 939.05 339.3905 917 338L0 280.17Z" fill="url(#printer-top)" />
+      <!-- Each shared edge is stroked once; the outer contour trims the endpoints. -->
+      <path d="M180 291.52L917 338C966 341.09 986.53 359 988 406L1004 918C1005.78 975 995 1001 964 1008" fill="none" stroke="#3b2c23" stroke-width="18" stroke-linecap="butt" />
+      <!-- This straight seam shares the left depth edge's direction (196, -107).
+           Its junction is the front corner Bezier at t=.45, also used by the top fill. -->
+      <path d="M966.71196 352.475L1140 257.87388" fill="none" stroke="#3b2c23" stroke-width="18" stroke-linecap="butt" />
+      <path d="m1065 941 1-88c0-15 4-24 17-36l28-25q14-13 16 8l7 97Z" fill="#48372c" stroke="#3b2c23" stroke-width="16" />
+      <path d="m1082 928 1-74q0-13 10-22l24-23 7 83Z" fill="#514034" />
+    </g>
+    <use href="#printer-body" fill="none" stroke="#3b2c23" stroke-width="24" />
+    <!-- Soft blue lip beneath the paper slot. -->
+    <path d="M254 627c181 10 428 25 600 53 27 4 41 19 38 39-3 22-18 27-43 24L241 695c-19-2-28-15-24-34 3-21 16-33 37-34Z" fill="url(#printer-slot)" />
+
+    <!-- Display: preserve the asymmetric cheeks, arched eyes and two-tone smile. -->
+    <path d="M298 357c154 7 304 18 454 31 29 3 42 15 38 42l-23 172c-3 25-14 37-40 34l-465-33c-26-2-35-15-31-41l25-165c4-27 17-41 42-40Z" fill="url(#printer-screen)" />
+    <path d="M326 486c13-48 68-50 79 5m206 16c14-49 68-48 80 7" fill="none" stroke="#fffdf8" stroke-width="23" />
+    <ellipse cx="317" cy="543" rx="41" ry="33" transform="rotate(-6 317 543)" fill="url(#printer-cheek)" />
+    <ellipse cx="682" cy="570" rx="42" ry="33" transform="rotate(5 682 570)" fill="url(#printer-cheek)" />
+    <g clip-path="url(#printer-mouth-clip)">
+      <path d="M452 509c29 3 65 4 96 7 10 0 14 4 11 15-9 36-33 62-61 61-34-1-55-29-58-66-1-12 2-17 12-17Z" fill="url(#printer-coral)" />
+      <path d="M445 568c22-35 73-33 99-2l-20 34-53-1Z" fill="url(#printer-cheek)" />
+    </g>
+    <ellipse cx="873" cy="597" rx="64" ry="63" transform="rotate(-12 873 597)" fill="#ff6b60" stroke="#3b2c23" stroke-width="15" />
+    <path d="M868 543c-31 1-51 25-51 55 0 26 19 47 44 48 31-4 54-28 54-56 0-22-12-41-30-46Z" fill="url(#printer-button)" />
+    <path d="M837 585q6-16 22-22" fill="none" stroke="#fffdf8" stroke-width="14" />
+
+    <!-- The paper bends at the slot. Lower Bezier segments share tangent directions;
+         a single broad curve spans the bottom instead of several small corrections. -->
+    <path d="M255 641c186 11 398 30 597 54" fill="none" stroke="#3b2c23" stroke-width="30" />
+    <path d="M274 637 848 691C783 771 756 901 796 1038C803 1062 808 1081 790 1092C772 1103 726 1106 674 1106C500 1106 310 1102 224 1088C181 1081 160 1070 148 1039C136 1008 140 949 149 893C167 781 202 693 274 637Z" fill="url(#printer-paper)" stroke="#3b2c23" stroke-width="24" />
+    <g clip-path="url(#printer-photo-clip)">
+      <path d="M305 702 707 735q28 2 23 27l-21 145q-2 21-21 18l-442-29q-17-1-13-23c6-40 16-88 31-132 9-27 19-40 41-39Z" fill="url(#printer-photo)" />
+      <path d="m231 894 91-69q19-15 37 0l78 59-40 23Z" fill="url(#printer-mountain)" />
+      <path d="m396 906 123-106q17-15 31 1l156 130Z" fill="#f3e8f1" />
+      <ellipse cx="400" cy="775" rx="34" ry="33" fill="#fffef9" />
+    </g>
+    <path d="m243 947 445 28m-445 41 301 14" fill="none" stroke="url(#printer-lines)" stroke-width="42" />
+  </g>
 </svg>

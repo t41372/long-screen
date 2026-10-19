@@ -188,6 +188,7 @@ if (css.includes('</style')) throw new Error('dist-portable/.site/style.css cont
 let page = html;
 page = replaceOnce(page, '<link rel="stylesheet" href="./style.css">', `<style>${css}</style>`);
 page = replaceOnce(page, 'href="./icon.svg"', `href="data:image/svg+xml;base64,${encodeBase64(icon)}"`);
+page = replaceOnce(page, 'src="./icon.svg"', `src="data:image/svg+xml;base64,${encodeBase64(icon)}"`);
 page = replaceOnce(page, 'href="./"', 'href=""', 'the brand link href="./"');
 // Installing as a PWA needs a manifest and a service worker, neither of which works from file:// (src/ui/install.ts
 // keeps the install key hidden there), so the links that point at them go.

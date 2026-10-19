@@ -16,24 +16,24 @@ import { fromFileUrl } from '@std/path';
 
 const dir = fromFileUrl(new URL('../static/icons/', import.meta.url));
 const favicon = await Deno.readTextFile(fromFileUrl(new URL('../static/icon.svg', import.meta.url)));
-// The printer's own shapes, without the favicon's <svg> wrapper; they span x 4–37, y 7–39 of its 40×40 box.
+// The printer's shapes, including strokes, fit inside x 3–38, y 4–36 of the 40×40 favicon.
 const mark = favicon.replace(/^[\s\S]*?<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '');
 const DESK = '#f6efe4';
 
 /** One icon at 512×512: `scale` is how many pixels one unit of the favicon's 40×40 box takes, `radius` the tile's
  *  corner radius (0 for edge to edge). */
 function icon(scale: number, radius: number): string {
-  const cx = 20.5, cy = 23; // centre of the printer's extent in favicon units
+  const cx = 20.5, cy = 20; // centre of the printer's extent in favicon units
   return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="${radius}" fill="${DESK}"/>` +
     `<g transform="translate(${256 - cx * scale} ${256 - cy * scale}) scale(${scale})">${mark}</g></svg>`;
 }
 
-// Maskable: half the diagonal of the 33×32 extent is ~23 units, so 8.4 px a unit keeps it ~193 px from the centre,
+// Maskable: half the diagonal of the 35×32 extent is ~24 units, so 8 px a unit keeps it ~190 px from the centre,
 // inside the 204.8 px safe circle.
 const icons: { name: string; size: number; svg: string }[] = [
   { name: 'icon-192.png', size: 192, svg: icon(11, 112) },
   { name: 'icon-512.png', size: 512, svg: icon(11, 112) },
-  { name: 'maskable-512.png', size: 512, svg: icon(8.4, 0) },
+  { name: 'maskable-512.png', size: 512, svg: icon(8, 0) },
   { name: 'apple-touch-icon.png', size: 180, svg: icon(10, 0) },
 ];
 
