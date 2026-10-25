@@ -213,6 +213,8 @@ class SolveRun {
   async drainVoting(): Promise<void> {
     if (!this.storageFailed) {
       this.queueVoting(this.session.drain());
+      // Draining also reports what the pass found once it had seen every frame (nested containers).
+      await this.apply(this.session.effects());
       if (this.pendingConsistency.length) {
         try {
           await this.ctx.commitRows(this.pendingConsistency);

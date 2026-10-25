@@ -168,6 +168,9 @@ export const pipelineSections: Catalog<typeof zh> = {
       message:
         '畫面頂端的紋理顯示這是固定在螢幕上的介面，而非頁面位移。這筆觀測中的固定遮擋不會寫入移動畫布；原始參考介面會保留在含外框的版本中。',
     },
+    NESTED_LAYER_FOUND: {
+      message: '這個區域裡有一塊自己捲動的容器：它的內容有 {{frames}} 個影格沒有跟著區域移動。',
+    },
     FRAGMENT_ATTACHED: {
       message: '根據重訪時的影像依據，已將獨立片段完整接回既有畫布。片段內部的相對軌跡保持不變。',
     },

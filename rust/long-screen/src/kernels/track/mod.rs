@@ -4,6 +4,7 @@
 //! The historical TS implementations remain parity references for unchanged paths.
 
 mod keyframes;
+pub mod nested;
 mod odometry;
 mod phase;
 mod reacquire;

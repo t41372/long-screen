@@ -201,6 +201,9 @@ export const pipelineSections: Catalog<typeof zh> = {
       message:
         'Pola di bagian atas bingkai menunjukkan UI yang tetap pada layar, bukan gerakan halaman. Bagian penutup yang tetap ini tidak ditulis ke kanvas bergerak. UI acuan asli tetap disimpan dalam tampilan berbingkai.',
     },
+    NESTED_LAYER_FOUND: {
+      message: 'Sebagian wilayah ini menggulir sendiri: dalam {{frames}} bingkai isinya tidak ikut bergerak bersama wilayah.',
+    },
     FRAGMENT_ATTACHED: {
       message:
         'Bukti dari kunjungan ulang menyambungkan seluruh fragmen terpisah ke kanvas yang sudah ada. Lintasan relatif di dalam fragmen tidak berubah.',

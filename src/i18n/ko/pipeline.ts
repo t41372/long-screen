@@ -178,6 +178,9 @@ export const pipelineSections: Catalog<typeof zh> = {
       message:
         '화면 위쪽 무늬는 페이지 움직임이 아니라 화면에 고정된 UI로 판단됩니다. 이 고정 UI는 움직이는 콘텐츠 캔버스에 기록하지 않습니다. 원래의 기준 UI는 테두리 포함 보기에 남깁니다.',
     },
+    NESTED_LAYER_FOUND: {
+      message: '이 영역의 일부가 따로 스크롤됩니다. {{frames}}개 프레임에서 그 내용이 영역과 함께 움직이지 않았습니다.',
+    },
     FRAGMENT_ATTACHED: {
       message: '재방문 근거를 통해 독립된 조각 전체를 기존 캔버스에 다시 연결했습니다. 조각 안의 상대적인 이동 경로는 바꾸지 않았습니다.',
     },

@@ -215,6 +215,9 @@ export const pipelineSections: Catalog<typeof zh> = {
       message:
         'I dettagli in alto indicano un’interfaccia fissa sullo schermo, non un movimento della pagina. Questo elemento sovrapposto non viene aggiunto al contenuto in movimento. L’interfaccia di riferimento resta nella vista con cornice.',
     },
+    NESTED_LAYER_FOUND: {
+      message: 'Una parte di questa regione scorre per conto suo: in {{frames}} fotogrammi il suo contenuto non si è mosso con la regione.',
+    },
     FRAGMENT_ATTACHED: {
       message:
         'Un ritorno su contenuti già visti ha permesso di ricollegare un frammento indipendente per intero a un’immagine esistente. La traiettoria relativa all’interno del frammento non cambia.',

@@ -207,6 +207,9 @@ export const pipelineSections: Catalog<typeof zh> = {
       message:
         'Szczegóły u góry klatki wskazują na interfejs nieruchomy względem ekranu, a nie na ruch strony. Ten zasłaniający element nie trafia do ruchomej warstwy treści. Oryginalny interfejs odniesienia pozostaje w widoku z ramką.',
     },
+    NESTED_LAYER_FOUND: {
+      message: 'Część tego obszaru przewija się samodzielnie: w {{frames}} klatkach jej zawartość nie przesuwała się razem z obszarem.',
+    },
     FRAGMENT_ATTACHED: {
       message:
         'Powrót do wcześniej widzianej treści pozwolił dołączyć niezależny fragment w całości do istniejącego obrazu. Względna ścieżka wewnątrz fragmentu nie zmieniła się.',

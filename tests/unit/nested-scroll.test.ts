@@ -105,6 +105,8 @@ Deno.test('nested-scroll-box: the box shares the page region, its own 600 px scr
   // Known limitation: the box rides on the page's pose, so every frame after it starts scrolling by itself is off by
   // its own scroll. A region of its own, or poses that follow it, fail this until the scenario joins the catalogue.
   assert(box.shared, 'the box got a region of its own: move nested-scroll-box into the catalogue');
+  // The solve pass finds the box (kernels/track/nested.rs), though nothing is reconstructed for it yet.
+  assertEquals(m.codes.NESTED_LAYER_FOUND, 1);
   assertEquals(box.maxError, 600, 'the box is still placed by the page alone');
 });
 
@@ -116,12 +118,14 @@ Deno.test('pane-majority: the narrow pane rides on the wide pane, 320 px of its 
   // Known limitation: one region for both panes; while the wide pane stands still the region stands still, so the
   // narrow pane's 320 px of scrolling are never counted.
   assert(right.shared, 'the narrow pane got a region of its own: move pane-majority into the catalogue');
+  assertEquals(m.codes.NESTED_LAYER_FOUND, 1, 'the solve pass finds the narrow pane');
   assertEquals(right.maxError, 320, 'the narrow pane is still placed by the wide pane alone');
 });
 
 Deno.test('pane-majority-revisit: the revisits at the end see the narrow pane 320 px from the trajectory and are rejected', async () => {
   const m = await measure('pane-majority-revisit');
   assert(m.layers.right.shared, 'the narrow pane got a region of its own: move pane-majority-revisit into the catalogue');
+  assertEquals(m.codes.NESTED_LAYER_FOUND, 1, 'the solve pass finds the narrow pane');
   assert((m.codes.INCONSISTENT_LOOP_REJECTED ?? 0) >= 1, 'a revisit sees the missed scroll');
   assert(m.layers.right.maxError! >= 300, `the narrow pane is still placed by the wide pane alone (${m.layers.right.maxError})`);
 });
@@ -136,6 +140,8 @@ Deno.test('pane-rare-scroll: a pane that scrolls in six frames is frozen as scre
   // Known limitation (docs/ARCHITECTURE.md §十, the stationary-region rule): its pixels stay in place in most frames, so
   // the rule makes it a fixed region and the 120 px it scrolled are not on any canvas.
   assertEquals(right.regionKind, 'fixed', 'the rarely scrolling pane is no longer frozen: update pane-rare-scroll');
+  // Frozen into a fixed region, it is not inside any moving region the solve pass could find it in.
+  assertEquals(m.codes.NESTED_LAYER_FOUND, undefined);
 });
 
 Deno.test('nested scrolling: write report', async () => {

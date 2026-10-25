@@ -1405,6 +1405,88 @@ impl SolveSession {
         }
     }
 
+    /// Lets the region's cells vote between its step and the frame's second translation, if the feature matches the
+    /// step leaves unexplained have one (`track::nested`): the evidence for a container scrolling inside the region.
+    fn observe_nested(&mut self, i: usize, ctx: &FrameCtx, s: &Step) {
+        let (Some(previous), Some(before)) = (
+            self.previous_gray.clone(),
+            self.states[i].previous_features.as_ref(),
+        ) else {
+            return;
+        };
+        let f = self.factor as f64;
+        let step = (s.delta.0 / f, s.delta.1 / f);
+        let matches: Vec<MatchPoints> = match_features(before, &s.own, true)
+            .iter()
+            .map(|m| {
+                let (a, b) = (&before[m.a as usize], &s.own[m.b as usize]);
+                MatchPoints {
+                    ax: a.x as f64,
+                    ay: a.y as f64,
+                    bx: b.x as f64,
+                    by: b.y as f64,
+                    unique: m.unique,
+                }
+            })
+            .collect();
+        let Some(other) = track::nested::second_translation(&matches, step) else {
+            return;
+        };
+        let (factor, w, h) = (self.factor as i64, self.width as f64, self.height as f64);
+        let shape = &self.regions[i].shape;
+        let rect = (
+            (shape.rect.x / f).floor() as i64,
+            (shape.rect.y / f).floor() as i64,
+            ((shape.rect.x + shape.rect.width) / f).ceil() as i64,
+            ((shape.rect.y + shape.rect.height) / f).ceil() as i64,
+        );
+        let inside = |x: i64, y: i64| {
+            shape.contains(
+                (x * factor + factor / 2) as f64,
+                (y * factor + factor / 2) as f64,
+                w,
+                h,
+            )
+        };
+        let native_rect = (
+            shape.rect.x.floor() as i64,
+            shape.rect.y.floor() as i64,
+            (shape.rect.x + shape.rect.width).ceil() as i64,
+            (shape.rect.y + shape.rect.height).ceil() as i64,
+        );
+        let inside_native = |x: i64, y: i64| shape.contains(x as f64, y as f64, w, h);
+        let Some(previous_slot) = self.previous_slot else {
+            return;
+        };
+        let state = &mut self.states[i];
+        let pose = (state.pose.0 / f, state.pose.1 / f);
+        let nested = state.nested.entry(state.canvas_id.clone()).or_default();
+        if !nested.observe(
+            &previous.data,
+            &ctx.gray.data,
+            previous.width,
+            previous.height,
+            step,
+            other,
+            pose,
+            rect,
+            inside,
+        ) {
+            return;
+        }
+        nested.observe_native(
+            &self.frames[previous_slot],
+            &self.frames[self.current_slot],
+            self.width,
+            self.height,
+            s.delta,
+            (other.0 * f, other.1 * f),
+            state.pose,
+            native_rect,
+            inside_native,
+        );
+    }
+
     /// The second pose recovery, then the voting observation, sticky occlusions and the placement — all with the
     /// region's final pose and canvas this frame.
     fn close_region(&mut self, i: usize, ctx: &FrameCtx, mut s: Step) -> Outcome {
@@ -1459,6 +1541,14 @@ impl SolveSession {
                     }
                 }
             }
+        }
+        if moving
+            && !s.skip
+            && matches!(s.decision, Decision::Tracked | Decision::Static)
+            && s.via_anchor.is_none()
+            && !s.relocalized
+        {
+            self.observe_nested(i, ctx, &s);
         }
         let has_previous = self.previous_slot.is_some();
         let canvas_id = self.states[i].canvas_id.clone();

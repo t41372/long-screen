@@ -254,6 +254,19 @@ fn solve_diagnostic(d: &EngineDiagnostic, l: Locale) -> Obj {
             .with("canvasId", canvas)
             .with("region", region)
             .with("message", msg("message")),
+        "NESTED_LAYER_FOUND" => base
+            .with("severity", "info")
+            .with("canvasId", canvas)
+            .with("region", region)
+            .with("detail", det)
+            .with(
+                "message",
+                t(
+                    l,
+                    "diag.NESTED_LAYER_FOUND.message",
+                    &[("frames", Param::Int(param("frames") as i64))],
+                ),
+            ),
         "TRAJECTORY_CORRECTED" => base
             .with("severity", "warning")
             .with("time", time)
@@ -640,6 +653,8 @@ pub fn solve(
     }
     // Finalise every frame still in the voting ring, then relax the pose graph.
     let drained = run.session.drain_voting();
+    // Draining also reports what the pass found once it had seen every frame (nested containers).
+    run.apply(ctx);
     run.queue_voting(ctx, drained);
     let mut graph = run.session.take_graph();
     let solved = run.solved;

@@ -25,7 +25,7 @@
 mod region;
 
 use crate::engine::attachments::{Attachment, Attachments};
-use crate::engine::diagnostic::{Diagnostic, Severity};
+use crate::engine::diagnostic::{Diagnostic, Severity, Value};
 use crate::engine::keyframes::{KeyframeIndex, Retrieval};
 use crate::engine::pose_graph::{PoseGraph, PoseGraphError, Write};
 use crate::kernels::features::{extract_features, Feature};
@@ -279,6 +279,8 @@ struct RegionState {
     weak: bool,
     /// A textured frame has been seen, so the canvas origin is defined.
     started: bool,
+    /// Per canvas of the region, the votes for a container scrolling inside it (`track::nested`).
+    nested: HashMap<String, crate::kernels::track::nested::Nested>,
 }
 
 /// The frame being solved.
@@ -424,6 +426,7 @@ impl SolveSession {
                 blind: false,
                 weak: false,
                 started: false,
+                nested: HashMap::new(),
             })
             .collect();
         SolveSession {
@@ -748,7 +751,50 @@ impl SolveSession {
     /// Finalises every frame still resident in the voting ring (the end of the pass).
     pub fn drain_voting(&mut self) -> Vec<VotingRecord> {
         let finalized = self.voting.drain();
-        self.records(finalized)
+        let records = self.records(finalized);
+        self.report_nested();
+        records
+    }
+
+    /// The containers found scrolling inside the moving regions (`track::nested`), one `NESTED_LAYER_FOUND` each,
+    /// with the footprint in the canvas's native coordinates. Only reported: nothing is reconstructed for them yet.
+    fn report_nested(&mut self) {
+        let factor = self.factor as i64;
+        let mut found = Vec::new();
+        for state in &self.states {
+            let mut canvases: Vec<&String> = state.nested.keys().collect();
+            canvases.sort();
+            for canvas in canvases {
+                let nested = &state.nested[canvas];
+                for fp in nested.footprints() {
+                    let edges = nested.edges(&fp, factor);
+                    found.push((canvas.clone(), fp, edges));
+                }
+            }
+        }
+        for (canvas, fp, [left, top, right, bottom]) in found {
+            let x0 = left.unwrap_or(fp.x0 * factor) as f64;
+            let y0 = top.unwrap_or(fp.y0 * factor) as f64;
+            let x1 = right.unwrap_or(fp.x1 * factor) as f64;
+            let y1 = bottom.unwrap_or(fp.y1 * factor) as f64;
+            let region = Rect {
+                x: x0,
+                y: y0,
+                width: x1 - x0,
+                height: y1 - y0,
+            };
+            self.diagnostic(
+                Diagnostic::new("NESTED_LAYER_FOUND", Severity::Info)
+                    .canvas(&canvas)
+                    .region(region)
+                    .param("frames", fp.frames as f64)
+                    .detail(Value::Object(vec![
+                        ("footprint", Value::rect(region)),
+                        ("open", Value::Number(fp.open as f64)),
+                        ("frames", Value::Number(fp.frames as f64)),
+                    ])),
+            );
+        }
     }
 
     /// Fills the native luma plane from the current frame, once per frame.
