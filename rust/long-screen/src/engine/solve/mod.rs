@@ -171,6 +171,9 @@ pub enum Effect {
         meta: CanvasMeta,
         created: bool,
     },
+    /// Delete `canvas/<id>` and stop counting it: a fragment that attached as a whole renders every frame onto its
+    /// target, so its own canvas would stay an empty 0×0 "unplaced fragment"; `attach/<id>` keeps the record.
+    CanvasDropped(String),
     /// Store `attach/<id>`.
     Attachment(Attachment),
     /// Store `keyframe/<id>`.

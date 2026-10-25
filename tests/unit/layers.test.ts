@@ -474,10 +474,14 @@ Deno.test('geometry: a no-overlap jump that tracks back into view attaches to th
     assertEquals(result.missing, 0);
     assertEquals(result.invented, 0);
     assertEquals(result.mismatched, 0);
-    const fragment = run.canvases.find((c) => c.layer === result.regionId && c.fragment > 0);
-    assert(fragment, 'no fragment canvas was ever created');
-    assertEquals(fragment!.attachedTo, result.mainCanvas.id);
-    assertEquals(fragment!.tileCount, 0, 'an attached fragment must hold no tiles of its own');
+    // The fragment rendered onto the main canvas as a whole, so it never holds a pixel of its own: its canvas row is
+    // dropped when it attaches (an empty 0×0 "unplaced fragment" would otherwise be listed in the app's canvases, the
+    // offline viewer and the result package), and attach/ keeps the record. Only canvases that exist are counted.
+    const attachment = await run.store.get<{ id: string; target: string }>(`attach/${(attach.detail as { id: string }).id}`);
+    assert(attachment, 'the attachment is recorded');
+    assertEquals(attachment!.target, result.mainCanvas.id);
+    assertEquals(run.canvases.find((c) => c.id === attachment!.id), undefined, 'the attached fragment left an empty canvas behind');
+    assertEquals(run.project.canvasCount, run.canvases.length, 'canvasCount counts a canvas that no longer exists');
     for (const o of run.observations) {
       const d = o.decisions.find((x) => x.placement.layer === result.regionId);
       assert(d, `frame ${o.frame}: no decision recorded for layer ${result.regionId}`);

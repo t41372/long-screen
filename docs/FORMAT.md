@@ -19,7 +19,7 @@ analysis.jsonl                          每帧运动分析记录（不含特征�
 poses.jsonl                             校正前后关键帧位置
 pose-edges.jsonl                        持久化邻接约束（双向）
 temporal.jsonl                          冲突区域与选择时刻，含参与合并的块级掩码
-attachments.jsonl                       被回访证据整体接回主画布的片段及其刚性位移
+attachments.jsonl                       被回访证据整体接回主画布的片段及其刚性位移（接回的片段没有自己的 canvases[] 项）
 diagnostics.jsonl                       持久化诊断
 regions.json                            自动/手动区域记录，含 base64 编码的归属掩码
 graph-summary.json                     优化残差与回环数量

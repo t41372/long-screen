@@ -245,6 +245,10 @@ fn write_effect(out: &mut Out, effect: &Effect) {
             out.u8(4);
             crate::diagnostic::write_diagnostic(out, d);
         }
+        Effect::CanvasDropped(id) => {
+            out.u8(5);
+            out.str(id);
+        }
     }
 }
 

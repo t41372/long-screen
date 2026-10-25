@@ -21,6 +21,8 @@ export interface SolveRegionInput {
 /** Something the pass did that the host carries out, in order. */
 export type SolveEffect =
   | { kind: 'canvas'; meta: CanvasMeta; created: boolean }
+  /** Delete `canvas/<id>` and stop counting it: a fragment attached as a whole holds no pixel of its own. */
+  | { kind: 'canvasDropped'; id: string }
   | { kind: 'attach'; attachment: Attachment }
   | { kind: 'keyframe'; keyframe: Keyframe }
   | { kind: 'graph'; write: PoseWrite }
@@ -135,6 +137,8 @@ function readEffect(r: ByteReader): SolveEffect {
       return { kind: 'keyframe', keyframe: readKeyframe(r) };
     case 3:
       return { kind: 'graph', write: readWrites(r)[0] };
+    case 5:
+      return { kind: 'canvasDropped', id: r.str() };
     default:
       return { kind: 'diagnostic', diagnostic: readDiagnostic(r) };
   }

@@ -1187,11 +1187,7 @@ impl SolveSession {
         self.effects.push(Effect::Attachment(attachment.clone()));
         if let Some(meta) = self.canvases.get_mut(id) {
             meta.attached_to = Some(target.to_string());
-            let meta = meta.clone();
-            self.effects.push(Effect::Canvas {
-                meta,
-                created: false,
-            });
+            self.effects.push(Effect::CanvasDropped(id.to_string()));
         }
         self.diagnostic(
             Diagnostic::new("FRAGMENT_ATTACHED", Severity::Info)

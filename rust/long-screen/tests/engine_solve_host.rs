@@ -65,6 +65,9 @@ impl Store {
                 Effect::Canvas { meta, .. } => {
                     self.rows.insert(format!("canvas/{}", meta.id), meta.name);
                 }
+                Effect::CanvasDropped(id) => {
+                    self.rows.remove(&format!("canvas/{id}"));
+                }
                 Effect::Attachment(a) => {
                     self.rows.insert(format!("attach/{}", a.id), a.target);
                 }

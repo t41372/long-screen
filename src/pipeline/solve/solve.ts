@@ -50,6 +50,10 @@ class SolveRun {
           await ctx.store.put(`canvas/${effect.meta.id}`, effect.meta);
           if (effect.created) ctx.project.canvasCount++;
           break;
+        case 'canvasDropped':
+          await ctx.store.delete(`canvas/${effect.id}`);
+          ctx.project.canvasCount = Math.max(0, ctx.project.canvasCount - 1);
+          break;
         case 'attach':
           await ctx.store.put(`attach/${effect.attachment.id}`, effect.attachment);
           break;

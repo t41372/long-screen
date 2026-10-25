@@ -372,6 +372,10 @@ impl Run<'_> {
                         ctx.canvas_count += 1;
                     }
                 }
+                Effect::CanvasDropped(id) => {
+                    ctx.delete(&format!("canvas/{id}"));
+                    ctx.canvas_count = ctx.canvas_count.saturating_sub(1);
+                }
                 Effect::Attachment(a) => ctx.put(
                     &format!("attach/{}", a.id),
                     Obj::new()
