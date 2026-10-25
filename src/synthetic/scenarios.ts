@@ -146,11 +146,26 @@ export function jitter(path: Point[], seed: number, amplitude = 1, every = 3): P
 /** A translucent bar pinned to the screen (iOS tab bar, input bar, glass navigation bar): the page scrolling under it
  *  shows through blurred and washed out, and the bar's own icons and labels sit on top, opaque. `layer`'s world
  *  continues past its viewport under the bar, so what shows through is the page beyond the viewport's edge. Nothing
- *  seen through the glass is page content the print should hold. */
-export function glassBar(id: string, rect: Rect, layer: () => Layer, ink: (band: World) => void, tint: RGB = [246, 246, 248]): Overlay {
-  const INK_KEY: RGB = [1, 2, 3], RADIUS = 7, SHOW = .3;
+ *  seen through the glass is page content the print should hold. Like iOS 26's glass and its scroll edge effect, the
+ *  bar shows the page least at the screen's edge (`edge`) and ever more clearly towards the page: `showEdge` of the
+ *  blurred page at the screen's edge, rising with the square of the distance to `showInner` at the bar's inner edge
+ *  (on new_ip_3 and new_ip_9 the rows under the status bar follow the page far less often than the page's own rows). */
+export function glassBar(
+  id: string,
+  rect: Rect,
+  layer: () => Layer,
+  ink: (band: World) => void,
+  edge: 'top' | 'bottom',
+  [showEdge, showInner]: [number, number],
+  tint: RGB = [246, 246, 248],
+): Overlay {
+  const INK_KEY: RGB = [1, 2, 3], RADIUS = 7;
   const marks = new World(rect.width, rect.height, INK_KEY);
   ink(marks);
+  const show = Array.from({ length: rect.height }, (_, y) => {
+    const t = (edge === 'top' ? y : rect.height - 1 - y) / Math.max(1, rect.height - 1);
+    return showEdge + (showInner - showEdge) * t * t;
+  });
   const pw = rect.width + 2 * RADIUS, ph = rect.height + 2 * RADIUS;
   return {
     id,
@@ -193,13 +208,39 @@ export function glassBar(id: string, rect: Rect, layer: () => Layer, ink: (band:
           for (let c = 0; c < 3; c++) {
             let s = 0;
             for (let d = 0; d < k; d++) s += tmp[((y + d) * pw + x + RADIUS) * 3 + c];
-            frame.data[o + c] = Math.round(tint[c] * (1 - SHOW) + (s / k) * SHOW);
+            frame.data[o + c] = Math.round(tint[c] * (1 - show[y]) + (s / k) * show[y]);
           }
         }
       }
       return [rect];
     },
   };
+}
+/** The marks of a phone's status bar that stay put in every frame of the iPhone recordings: the time at the left,
+ *  the Dynamic Island (a black pill) in the middle, signal bars, Wi-Fi and battery at the right. */
+export function statusMarks(band: World, width: number, seed: number, ink: RGB): void {
+  band.textLine(28, 12, 34, seed, ink, 1.3);
+  band.fill({ x: Math.round(width / 2) - 60, y: 10, width: 120, height: 34 }, [0, 0, 0]);
+  for (let k = 0; k < 4; k++) band.fill({ x: width - 98 + k * 5, y: 26 - 3 * k, width: 3, height: 4 + 3 * k }, ink);
+  for (let k = 0; k < 3; k++) band.fill({ x: width - 72 + 3 * k, y: 17 + 4 * k, width: 16 - 6 * k, height: 2 }, ink);
+  band.stroke({ x: width - 48, y: 17, width: 25, height: 12 }, ink);
+  band.stroke({ x: width - 47, y: 18, width: 23, height: 10 }, ink);
+  band.fill({ x: width - 45, y: 20, width: 15, height: 6 }, ink);
+  band.fill({ x: width - 22, y: 21, width: 2, height: 4 }, ink);
+}
+/** A bar's line icon (an SF Symbol): a 2 px outline with a few seeded strokes inside, not a flat block. */
+export function lineIcon(band: World, r: Rect, seed: number, ink: RGB): void {
+  const random = rng(seed);
+  band.stroke(r, ink);
+  band.stroke({ x: r.x + 1, y: r.y + 1, width: r.width - 2, height: r.height - 2 }, ink);
+  for (let k = 0; k < 3; k++) {
+    const at = .25 + random() * .5, span = .3 + random() * .4;
+    if (random() < .5) {
+      band.fill({ x: r.x + 4, y: r.y + Math.round(at * r.height), width: Math.round(span * (r.width - 8)), height: 2 }, ink);
+    } else {
+      band.fill({ x: r.x + Math.round(at * r.width), y: r.y + 4, width: 2, height: Math.round(span * (r.height - 8)) }, ink);
+    }
+  }
 }
 /** A schematic street map: flat land-use blocks, parks and water cut by white roads of several widths, with a few
  *  place labels. Little texture away from the roads, as on a vector map. */
@@ -1349,7 +1390,12 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         settled: n - 1,
         draw: (frame, index) => {
           const t = progress(index), h = barHeight(index), band = new World(PW, h, paper);
-          band.fill({ x: 12, y: 14, width: 14, height: 22 }, [10, 132, 255]);
+          // The buttons stay put from the first frame (new_ip_1: "Edit" on a glass capsule at the left, a filter icon
+          // on a glass circle at the right); only the title changes while the bar collapses.
+          band.fill({ x: 12, y: 8, width: 60, height: 36 }, [232, 232, 236]);
+          band.textLine(22, 16, 40, 2613, [10, 132, 255], 1.1);
+          band.fill({ x: PW - 48, y: 8, width: 36, height: 36 }, [232, 232, 236]);
+          lineIcon(band, { x: PW - 40, y: 16, width: 20, height: 20 }, 2614, ink);
           if (t > 0) band.textLine(150, 16, 90, 2611, mix(paper, ink, t));
           // The large title rides up with the content until the shrinking bar clips it away.
           if (t < 1) band.textLine(16, TALL - 44 - (scroll[index] - scroll[0]), 210, 2612, ink, 2.2);
@@ -1367,17 +1413,25 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         layers: [layer],
         overlays: [fixedBand('status', { x: 0, y: 0, width: PW, height: TOP }, 262, [20, 20, 24]), header],
         frames: frames(n),
-        // Measured on main (c65e33e): the collapsing bar is learned as part of the page region (fixed region only the
-        // 48 px status bar), so the bar's frames land on top of the print: invented 35,490, mismatched 1,214,
-        // provisional 610; ratchets are those +5 %. Ideal: all 0, and the status bar plus the collapsed bar fixed.
-        // That provisional figure is the render pass's own count; maxProvisional bounds the bits left in the final tiles: 510.
+        // Measured on c8377d7, with the bar's buttons standing still from frame 0 as on new_ip_1: the status bar is the
+        // change test's top band (0–48) and the collapsed bar a region of its own (48–96), fixed because its cells
+        // hardly move (`regions/construct.rs`, activity under 8 % of the page's), so the print starts under the bar.
+        // On new_ip_1 the bar moved enough to stay a moving region until the stationary-region rule froze it; this
+        // opaque bar does not (nor with the page showing through it at up to 50 %, tried), so the scenario guards the
+        // split of a still bar from the page, not that rule. Before the buttons the bar had no standing-still
+        // structure, was learned as part of the page region and its frames landed on the print (invented 35,490,
+        // mismatched 1,214, provisional 510). Still a limitation: the rows the bar gives up while it
+        // collapses (96–140, frames 0–7) belong to the page region for the whole run, so the tall bar's lower part and
+        // the large title riding up through it reach the page canvas: invented 16,770, mismatched 2,592. The collapse
+        // epoch (`epochs.rs::band_collapse`, toolbar-collapse) does not apply: it stretches a full-width top band and
+        // needs 8 frames before the split, and here the bar is a frozen region and shrinks over the first 8 frames.
+        // Ratchets are those +5 %. Ideal: all 0.
         expect: expect({
-          fragments: { body: -1 },
+          fragments: { body: 0 },
           limitation: true,
-          maxInvented: 37300,
-          maxMismatched: 1280,
-          maxProvisional: 510,
-          diagnostics: { present: [], absent: ['PROCESSING_ERROR', 'NONFINITE_POSE'] },
+          maxInvented: 17600,
+          maxMismatched: 2720,
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
         }),
       };
     }
@@ -1482,10 +1536,16 @@ export function buildScenario(name: ScenarioName | string): Scenario {
     }
     case 'glass-tab-bar': {
       // Frosted-glass bars at both ends of a phone screen (new_ip_9's tab bar, new_ip_3's navigation bar): the page
-      // scrolls under them and shows through blurred and washed out (30 % of a 15 px box blur over a light tint), with
-      // the bars' own title, icons and labels opaque on top. What shows through is not page content: the print holds the
-      // page from the clear area between the bars only. Ideal: both bars are fixed canvases (kept as of frame 0, as
-      // `live-bar`), the page is one canvas with nothing of the glass in it.
+      // scrolls under them and shows through a 15 px box blur over a light tint, 20 % at the screen's edge and more
+      // towards the page (45 % at the header's lower edge, 30 % at the tab bar's upper edge), with the bars' own marks
+      // opaque on top and still in every frame: status marks (time, Dynamic Island, signal, Wi-Fi, battery), two
+      // buttons and the title; five tabs (line icons over labels) and the home indicator. With the learner's row
+      // votes (standing still / following the page, per sampled pixel and informative frame) the status rows give
+      // 0.37 / 0.13 on average, the tab bar's 0.18 / 0.17 (its icon and label rows up to 0.83 / 0.002), the page
+      // 0.012 / 0.34; new_ip_9's status bar gives 0.26–0.52 / 0.06–0.22, its tab bar 0.27–0.45 / 0.02–0.2 and its page
+      // about 0.01 / 0.24 (the same votes, emulated on its frames). What shows through is not page content: the print
+      // holds the page from the clear area between the bars only. Ideal: both bars are fixed canvases (kept as of
+      // frame 0, as `live-bar`), the page is one canvas with nothing of the glass in it.
       const PW = 390, PH = 844, TOP = 100, TAB = 116;
       const world = makeWorld(PW, 4000, 271, 'cards');
       const path = jitter(linearPath([{ x: 0, y: 200 }, { x: 0, y: 1500 }, { x: 0, y: 1300 }, { x: 0, y: 2900 }], [50, 10, 50]), 27, 1, 5);
@@ -1499,32 +1559,65 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         background: [251, 250, 246],
         layers: [layer],
         overlays: [
-          glassBar('header', { x: 0, y: 0, width: PW, height: TOP }, () => layer, (band) => {
-            band.textLine(24, 12, 40, 2711, dark);
-            band.fill({ x: 300, y: 16, width: 64, height: 12 }, dark);
-            band.textLine(140, 58, 110, 2712, dark, 1.3);
-            band.fill({ x: 0, y: TOP - 1, width: PW, height: 1 }, [205, 205, 208]);
-          }),
-          glassBar('tabs', { x: 0, y: PH - TAB, width: PW, height: TAB }, () => layer, (band) => {
-            band.fill({ x: 0, y: 0, width: PW, height: 1 }, [205, 205, 208]);
-            for (let k = 0; k < 4; k++) {
-              const colour: RGB = k ? [142, 142, 147] : [10, 132, 255];
-              band.fill({ x: 34 + k * 92, y: 14, width: 30, height: 26 }, colour);
-              band.textLine(28 + k * 92, 46, 42, 2713 + k, colour, .8);
-            }
-            band.fill({ x: 128, y: TAB - 14, width: 134, height: 5 }, dark);
-          }),
+          glassBar(
+            'header',
+            { x: 0, y: 0, width: PW, height: TOP },
+            () => layer,
+            (band) => {
+              statusMarks(band, PW, 2711, dark);
+              // The navigation row: a back button and an action button (glass circles holding line icons), the title.
+              for (const x of [16, PW - 52]) {
+                band.fill({ x, y: 54, width: 36, height: 36 }, [232, 232, 236]);
+                lineIcon(band, { x: x + 8, y: 62, width: 20, height: 20 }, 2714 + x, dark);
+              }
+              band.textLine(140, 62, 110, 2712, dark, 1.3);
+              band.fill({ x: 0, y: TOP - 1, width: PW, height: 1 }, [205, 205, 208]);
+            },
+            'top',
+            [.2, .45],
+          ),
+          glassBar(
+            'tabs',
+            { x: 0, y: PH - TAB, width: PW, height: TAB },
+            () => layer,
+            (band) => {
+              band.fill({ x: 0, y: 0, width: PW, height: 1 }, [205, 205, 208]);
+              // Five tabs (line icon over a label), the selected one on a lighter capsule, and the home indicator.
+              band.fill({ x: 8, y: 8, width: 70, height: 56 }, [226, 232, 244]);
+              for (let k = 0; k < 5; k++) {
+                const colour: RGB = k ? [142, 142, 147] : [10, 132, 255];
+                lineIcon(band, { x: 28 + k * 76, y: 14, width: 30, height: 26 }, 2717 + k, colour);
+                band.textLine(22 + k * 76, 46, 42, 2713 + k, colour, .8);
+              }
+              band.fill({ x: 128, y: TAB - 14, width: 134, height: 5 }, dark);
+            },
+            'bottom',
+            [.2, .3],
+          ),
         ],
         frames: frames(path.length),
-        // Measured on main (c65e33e): no bar is learned as fixed (the only fixed regions are the page's empty 20 px side
-        // margins); the top bar is learned as part of the page region, putting 35,000 px seen through the glass on the
-        // print (invented), and the tab bar becomes a second moving region with two canvases (UNPLACED_FRAGMENT).
-        // maxInvented is that +5 %. Ideal: invented 0, both bars fixed, one moving region.
+        // Measured on c8377d7: besides the page's empty 20 px side margins, the header (0–96) is a region of its own,
+        // fixed because its cells hardly move (`regions/construct.rs`, activity under 8 % of the page's; without that
+        // rule the stationary-region rule below makes it fixed all the same), and the tab
+        // bar (720–844) is a second region that moves with the page it shows but whose sampled pixels stand still more
+        // often than they follow it, which the stationary-region rule turns fixed (docs/ARCHITECTURE.md §十,
+        // `freeze_stationary_regions`; without it the tab bar is a second scroll layer, MULTIPLE_SCROLL_LAYERS and 30
+        // LOW_CONFIDENCE_PLACEMENT, as on new_ip_9). One page canvas. The vote band (`bands.rs::detect_bands`) finds
+        // nothing: the votes take rows 0–4 only, under its 6-row minimum. Before the marks, with the glass as clear at
+        // the screen's edge as anywhere and flat blocks for icons, the glass rows followed the page as often as the
+        // page itself, the top bar was learned as page (35,000 px seen through it on the print) and the tab bar as a
+        // second moving region with two canvases (UNPLACED_FRAGMENT). Still a limitation: the regions follow analysis
+        // cells, so the glass rows 96–100 stay on the print (invented 1,400), and the fixed canvases do not keep frame
+        // 0's glass. Ratchets are the measured values +5 %. Ideal: invented 0, both bars fixed canvases as of frame 0.
         expect: expect({
-          fragments: { body: -1 },
+          fragments: { body: 0 },
           limitation: true,
-          maxInvented: 36750,
-          diagnostics: { present: [], absent: ['PROCESSING_ERROR', 'NONFINITE_POSE'] },
+          maxInvented: 1470,
+          maxProvisional: 8,
+          diagnostics: {
+            present: [],
+            absent: ['UNPLACED_FRAGMENT', 'MULTIPLE_SCROLL_LAYERS', 'LOW_CONFIDENCE_PLACEMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'],
+          },
         }),
       };
     }
