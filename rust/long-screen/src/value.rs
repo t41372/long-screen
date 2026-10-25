@@ -373,6 +373,108 @@ fn write_string(s: &str, out: &mut String) {
     out.push('"');
 }
 
+/// The elements of a typed array as the numbers `Array.from(typedArray)` gives (little-endian bytes).
+pub fn typed_values(kind: Typed, bytes: &[u8]) -> Vec<f64> {
+    match kind {
+        Typed::Uint8 | Typed::Uint8Clamped => bytes.iter().map(|&b| b as f64).collect(),
+        Typed::Int16 => bytes
+            .chunks_exact(2)
+            .map(|c| i16::from_le_bytes([c[0], c[1]]) as f64)
+            .collect(),
+        Typed::Int32 => bytes
+            .chunks_exact(4)
+            .map(|c| i32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64)
+            .collect(),
+        Typed::Uint32 => bytes
+            .chunks_exact(4)
+            .map(|c| u32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64)
+            .collect(),
+        Typed::Float32 => bytes
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]) as f64)
+            .collect(),
+    }
+}
+
+/// `v` with every typed array replaced by a plain array of its numbers, as the replacer
+/// `(_, x) => ArrayBuffer.isView(x) ? Array.from(x) : x` hands `JSON.stringify` (src/export/project.ts's `jsonLines`).
+pub fn typed_as_arrays(v: &Js) -> Js {
+    match v {
+        Js::Typed(kind, bytes) => Js::Arr(
+            typed_values(*kind, bytes)
+                .into_iter()
+                .map(Js::Num)
+                .collect(),
+        ),
+        Js::Arr(a) => Js::Arr(a.iter().map(typed_as_arrays).collect()),
+        Js::Obj(o) => Js::Obj(Obj(o
+            .0
+            .iter()
+            .map(|(k, x)| (k.clone(), typed_as_arrays(x)))
+            .collect())),
+        other => other.clone(),
+    }
+}
+
+/// `JSON.stringify(v, null, 2)`. A typed array stringifies as an object of its indices and a blob as `{}`, as
+/// JavaScript's own would without a replacer.
+pub fn to_json_pretty(v: &Js) -> String {
+    let mut s = String::new();
+    write_pretty(v, 0, &mut s);
+    s
+}
+
+fn write_pretty(v: &Js, depth: usize, out: &mut String) {
+    let pad = |n: usize, out: &mut String| out.extend(std::iter::repeat_n("  ", n));
+    match v {
+        Js::Arr(a) if !a.is_empty() => {
+            out.push_str("[\n");
+            for (i, x) in a.iter().enumerate() {
+                if i > 0 {
+                    out.push_str(",\n");
+                }
+                pad(depth + 1, out);
+                write_pretty(x, depth + 1, out);
+            }
+            out.push('\n');
+            pad(depth, out);
+            out.push(']');
+        }
+        Js::Obj(o) => {
+            let fields: Vec<(&String, &Js)> = ordered(o)
+                .into_iter()
+                .filter(|(_, x)| !matches!(x, Js::Undefined))
+                .collect();
+            if fields.is_empty() {
+                out.push_str("{}");
+                return;
+            }
+            out.push_str("{\n");
+            for (i, (k, x)) in fields.into_iter().enumerate() {
+                if i > 0 {
+                    out.push_str(",\n");
+                }
+                pad(depth + 1, out);
+                write_string(k, out);
+                out.push_str(": ");
+                write_pretty(x, depth + 1, out);
+            }
+            out.push('\n');
+            pad(depth, out);
+            out.push('}');
+        }
+        Js::Typed(kind, bytes) => {
+            let indices = Obj(typed_values(*kind, bytes)
+                .into_iter()
+                .enumerate()
+                .map(|(i, n)| (i.to_string(), Js::Num(n)))
+                .collect());
+            write_pretty(&Js::Obj(indices), depth, out)
+        }
+        other => write_json(other, out),
+    }
+}
+
 pub fn to_json(v: &Js) -> String {
     let mut s = String::new();
     write_json(v, &mut s);

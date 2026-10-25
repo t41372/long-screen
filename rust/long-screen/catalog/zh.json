@@ -204,5 +204,17 @@
     "ignored": "主动忽略",
     "fragment": "未定位片段 {{n}}",
     "framed": "保留外框"
+  },
+  "offline": {
+    "title": "离线画布",
+    "fit": "适应",
+    "tip": "本地原尺寸瓦片 · 拖动 / 滚轮缩放",
+    "previewLevel": "显示预览层 {{level}}，放大可见原像素",
+    "nativeTiles": "显示原尺寸瓦片",
+    "footer": "棋盘区域未被观察 / 无瓦片；置信度不是正确概率。查看 diagnostics.jsonl 与 observations.jsonl。"
+  },
+  "viewer": {
+    "lang": "zh-CN",
+    "dir": "ltr"
   }
 }

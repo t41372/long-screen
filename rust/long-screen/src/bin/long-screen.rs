@@ -53,6 +53,10 @@ struct Args {
     /// A JSON report: status, diagnostics (codes, severities, messages, counts), canvases, timings.
     #[arg(long)]
     json: Option<PathBuf>,
+    /// Also write the result package to this file: the web page's project ZIP (native-size tiles, the offline viewer,
+    /// coverage and quality data, frame records, diagnostics; docs/FORMAT.md).
+    #[arg(long)]
+    package: Option<PathBuf>,
     /// Language of messages.
     #[arg(long, value_enum, default_value = "en")]
     lang: Lang,
@@ -368,6 +372,18 @@ fn main() -> ExitCode {
                     eprintln!("long-screen: cannot write {}: {e}", path.display());
                     write_error = true;
                 }
+            }
+        }
+    }
+    if let (Some(path), None) = (&args.package, &failed) {
+        let written = std::fs::File::create(path)
+            .and_then(|f| result.write_package(std::io::BufWriter::new(f)));
+        match written {
+            Ok(()) if !args.quiet => eprintln!("wrote {}", path.display()),
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("long-screen: cannot write {}: {e}", path.display());
+                write_error = true;
             }
         }
     }

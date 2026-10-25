@@ -97,6 +97,8 @@ class Result:
         """Writes the print to `path` as an RGBA PNG (unobserved pixels transparent)."""
     def print_image(self) -> npt.NDArray[np.uint8]:
         """The print as a uint8 array of shape (height, width, 4), RGBA. A long print is large."""
+    def write_package(self, path: str | os.PathLike[str]) -> None:
+        """Writes the result package to `path`: the web page's project ZIP (tiles, offline viewer, diagnostics)."""
 
 class LongScreenError(Exception):
     """Base class of the errors Long Screen raises."""

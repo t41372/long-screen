@@ -6,7 +6,7 @@ import { type StoredTile, type TileIndex, TileStore } from '../storage/tiles.ts'
 import { ZipWriter } from './zip.ts';
 import { utf8 } from '../codec/crc.ts';
 import { createTarget } from './target.ts';
-import { offlineViewer } from './offline.ts';
+import { offlineViewer, PACKAGE_NOTES, PACKAGE_README } from './offline.ts';
 import { encodePNG } from '../codec/png.ts';
 import { rasterRows } from './png.ts';
 import { canvasRect, clampCrop } from './crop.ts';
@@ -44,27 +44,21 @@ export async function exportProject(
       canvases.push(value);
     }
     const manifest = {
-      format: 'long-screen/sparse-canvas',
-      version: 2,
-      presentation:
-        'Canvases with kind=presentation are framed views, not independent reconstructed worlds. Their opaque decorative extensions have NO evidence coverage; see canvas.presentation. Original moving and fixed canvases are retained.',
+      format: PACKAGE_NOTES.format,
+      version: PACKAGE_NOTES.version,
+      presentation: PACKAGE_NOTES.presentation,
       tileSize: project.settings.tileSize,
-      coordinates: 'Native source pixels. Each independent canvas has its own origin.',
-      holes: 'Transparent pixels were not observed; the enclosing bounding rectangle is not a coverage guarantee.',
-      levels: 'Level 0 is native resolution; levels 1+ are explicitly downsampled previews.',
-      confidence: 'Heuristic, uncalibrated, not a correctness probability.',
+      coordinates: PACKAGE_NOTES.coordinates,
+      holes: PACKAGE_NOTES.holes,
+      levels: PACKAGE_NOTES.levels,
+      confidence: PACKAGE_NOTES.confidence,
       sourceIncluded: false,
       project,
       canvases,
     };
     await zip.add('manifest.json', utf8(JSON.stringify(manifest, null, 2)));
     await zip.add('index.html', utf8(offlineViewer(manifest)));
-    await zip.add(
-      'README.txt',
-      utf8(
-        'Long Screen — offline reconstruction\n\nUnzip everything, then open index.html. Level-zero PNG tiles preserve native output resolution. Missing tiles and transparent pixels are unobserved holes, not white page content. Independent fragments are not asserted to be adjacent. The original video is NOT included: retain it for source-time comparisons. observations.jsonl records every processed source frame and chosen placement; diagnostics.jsonl contains warnings. quality/*.json stores 16px-block heuristic quality, conflict markers, and source-frame ownership. provisional/*.bin marks covered pixels the world-consistency mask could not corroborate against a neighbouring frame (screen-space overlay/dynamic burn-in still awaiting a later consistent observation), same bit layout as coverage/*.bin. Pixel coverage bits are least-significant-bit first. Pyramids are previews only. regions.json holds the full region definitions (including their masks, base64-encoded) that produced canvases[].layer.\n',
-      ),
-    );
+    await zip.add('README.txt', utf8(PACKAGE_README));
     const regions = (await db.get<Region[]>('regions')) || [];
     // analysis.jsonl (built from scan/ below) carries no per-feature descriptors any more — features live only
     // transiently under scan-features/ during solve() and are deleted once it finishes with them — so region
@@ -91,8 +85,7 @@ export async function exportProject(
               quality: [...(tile.quality || [])],
               conflicts: [...(tile.conflicts || [])],
               frozen: [...(tile.frozen || [])],
-              ownerFrameEncoding:
-                '0 = unassigned; otherwise zero-based source frame index + 1. Block-level representative, not per-pixel provenance.',
+              ownerFrameEncoding: PACKAGE_NOTES.ownerFrameEncoding,
               ownerFrame: [...tile.owner],
             }),
           ),

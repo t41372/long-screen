@@ -1,6 +1,6 @@
 # 稀疏画布结果包
 
-格式：`long-screen/sparse-canvas`，version 2。`project` 内嵌的 `schema` 字段是内部存储层版本（scan-time 特征改为 `scan-features/<frame>` 独立行，不再内联在 ScanRecord 上），与本导出格式的 `version` 是两回事。
+格式：`long-screen/sparse-canvas`，version 2。网页的“项目 ZIP”与原生命令行的 `--package <file.zip>`（Rust `RunResult::write_package`、Python `Result.write_package`）写的是同一种包：条目、顺序和内容相同，只有运行本身不同的地方不同（项目 id 与时间戳、媒体与解码器、计时、`COMPUTE_BACKEND` 诊断、ZIP 容器自己的时间戳）。`project` 内嵌的 `schema` 字段是内部存储层版本（scan-time 特征改为 `scan-features/<frame>` 独立行，不再内联在 ScanRecord 上），与本导出格式的 `version` 是两回事。
 
 `manifest.json` 保存项目、设置、媒体尺寸 / 名称 / 字节数、各画布原生坐标边界。每个独立画布有自己的坐标原点；fragment 之间没有声明空间邻接关系。bounds 是外接矩形，不是“全部被观察”的保证。
 

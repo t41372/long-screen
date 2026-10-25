@@ -204,5 +204,17 @@
     "ignored": "Ignored",
     "fragment": "unplaced fragment {{n}}",
     "framed": "framed"
+  },
+  "offline": {
+    "title": "Offline canvas",
+    "fit": "Fit",
+    "tip": "Local native-size tiles · drag / scroll to zoom",
+    "previewLevel": "Showing preview level {{level}}; zoom in to see native pixels",
+    "nativeTiles": "Showing native-size tiles",
+    "footer": "Checkerboard areas are unobserved / have no tiles; confidence is not a correctness probability. See diagnostics.jsonl and observations.jsonl."
+  },
+  "viewer": {
+    "lang": "en",
+    "dir": "ltr"
   }
 }

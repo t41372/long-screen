@@ -1,0 +1,10 @@
+{
+  "format": "long-screen/sparse-canvas",
+  "version": 2,
+  "presentation": "Canvases with kind=presentation are framed views, not independent reconstructed worlds. Their opaque decorative extensions have NO evidence coverage; see canvas.presentation. Original moving and fixed canvases are retained.",
+  "coordinates": "Native source pixels. Each independent canvas has its own origin.",
+  "holes": "Transparent pixels were not observed; the enclosing bounding rectangle is not a coverage guarantee.",
+  "levels": "Level 0 is native resolution; levels 1+ are explicitly downsampled previews.",
+  "confidence": "Heuristic, uncalibrated, not a correctness probability.",
+  "ownerFrameEncoding": "0 = unassigned; otherwise zero-based source frame index + 1. Block-level representative, not per-pixel provenance."
+}

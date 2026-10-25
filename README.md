@@ -128,7 +128,7 @@ cargo install long-screen
 long-screen recording.mov -o print.png --json report.json
 ```
 
-It writes the print, the canvas the web app shows first, as one PNG (fragments it could not place go next to it as `print-fragment-<n>.png` in the app's order, or use `--out-dir` for every canvas), progress and warnings on stderr, and with `--json` a report of the diagnostics, canvases and timings; `--lang zh`, `--threads`, `--memory-mb` and `--help` for the rest.
+It writes the print, the canvas the web app shows first, as one PNG (fragments it could not place go next to it as `print-fragment-<n>.png` in the app's order, or use `--out-dir` for every canvas), progress and warnings on stderr, with `--json` a report of the diagnostics, canvases and timings, and with `--package out.zip` the same result package the web app exports (native-size tiles, the offline viewer, coverage and quality data, diagnostics); `--lang zh`, `--threads`, `--memory-mb` and `--help` for the rest.
 
 | Exit code | Meaning                        |
 | --------- | ------------------------------ |

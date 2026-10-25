@@ -1,6 +1,10 @@
-/** Exports the `diag`, `progress` and `names` sections of the zh and en catalogues (src/i18n) to
+/** Exports the `diag`, `progress`, `names` and `offline` sections of the zh and en catalogues (src/i18n) to
  *  rust/long-screen/catalog/*.json, where the Rust engine embeds them (rust/long-screen/src/engine/catalog.rs) to word its diagnostics
- *  exactly as the page does and to show region and canvas names in the run's language (src/i18n/names.ts).
+ *  exactly as the page does, to show region and canvas names in the run's language (src/i18n/names.ts) and to word the
+ *  result package's offline viewer; a `viewer` section adds the page's `lang` and `dir` for the locale. The viewer page
+ *  itself (src/export/offline.ts `VIEWER_TEMPLATE`), the package README and the manifest's fixed notes go to
+ *  catalog/viewer.html, catalog/package-readme.txt and catalog/package-notes.json, which the native result package
+ *  (rust/long-screen/src/package.rs) fills and copies.
  *
  *  Usage: deno task export-catalog          rewrite the JSON files
  *         deno task export-catalog --check  exit 1 if they are out of date (tests/unit/catalog-export.test.ts does the same)
@@ -11,9 +15,12 @@
 import { fromFileUrl } from '@std/path';
 import { zh } from '../src/i18n/zh/index.ts';
 import { en } from '../src/i18n/en/index.ts';
+import { HTML_LANG } from '../src/i18n/locales.ts';
+import { localeDirection } from '../src/i18n/locales.ts';
+import { PACKAGE_NOTES, PACKAGE_README, VIEWER_TEMPLATE } from '../src/export/offline.ts';
 
 type Tree = { [key: string]: string | Tree };
-export const CATALOG_SECTIONS = ['diag', 'progress', 'names'] as const;
+export const CATALOG_SECTIONS = ['diag', 'progress', 'names', 'offline'] as const;
 export const CATALOG_DIR = fromFileUrl(new URL('../rust/long-screen/catalog/', import.meta.url));
 const PLURAL = /_(zero|one|two|few|many|other)$/;
 
@@ -42,16 +49,29 @@ export function catalogJSON(): Record<'zh' | 'en', string> {
       sections[name] = catalogue[name] as Tree;
       check(sections[name] as Tree, `${locale}.${name}`);
     }
+    sections.viewer = { lang: HTML_LANG[locale as 'zh' | 'en'], dir: localeDirection(locale as 'zh' | 'en') };
     return JSON.stringify(sections, null, 2) + '\n';
   };
   return { zh: pick(zh, 'zh'), en: pick(en, 'en') };
 }
 
+/** Every file the export writes into CATALOG_DIR, by name, with the text it should hold. */
+export function catalogFiles(): Record<string, string> {
+  const json = catalogJSON();
+  return {
+    'zh.json': json.zh,
+    'en.json': json.en,
+    'viewer.html': VIEWER_TEMPLATE,
+    'package-readme.txt': PACKAGE_README,
+    'package-notes.json': JSON.stringify(PACKAGE_NOTES, null, 2) + '\n',
+  };
+}
+
 if (import.meta.main) {
   const checkOnly = Deno.args.includes('--check');
   let stale = false;
-  for (const [locale, text] of Object.entries(catalogJSON())) {
-    const file = `${CATALOG_DIR}${locale}.json`;
+  for (const [name, text] of Object.entries(catalogFiles())) {
+    const file = `${CATALOG_DIR}${name}`;
     let current: string | undefined;
     try {
       current = await Deno.readTextFile(file);
