@@ -308,7 +308,19 @@ export interface CoreExports {
   ls_regions_read_headers(handle: number, out: number): number;
   ls_regions_read_masks(handle: number, out: number): number;
   ls_regions_read_cells(handle: number, out: number): number;
-  ls_regions_label_atlas(regions: number, count: number, width: number, height: number, labelsOut: number, countsOut: number): number;
+  ls_regions_label_atlas(
+    regions: number,
+    count: number,
+    width: number,
+    height: number,
+    epochs: number,
+    epochsLength: number,
+    frame: number,
+    labelsOut: number,
+    countsOut: number,
+  ): number;
+  ls_regions_epoch_starts(epochs: number, epochsLength: number, count: number, out: number, capacity: number): number;
+  ls_regions_epoch_index(starts: number, count: number, frame: number): number;
   ls_render_new(input: number, len: number): number;
   ls_render_free(handle: number): void;
   ls_render_take(handle: number, out: number, len: number): number;

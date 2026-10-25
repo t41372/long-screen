@@ -36,20 +36,6 @@ export class LayerLearner {
     return this.live.finish(nativeWidth, nativeHeight, manual, factor);
   }
 }
-/** The frames at which any region's ownership changes (its `epochs`), ascending and unique, starting with 0 — the
- *  host-side mirror of `rust/long-screen/src/kernels/regions/epochs.rs::epoch_starts`, which the native host uses. */
-export function epochStarts(regions: readonly Region[]): number[] {
-  const starts = new Set([0]);
-  for (const r of regions) for (const e of r.epochs ?? []) starts.add(e.from);
-  return [...starts].sort((a, b) => a - b);
-}
-/** A region as it stands at `frame`: its own exclusions plus those of the last epoch starting at or before it
- *  (`epochs.rs::exclusions_at`). A region without epochs is returned as it is. */
-export function regionAt(region: Region, frame: number): Region {
-  if (!region.epochs?.length) return region;
-  const extra = [...region.epochs].reverse().find((e) => e.from <= frame)?.exclusions ?? [];
-  return { ...region, exclusions: [...(region.exclusions ?? []), ...extra] };
-}
 /** Native-resolution pixel ownership computed once per run: compositing loops index a byte instead of testing
  *  region membership per pixel (`rust/long-screen/src/kernels/region.rs::Region::contains`, via `filter_features` and the
  *  atlas label plane below). One label plane per ownership epoch (`Region.epochs`); a run whose regions have no
@@ -69,12 +55,10 @@ export class RegionAtlas {
     if (regions.length > 254) {
       throw new Error('Too many regions for the pixel atlas.');
     }
-    this.starts = epochStarts(regions);
+    this.starts = core().epochStarts(regions);
     this.planes = [];
     try {
-      for (const start of this.starts) {
-        this.planes.push(core().labelAtlasResident(regions.map((r) => regionAt(r, start)), width, height));
-      }
+      for (const start of this.starts) this.planes.push(core().labelAtlasResident(regions, width, height, start));
     } catch (e) {
       this.dispose();
       throw e;
@@ -85,9 +69,7 @@ export class RegionAtlas {
     return this.planes[0].resident;
   }
   private plane(frame: number): { resident: Resident; counts: Uint32Array; labels?: Uint8Array } {
-    let i = 0;
-    while (i + 1 < this.starts.length && this.starts[i + 1] <= frame) i++;
-    return this.planes[i];
+    return this.planes[core().epochIndex(this.starts, frame)];
   }
   /** The plane in effect at `frame`. */
   residentAt(frame: number): Resident {

@@ -10,7 +10,7 @@ import type { Core } from './core.ts';
 import type { CoreExports } from './exports.ts';
 import { MANUAL_REGION_BYTES, REGION_HEADER_BYTES, REGIONS_FINISH_DESC_BYTES, VOTING_REGION_BYTES } from './exports.ts';
 import { writeRegionDescriptor } from './marshal.ts';
-import type { ByteReader } from './bytes.ts';
+import { type ByteReader, ByteWriter } from './bytes.ts';
 import { type FrameInput, type Resident, ResidentFrame } from './memory.ts';
 
 export interface FinishAccumulators {
@@ -319,6 +319,7 @@ export function labelAtlasResident(
   regions: Region[],
   width: number,
   height: number,
+  frame = 0,
 ): { resident: Resident; counts: Uint32Array } {
   if (regions.length > 254) {
     // Matches the error `RegionAtlas`'s former all-TS constructor threw; the Rust side rejects the same limit
@@ -332,17 +333,29 @@ export function labelAtlasResident(
   // the pointers this one already handed out.
   const resident = core.alloc(width * height);
   try {
+    const epochs = epochBytes(regions);
     const sizes: number[] = [regions.length * VOTING_REGION_BYTES];
     for (const r of regions) {
       sizes.push((r.exclusions?.length || 0) * 32, r.crop ? 32 : 0, r.mask && !r.solid ? r.mask.byteLength : 0);
     }
-    sizes.push((regions.length + 1) * 4);
-    const ptr = core.scratch(sizes), base = ptr[0], countsPtr = ptr[ptr.length - 1];
+    sizes.push((regions.length + 1) * 4, epochs?.length ?? 0);
+    const ptr = core.scratch(sizes), base = ptr[0], countsPtr = ptr[ptr.length - 2], epochsPtr = ptr[ptr.length - 1];
     regions.forEach((r, i) => {
       const [exclusions, crop, mask] = ptr.slice(1 + i * 3, 4 + i * 3);
       writeRegionDescriptor(exports, base, i * VOTING_REGION_BYTES, r, exclusions, crop, mask);
     });
-    const status = exports.ls_regions_label_atlas(base, regions.length, width, height, resident.ptr, countsPtr);
+    if (epochs) core.writeBytes(epochsPtr, epochs);
+    const status = exports.ls_regions_label_atlas(
+      base,
+      regions.length,
+      width,
+      height,
+      epochs ? epochsPtr : 0,
+      epochs?.length ?? 0,
+      frame,
+      resident.ptr,
+      countsPtr,
+    );
     if (status === STATUS_TOO_MANY_REGIONS) throw new Error('Too many regions for the pixel atlas.');
     core.check(status, 'regions label atlas');
     // See the shared-memory note on the identical pattern in `finishRegions` above: `readBytes` (a
@@ -356,4 +369,42 @@ export function labelAtlasResident(
     resident.free();
     throw error;
   }
+}
+
+/** The regions' ownership epochs in `rust/wasm/src/regions.rs::read_epochs`'s format, or undefined when none has any. */
+function epochBytes(regions: Region[]): Uint8Array | undefined {
+  if (!regions.some((r) => r.epochs?.length)) return undefined;
+  const w = new ByteWriter();
+  for (const r of regions) {
+    w.u32(r.epochs?.length ?? 0);
+    for (const e of r.epochs ?? []) {
+      w.u32(e.from).u32(e.exclusions.length);
+      for (const x of e.exclusions) w.f64(x.x).f64(x.y).f64(x.width).f64(x.height);
+    }
+  }
+  return w.toBytes();
+}
+
+/** The frames at which the regions' ownership may change, ascending, starting with 0
+ *  (`rust/long-screen/src/kernels/regions/epochs.rs::epoch_starts`). */
+export function epochStarts(core: Core, exports: CoreExports, regions: Region[]): number[] {
+  const epochs = epochBytes(regions);
+  if (!epochs) return [0];
+  const capacity = 1 + regions.reduce((n, r) => n + (r.epochs?.length ?? 0), 0);
+  const [epochsPtr, out] = core.scratch([epochs.length, capacity * 4]);
+  core.writeBytes(epochsPtr, epochs);
+  const n = exports.ls_regions_epoch_starts(epochsPtr, epochs.length, regions.length, out, capacity);
+  core.check(n, 'regions epoch starts');
+  const bytes = core.readBytes(out, n * 4);
+  return [...new Uint32Array(bytes.buffer, bytes.byteOffset, n)];
+}
+
+/** Which of `starts` frame `frame` falls in (`epochs.rs::epoch_index`). */
+export function epochIndex(core: Core, exports: CoreExports, starts: number[], frame: number): number {
+  if (starts.length === 1) return 0;
+  const [ptr] = core.scratch([starts.length * 4]);
+  core.writeBytes(ptr, new Uint8Array(new Uint32Array(starts).buffer));
+  const index = exports.ls_regions_epoch_index(ptr, starts.length, frame);
+  core.check(index, 'regions epoch index');
+  return index;
 }

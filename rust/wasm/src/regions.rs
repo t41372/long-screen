@@ -311,12 +311,18 @@ unsafe fn read_atlas_regions<'a>(ptr: u32, count: u32) -> Option<Vec<AtlasRegion
 /// encode that many non-zero codes), matching the error `RegionAtlas`'s former TS constructor threw; never
 /// panics across the boundary.
 pub const STATUS_TOO_MANY_REGIONS: i32 = -2;
+///
+/// `epochs_ptr`/`epochs_len` carry the regions' ownership epochs (`read_epochs`; zero length for none): the plane is
+/// labelled with the exclusions in effect at `frame` (`kernels::regions::exclusions_at`).
 #[no_mangle]
 pub extern "C" fn ls_regions_label_atlas(
     regions_ptr: u32,
     count: u32,
     width: u32,
     height: u32,
+    epochs_ptr: u32,
+    epochs_len: u32,
+    frame: u32,
     labels_out: u32,
     counts_out: u32,
 ) -> i32 {
@@ -324,9 +330,16 @@ pub extern "C" fn ls_regions_label_atlas(
         return STATUS_BAD_ARGUMENT;
     }
     // SAFETY: adapter-owned descriptors and output, bounds checked.
-    let Some(defs) = (unsafe { read_atlas_regions(regions_ptr, count) }) else {
+    let Some(mut defs) = (unsafe { read_atlas_regions(regions_ptr, count) }) else {
         return STATUS_BAD_ARGUMENT;
     };
+    // SAFETY: as above.
+    let Some(epochs) = (unsafe { read_epochs(epochs_ptr, epochs_len, count) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    for (def, epochs) in defs.iter_mut().zip(&epochs) {
+        def.exclusions = regions::exclusions_at(&def.exclusions, epochs, frame);
+    }
     if defs.len() > 254 {
         return STATUS_TOO_MANY_REGIONS;
     }
@@ -345,6 +358,80 @@ pub extern "C" fn ls_regions_label_atlas(
         d.copy_from_slice(&c.to_le_bytes());
     }
     crate::STATUS_OK
+}
+
+/// Every region's ownership epochs (`kernels::regions::RegionEpoch`), in region order: per region u32 n, then per
+/// epoch u32 first frame, u32 k and k rects (4 × f64). A zero length is no epochs for any of the `count` regions.
+///
+/// # Safety
+/// `ptr` is zero with `len` zero, or points at `len` readable bytes.
+unsafe fn read_epochs(ptr: u32, len: u32, count: u32) -> Option<Vec<Vec<regions::RegionEpoch>>> {
+    if len == 0 {
+        return Some(vec![Vec::new(); count as usize]);
+    }
+    let mut c = crate::bytes::Cursor::new(slice(ptr, len as usize)?);
+    (0..count)
+        .map(|_| {
+            (0..c.u32()?)
+                .map(|_| {
+                    let from = c.u32()?;
+                    let exclusions = (0..c.u32()?)
+                        .map(|_| {
+                            Some(Rect {
+                                x: c.f64()?,
+                                y: c.f64()?,
+                                width: c.f64()?,
+                                height: c.f64()?,
+                            })
+                        })
+                        .collect::<Option<_>>()?;
+                    Some(regions::RegionEpoch { from, exclusions })
+                })
+                .collect::<Option<Vec<_>>>()
+        })
+        .collect()
+}
+
+/// The frames at which the regions' ownership may change (`kernels::regions::epoch_starts`), as u32s into `out`
+/// (room for `cap`). Returns how many there are — at least one, the 0 every run starts with — or a negative status.
+#[no_mangle]
+pub extern "C" fn ls_regions_epoch_starts(
+    epochs_ptr: u32,
+    epochs_len: u32,
+    count: u32,
+    out: u32,
+    cap: u32,
+) -> i32 {
+    // SAFETY: adapter-owned input, bounds checked.
+    let Some(epochs) = (unsafe { read_epochs(epochs_ptr, epochs_len, count) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let starts = regions::epoch_starts(epochs.iter().map(Vec::as_slice));
+    if starts.len() > cap as usize {
+        return STATUS_BAD_ARGUMENT;
+    }
+    // SAFETY: as above; room for `cap` u32s.
+    let Some(dst) = (unsafe { slice_mut(out, starts.len() * 4) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    for (s, d) in starts.iter().zip(dst.chunks_exact_mut(4)) {
+        d.copy_from_slice(&s.to_le_bytes());
+    }
+    starts.len() as i32
+}
+
+/// Which of `count` epoch starts (u32s at `starts_ptr`, ascending) `frame` falls in (`kernels::regions::epoch_index`).
+#[no_mangle]
+pub extern "C" fn ls_regions_epoch_index(starts_ptr: u32, count: u32, frame: u32) -> i32 {
+    // SAFETY: adapter-owned input, bounds checked.
+    let Some(bytes) = (unsafe { slice(starts_ptr, count as usize * 4) }) else {
+        return STATUS_BAD_ARGUMENT;
+    };
+    let starts: Vec<u32> = bytes
+        .chunks_exact(4)
+        .map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+        .collect();
+    regions::epoch_index(&starts, frame) as i32
 }
 
 /// Bytes of one hand-placed region descriptor (`read_manual`): 32-byte rect, u32 kind (0 moving, 1 fixed,
