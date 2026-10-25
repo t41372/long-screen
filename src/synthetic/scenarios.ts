@@ -276,6 +276,11 @@ export const SCENARIO_NAMES = [
   'hover-card-grow',
   'map-pan-chips',
   'header-lag-collapse',
+  'sticky-toc-fade',
+  'sticky-toc-duty-25',
+  'sticky-toc-duty-31',
+  'sticky-toc-duty-40',
+  'sticky-toc-title',
 ] as const;
 export type ScenarioName = typeof SCENARIO_NAMES[number];
 /** Nested scrolling, which the engine does not reconstruct yet (docs/ARCHITECTURE.md §九): a scroll box that moves
@@ -1599,6 +1604,122 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           limitation: true,
           fragments: { body: 0 },
           diagnostics: { present: [], absent: ['PROCESSING_ERROR', 'NONFINITE_POSE'] },
+        }),
+      };
+    }
+    case 'sticky-toc-fade':
+    case 'sticky-toc-duty-25':
+    case 'sticky-toc-duty-31':
+    case 'sticky-toc-duty-40':
+    case 'sticky-toc-title': {
+      // A docs page on a desktop browser (new_mac_3): an article column with a table of contents pinned in the left
+      // margin for part of the recording, in dark grey text (about 130 levels under its pale box), over a margin that is
+      // flat page colour. It appears and disappears several times, fading over 6 frames each way, so it covers its part
+      // of the screen in only some of the frames (31 % on new_mac_3; 25, 31 and 40 % in the duty variants).
+      // - sticky-toc-fade: 31 %, and the scroll pauses while the TOC fades out, so a paused run's last frame has it
+      //   half faded.
+      // - sticky-toc-title: the recording starts without the TOC on a page whose title runs across the TOC's columns;
+      //   until the TOC first appears those title rows are seen only there. Freezing the TOC's block for the whole
+      //   recording cuts the title out of the page canvas (maxMissing stays 0).
+      // Ideal: nothing of the TOC on the page canvas (contaminatedOverlay 0), nothing of the page missing.
+      const DW = 864, DH = 560, CHROME = 56, n = 210;
+      // Ratchets (contaminatedOverlay, all of it recoverable; provisional): see the measurement note below.
+      const measured: Record<string, [number, number]> = {
+        'sticky-toc-fade': [16985, 101],
+        'sticky-toc-duty-25': [3545, 166],
+        'sticky-toc-duty-31': [588, 441],
+        'sticky-toc-duty-40': [0, 324],
+        'sticky-toc-title': [17145, 363],
+      };
+      const duty = name === 'sticky-toc-duty-25' ? .25 : name === 'sticky-toc-duty-40' ? .4 : .31;
+      const title = name === 'sticky-toc-title', paused = name === 'sticky-toc-fade';
+      const world = new World(DW, 4300), random = rng(name === 'sticky-toc-title' ? 311 : 312);
+      let y = 40;
+      if (title) {
+        // The page's title block runs from the left edge across the TOC's columns.
+        world.textLine(24, 40, 620, 3111, [30, 34, 30], 2.4);
+        world.picture({ x: 24, y: 110, width: 780, height: 220 }, 3112);
+        y = 360;
+      }
+      for (; y < 4300 - 80;) {
+        const roll = random();
+        if (roll < .12) {
+          // Margin notes and full-bleed figures keep the left margin page content.
+          world.paragraph(24, y, 200, 3, Math.floor(random() * 1e6), .85);
+          y += world.paragraph(260, y, 560, 3, Math.floor(random() * 1e6)) + 12;
+        } else if (roll < .2) {
+          world.picture({ x: 0, y, width: DW, height: 110 }, Math.floor(random() * 1e9));
+          y += 126;
+        } else if (roll < .35) {
+          const h = 120 + Math.floor(random() * 100);
+          world.picture({ x: 260, y, width: 560, height: Math.min(h, 4300 - y - 8) }, Math.floor(random() * 1e9));
+          y += h + 16;
+        } else {
+          y += world.paragraph(260, y, 560, 2 + Math.floor(random() * 5), Math.floor(random() * 1e6)) + 12;
+        }
+      }
+      // The TOC's schedule: four visits whose plateaus plus half their fades add up to `duty` of the frames; the first
+      // starts at frame 40 when the page title must be seen first, else at 20.
+      const FADE = 6, visits = 4, first = title ? 44 : 20;
+      const plateau = Math.round((duty * n) / visits) - FADE, gap = Math.floor((n - first - visits * (plateau + 2 * FADE)) / visits);
+      const alphaAt: number[] = Array(n).fill(0);
+      for (let v = 0, at = first; v < visits; v++, at += plateau + 2 * FADE + gap) {
+        for (let k = 0; k < FADE; k++) {
+          if (at + k < n) alphaAt[at + k] = (k + 1) / (FADE + 1);
+          if (at + FADE + plateau + k < n) alphaAt[at + FADE + plateau + k] = 1 - (k + 1) / (FADE + 1);
+        }
+        for (let k = 0; k < plateau; k++) if (at + FADE + k < n) alphaAt[at + FADE + k] = 1;
+      }
+      // Pauses: in the fade variant the page stands still for 4 frames from the middle of each fade-out.
+      const steps: number[] = [];
+      for (let i = 0; i < n; i++) {
+        const fadingOut = alphaAt[i] > 0 && alphaAt[i] < 1 && i > 0 && alphaAt[i] < alphaAt[i - 1];
+        steps.push(paused && fadingOut && alphaAt[i] < .6 ? 0 : 17);
+      }
+      const path: Point[] = [];
+      for (let i = 0, at = 0; i < n; i++) {
+        if (i) at += steps[i];
+        path.push({ x: 0, y: Math.min(at, 4300 - (DH - CHROME)) });
+      }
+      const tocRect = { x: 24, y: CHROME + 48, width: 196, height: 300 }, toc = new World(tocRect.width, tocRect.height, [250, 247, 244]);
+      for (let k = 0; k < 13; k++) toc.textLine(14 + (k % 3 ? 12 : 0), 12 + k * 21, 120 + (k * 37) % 50, 3120 + k, [113, 111, 107], .85);
+      const tocOverlay: Overlay = {
+        id: 'toc',
+        kind: 'dynamic',
+        draw: (frame, index) => {
+          const a = alphaAt[index];
+          if (!a) return [];
+          for (let y = 0; y < tocRect.height; y++) {
+            for (let x = 0; x < tocRect.width; x++) {
+              const o = ((tocRect.y + y) * frame.width + tocRect.x + x) * 4, m = (y * tocRect.width + x) * 4;
+              for (let c = 0; c < 3; c++) frame.data[o + c] = Math.round(frame.data[o + c] * (1 - a) + toc.data[m + c] * a);
+            }
+          }
+          return [tocRect];
+        },
+      };
+      return {
+        name,
+        description: title
+          ? '桌面文档页：开头没有目录，页面标题横跨目录所在的列；之后目录多次淡入淡出、只在部分帧里钉在左侧。'
+          : `桌面文档页：左侧目录多次淡入淡出，约 ${Math.round(duty * 100)}% 的帧里钉在屏幕上，下面是平坦的页边${
+            paused ? '；目录淡出时滚动停下' : ''
+          }。`,
+        width: DW,
+        height: DH,
+        background: [251, 250, 246],
+        layers: [{ id: 'body', viewport: { x: 0, y: CHROME, width: DW, height: DH - CHROME }, world, path }],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: DW, height: CHROME }, 313), tocOverlay],
+        frames: frames(n),
+        // Measured on 6947e94: every TOC pixel left on the page canvas sits over page content seen clean elsewhere
+        // (recoverable): fade 16,176, duty 25 % 3,376, 31 % 560, 40 % 0, title 16,328; provisional 96, 158, 420, 308,
+        // 345. The page title is never cut out (missing 0). Ratchets are those +5 %. Ideal: contaminatedOverlay 0.
+        expect: expect({
+          fragments: { body: 0 },
+          maxContaminatedOverlay: measured[name][0],
+          maxContaminatedOverlayRecoverable: measured[name][0],
+          maxProvisional: measured[name][1],
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
         }),
       };
     }
