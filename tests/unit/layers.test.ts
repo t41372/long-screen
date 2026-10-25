@@ -115,15 +115,15 @@ Deno.test('layers: sub-analysis-pixel scrolling still separates a fixed header v
 });
 // F7 end-to-end: a 1080p-class desktop capture whose HEIGHT is not an exact multiple of the analysis factor
 // (1082 / 4 = 270.5, matching 'factor4' in scenarios.ts but with a non-divisible height), run through the whole
-// scan → solve → render pipeline, not just LayerLearner.finish() in isolation. The path is monotonic (unlike
-// 'factor4', which reverses direction): a reversal deep in repeating 'cards' content lands the frame-to-frame
-// odometry on a period-aliased candidate ~670px away — reproducible identically at the divisible height 1080
-// and with other world seeds, i.e. a pre-existing motion-matching ambiguity unrelated to factor divisibility —
-// and would make this test assert something it isn't measuring.
+// scan → solve → render pipeline, not just LayerLearner.finish() in isolation. The path reverses deep in repeating
+// 'cards' content, as 'factor4' does. This exact recording (seed 8181, height 1082) once landed the frame-to-frame
+// odometry on a period-aliased candidate ~670px away (issue #4; the same at height 1080 and with other seeds), so
+// the path here used to stay monotonic; since the 2026-10 tracking fixes every placement is exact, and the test now
+// guards that.
 function factor4NonDivisibleScenario(): Scenario {
   const RW = 1920, RH = 1082, RH_HEADER = 80;
   const world = makeWorld(2400, 2600, 8181, 'cards', 4);
-  const path = linearPath([{ x: 0, y: 0 }, { x: 200, y: 900 }, { x: 400, y: 1500 }], [14, 12]);
+  const path = linearPath([{ x: 0, y: 0 }, { x: 200, y: 900 }, { x: 400, y: 300 }], [14, 12]);
   return {
     name: 'factor4-non-divisible',
     description: '桌面横屏，高度不能被分析因子整除 (1082 / 4)。',
