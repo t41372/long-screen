@@ -313,6 +313,7 @@ export const SCENARIO_NAMES = [
   'overscroll',
   'large-title-collapse',
   'glass-tab-bar',
+  'glass-tall-header',
   'sticky-toc-later',
   'hover-card-grow',
   'map-pan-chips',
@@ -1619,6 +1620,79 @@ export function buildScenario(name: ScenarioName | string): Scenario {
             present: [],
             absent: ['UNPLACED_FRAGMENT', 'MULTIPLE_SCROLL_LAYERS', 'LOW_CONFIDENCE_PLACEMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'],
           },
+        }),
+      };
+    }
+    case 'glass-tall-header': {
+      // A messaging app's tall glass header (new_ip_3's top, new_ip_2's): the status bar, a strip of bare glass, then
+      // the contact's avatar between a back and a call button, and the name capsule under it, 160 px in all. The
+      // glass is almost opaque at the screen's edge and shows the scrolling page ever more clearly downwards (15 % to
+      // 85 %, blurred), so no row passes the change test and the bare strip follows the page more often than it
+      // stands still. The band comes from the row votes over the status rows (`bands.rs::detect_bands`) and reaches
+      // the avatar and the capsule only through the rows those objects hold (`last_row_of_fixed_objects`, across the
+      // 16 px of bare glass). What shows through is not page content. Ideal: the header is one fixed canvas, the
+      // page canvas holds none of it.
+      const PW = 390, PH = 844, TOP = 180, AT = 92;
+      const world = makeWorld(PW, 4000, 293, 'cards');
+      const path = jitter(linearPath([{ x: 0, y: 200 }, { x: 0, y: 1500 }, { x: 0, y: 1300 }, { x: 0, y: 2900 }], [50, 10, 50]), 29, 1, 5);
+      const layer: Layer = { id: 'body', viewport: { x: 0, y: TOP, width: PW, height: PH - TOP }, world, path };
+      const dark: RGB = [20, 20, 24];
+      return {
+        name,
+        description: '高的毛玻璃页首：状态栏、头像、名字胶囊与按钮都不动，下半段透出页面越来越清楚；透出来的不是长图内容。',
+        width: PW,
+        height: PH,
+        background: [251, 250, 246],
+        layers: [layer],
+        overlays: [
+          glassBar(
+            'header',
+            { x: 0, y: 0, width: PW, height: TOP },
+            () => layer,
+            (band) => {
+              statusMarks(band, PW, 2931, dark);
+              // The Dynamic Island's lighter rim, which stands still against the glass above it.
+              band.fill({ x: Math.round(PW / 2) - 60, y: 10, width: 120, height: 1 }, [70, 70, 74]);
+              // Back and call buttons (glass circles holding line icons) beside the avatar.
+              for (const x of [14, PW - 58]) {
+                band.fill({ x, y: AT + 4, width: 44, height: 44 }, [232, 232, 236]);
+                lineIcon(band, { x: x + 10, y: AT + 14, width: 24, height: 24 }, 2932 + x, dark);
+              }
+              // The avatar: a photo-like disc of a few tones.
+              for (let y = 0; y < 64; y++) {
+                for (let x = 0; x < 64; x++) {
+                  const dx = x - 31.5, dy = y - 31.5;
+                  if (dx * dx + dy * dy > 32 * 32) continue;
+                  const tone = (Math.floor(x / 8) + Math.floor(y / 8)) % 3;
+                  band.set(PW / 2 - 32 + x, AT + y, tone === 0 ? [176, 132, 104] : tone === 1 ? [120, 86, 70] : [214, 178, 150]);
+                }
+              }
+              // The name capsule under it.
+              band.fill({ x: PW / 2 - 70, y: AT + 68, width: 140, height: 24 }, [236, 236, 240]);
+              band.textLine(PW / 2 - 58, AT + 73, 116, 2934, dark, 1);
+            },
+            'top',
+            [.2, 1],
+          ),
+        ],
+        frames: frames(path.length),
+        // Measured on 2dc6318 plus the walk across rows that hold fixed objects: one page region from y 175 and the
+        // header a fixed band 0–175. The walk takes the status rows (0–44, standing still 0.29–0.50 against 0.06–0.17
+        // per sampled pixel and informative frame) and stops at the bare glass (0.03–0.17 against 0.25–0.30); the
+        // band reaches the avatar, the buttons and the capsule (to 175) only by the objects' extension across the
+        // 16 px of bare glass. A guard: with the vote walk off the header splits off a region that is not one band,
+        // the page region starts at 48 and invented rises to 29,276; with the extension off the band is 0–39, the
+        // avatar and a button become fixed regions of their own and invented is 34,842; the stationary-region and
+        // low-activity rules (`merge.rs::freeze_stationary_regions`, `construct.rs`) change nothing here. Still a
+        // limitation: the band ends at the capsule's last fixed row, so the glass's last 5 rows stay on the print
+        // (invented 1,965). Ratchets are the measured values +5 %. Ideal: invented 0, the header fixed to 180.
+        expect: expect({
+          fragments: { body: 0 },
+          limitation: true,
+          maxInvented: 2064,
+          maxMismatched: 12,
+          maxProvisional: 1735,
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
         }),
       };
     }
