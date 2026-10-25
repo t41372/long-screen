@@ -286,6 +286,7 @@ export const SCENARIO_NAMES = [
   'sticky-toc-title',
   'edge-arc-turn',
   'overscroll-sideways',
+  'scroll-back-cards',
 ] as const;
 export type ScenarioName = typeof SCENARIO_NAMES[number];
 /** Nested scrolling, which the engine does not reconstruct yet (docs/ARCHITECTURE.md §九): a scroll box that moves
@@ -1291,6 +1292,32 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           bounds: { x: 0, y: HEADER, width: 680 + W, height: 800 },
           diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
+      };
+    }
+    case 'scroll-back-cards': {
+      // 1080p cards at factor 4 (`factor4`'s page and settings), down diagonally to x = 400 and back up. Moving back
+      // up, each frame shows new text in the region's top rows where the previous frame showed blank card; those
+      // rows' page partners lie above the region, so only standing still can explain them, and the white pixels beside
+      // the glyph edges matched the previous frame's white exactly. Frames 29 and 34 got a sticky band down to the next
+      // card border, and the 776 pixels of text only they showed were missing from the print.
+      const RW = 1920, RH = 1080, RH_HEADER = 80;
+      const world = makeWorld(2400, 2600, 181, 'cards', 4);
+      const path = linearPath([{ x: 0, y: 0 }, { x: 200, y: 900 }, { x: 400, y: 1500 }, { x: 300, y: 700 }], [14, 12, 12]);
+      return {
+        name,
+        description: '1080p 卡片页、分析因子 4：斜向往下再往回滚，顶端新出现的文字不是吸顶栏。',
+        width: RW,
+        height: RH,
+        background: [251, 250, 246],
+        layers: [{ id: 'body', viewport: { x: 0, y: RH_HEADER, width: RW, height: RH - RH_HEADER }, world, path }],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: RW, height: RH_HEADER }, 823)],
+        frames: frames(path.length),
+        expect: expect({
+          fragments: { body: 0 },
+          factor: 4,
+          diagnostics: { present: ['ANALYSIS_PYRAMID'], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
+        }),
+        settings: { analysisSize: 480 },
       };
     }
     case 'large-title-collapse': {

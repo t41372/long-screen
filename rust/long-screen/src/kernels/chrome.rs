@@ -88,6 +88,20 @@ pub fn stationary_boundary(
     found
 }
 
+/// How far a textured sample and its left and right neighbours, the pixels whose difference made it a sample, are
+/// from the previous frame `offset` bytes away (red channel, summed over the three). Standing still means the edge
+/// itself stays put: the sample pixel alone is often the flat side of a glyph edge, white on a white page, and the
+/// previous frame's white anywhere else matched it exactly. Scrolling back up a page of cards (the factor-4 cards
+/// scenario, frames 29 and 34), the region's top rows show text where the previous frame showed blank card, their
+/// page partners lie above the region, and these white samples alone made them stand still: the band ran down to
+/// the next card border and covered 776 pixels of text no other frame showed.
+fn texture_difference(previous: &[u8], current: &[u8], i: usize, offset: i64) -> i64 {
+    [i - 4, i, i + 4]
+        .iter()
+        .map(|&p| (previous[(p as i64 + offset) as usize] as i64 - current[p] as i64).abs())
+        .sum()
+}
+
 /// Sticky-band evidence for one observation. `carry` are the previous observation's bands, retained while
 /// every native pixel under them is unchanged. Returns the bands to exclude from the moving canvas.
 ///
@@ -165,7 +179,7 @@ pub fn sticky_occlusions(
                 continue;
             }
             let j = (((y + dy) * w + x + dx) * 4) as usize;
-            zero += (previous[i] as i64 - current[i] as i64).abs();
+            zero += texture_difference(previous, current, i, 0);
             shifted += (previous[j] as i64 - current[i] as i64).abs();
             samples.push(i);
             x += step;
@@ -179,7 +193,7 @@ pub fn sticky_occlusions(
         // Agreement with the previous frame at zero shift, or at a small shift of the band's own. A shift of its own
         // needs the page's own position of this row inside the region: above it (scrolling back at the region's top
         // edge) the page-shift comparison reads fixed chrome, which never matches, and says nothing about the page.
-        let mut still = (zero as f64) / nf < 6.0;
+        let mut still = (zero as f64) / (3.0 * nf) < 6.0;
         let page_inside = (y + dy) as f64 >= r.y && ((y + dy) as f64) < r.y + r.height;
         let mut k = if page_inside { -window } else { window + 1 };
         while !still && k <= window {
@@ -187,13 +201,19 @@ pub fn sticky_occlusions(
                 let offset = k * w * 4;
                 let sum: i64 = samples
                     .iter()
-                    .map(|&i| {
-                        (previous[(i as i64 + offset) as usize] as i64 - current[i] as i64).abs()
-                    })
+                    .map(|&i| texture_difference(previous, current, i, offset))
                     .sum();
-                still = (sum as f64) / nf < 6.0;
+                still = (sum as f64) / (3.0 * nf) < 6.0;
             }
             k += 1;
+        }
+        #[cfg(test)]
+        if y < 100 {
+            eprintln!(
+                "DBGR y={y} n={n} page={page} still={still} zero={} shifted={}",
+                zero as f64 / nf,
+                shifted as f64 / nf
+            );
         }
         if page {
             // A row the page's motion explains and no standing still does is page content. A row both explain says
@@ -551,6 +571,51 @@ mod tests {
             band_bottom(&bands(&previous, &current, 40.0)),
             Some((BAND + 3) as f64)
         );
+    }
+
+    #[test]
+    fn white_beside_new_text_is_not_a_row_standing_still() {
+        // Scrolling back up a white page (the factor-4 cards scenario, frames 29 and 34): text comes in at the region's
+        // top where the previous frame showed blank white, and those rows' page partners lie above the region, so only
+        // standing still can explain them. A textured sample is a pixel whose left and right neighbours differ; beside
+        // a 1-px stroke it is the white on either side of it, and the previous frame's white at the same place matched
+        // it exactly. The rows read as standing still, the band ran down to the next rule and covered text no other
+        // frame showed: 776 pixels missing from the print.
+        let (top, step) = (80i64, -67i64);
+        // World rows `c..`: 50 rows of strokes, a rule, then 130 blank rows, then textured page.
+        let world = |x: i64, wy: i64| -> u8 {
+            match wy {
+                0..=49 if x % 20 == 7 => 40,
+                0..=49 => 255,
+                50 => 60,
+                51..=180 => 255,
+                _ => noise(x, wy, 3),
+            }
+        };
+        let shot = |pose: i64| -> Vec<u8> {
+            let mut out = vec![0u8; W * H * 4];
+            for y in 0..H as i64 {
+                for x in 0..W as i64 {
+                    let v = if y < top {
+                        noise(x, y, 9)
+                    } else {
+                        world(x, y - top + pose)
+                    };
+                    put(&mut out, x as usize, y as usize, v);
+                }
+            }
+            out
+        };
+        // The current frame shows world row 0 at the region's top; the previous one was 67 rows further down.
+        let (previous, current) = (shot(-step), shot(0));
+        let region = Rect {
+            x: 0.0,
+            y: top as f64,
+            width: W as f64,
+            height: (H as i64 - top) as f64,
+        };
+        let found = sticky_occlusions(&previous, &current, W, H, region, 0.0, step as f64, &[]);
+        assert!(found.is_empty(), "{found:?}");
     }
 }
 

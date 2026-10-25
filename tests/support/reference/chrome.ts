@@ -78,20 +78,24 @@ export function stickyOcclusions(
       const i = (y * w + x) * 4;
       if (Math.abs(b[i - 4] - b[i + 4]) < 24) continue;
       const j = ((y + dy) * w + x + dx) * 4;
-      zero += Math.abs(a[i] - b[i]);
+      zero += Math.abs(a[i - 4] - b[i - 4]) + Math.abs(a[i] - b[i]) + Math.abs(a[i + 4] - b[i + 4]);
       shifted += Math.abs(a[j] - b[i]);
       samples.push(i);
     }
     const n = samples.length;
     if (n < 8) continue;
     const page = shifted / n <= 18;
-    let still = zero / n < 6;
+    // Standing still is judged on the sample and the two neighbours whose difference made it one (Rust
+    // `texture_difference`): the sample alone is often the white beside a glyph edge.
+    let still = zero / (3 * n) < 6;
     const pageInside = y + dy >= r.y && y + dy < r.y + r.height;
     for (let k = pageInside ? -window : window + 1; !still && k <= window; k++) {
       if (k === 0 || Math.abs(dy - k) < 8 || y + k < 2 || y + k >= h - 2) continue;
       let sum = 0;
-      for (const i of samples) sum += Math.abs(a[i + k * w * 4] - b[i]);
-      still = sum / n < 6;
+      for (const i of samples) {
+        for (const p of [i - 4, i, i + 4]) sum += Math.abs(a[p + k * w * 4] - b[p]);
+      }
+      still = sum / (3 * n) < 6;
     }
     // A row the page explains and no standing still does is page content; a band runs down from the region's top, so
     // a frame with rows standing still below page content has no band of its own.
