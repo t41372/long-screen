@@ -276,6 +276,9 @@ export const SCENARIO_NAMES = [
   'hover-card-grow',
   'map-pan-chips',
   'header-lag-collapse',
+  'minimap-thumb',
+  'thumb-beside-page',
+  'thumb-beside-margin',
   'sticky-toc-fade',
   'sticky-toc-duty-25',
   'sticky-toc-duty-31',
@@ -1608,6 +1611,108 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           limitation: true,
           fragments: { body: 0 },
           diagnostics: { present: [], absent: ['PROCESSING_ERROR', 'NONFINITE_POSE'] },
+        }),
+      };
+    }
+    case 'minimap-thumb':
+    case 'thumb-beside-page':
+    case 'thumb-beside-margin': {
+      // A scrollbar thumb near the window's right edge, 4 px wide, moving 2–3 px a frame while the page scrolls 16: its
+      // columns move in most frames but never with the page. A walk in from the right edge that stops at the first
+      // moving column stops at it, and the blank strip outside it holds no structure, so there is no right band.
+      // - minimap-thumb (new_mac_4, a code editor): inside the thumb a minimap stands still beside the editor pane.
+      //   Ideal: one fixed band holding the minimap and the thumb; the page canvas holds the editor only.
+      // - thumb-beside-page (pub_1): inside the thumb is the page itself, its right part sparse margin notes that
+      //   follow the page. Ideal: no right band; the page canvas holds every column of the page.
+      // - thumb-beside-margin (own_c): inside the thumb a 92 px blank page margin with a resting pointer and a small
+      //   button floating over it. Ideal: no right band either.
+      const THUMB_X = 608, THUMB_W = 4, THUMB_H = 40, PANE = name === 'minimap-thumb' ? 556 : W;
+      const span = 2400, travel = H - HEADER - THUMB_H;
+      const path = linearPath([{ x: 0, y: 0 }, { x: 0, y: 1200 }, { x: 0, y: 1000 }, { x: 0, y: span }], [75, 12, 88]);
+      path.splice(60, 0, ...Array(6).fill(path[60]));
+      const world = new World(PANE, span + H, [251, 250, 246]),
+        random = rng(name === 'minimap-thumb' ? 291 : name === 'thumb-beside-page' ? 292 : 293);
+      const textRight = name === 'minimap-thumb' ? PANE - 4 : name === 'thumb-beside-page' ? 556 : 516;
+      for (let y = 24; y < world.height - 60;) {
+        const roll = random();
+        if (roll < .2) {
+          world.picture({ x: 20, y, width: textRight - 20, height: 90 }, Math.floor(random() * 1e9));
+          y += 104;
+        } else {
+          y += world.paragraph(20, y, textRight - 20, 2 + Math.floor(random() * 4), Math.floor(random() * 1e6)) + 14;
+        }
+        if (name === 'thumb-beside-page' && random() < .25) world.textLine(562, y, 40, Math.floor(random() * 1e6), [90, 94, 90], .8);
+      }
+      const thumb: Overlay = {
+        id: 'thumb',
+        kind: 'dynamic',
+        draw: (frame, index) => {
+          const r = { x: THUMB_X, y: HEADER + Math.round(path[index].y / span * travel), width: THUMB_W, height: THUMB_H };
+          fillRGBA(frame, r, [96, 96, 96]);
+          return [r];
+        },
+      };
+      const overlays: Overlay[] = [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 294), thumb];
+      if (name === 'minimap-thumb') {
+        // The minimap: the code condensed to 2 px bars, standing still (a long file's minimap barely moves).
+        const map = { x: PANE, y: HEADER, width: 44, height: H - HEADER }, mini = new World(map.width, map.height, [238, 238, 242]);
+        for (let y = 4; y < map.height - 4; y += 3) {
+          mini.fill({ x: 4, y, width: 6 + Math.floor(random() * 32), height: 2 }, [112, 118, 136]);
+        }
+        overlays.push({
+          id: 'minimap',
+          kind: 'fixed',
+          draw: (frame) => {
+            for (let y = 0; y < map.height; y++) {
+              frame.data.set(mini.data.subarray(y * map.width * 4, (y + 1) * map.width * 4), ((map.y + y) * frame.width + map.x) * 4);
+            }
+            return [map];
+          },
+        });
+      }
+      if (name === 'thumb-beside-margin') {
+        overlays.push(floatingButton({ x: 556, y: H - 70, width: 36, height: 36 }));
+        overlays.push(
+          cursor((i) => i < 40 ? { x: 560, y: 160 } : i < 50 ? { x: 560 - (i - 40) * 2, y: 160 + (i - 40) * 12 } : { x: 540, y: 280 }),
+        );
+      }
+      return {
+        name,
+        description: name === 'minimap-thumb'
+          ? '代码编辑器：右侧缩略图不动，最外侧滚动条滑块随滚动移动；缩略图与滑块都是屏幕固定界面，不属于页面。'
+          : name === 'thumb-beside-page'
+          ? '滚动条滑块紧贴页面：滑块内侧是跟着页面走的稀疏旁注，不是固定栏。'
+          : '滚动条滑块内侧是空白页边，上面停着鼠标指针和一个浮动按钮，不是固定栏。',
+        width: W,
+        height: H,
+        background: [251, 250, 246],
+        layers: [{ id: 'body', viewport: { x: 0, y: HEADER, width: PANE, height: H - HEADER }, world, path }],
+        overlays,
+        frames: frames(path.length),
+        // Measured on 6947e94 and since a walk may cross a thumb (the same): the thumb's pixels left on the page canvas
+        // beside the page (576, 312 recoverable, the other 264 never seen clean; provisional 136) and in the margin
+        // (480: 348, 132; provisional 56). Ratchets are those +5 % (the unobservable share exactly). On 6947e94 the
+        // strip beyond the editor was frozen as a fixed region of its own, cut at an analysis cell (x 552), whose canvas
+        // held the moving thumb and reported 25 temporal conflicts; the band walk now takes minimap and thumb as a right
+        // band from the minimap's edge (x 556), with none.
+        expect: expect({
+          fragments: { body: 0 },
+          ...(name === 'thumb-beside-page'
+            ? {
+              maxContaminatedOverlay: 605,
+              maxContaminatedOverlayRecoverable: 328,
+              maxContaminatedOverlayUnobservable: 264,
+              maxProvisional: 143,
+            }
+            : name === 'thumb-beside-margin'
+            ? {
+              maxContaminatedOverlay: 504,
+              maxContaminatedOverlayRecoverable: 366,
+              maxContaminatedOverlayUnobservable: 132,
+              maxProvisional: 59,
+            }
+            : {}),
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
         }),
       };
     }

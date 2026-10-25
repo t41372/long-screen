@@ -719,3 +719,149 @@ fn still_pixels_down_the_whole_screen_do_not_extend_the_band() {
     let bands = glass_bands_over(40, 15.0, 2.0, 0, &[(0, 300, 8)]);
     assert_eq!((bands.top, bands.bottom), (40, 300));
 }
+
+// A scrollbar's thumb at the window's edge (new_mac_4, a code editor): the thumb's columns move in about 40 % of the
+// frames, so the walk in from the right edge stops at them, and the blank strip outside the thumb has no structure:
+// no right band, and the minimap standing still inside the thumb stays in the moving layer. Ways a crossing could go
+// wrong, written before it was allowed (the numbers are the engine's own `pixel_fixed`/`pixel_moving` per sampled
+// pixel and frame on the recordings):
+// - a thumb with a fixed panel beside it is not crossed (new_mac_4: the thumb 0.07 / 0.0001, the minimap 0.12 / 0);
+// - columns that move with the page beside the thumb are taken (pub_1: 0.017 following under the thumb);
+// - what stands still beyond the thumb but is no panel is taken: a blank margin with a resting pointer (own_c, 3.8
+//   times as often still as following), an empty strip by the page's edge (own_g, 0.016 still);
+// - a thumb in the last columns, where no pixel is sampled, is crossed on no evidence;
+// - the crossing runs without the votes (the change-only bands) or on the left without being mirrored.
+struct Thumb {
+    /// Per sampled pixel and frame, in the thumb's columns: standing still, following the page.
+    thumb: (f64, f64),
+    /// The same beyond it, up to the page.
+    beyond: (f64, f64),
+    /// The thumb's first column (4 wide) and the page's last column + 1 (the panel is `[page, thumb - 8)`).
+    at: usize,
+    /// Share of the columns beyond the thumb that carry `beyond` (from the page's side); the rest stand still blank.
+    filled: f64,
+    page: usize,
+    votes: bool,
+    mirror: bool,
+}
+
+const THUMB: Thumb = Thumb {
+    thumb: (0.07, 0.0001),
+    beyond: (0.12, 0.0),
+    at: 528,
+    page: 440,
+    filled: 1.0,
+    votes: true,
+    mirror: false,
+};
+
+fn thumb_bands(t: Thumb) -> super::bands::Bands {
+    let (w, h) = (600usize, 100usize);
+    let frames = 40.0;
+    // `x` as seen from the right edge, or from the left one when mirrored.
+    let at = |x: usize| if t.mirror { w - 1 - x } else { x };
+    let mut col_moving = vec![0.0; w];
+    let mut col_mean = vec![200.0 * frames; w];
+    let (mut pixel_fixed, mut pixel_moving) = (vec![0.0; w * h], vec![0.0; w * h]);
+    for x in 0..w {
+        let c = at(x);
+        let (moves, votes, mean) = if x < t.page {
+            (1.0, (0.02, 0.4), 120.0 + (x % 9) as f64 * 9.0)
+        } else if x < t.at - 8 {
+            let inside = ((x - t.page) as f64) < t.filled * (t.at - 8 - t.page) as f64;
+            let votes = if inside { t.beyond } else { (0.0, 0.0) };
+            (0.0, votes, 90.0 + (x % 7) as f64 * 15.0)
+        } else if (t.at..t.at + 4).contains(&x) {
+            (0.4, t.thumb, 200.0)
+        } else {
+            (0.0, (0.0, 0.0), 200.0)
+        };
+        col_moving[c] = moves * frames;
+        col_mean[c] = mean * frames;
+        for y in 0..h {
+            pixel_fixed[y * w + c] = votes.0 * frames;
+            pixel_moving[y * w + c] = votes.1 * frames;
+        }
+    }
+    let row_change = vec![5.0 * frames; h];
+    let (row_fixed, row_moving) = (vec![0.0; h], vec![frames * 100.0; h]);
+    super::bands::detect_bands(
+        w as i64,
+        h as i64,
+        frames,
+        &row_change,
+        t.votes.then_some((&row_fixed[..], &row_moving[..])),
+        (&pixel_fixed, &pixel_moving),
+        &col_moving,
+        &col_mean,
+        None,
+        w as f64,
+        h as f64,
+        1.0,
+    )
+}
+
+#[test]
+fn a_fixed_panel_beyond_a_scrollbar_thumb_is_a_side_band() {
+    let bands = thumb_bands(THUMB);
+    assert_eq!((bands.left, bands.right), (0, 440));
+    let bands = thumb_bands(Thumb {
+        mirror: true,
+        ..THUMB
+    });
+    assert_eq!((bands.left, bands.right), (160, 600));
+}
+
+#[test]
+fn a_thumb_beside_what_follows_the_page_is_not_crossed() {
+    // pub_1: the page's notes show under and beside the thumb.
+    let bands = thumb_bands(Thumb {
+        thumb: (0.2, 0.017),
+        ..THUMB
+    });
+    assert_eq!((bands.left, bands.right), (0, 600));
+}
+
+#[test]
+fn what_stands_still_beyond_a_thumb_must_be_a_panel() {
+    // own_c: a blank margin with a resting pointer, 3.8 times as often still as following.
+    let bands = thumb_bands(Thumb {
+        beyond: (0.0675, 0.0178),
+        ..THUMB
+    });
+    assert_eq!(bands.right, 600);
+    // own_g: an empty strip by the page's edge, 0.016 standing still.
+    let bands = thumb_bands(Thumb {
+        beyond: (0.016, 0.0),
+        ..THUMB
+    });
+    assert_eq!(bands.right, 600);
+    // A blank margin with a button floating on it: what stands still there fills under half of its columns, however
+    // often it votes (thumb-beside-margin).
+    let bands = thumb_bands(Thumb {
+        beyond: (0.12, 0.0),
+        filled: 0.4,
+        ..THUMB
+    });
+    assert_eq!(bands.right, 600);
+}
+
+#[test]
+fn a_thumb_with_no_sampled_column_is_not_crossed() {
+    // The last two columns are never sampled; a thumb there carries no votes either way.
+    let bands = thumb_bands(Thumb {
+        at: 596,
+        page: 500,
+        ..THUMB
+    });
+    assert_eq!(bands.right, 600);
+}
+
+#[test]
+fn without_the_votes_the_walk_stops_at_the_thumb() {
+    let bands = thumb_bands(Thumb {
+        votes: false,
+        ..THUMB
+    });
+    assert_eq!(bands.right, 600);
+}

@@ -143,6 +143,121 @@ const FIXED_ROW_GAP: f64 = 20.0;
 /// input bar 10–35 px.
 const FIXED_ROW_RUN: f64 = 60.0;
 
+/// Widest run of moving columns, in analysis columns and as a share of the width, that a side band's walk may cross
+/// when they never follow the page: a scrollbar's thumb and track. The thumbs on the recordings are 3–5 columns
+/// (0.5–0.9 % of the width).
+const THUMB_COLUMNS: i64 = 6;
+const THUMB_WIDTH_SHARE: f64 = 0.015;
+/// Votes for the page's motion per sampled pixel and informative frame under which a column never follows the page.
+/// new_mac_4's thumb columns: 0.0001 and 0; the columns a walk stops at beside pages that follow the page (pub_1's
+/// "stars today" notes under the thumb) 0.017.
+const THUMB_FOLLOW_SHARE: f64 = 0.002;
+/// How many times as often standing still must win as the page's motion, in the crossed columns and in what stands
+/// still beyond them, per sampled pixel: new_mac_4's thumb 650× and up, its minimap 700×; beyond the thumbs where no
+/// fixed panel stands, a blank margin with a resting pointer (own_c) 3.8×, the page's sparse notes (pub_1) 3.5×, an
+/// empty strip by a page's edge (own_g) 5.8×.
+const THUMB_VOTE_RATIO: f64 = 10.0;
+/// Share of the columns beyond a thumb that must each stand still as often as `STATIONARY_VOTE_SHARE`: a panel stands
+/// still across its width (new_mac_4's minimap: 38 of its 44 columns), while a button floating on a blank margin
+/// fills a few of the margin's columns however often it votes.
+const THUMB_PANEL_SHARE: f64 = 2.0 / 3.0;
+
+/// Votes per sampled pixel and informative frame, standing still and following the page, over the band rows
+/// `[top, bottom)` of the sampled column standing for analysis column `x` (`Learner::add` samples every 4th column,
+/// from 2, and not the last two). `None` where no column there is sampled: no evidence either way.
+#[allow(clippy::too_many_arguments)]
+fn column_votes(
+    votes: (&[f64], &[f64]),
+    x: i64,
+    width: i64,
+    height: i64,
+    top: i64,
+    bottom: i64,
+    frames: f64,
+) -> Option<(f64, f64)> {
+    let s = (x / 4) * 4 + 2;
+    let (y0, y1) = (top.max(2), bottom.min(height - 2));
+    if s >= width - 2 || y1 <= y0 {
+        return None;
+    }
+    let (fixed, moving) = votes;
+    let (mut f, mut m) = (0.0, 0.0);
+    for y in y0..y1 {
+        f += fixed[(y * width + s) as usize];
+        m += moving[(y * width + s) as usize];
+    }
+    let n = (y1 - y0) as f64 * frames;
+    Some((f / n, m / n))
+}
+
+/// Where a side band's walk stopped at a scrollbar's thumb: the edge of what stands still beyond it and the thumb's
+/// inner edge (the panel lies between them), or `None`. From
+/// `edge`, the walk's stop, the columns going inwards (`step` −1 on the right, +1 on the left) must start with a run
+/// of `THUMB_COLUMNS` at most that move but never follow the page (`column_votes`: standing still wins
+/// `STATIONARY_VOTE_SHARE` per pixel and frame, `THUMB_VOTE_RATIO` times as often as following, which stays under
+/// `THUMB_FOLLOW_SHARE`); past it the walk goes on over stationary columns to `inner`. What it crosses there must be
+/// a panel standing still: at least 6 columns (a band's minimum, the thumb not counted), its mean votes standing
+/// still as a glass bar's rows do and `THUMB_VOTE_RATIO` times as often as following, in `THUMB_PANEL_SHARE` of its
+/// columns each, and textured on its own (the thumb's ends give a blank margin vertical structure).
+#[allow(clippy::too_many_arguments)]
+fn past_thumb(
+    edge: i64,
+    step: i64,
+    within: impl Fn(i64) -> bool,
+    moved: impl Fn(i64) -> bool,
+    votes: (&[f64], &[f64]),
+    width: i64,
+    height: i64,
+    top: i64,
+    bottom: i64,
+    frames: f64,
+    texture: impl Fn(i64, i64) -> bool,
+) -> Option<(i64, i64)> {
+    // The column a step inwards from a boundary `b`: `b - 1` on the right, `b` on the left.
+    let col = |b: i64| if step < 0 { b - 1 } else { b };
+    let never_follows = |x: i64| {
+        column_votes(votes, x, width, height, top, bottom, frames).is_some_and(|(f, m)| {
+            f >= STATIONARY_VOTE_SHARE && m <= THUMB_FOLLOW_SHARE && f >= THUMB_VOTE_RATIO * m
+        })
+    };
+    let limit = THUMB_COLUMNS.min(js_floor(width as f64 * THUMB_WIDTH_SHARE) as i64);
+    let mut k = edge;
+    while within(k) && moved(col(k)) && never_follows(col(k)) && (k - edge).abs() < limit {
+        k += step;
+    }
+    if k == edge || !within(k) || moved(col(k)) {
+        return None;
+    }
+    let mut inner = k;
+    while within(inner) && !moved(col(inner)) {
+        inner += step;
+    }
+    let (from, to) = if step < 0 { (inner, k) } else { (k, inner) };
+    if !within(inner) || to - from < 6 {
+        return None;
+    }
+    let (mut f, mut m, mut n, mut standing) = (0.0, 0.0, 0.0, 0.0);
+    for x in from..to {
+        if let Some((cf, cm)) = column_votes(votes, x, width, height, top, bottom, frames) {
+            f += cf;
+            m += cm;
+            n += 1.0;
+            if cf >= STATIONARY_VOTE_SHARE {
+                standing += 1.0;
+            }
+        }
+    }
+    if n == 0.0
+        || f / n < STATIONARY_VOTE_SHARE
+        || f < THUMB_VOTE_RATIO * m
+        || standing < THUMB_PANEL_SHARE * n
+        || !texture(from, to)
+    {
+        return None;
+    }
+    Some((inner, k))
+}
+
 /// Sampled pixels of row `y` that a fixed object holds: standing still explained them in `FIXED_PIXEL_SHARE` of the
 /// informative frames and `STATIONARY_VOTE_RATIO` times as often as the main motion did. Unlike the row votes, the
 /// page showing through around the object does not dilute them.
@@ -333,6 +448,11 @@ pub fn detect_bands(
     };
     let (mut left, mut right) = (0i64, width);
     let (mut exact_left, mut exact_right) = (None, None);
+    // The inner edges of scrollbar thumbs the walks crossed: a panel's own edge is looked for between the walk's stop
+    // and a column short of the thumb, not at the thumb: the track's border runs the full height and is the strongest
+    // edge there (new_mac_4: x 3178, the thumb from 3180), while a minimap shares the editor's background and may show
+    // none, so the band then starts where the walk stopped.
+    let (mut thumb_left, mut thumb_right) = (None, None);
     if informative_frames >= 2.0 {
         while (left as f64) < width as f64 * 0.45
             && stat_at(col_moving, left) / informative_frames < STATIONARY_COLUMN_SHARE
@@ -343,6 +463,61 @@ pub fn detect_bands(
             && stat_at(col_moving, right - 1) / informative_frames < STATIONARY_COLUMN_SHARE
         {
             right -= 1;
+        }
+        // A scrollbar's thumb at the window's edge moves whenever the page does, so the walk stops at it although it
+        // never follows the page; a fixed panel standing still beyond it (new_mac_4's minimap) then stayed in the
+        // moving layer. With the votes at hand, the walk crosses such a thumb when what it reaches beyond is a panel
+        // standing still (`past_thumb`); the thumb then belongs to the band.
+        if row_votes.is_some() {
+            let moved =
+                |x: i64| stat_at(col_moving, x) / informative_frames >= STATIONARY_COLUMN_SHARE;
+            let texture = |from: i64, to: i64| {
+                textured(
+                    from,
+                    to,
+                    informative_frames,
+                    reference,
+                    &mm,
+                    col_mean,
+                    top,
+                    bottom,
+                    factor,
+                )
+            };
+            if (left as f64) < width as f64 * 0.45 {
+                if let Some(inner) = past_thumb(
+                    left,
+                    1,
+                    |b| (b as f64) < width as f64 * 0.45,
+                    moved,
+                    pixel_votes,
+                    width,
+                    height,
+                    top,
+                    bottom,
+                    informative_frames,
+                    texture,
+                ) {
+                    (left, thumb_left) = (inner.0, Some(inner.1));
+                }
+            }
+            if right as f64 > width as f64 * 0.55 {
+                if let Some(inner) = past_thumb(
+                    right,
+                    -1,
+                    |b| b as f64 > width as f64 * 0.55,
+                    moved,
+                    pixel_votes,
+                    width,
+                    height,
+                    top,
+                    bottom,
+                    informative_frames,
+                    texture,
+                ) {
+                    (right, thumb_right) = (inner.0, Some(inner.1));
+                }
+            }
         }
         if let Some(img) = reference {
             let scale = factor;
@@ -357,7 +532,7 @@ pub fn detect_bands(
                     img.width,
                     img.height,
                     Axis::X,
-                    0.0,
+                    thumb_left.map_or(0.0, |k| ((k + 1) as f64 * scale).floor()),
                     (left as f64 * scale).ceil(),
                     cross_from,
                     cross_to,
@@ -373,7 +548,7 @@ pub fn detect_bands(
                     img.height,
                     Axis::X,
                     (right as f64 * scale).floor(),
-                    native_width,
+                    thumb_right.map_or(native_width, |k| ((k - 1) as f64 * scale).ceil()),
                     cross_from,
                     cross_to,
                     Choose::First,
