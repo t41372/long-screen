@@ -865,3 +865,94 @@ fn without_the_votes_the_walk_stops_at_the_thumb() {
     });
     assert_eq!(bands.right, 600);
 }
+
+/// `glass_bands_over` with the row votes of every row given by `votes(y)` (standing still, following, per frame).
+fn vote_bands(votes: &dyn Fn(usize) -> (f64, f64)) -> super::bands::Bands {
+    let (w, h) = (204usize, 300usize);
+    let frames = 10.0;
+    let row_change = vec![5.0 * frames; h];
+    let row_fixed: Vec<f64> = (0..h).map(|y| frames * votes(y).0).collect();
+    let row_moving: Vec<f64> = (0..h).map(|y| frames * votes(y).1).collect();
+    let (pixel_fixed, pixel_moving) = (vec![0.0; w * h], vec![0.0; w * h]);
+    super::bands::detect_bands(
+        w as i64,
+        h as i64,
+        frames,
+        &row_change,
+        Some((&row_fixed, &row_moving)),
+        (&pixel_fixed, &pixel_moving),
+        &vec![frames; w],
+        &vec![0.0; w],
+        None,
+        w as f64,
+        h as f64,
+        1.0,
+    )
+}
+
+// new_ip_3's bottom bar: its last rows stand still only about 1.5 to 2 times as often as they follow the page (the
+// home indicator over the glass). Four more informative frames (an odd-step fix in motion) took row 564 from 1.53
+// to 1.48, the walk from the bottom edge stopped there with 9 rows and no dense structure, and the whole bottom band
+// was gone, its tab icons burnt into the print. Ways a gap-tolerant walk could fail, written before it:
+// - a bar with a few rows just under the ratio near its edge is still cut there;
+// - the walk crosses rows the page clearly moves: own_f's floating composer sits above rows at 1.16 to 1.32 where
+//   the page shows through, and crossing them made it a band reaching up over page text and a floating button;
+// - the walk crosses more than a bar's spacing of page rows into something standing still further in;
+// - the band ends inside the gap instead of at the last row that stands still.
+const BAR: (f64, f64) = (15.0, 2.0);
+const PAGE: (f64, f64) = (1.0, 15.0);
+/// Standing still 1.45 times as often as following the page: just under the ratio.
+const NEAR: (f64, f64) = (14.5, 10.0);
+/// 1.3 times: the page moves these rows too often for them to be the bar's.
+const UNDER: (f64, f64) = (13.0, 10.0);
+
+#[test]
+fn a_few_rows_just_under_the_ratio_do_not_cut_a_bar() {
+    let bands = vote_bands(&|y| match y {
+        3..6 => NEAR,
+        _ if y < 40 => BAR,
+        _ => PAGE,
+    });
+    assert_eq!(bands.top, 40);
+    let bands = vote_bands(&|y| match y {
+        294..297 => NEAR,
+        _ if y >= 260 => BAR,
+        _ => PAGE,
+    });
+    assert_eq!(bands.bottom, 260);
+}
+
+#[test]
+fn rows_the_page_moves_too_often_end_a_bar() {
+    let bands = vote_bands(&|y| match y {
+        10..12 => UNDER,
+        _ if y < 40 => BAR,
+        _ => PAGE,
+    });
+    assert_eq!(bands.top, 10);
+    let bands = vote_bands(&|y| match y {
+        288..290 => UNDER,
+        _ if y >= 260 => BAR,
+        _ => PAGE,
+    });
+    assert_eq!(bands.bottom, 290);
+}
+
+#[test]
+fn the_walk_does_not_cross_more_than_a_bars_spacing_of_page() {
+    // A bar of 10 rows, 25 rows of page (over the 20 px gap), then rows standing still again further in.
+    let bands = vote_bands(&|y| {
+        if y < 10 || (35..60).contains(&y) {
+            BAR
+        } else {
+            PAGE
+        }
+    });
+    assert_eq!(bands.top, 10);
+    // A gap at the end of the bar is not part of it: the band ends at the last row that stands still.
+    let bands = vote_bands(&|y| if y < 30 { BAR } else { PAGE });
+    assert_eq!(bands.top, 30);
+    // A walk whose first row follows the page finds no bar, as before.
+    let bands = vote_bands(&|y| if (3..40).contains(&y) { BAR } else { PAGE });
+    assert_eq!(bands.top, 0);
+}

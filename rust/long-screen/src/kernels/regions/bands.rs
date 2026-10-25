@@ -112,6 +112,13 @@ pub(super) const STATIONARY_VOTE_RATIO: f64 = 1.5;
 /// Share of a row's sampled pixels (every 4th column) that must vote for standing still per informative frame,
 /// so a row with almost no structure cannot pass on a handful of votes.
 pub(super) const STATIONARY_VOTE_SHARE: f64 = 0.03;
+/// How far a row's ratio may fall under `STATIONARY_VOTE_RATIO` inside a band found by the votes when a row over it
+/// follows within `FIXED_ROW_GAP` (`vote_walk`). A glass bar's rows near its edge stand still only 1.5 to 2 times as
+/// often as they follow the page (new_ip_3's home indicator: 1.48 to 2.03, the 1.48 after four more frames had their
+/// motion measured), while the page showing through under a floating panel stays further down (own_f: 1.16 to 1.32
+/// under ChatGPT's input box, whose fade is page content; crossing those rows made the box a band reaching up over
+/// the page text and a floating button above it).
+pub(super) const STATIONARY_GAP_RATIO: f64 = 1.4;
 
 /// Share of a row's sampled pixels at which standing still must win, per informative frame, on at least one row
 /// of a band found by the votes. Bars hold icons and text: the densest row of each such band on the recordings is
@@ -312,6 +319,39 @@ fn last_row_of_fixed_objects(
     None
 }
 
+/// The vote walk from a screen edge: from row `start`, `step` rows at a time while `within` holds, over rows `still`
+/// takes and, once one row was taken, gaps of at most `gap_rows` rows it does not but `near` does, each followed by
+/// one it takes. Returns the first row past the band on the top side (`step` 1) and the last row before it on the
+/// bottom side (`step` −1): the band ends at the last row taken.
+fn vote_walk(
+    start: i64,
+    step: i64,
+    within: impl Fn(i64) -> bool,
+    still: &impl Fn(i64) -> bool,
+    near: &impl Fn(i64) -> bool,
+    gap_rows: i64,
+) -> i64 {
+    let (mut y, mut end) = (start, start);
+    while within(y) {
+        if still(y) {
+            y += step;
+            end = y;
+            continue;
+        }
+        if end == start {
+            break;
+        }
+        match (1..=gap_rows)
+            .take_while(|&k| near(y + (k - 1) * step))
+            .find(|&k| within(y + k * step) && still(y + k * step))
+        {
+            Some(k) => y += k * step,
+            None => break,
+        }
+    }
+    end
+}
+
 /// The row-vote test above.
 fn stationary_by_votes(
     fixed: &[f64],
@@ -320,13 +360,14 @@ fn stationary_by_votes(
     width: i64,
     height: i64,
     informative_frames: f64,
+    ratio: f64,
 ) -> bool {
     if height < 5 || width < 5 {
         return false;
     }
     let f = vote_share(fixed, y, width, height, informative_frames);
     let m = vote_share(moving, y, width, height, informative_frames);
-    f >= STATIONARY_VOTE_SHARE && f >= STATIONARY_VOTE_RATIO * m
+    f >= STATIONARY_VOTE_SHARE && f >= ratio * m
 }
 
 /// Votes per informative frame over the row's sampled pixels. `Learner::add` samples rows 2..height-2 only, so the
@@ -393,12 +434,41 @@ pub fn detect_bands(
         if let Some((fixed, moving)) = row_votes {
             let still = |y: i64| {
                 stat_at(row_change, y) / informative_frames < 0.9
-                    || stationary_by_votes(fixed, moving, y, width, height, informative_frames)
+                    || stationary_by_votes(
+                        fixed,
+                        moving,
+                        y,
+                        width,
+                        height,
+                        informative_frames,
+                        STATIONARY_VOTE_RATIO,
+                    )
             };
+            // A bar's rows over the glass stand still only about 1.5 to 2 times as often as they follow the page
+            // near its edges, so the walk crosses a gap of at most `FIXED_ROW_GAP` native px of rows just under the
+            // ratio (`STATIONARY_GAP_RATIO`) when a row that stands still follows it; the band still ends at the last
+            // row that stands still.
+            let near = |y: i64| {
+                stationary_by_votes(
+                    fixed,
+                    moving,
+                    y,
+                    width,
+                    height,
+                    informative_frames,
+                    STATIONARY_GAP_RATIO,
+                )
+            };
+            let gap_rows = js_ceil(FIXED_ROW_GAP / factor) as i64;
             if top == 0 {
-                while (top as f64) < height as f64 * 0.45 && still(top) {
-                    top += 1;
-                }
+                top = vote_walk(
+                    0,
+                    1,
+                    |y| (y as f64) < height as f64 * 0.45,
+                    &still,
+                    &near,
+                    gap_rows,
+                );
                 if top < 6
                     || top as f64 >= height as f64 * 0.45
                     || !holds_structure(fixed, 0, top, width, height, informative_frames)
@@ -418,9 +488,14 @@ pub fn detect_bands(
                 }
             }
             if bottom == height {
-                while bottom as f64 > height as f64 * 0.55 && still(bottom - 1) {
-                    bottom -= 1;
-                }
+                bottom = vote_walk(
+                    height - 1,
+                    -1,
+                    |y| (y + 1) as f64 > height as f64 * 0.55,
+                    &still,
+                    &near,
+                    gap_rows,
+                ) + 1;
                 if height - bottom < 6
                     || bottom as f64 <= height as f64 * 0.55
                     || !holds_structure(fixed, bottom, height, width, height, informative_frames)
