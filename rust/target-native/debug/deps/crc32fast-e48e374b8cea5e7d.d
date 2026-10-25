@@ -1,0 +1,10 @@
+/Users/tim/LocalData/coding/2026/Lab/23_long_screen/wtx-panes/rust/target-native/debug/deps/crc32fast-e48e374b8cea5e7d.d: /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/lib.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/baseline.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/combine.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/specialized/mod.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/table.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/specialized/aarch64.rs
+
+/Users/tim/LocalData/coding/2026/Lab/23_long_screen/wtx-panes/rust/target-native/debug/deps/libcrc32fast-e48e374b8cea5e7d.rmeta: /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/lib.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/baseline.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/combine.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/specialized/mod.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/table.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/specialized/aarch64.rs
+
+/Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/lib.rs:
+/Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/baseline.rs:
+/Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/combine.rs:
+/Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/specialized/mod.rs:
+/Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/table.rs:
+/Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/crc32fast-1.5.2/src/specialized/aarch64.rs:

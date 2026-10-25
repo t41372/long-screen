@@ -113,6 +113,7 @@ fn session_with(
             },
             epochs,
             sticky: Vec::new(),
+            nest: None,
         }],
     })
 }
@@ -929,4 +930,110 @@ fn a_relocalization_onto_the_fragment_itself_ties_nothing() {
     let (host, frames) = lost_off_a_fragment(true, true);
     assert_eq!(frames[6].placements[0].canvas_id, "body-part-1");
     assert!(attachments(&host).is_empty(), "{:?}", host.codes());
+}
+
+/// A page that scrolls with a box in it whose own content scrolls too: page rows `[BOX_TOP, BOX_TOP + BOX_H)` and
+/// columns `[BOX_LEFT, BOX_LEFT + BOX_W)` show the box's content, scrolled by `own` rows.
+const BOX_LEFT: usize = 10;
+const BOX_W: usize = 140;
+const BOX_TOP: usize = 200;
+const BOX_H: usize = 100;
+
+fn boxed_frame(page: &[u8], inner: &[u8], offset: usize, own: usize) -> Vec<u8> {
+    let mut out = window(page, offset).to_vec();
+    for y in 0..H {
+        let py = y + offset;
+        if !(BOX_TOP..BOX_TOP + BOX_H).contains(&py) {
+            continue;
+        }
+        for x in BOX_LEFT..BOX_LEFT + BOX_W {
+            let (iy, ix) = (py - BOX_TOP + own, x);
+            out[(y * W + x) * 4..(y * W + x) * 4 + 4]
+                .copy_from_slice(&inner[(iy * W + ix) * 4..(iy * W + ix) * 4 + 4]);
+        }
+    }
+    out
+}
+
+// Failure cases for a nested container's own solve: starting anywhere but at the parent's pose; following the page
+// instead of its own content; registering on the page around it; frames where it is off screen placed anyway; the
+// rest of the region not occluded for it.
+#[test]
+fn a_nested_container_follows_its_own_content_inside_its_footprint() {
+    let (page, inner) = (page(), {
+        // A second texture: the page flipped, so nothing in it matches the page.
+        let p = page();
+        let mut flipped = vec![0u8; p.len()];
+        for y in 0..PAGE {
+            flipped[y * W * 4..(y + 1) * W * 4]
+                .copy_from_slice(&p[(PAGE - 1 - y) * W * 4..(PAGE - y) * W * 4]);
+        }
+        flipped
+    });
+    // The page scrolls 8 rows a frame to 160, stands while the box scrolls 6 rows a frame, then moves on.
+    let mut path = Vec::new();
+    let (mut offset, mut own) = (0usize, 0usize);
+    for t in 0..40 {
+        if t > 0 {
+            if t <= 20 || t > 30 {
+                offset += 8;
+            } else {
+                own += 6;
+            }
+        }
+        path.push((offset, own));
+    }
+    let frames: Vec<Vec<u8>> = path
+        .iter()
+        .map(|&(o, s)| boxed_frame(&page, &inner, o, s))
+        .collect();
+    // The parent's poses are the page offsets (its canvas is the page): exact, as a first pass would give them.
+    let parent_poses: Vec<Option<(f64, f64)>> =
+        path.iter().map(|&(o, _)| Some((0.0, o as f64))).collect();
+    let nest = Nest {
+        footprint: Rect {
+            x: BOX_LEFT as f64,
+            y: BOX_TOP as f64,
+            width: BOX_W as f64,
+            height: BOX_H as f64,
+        },
+        open: 0,
+        parent_poses,
+    };
+    let mut s = session(true);
+    s.regions[0].nest = Some(nest);
+    let mut host = Host::default();
+    let mut placed = Vec::new();
+    for (t, pixels) in frames.iter().enumerate() {
+        let done = host.frame(&mut s, t as u32, pixels);
+        placed.push(done.placements[0].clone());
+    }
+    for (t, p) in placed.iter().enumerate() {
+        let (offset, own) = path[t];
+        let screen_top = BOX_TOP as f64 - offset as f64;
+        let visible = screen_top < H as f64 && screen_top + BOX_H as f64 > 0.0;
+        if !visible {
+            assert!(p.skip, "frame {t}: the box is off screen");
+            continue;
+        }
+        if p.skip {
+            continue;
+        }
+        // Its pose is the parent's plus its own scroll, relative to where it started.
+        assert_eq!((p.x, p.y), (0.0, (offset + own) as f64), "frame {t}");
+        let clip = Rect {
+            x: BOX_LEFT as f64,
+            y: screen_top.max(0.0),
+            width: BOX_W as f64,
+            height: (screen_top + BOX_H as f64).min(H as f64) - screen_top.max(0.0),
+        };
+        let covered: f64 = p.occlusions.iter().map(|r| r.width * r.height).sum();
+        assert_eq!(
+            covered,
+            (W * H) as f64 - clip.width * clip.height,
+            "frame {t}: {:?}",
+            p.occlusions
+        );
+    }
+    assert!(placed.iter().filter(|p| !p.skip).count() >= 20);
 }

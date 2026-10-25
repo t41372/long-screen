@@ -220,6 +220,45 @@ fn patches<'a>(
 }
 
 /// `String(n).padStart(10, '0')`.
+/// `rect` less `inner` (which lies inside it), as up to four rectangles: above, below, left and right of it.
+fn complement(rect: Rect, inner: Rect) -> Vec<Rect> {
+    let (rx1, ry1, ix1, iy1) = (
+        rect.x + rect.width,
+        rect.y + rect.height,
+        inner.x + inner.width,
+        inner.y + inner.height,
+    );
+    [
+        Rect {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: inner.y - rect.y,
+        },
+        Rect {
+            x: rect.x,
+            y: iy1,
+            width: rect.width,
+            height: ry1 - iy1,
+        },
+        Rect {
+            x: rect.x,
+            y: inner.y,
+            width: inner.x - rect.x,
+            height: inner.height,
+        },
+        Rect {
+            x: ix1,
+            y: inner.y,
+            width: rx1 - ix1,
+            height: inner.height,
+        },
+    ]
+    .into_iter()
+    .filter(|r| r.width > 0.0 && r.height > 0.0)
+    .collect()
+}
+
 fn pad(n: u32) -> String {
     format!("{n:0>10}")
 }
@@ -232,6 +271,9 @@ impl SolveSession {
         ctx: &FrameCtx,
         labels: &[u8],
     ) -> Result<Outcome, SolveError> {
+        if let Some(nest) = &self.regions[i].nest {
+            self.states[i].clip = nest.clip(ctx.index, self.regions[i].shape.rect);
+        }
         let mut s = self.setup(i, ctx);
         let registration = self.registration_plane(labels);
         let registration_labels = registration.as_deref().map_or(labels, Vec::as_slice);
@@ -242,6 +284,14 @@ impl SolveSession {
                 self.states[i].started = true;
                 self.states[i].canvas_id = String::new();
                 self.new_canvas(i, ctx.time);
+                // A nested container starts where its parent is: its canvas is the parent's, moved by its own scroll.
+                let start = self.regions[i]
+                    .nest
+                    .as_ref()
+                    .and_then(|n| n.parent_poses.get(ctx.index as usize).copied().flatten());
+                if let Some(pose) = start {
+                    self.states[i].pose = pose;
+                }
             }
             Gate::FixedInit => self.new_canvas(i, ctx.time),
             Gate::Fixed => {}
@@ -378,8 +428,17 @@ impl SolveSession {
             self.width as f64,
             self.height as f64,
         );
-        let (registration_rect, own) =
-            track::registration_features(rect, self.states[i].registration_support, own, f);
+        let (registration_rect, own) = match (&r.nest, state.clip) {
+            // A nested container registers on its own rectangle only, every frame, however few features it has.
+            (Some(_), Some(clip)) => (
+                clip,
+                own.into_iter()
+                    .filter(|p| clip.contains(p.x as f64 * f, p.y as f64 * f))
+                    .collect(),
+            ),
+            (Some(_), None) => (rect, Vec::new()),
+            (None, _) => track::registration_features(rect, state.registration_support, own, f),
+        };
         let own = match state.screen_fixed.as_ref().filter(|c| c.any()) {
             Some(cells) => {
                 let kept: Vec<Feature> = own
@@ -727,6 +786,18 @@ impl SolveSession {
         s.confidence = BLIND_CONFIDENCE;
         s.uncertain = true;
         self.states[i].velocity = (0.0, 0.0);
+        // A nested container out of sight keeps its own scroll and moves with its parent.
+        let carried = self.regions[i].nest.as_ref().and_then(|n| {
+            let at = |k: u32| n.parent_poses.get(k as usize).copied().flatten();
+            Some((at(ctx.index)?, at(ctx.index.checked_sub(1)?)?))
+        });
+        if let Some((now, before)) = carried {
+            let state = &mut self.states[i];
+            state.pose = (
+                state.pose.0 + now.0 - before.0,
+                state.pose.1 + now.1 - before.1,
+            );
+        }
         let canvas_id = self.states[i].canvas_id.clone();
         self.diagnostic(
             Diagnostic::new("UNOBSERVABLE_FRAME", Severity::Warning)
@@ -1500,8 +1571,7 @@ impl SolveSession {
                 .unwrap_or(self.regions[i].shape.rect),
         );
         let mut observed = false;
-        if moving && !s.skip {
-            let slot = self.voting_slot[i].expect("a moving region has a voting slot");
+        if let (true, false, Some(slot)) = (moving, s.skip, self.voting_slot[i]) {
             let canvas_id = self.states[i].canvas_id.clone();
             let canvas = self.canvas_slot(&canvas_id);
             let pose = self.states[i].pose;
@@ -1583,7 +1653,15 @@ impl SolveSession {
             }
             _ => Vec::new(),
         };
-        if let Some(first) = occlusions.first() {
+        // A nested container owns only its rectangle this frame: the rest of the region is occluded for it.
+        let occlusions = match (&self.regions[i].nest, self.states[i].clip) {
+            (Some(_), Some(clip)) => complement(self.regions[i].shape.rect, clip),
+            _ => occlusions,
+        };
+        if let Some(first) = occlusions
+            .first()
+            .filter(|_| self.regions[i].nest.is_none())
+        {
             self.diagnostic(
                 Diagnostic::new("STICKY_OCCLUSION", Severity::Info)
                     .at(ctx.index, ctx.time)

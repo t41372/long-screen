@@ -566,6 +566,7 @@ pub fn solve(
             shape: shape(r),
             epochs: r.epochs.clone(),
             sticky: r.sticky.clone(),
+            nest: None,
         })
         .collect();
     let session = SolveSession::new(SolveConfig {

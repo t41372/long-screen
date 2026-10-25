@@ -329,6 +329,7 @@ pub extern "C" fn ls_solve_new(input: u32, len: u32, shapes: u32) -> i32 {
                 shape,
                 epochs,
                 sticky,
+                nest: None,
             });
         }
         (width > 0 && height > 0).then_some(SolveConfig {

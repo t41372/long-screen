@@ -1,0 +1,14 @@
+/Users/tim/LocalData/coding/2026/Lab/23_long_screen/wtx-panes/rust/target-native/release/deps/serde-aa4f87beef835056.d: /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/tim/LocalData/coding/2026/Lab/23_long_screen/wtx-panes/rust/target-native/release/build/serde-a88b1b8a8d90b94a/out/private.rs
+
+/Users/tim/LocalData/coding/2026/Lab/23_long_screen/wtx-panes/rust/target-native/release/deps/libserde-aa4f87beef835056.rlib: /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/tim/LocalData/coding/2026/Lab/23_long_screen/wtx-panes/rust/target-native/release/build/serde-a88b1b8a8d90b94a/out/private.rs
+
+/Users/tim/LocalData/coding/2026/Lab/23_long_screen/wtx-panes/rust/target-native/release/deps/libserde-aa4f87beef835056.rmeta: /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs /Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs /Users/tim/LocalData/coding/2026/Lab/23_long_screen/wtx-panes/rust/target-native/release/build/serde-a88b1b8a8d90b94a/out/private.rs
+
+/Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/lib.rs:
+/Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/integer128.rs:
+/Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/mod.rs:
+/Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/de.rs:
+/Users/tim/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.229/src/private/ser.rs:
+/Users/tim/LocalData/coding/2026/Lab/23_long_screen/wtx-panes/rust/target-native/release/build/serde-a88b1b8a8d90b94a/out/private.rs:
+
+# env-dep:OUT_DIR=/Users/tim/LocalData/coding/2026/Lab/23_long_screen/wtx-panes/rust/target-native/release/build/serde-a88b1b8a8d90b94a/out

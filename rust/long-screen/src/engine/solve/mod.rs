@@ -75,6 +75,53 @@ pub struct SolveRegion {
     /// Candidate sticky blocks (the `sticky` of the region row), native pixels; each observation excludes those its
     /// page motion does not explain (`chrome::sticky_occlusions`).
     pub sticky: Vec<Rect>,
+    /// A container scrolling inside a moving region (`track::nested`), solved as a region of its own: the same rect
+    /// and atlas code as its parent, clipped frame by frame to where its footprint is on screen.
+    pub nest: Option<Nest>,
+}
+
+/// Where a nested container is: its footprint in its parent's canvas and the parent's pose there frame by frame.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Nest {
+    /// Native pixels of the parent's canvas.
+    pub footprint: Rect,
+    /// Sides on which the container may continue past the footprint (1 left, 2 right, 4 top, 8 bottom): there it
+    /// reaches the edge of the region.
+    pub open: u8,
+    /// Per frame index, the parent's pose on the footprint's canvas; `None` where the parent was on another canvas
+    /// or not placed.
+    pub parent_poses: Vec<Option<(f64, f64)>>,
+}
+
+impl Nest {
+    /// The container's screen rectangle in frame `index`, inside `rect` (the region's): the footprint moved by the
+    /// parent's pose, open sides out to the region's edges. `None` when the parent was not there or nothing is left.
+    pub fn clip(&self, index: u32, rect: Rect) -> Option<Rect> {
+        let (px, py) = (*self.parent_poses.get(index as usize)?)?;
+        let f = self.footprint;
+        let (mut x0, mut y0, mut x1, mut y1) =
+            (f.x - px, f.y - py, f.x + f.width - px, f.y + f.height - py);
+        let (rx1, ry1) = (rect.x + rect.width, rect.y + rect.height);
+        if self.open & 1 != 0 {
+            x0 = rect.x;
+        }
+        if self.open & 2 != 0 {
+            x1 = rx1;
+        }
+        if self.open & 4 != 0 {
+            y0 = rect.y;
+        }
+        if self.open & 8 != 0 {
+            y1 = ry1;
+        }
+        let (x0, y0, x1, y1) = (x0.max(rect.x), y0.max(rect.y), x1.min(rx1), y1.min(ry1));
+        (x1 > x0 && y1 > y0).then_some(Rect {
+            x: x0,
+            y: y0,
+            width: x1 - x0,
+            height: y1 - y0,
+        })
+    }
 }
 
 pub struct SolveConfig {
@@ -281,6 +328,8 @@ struct RegionState {
     started: bool,
     /// Per canvas of the region, the votes for a container scrolling inside it (`track::nested`).
     nested: HashMap<String, crate::kernels::track::nested::Nested>,
+    /// A nested container's screen rectangle this frame (`Nest::clip`).
+    clip: Option<Rect>,
 }
 
 /// The frame being solved.
@@ -382,7 +431,8 @@ impl SolveSession {
         let mut voting_slot = Vec::with_capacity(regions.len());
         let mut voting_regions = Vec::new();
         for r in &regions {
-            if r.moving {
+            // A nested container votes nowhere: its membership changes every frame.
+            if r.moving && r.nest.is_none() {
                 voting_slot.push(Some(voting_regions.len()));
                 voting_regions.push(clone_shape(&r.shape));
             } else {
@@ -427,6 +477,7 @@ impl SolveSession {
                 weak: false,
                 started: false,
                 nested: HashMap::new(),
+                clip: None,
             })
             .collect();
         SolveSession {
