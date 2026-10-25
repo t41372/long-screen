@@ -222,6 +222,10 @@ export class PreciseSource implements FrameSource {
     info.notices = [];
     const stats: SourceStats = this.stats = { frames: 0, converted: 0, decodeMS: 0, convertMS: 0 };
     let ended = false, producerDone = false, failure: unknown = null, submitted = 0, received = 0, lastOutput = performance.now();
+    // When the consumer began waiting on an empty queue (0 while it works on a frame). A stall is measured from the later
+    // of this and the decoder's last output: a consumer that spent longer than the stall timeout on one frame without
+    // yielding finds the queue empty with the decoder's answer still a pending task, which is not a stalled decoder.
+    let hungry = 0;
     // WebCodecs promises presentation order, but WebKit's decoder hands some B-frames back in decode order (35 of
     // the 90 frames of tests/fixtures/bframes-pyramid.mp4). Holding back as many frames as the stream ever reorders
     // (`reorderDepth`, 0 without B-frames) and releasing the earliest restores the order; on a decoder that already
@@ -256,7 +260,7 @@ export class PreciseSource implements FrameSource {
             !ended && !failure && (queue.length >= Math.max(2, depth()) || decoder.decodeQueueSize >= 2 || submitted - received >= 32)
           ) {
             await signal.wait(100);
-            if (!queue.length && performance.now() - lastOutput > this.stallTimeout) {
+            if (!queue.length && hungry && performance.now() - Math.max(lastOutput, hungry) > this.stallTimeout) {
               throw new Error(
                 `DECODER_STALLED: No decoded frame arrived for ${
                   Math.round(this.stallTimeout / 1000)
@@ -337,8 +341,10 @@ export class PreciseSource implements FrameSource {
         }
         if (!queue.length) {
           // Mirrors the producer's own stall check (above): if some future producer hang were not caught
-          // there, an empty queue with no decoder output for stallTimeout ms is stuck, not merely slow.
-          if (!producerDone && performance.now() - lastOutput > this.stallTimeout) {
+          // there, an empty queue with no decoder output for stallTimeout ms of waiting is stuck, not merely slow.
+          const now = performance.now();
+          if (!hungry) hungry = now;
+          if (!producerDone && now - Math.max(lastOutput, hungry) > this.stallTimeout) {
             throw new Error(
               `DECODER_STALLED: No decoded frame arrived for ${
                 Math.round(this.stallTimeout / 1000)
@@ -351,6 +357,7 @@ export class PreciseSource implements FrameSource {
           continue;
         }
         const frame = queue.shift()!;
+        hungry = 0;
         const early = ahead.get(frame), earlyPlanes = aheadPlanes.get(frame);
         ahead.delete(frame);
         aheadPlanes.delete(frame);
