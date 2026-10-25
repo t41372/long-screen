@@ -45,18 +45,20 @@ async function measure(name: string): Promise<Measure> {
     assertEquals(result.project.renderedFrames, scenario.frames.length, `${name}: every frame rendered`);
     const codes: Record<string, number> = {};
     for (const d of result.diagnostics) codes[d.code] = (codes[d.code] ?? 0) + 1;
+    // Measured as before nested layers had a meaning: each layer against the region its viewport overlaps most.
+    const flat: RunResult = { ...result, scenario: { ...scenario, layers: scenario.layers.map(({ parent: _, ...l }) => l) } };
     const owner = (layer: Layer): string | null => {
       try {
-        return matchRegion(result, layer).id;
+        return matchRegion(flat, layer).id;
       } catch {
         return null;
       }
     };
-    const owners = Object.fromEntries(scenario.layers.map((l) => [l.id, owner(l)]));
+    const owners = Object.fromEntries(flat.scenario.layers.map((l) => [l.id, owner(l)]));
     const layers: Record<string, LayerMeasure> = {};
-    for (const layer of scenario.layers) {
+    for (const layer of flat.scenario.layers) {
       const region = owners[layer.id];
-      const shared = region !== null && scenario.layers.some((other) => other.id !== layer.id && owners[other.id] === region);
+      const shared = region !== null && flat.scenario.layers.some((other) => other.id !== layer.id && owners[other.id] === region);
       const fixed = result.regions.filter((r) => r.kind === 'fixed').find((r) =>
         r.rect.x < layer.viewport.x + layer.viewport.width && layer.viewport.x < r.rect.x + r.rect.width &&
         r.rect.y < layer.viewport.y + layer.viewport.height && layer.viewport.y < r.rect.y + r.rect.height &&
@@ -64,7 +66,7 @@ async function measure(name: string): Promise<Measure> {
       );
       const m: LayerMeasure = { region: region ?? fixed?.id ?? null, regionKind: region ? 'moving' : fixed ? 'fixed' : null, shared };
       if (region !== null) {
-        const v = await verifyLayer(result, layer);
+        const v = await verifyLayer(flat, layer);
         Object.assign(m, {
           maxError: v.maxError,
           framesWithError: v.errors.filter((e) => e > 0).length,
@@ -115,6 +117,13 @@ Deno.test('pane-majority: the narrow pane rides on the wide pane, 320 px of its 
   // narrow pane's 320 px of scrolling are never counted.
   assert(right.shared, 'the narrow pane got a region of its own: move pane-majority into the catalogue');
   assertEquals(right.maxError, 320, 'the narrow pane is still placed by the wide pane alone');
+});
+
+Deno.test('pane-majority-revisit: the revisits at the end see the narrow pane 320 px from the trajectory and are rejected', async () => {
+  const m = await measure('pane-majority-revisit');
+  assert(m.layers.right.shared, 'the narrow pane got a region of its own: move pane-majority-revisit into the catalogue');
+  assert((m.codes.INCONSISTENT_LOOP_REJECTED ?? 0) >= 1, 'a revisit sees the missed scroll');
+  assert(m.layers.right.maxError! >= 300, `the narrow pane is still placed by the wide pane alone (${m.layers.right.maxError})`);
 });
 
 Deno.test('pane-rare-scroll: a pane that scrolls in six frames is frozen as screen-fixed, the busy pane stays exact', async () => {

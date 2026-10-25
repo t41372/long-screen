@@ -76,6 +76,9 @@ export interface Region {
   /** Candidate sticky blocks of a moving region, native pixels: blocks that stand still for part of the recording (a
    *  table of contents shown some of the time), excluded in the observations whose page motion does not explain them. */
   sticky?: Rect[];
+  /** A nested scroll container: the id of the region it scrolls inside. It shares that region's rect and atlas code
+   *  and owns, frame by frame, only its footprint there. */
+  parent?: string;
 }
 export interface Settings {
   analysisSize: number;

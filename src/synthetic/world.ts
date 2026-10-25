@@ -240,6 +240,10 @@ export interface Layer {
   /** The world's border is the page's edge: what a viewport shows past it is the browser's overscroll background,
    *  not page content, so the verifier never expects it and counts any of it on the canvas as invented. */
   pageEdges?: boolean;
+  /** A scroll container inside the layer with this id (nested scrolling): its viewport moves with that layer and it
+   *  scrolls by itself too. The engine must give it a canvas of its own, a child of the parent's region
+   *  (`Region.parent`); the verifier matches it there and expects every pixel of its viewport in every frame. */
+  parent?: string;
 }
 /** Actual screen membership; absent per-frame geometry retains the base viewport. */
 export function viewportAt(layer: Layer, frame: number): Rect {

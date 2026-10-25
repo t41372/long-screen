@@ -337,7 +337,7 @@ export type ScenarioName = typeof SCENARIO_NAMES[number];
  *  scrolls in only a few frames (the stationary-region rule's known limitation, §十). Not in the catalogue: their
  *  layers share one engine region, which the per-layer pixel checks cannot express. `tests/unit/nested-scroll.test.ts`
  *  measures them and guards what they show today. */
-export const NESTED_SCENARIO_NAMES = ['nested-scroll-box', 'pane-majority', 'pane-rare-scroll'] as const;
+export const NESTED_SCENARIO_NAMES = ['nested-scroll-box', 'pane-majority', 'pane-majority-revisit', 'pane-rare-scroll'] as const;
 /** Deterministic recordings with exact ground truth. Each one isolates a behaviour named in the requirements. */
 export function buildScenario(name: ScenarioName | string): Scenario {
   const W = 640, H = 448, HEADER = 48, bodyViewport = { x: 0, y: HEADER, width: W, height: H - HEADER };
@@ -552,25 +552,28 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         width: W,
         height: H,
         background: [251, 250, 246],
-        layers: [body(page, pagePath), { id: 'box', viewport: viewports[40], viewports, world: inner, path: boxPath }],
+        layers: [body(page, pagePath), { id: 'box', parent: 'body', viewport: viewports[40], viewports, world: inner, path: boxPath }],
         overlays: [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 31)],
         frames: frames(pagePath.length),
-        expect: expect({ fragments: { body: -1, box: -1 }, limitation: true }),
+        expect: expect({ fragments: { body: 0, box: 0 } }),
       };
     }
-    case 'pane-majority': {
+    case 'pane-majority':
+    case 'pane-majority-revisit': {
       // own_a's shape: a two-pane layout wider than the screen (a pinch-zoomed page). The view starts on the narrow
       // right pane and pans down, pans left until the wide left pane fills two thirds of it, the right pane alone
-      // scrolls 320 px, then the view pans back right and up over what it saw first.
-      const LEFT = 420, RIGHT = 480;
+      // scrolls 320 px, then the view pans back right and up over what it saw first. In the `-revisit` variant the
+      // right pane is as wide as the screen and the view starts and ends on it alone, so the revisits at the end see
+      // only the right pane, 320 px from where a region that missed its scroll would put it (own_a's 1635 px).
+      const revisit = name === 'pane-majority-revisit', LEFT = 420, RIGHT = revisit ? 640 : 480, ON_RIGHT = revisit ? LEFT : 260;
       const left = makeWorld(LEFT, 2400, 311, 'cards'), right = makeWorld(RIGHT, 3200, 312, 'article');
       const view: Point[] = [], own: number[] = [];
       for (let i = 0; i < 90; i++) {
-        if (i < 20) view.push({ x: 260, y: i * 12 }), own.push(0);
-        else if (i < 35) view.push({ x: Math.round(260 - (i - 19) * 260 / 15), y: 240 }), own.push(0);
+        if (i < 20) view.push({ x: ON_RIGHT, y: i * 12 }), own.push(0);
+        else if (i < 35) view.push({ x: Math.round(ON_RIGHT - (i - 19) * ON_RIGHT / 15), y: 240 }), own.push(0);
         else if (i < 55) view.push({ x: 0, y: 240 }), own.push((i - 34) * 16);
-        else if (i < 70) view.push({ x: Math.round((i - 54) * 260 / 15), y: 240 }), own.push(320);
-        else view.push({ x: 260, y: 240 - (i - 69) * 12 }), own.push(320);
+        else if (i < 70) view.push({ x: Math.round((i - 54) * ON_RIGHT / 15), y: 240 }), own.push(320);
+        else view.push({ x: ON_RIGHT, y: 240 - (i - 69) * 12 }), own.push(320);
       }
       const pane = (id: string, origin: number, world: World, base: number): Layer => {
         const viewports: Rect[] = [], path: Point[] = [];
@@ -579,18 +582,20 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           viewports.push({ x: x0, y: HEADER, width: Math.max(0, x1 - x0), height: H - HEADER });
           path.push({ x: x0 + v.x - origin, y: v.y + (id === 'right' ? own[i] : 0) });
         });
-        return { id, viewport: viewports[base], viewports, world, path };
+        return { id, viewport: viewports[base], viewports, world, path, ...(id === 'right' ? { parent: 'left' } : {}) };
       };
       return {
         name,
-        description: '宽的静止左栏占视口多数时，窄右栏自己滚动，之后整个版面二维平移（own_a 的形状）。',
+        description: revisit
+          ? '同 pane-majority，但右栏与视口一样宽，开头和结尾只看得见右栏，回访看得见它错过的滚动。'
+          : '宽的静止左栏占视口多数时，窄右栏自己滚动，之后整个版面二维平移（own_a 的形状）。',
         width: W,
         height: H,
         background: [251, 250, 246],
         layers: [pane('left', 0, left, 45), pane('right', LEFT, right, 10)],
         overlays: [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 32)],
         frames: frames(view.length),
-        expect: expect({ fragments: { left: -1, right: -1 }, limitation: true }),
+        expect: expect({ fragments: { left: 0, right: 0 } }),
       };
     }
     case 'pane-rare-scroll': {

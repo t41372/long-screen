@@ -33,12 +33,28 @@ function overlapArea(
   return Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)) *
     Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y));
 }
-/** The engine region that best matches a scenario layer's viewport. */
+/** The engine region that best matches a scenario layer's viewport. A nested layer (`Layer.parent`) matches the
+ *  region the engine made a child of its parent's region; every other layer matches among the regions that are not
+ *  children (a child shares its parent's rect). */
 export function matchRegion(result: VerifiableRun, layer: Layer, kind: Region['kind'] = 'moving'): Region {
-  const candidates = result.regions.filter((r) => r.kind === kind).map((r) => ({ r, overlap: overlapArea(r.rect, layer.viewport) })).sort((
-    a,
-    b,
-  ) => b.overlap - a.overlap);
+  if (layer.parent) {
+    const parentLayer = result.scenario.layers.find((l) => l.id === layer.parent);
+    if (!parentLayer) throw new Error(`Layer ${layer.id} names a parent ${layer.parent} the scenario does not have.`);
+    const parent = matchRegion(result, parentLayer, kind);
+    const child = result.regions.find((r) => r.kind === kind && r.parent === parent.id);
+    if (!child) {
+      throw new Error(`No ${kind} region is a child of ${parent.id} for the nested layer ${layer.id}.`);
+    }
+    return child;
+  }
+  const candidates = result.regions.filter((r) => r.kind === kind && !r.parent).map((r) => ({
+    r,
+    overlap: overlapArea(r.rect, layer.viewport),
+  }))
+    .sort((
+      a,
+      b,
+    ) => b.overlap - a.overlap);
   if (!candidates.length || candidates[0].overlap <= 0) {
     throw new Error(
       `No ${kind} region overlaps layer ${layer.id}. Regions: ${
@@ -47,6 +63,15 @@ export function matchRegion(result: VerifiableRun, layer: Layer, kind: Region['k
     );
   }
   return candidates[0].r;
+}
+/** Whether a later layer of the scenario covers screen pixel (x, y) in `frame`: layers draw in order, so only the
+ *  topmost one is visible there. */
+function coveredByLater(scenario: Scenario, layer: Layer, frame: number, x: number, y: number): boolean {
+  for (let i = scenario.layers.indexOf(layer) + 1; i < scenario.layers.length; i++) {
+    const v = viewportAt(scenario.layers[i], frame);
+    if (x >= v.x && y >= v.y && x < v.x + v.width && y < v.y + v.height) return true;
+  }
+  return false;
 }
 export interface FragmentReport {
   canvasId: string;
@@ -171,6 +196,8 @@ async function verifyCanvas(
   tolerance: number,
 ): Promise<CanvasCheck> {
   const { scenario, atlas, store } = result, baseViewport = layer.viewport, W = scenario.width, worldW = layer.world.width;
+  // Only scenarios with nested layers can have one layer drawn over another.
+  const nested = scenario.layers.some((l) => l.parent);
   const origin = entries.find((e) => e.frame === originFrame);
   const originWorld = origin
     ? { x: layerTranslation(layer, originFrame).x - origin.placement.x, y: layerTranslation(layer, originFrame).y - origin.placement.y }
@@ -245,7 +272,9 @@ async function verifyCanvas(
     const dynamicRects = rendered.dynamicRects[layer.id] || [], labels = atlas.labelsAt(e.frame);
     for (let y = v.y; y < v.y + v.height; y++) {
       for (let x = v.x; x < v.x + v.width; x++) {
-        if (labels[y * W + x] !== code) {
+        // A nested layer shares its parent's atlas code; it owns its whole viewport. Any layer is only expected where
+        // no later layer covers it.
+        if ((!layer.parent && labels[y * W + x] !== code) || (nested && coveredByLater(scenario, layer, e.frame, x, y))) {
           continue;
         }
         if (layer.pageEdges) {
