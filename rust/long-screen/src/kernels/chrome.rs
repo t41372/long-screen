@@ -141,6 +141,7 @@ pub fn sticky_occlusions(
     let start = 2i64.max(js_floor(r.y) as i64);
     let step = 1i64.max(js_floor(r.width / 700.0) as i64);
     let (mut last_fixed, mut strong_rows, mut matched) = (-1i64, 0u32, 0u32);
+    let mut below_page = false;
     let x_start = 2i64.max(js_ceil(r.x) as i64);
     let x_end = (w - 2) as f64;
     let window = (dy.abs() / 4).min(16);
@@ -171,9 +172,10 @@ pub fn sticky_occlusions(
         }
         let n = samples.len() as u32;
         let nf = n as f64;
-        if n < 8 || (shifted as f64) / nf <= 18.0 {
+        if n < 8 {
             continue;
         }
+        let page = (shifted as f64) / nf <= 18.0;
         // Agreement with the previous frame at zero shift, or at a small shift of the band's own. A shift of its own
         // needs the page's own position of this row inside the region: above it (scrolling back at the region's top
         // edge) the page-shift comparison reads fixed chrome, which never matches, and says nothing about the page.
@@ -193,7 +195,20 @@ pub fn sticky_occlusions(
             }
             k += 1;
         }
+        if page {
+            // A row the page's motion explains and no standing still does is page content. A row both explain says
+            // nothing either way, nor does one whose page partner lies outside the region (it reads fixed chrome).
+            below_page |= !still && page_inside;
+            continue;
+        }
         if still {
+            // A sticky band runs down from the region's top: rows that stand still below page content are something
+            // else, and the band drawn from the top down to them would cover that page content (new_mac_4: a pointer
+            // resting in a blank gap under scrolling text, beside a column ruler, made a 151 px band). Such a frame
+            // has no band of its own.
+            if below_page {
+                return carry;
+            }
             last_fixed = y;
             strong_rows += 1;
             matched += n;
@@ -313,6 +328,8 @@ mod tests {
     //!   slow scroll lets the shift window reach the page's own displacement;
     //! - a shift window reaching above the frame's top reads out of bounds;
     //! - a band sliding down while the page scrolls back (the header expanding again) is missed.
+    //! - rows that stand still below rows that follow the page (a resting pointer in a blank gap under scrolling text)
+    //!   are taken for a band running down from the region's top.
     use super::*;
 
     const W: usize = 400;
@@ -491,6 +508,37 @@ mod tests {
         // Page step 8: the window is ±2 but only k ≤ 0 keep |8 − k| ≥ 8; a band moving up 2 px is not found.
         let current = frame(8, Some(-2), &plain);
         assert!(bands(&previous, &current, 8.0).is_empty());
+    }
+
+    /// A code editor (new_mac_4): text scrolling at the region's top, and lower down, where the page shows a blank gap
+    /// in both frames, a pointer resting on screen and a column ruler running the whole height. `page` is the world
+    /// row of screen row 0.
+    fn editor(page: i64) -> Vec<u8> {
+        let mut out = vec![0u8; W * H * 4];
+        for y in 0..H as i64 {
+            for x in 0..W as i64 {
+                let world = y + page;
+                let v = if x == 200 || x == 201 || (300..306).contains(&x) && (70..90).contains(&y)
+                {
+                    250
+                } else if (60..120).contains(&world) {
+                    20
+                } else {
+                    noise(x, world, 1)
+                };
+                put(&mut out, x as usize, y as usize, v);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_resting_pointer_below_scrolling_text_is_not_a_band() {
+        // The pointer's rows, inside the blank gap, agree at zero shift and not at the page's step; the text rows
+        // above them follow the page. A sticky band runs down from the region's top, so the band is not there; taking
+        // it hid the rows the pointer had covered while they scrolled up past it, and its burn-in stayed.
+        let found = bands(&editor(0), &editor(14), 14.0);
+        assert!(found.is_empty(), "{found:?}");
     }
 
     #[test]

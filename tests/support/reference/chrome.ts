@@ -1,7 +1,10 @@
 /** FROZEN TypeScript chrome evidence (`stationaryBoundary`, `stickyOcclusions`), lifted verbatim as the parity
  *  oracle for rust/long-screen/src/kernels/chrome.rs (tests/unit/parity/). Not used by production code. Do not "fix".
- *  One deliberate change since the freeze, made in Rust first and mirrored here: a sticky band may also agree with the
- *  previous frame at a small vertical shift of its own (a header collapsing at its own speed, new_ip_8). */
+ *  Two deliberate changes since the freeze, each made in Rust first and mirrored here: a sticky band may also agree with
+ *  the previous frame at a small vertical shift of its own (a header collapsing at its own speed, new_ip_8); and a row
+ *  the page's motion explains while standing still does not, above rows that stand still, leaves the frame without a
+ *  band, since a band runs down from the region's top (a pointer resting in a blank gap under scrolling text was a
+ *  band, new_mac_4). */
 import type { Rect, Region, RGBA } from '../../../src/types.ts';
 /** Strong persistent appearance boundary within a stationary run. Never infer a pane edge from its first glyph.
  * Returns the boundary coordinate in native pixels, or undefined if the image offers no boundary evidence. */
@@ -65,7 +68,7 @@ export function stickyOcclusions(
   const end = Math.min(h - 2, Math.floor(r.y + Math.min(288, r.height * .23))), start = Math.max(2, Math.floor(r.y));
   const step = Math.max(1, Math.floor(r.width / 700));
   const window = Math.min(16, Math.floor(Math.abs(dy) / 4));
-  let lastFixed = -1, strongRows = 0, matched = 0;
+  let lastFixed = -1, strongRows = 0, matched = 0, belowPage = false;
   for (let y = start; y < end; y++) {
     if (y + dy < 2 || y + dy >= h - 2) continue;
     let zero = 0, shifted = 0;
@@ -80,7 +83,8 @@ export function stickyOcclusions(
       samples.push(i);
     }
     const n = samples.length;
-    if (n < 8 || shifted / n <= 18) continue;
+    if (n < 8) continue;
+    const page = shifted / n <= 18;
     let still = zero / n < 6;
     const pageInside = y + dy >= r.y && y + dy < r.y + r.height;
     for (let k = pageInside ? -window : window + 1; !still && k <= window; k++) {
@@ -89,7 +93,14 @@ export function stickyOcclusions(
       for (const i of samples) sum += Math.abs(a[i + k * w * 4] - b[i]);
       still = sum / n < 6;
     }
+    // A row the page explains and no standing still does is page content; a band runs down from the region's top, so
+    // a frame with rows standing still below page content has no band of its own.
+    if (page) {
+      if (!still && pageInside) belowPage = true;
+      continue;
+    }
     if (still) {
+      if (belowPage) return carry;
       lastFixed = y;
       strongRows++;
       matched += n;
