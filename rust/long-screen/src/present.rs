@@ -28,9 +28,14 @@ fn canvas_rows(ctx: &Ctx) -> Vec<(String, Obj)> {
 fn build_framed(ctx: &mut Ctx, source: &Obj, started: Instant) -> Result<Option<f64>, String> {
     let id = source.str("id").unwrap_or_default().to_string();
     let layer = source.str("layer").unwrap_or_default();
-    let region = ctx.regions.iter().find(|r| r.id == layer).ok_or_else(|| {
-        "TypeError: Cannot read properties of undefined (reading 'crop')".to_string()
-    })?;
+    // A nested container's canvas is framed in its parent's pane, as its region is its parent's copy on the page.
+    let parent = ctx.nested.iter().find(|n| n.id == layer).map(|n| n.parent);
+    let region = parent
+        .map(|i| &ctx.regions[i])
+        .or_else(|| ctx.regions.iter().find(|r| r.id == layer))
+        .ok_or_else(|| {
+            "TypeError: Cannot read properties of undefined (reading 'crop')".to_string()
+        })?;
     let pane = region
         .crop
         .map_or(region.rect, |crop| intersect(region.rect, crop));

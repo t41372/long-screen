@@ -2,15 +2,17 @@
 //! frame, stores the rows it hands back, formats its diagnostics (`solve/diagnostics.ts`), relaxes the pose graph
 //! and drops the pass's scratch.
 
-use crate::context::{pad, t, Ctx};
+use crate::context::{pad, t, Ctx, NestedRegion};
 use crate::engine::catalog::{Locale, Param};
 use crate::engine::diagnostic::Diagnostic as EngineDiagnostic;
+use crate::engine::pose_graph::PoseGraph;
 use crate::engine::pose_graph::{PoseEdge, PoseNode, PoseRow, Write};
 use crate::engine::solve::{
-    Begin, Effect, Keyframe, Placement, Poll, ScanFields, SolveConfig, SolveRegion, SolveSession,
-    VotingRecord, VOTING_RING_BYTES,
+    Begin, Effect, Keyframe, Nest, NestedFound, Placement, Poll, ScanFields, SolveConfig,
+    SolveRegion, SolveSession, VotingRecord, VOTING_RING_BYTES,
 };
 use crate::kernels::features::{Feature, DESCRIPTOR_WORDS};
+use crate::kernels::geometry::Rect;
 use crate::kernels::region::{Mask, Region as Shape};
 use crate::kernels::regions::{Kind, RegionOut};
 use crate::scan::Features;
@@ -114,18 +116,65 @@ pub fn edge_js(e: &PoseEdge) -> Js {
 
 /// Stores pose-graph rows.
 pub fn store_writes(ctx: &mut Ctx, writes: &[Write]) {
-    let put = |ctx: &mut Ctx, row: &PoseRow| {
+    pose_rows(writes, &mut |key, value| ctx.put(key, value));
+}
+
+/** Each pose graph row of `writes`, keyed, as its row is stored. */
+fn pose_rows(writes: &[Write], put: &mut dyn FnMut(&str, Js)) {
+    let mut one = |row: &PoseRow| {
         let value = match row {
             PoseRow::Node(n) => node_js(n),
             PoseRow::Edge { edge, .. } => edge_js(edge),
         };
-        ctx.put(&row.key(), value);
+        put(&row.key(), value);
     };
     for w in writes {
         match w {
-            Write::Put(row) => put(ctx, row),
-            Write::PutMany(rows) => rows.iter().for_each(|r| put(ctx, r)),
+            Write::Put(row) => one(row),
+            Write::PutMany(rows) => rows.iter().for_each(&mut one),
         }
+    }
+}
+
+/// A nested run's writes, held back until its containers are confirmed (`Effect::NestedRejected`; `solve.ts`'s
+/// `HeldStore`): its rows (a later put of a key replaces the earlier in place), its diagnostics, its large residual
+/// and the canvases it created, in order.
+#[derive(Default)]
+struct Held {
+    rows: Vec<(String, Js)>,
+    index: HashMap<String, usize>,
+    diagnostics: Vec<EngineDiagnostic>,
+    residual: Option<(f64, u32)>,
+    canvases: u32,
+}
+
+impl Held {
+    fn put(&mut self, key: &str, value: Js) {
+        match self.index.get(key) {
+            Some(&i) => self.rows[i].1 = value,
+            None => {
+                self.index.insert(key.to_string(), self.rows.len());
+                self.rows.push((key.to_string(), value));
+            }
+        }
+    }
+
+    fn get(&self, key: &str) -> Option<Js> {
+        self.index.get(key).map(|&i| self.rows[i].1.clone())
+    }
+
+    /// Drops a held row (a canvas the run created and then let go); false when the run never wrote `key`.
+    fn remove(&mut self, key: &str) -> bool {
+        let Some(i) = self.index.remove(key) else {
+            return false;
+        };
+        self.rows.remove(i);
+        for at in self.index.values_mut() {
+            if *at > i {
+                *at -= 1;
+            }
+        }
+        true
     }
 }
 
@@ -348,12 +397,77 @@ struct Run<'s> {
     keyframes: HashMap<String, Arc<Keyframe>>,
     features: &'s Features,
     solved: u32,
+    /// Containers the pass found scrolling inside its regions (`track::nested`).
+    found: Vec<NestedFound>,
+    /// On a nested run: per container, the frames its parent's print shows it in.
+    moments: Vec<(String, Vec<(u32, Rect)>)>,
+    /// On a nested run: the containers their own run did not confirm.
+    rejected: Vec<String>,
+    /// On a nested run: where its rows and diagnostics wait until its containers are confirmed.
+    held: Option<Held>,
+    /// On the first run: the containers it would report so far (refreshed every 30 frames), for its progress.
+    candidates: usize,
+    /// On a nested run: the frames it solves (`SolveSession::nested_until`).
+    until: Option<u32>,
+    /// On the nested containers' run (`solve_nested`): each container's parent, whose stored plan rows this run's
+    /// placements join.
+    parents: Option<HashMap<String, String>>,
 }
 
 impl Run<'_> {
+    fn put(&mut self, ctx: &mut Ctx, key: &str, value: impl Into<Js>) {
+        match &mut self.held {
+            Some(held) => held.put(key, value.into()),
+            None => ctx.put(key, value),
+        }
+    }
+
+    /// The solve pass's progress, both runs on one scale (`solve.ts`'s `SolveRun.progress`): each frame of a run costs
+    /// a decode and a step per region it solves, so the first run takes `1 + moving regions` of the work and a second
+    /// run `1 + containers`; until the first run has seen every frame its containers are an estimate. It never goes
+    /// back.
+    fn progress(&mut self, ctx: &mut Ctx) -> f64 {
+        let done = self.solved as f64 / self.until.unwrap_or(ctx.frames).max(1) as f64;
+        if self.parents.is_none() && self.solved.is_multiple_of(30) {
+            self.candidates = self.session.nested_candidates();
+        }
+        let moving = ctx
+            .regions
+            .iter()
+            .filter(|r| kind_str(r) == "moving")
+            .count();
+        let first = 1.0 + moving.max(1) as f64;
+        let second = |containers: usize| {
+            if containers > 0 {
+                1.0 + containers as f64
+            } else {
+                0.0
+            }
+        };
+        let value = match &self.parents {
+            Some(parents) => {
+                let s = second(parents.len());
+                (first + s * done) / (first + s)
+            }
+            None => first * done / (first + second(self.candidates)),
+        };
+        ctx.solve_progress = ctx.solve_progress.max(value);
+        ctx.solve_progress
+    }
+
+    fn get(&self, ctx: &Ctx, key: &str) -> Option<Js> {
+        self.held
+            .as_ref()
+            .and_then(|h| h.get(key))
+            .or_else(|| ctx.get(key))
+    }
+
     fn apply(&mut self, ctx: &mut Ctx) {
         for effect in self.session.take_effects() {
             match effect {
+                Effect::Nested(found) => self.found.push(found),
+                Effect::NestedMoment { region, frames } => self.moments.push((region, frames)),
+                Effect::NestedRejected { region } => self.rejected.push(region),
                 Effect::Canvas { meta, created } => {
                     let mut o = Obj::new()
                         .with("id", meta.id.as_str())
@@ -380,16 +494,30 @@ impl Run<'_> {
                     if let Some(a) = &meta.attached_to {
                         o.set("attachedTo", a.as_str());
                     }
-                    ctx.put(&format!("canvas/{}", meta.id), o);
+                    self.put(ctx, &format!("canvas/{}", meta.id), o);
                     if created {
-                        ctx.canvas_count += 1;
+                        match &mut self.held {
+                            Some(held) => held.canvases += 1,
+                            None => ctx.canvas_count += 1,
+                        }
                     }
                 }
                 Effect::CanvasDropped(id) => {
-                    ctx.delete(&format!("canvas/{id}"));
-                    ctx.canvas_count = ctx.canvas_count.saturating_sub(1);
+                    let key = format!("canvas/{id}");
+                    let held = self.held.as_mut().is_some_and(|held| {
+                        let kept = held.remove(&key);
+                        if kept {
+                            held.canvases = held.canvases.saturating_sub(1);
+                        }
+                        kept
+                    });
+                    if !held {
+                        ctx.delete(&key);
+                        ctx.canvas_count = ctx.canvas_count.saturating_sub(1);
+                    }
                 }
-                Effect::Attachment(a) => ctx.put(
+                Effect::Attachment(a) => self.put(
+                    ctx,
                     &format!("attach/{}", a.id),
                     Obj::new()
                         .with("id", a.id.as_str())
@@ -403,10 +531,58 @@ impl Run<'_> {
                 Effect::Keyframe(k) => {
                     self.keyframes.insert(k.id.clone(), k);
                 }
-                Effect::Graph(w) => store_writes(ctx, std::slice::from_ref(&w)),
-                Effect::Diagnostic(d) => ctx.emit(&|l| solve_diagnostic(&d, l)),
+                Effect::Graph(w) => match &mut self.held {
+                    Some(held) => pose_rows(std::slice::from_ref(&w), &mut |k, v| held.put(k, v)),
+                    None => store_writes(ctx, std::slice::from_ref(&w)),
+                },
+                Effect::Diagnostic(d) => match &mut self.held {
+                    Some(held) => held.diagnostics.push(d),
+                    None => ctx.emit(&|l| solve_diagnostic(&d, l)),
+                },
             }
         }
+    }
+
+    /// Stores frame `index`'s plan row: `row` on the first run; on a nested run the first run's row with the
+    /// containers' `placements` added and each container's rectangle left out of its parent's placement
+    /// (`solve.ts`'s `SolveRun.plan`).
+    fn store_plan(&mut self, ctx: &mut Ctx, index: u32, row: Obj, placements: &[Placement]) {
+        let key = format!("plan/{}", pad(index));
+        let Some(parents) = self.parents.clone() else {
+            self.put(ctx, &key, row);
+            return;
+        };
+        let mut row = match self.get(ctx, &key) {
+            Some(Js::Obj(stored)) => stored,
+            _ => {
+                let mut row = row;
+                row.set("placements", Js::Arr(Vec::new()));
+                row
+            }
+        };
+        let mut list = match row.get("placements") {
+            Some(Js::Arr(a)) => a.clone(),
+            _ => Vec::new(),
+        };
+        for p in placements {
+            if let Some(clip) = p.clip {
+                let parent = parents.get(&p.layer).map(String::as_str);
+                let at = list.iter().position(
+                    |q| matches!(q, Js::Obj(q) if q.str("layer") == parent && !q.bool("skip")),
+                );
+                if let Some(Js::Obj(q)) = at.and_then(|at| list.get_mut(at)) {
+                    let mut occlusions = match q.get("occlusions") {
+                        Some(Js::Arr(a)) => a.clone(),
+                        _ => Vec::new(),
+                    };
+                    occlusions.push(rect(clip));
+                    q.set("occlusions", Js::Arr(occlusions));
+                }
+            }
+            list.push(placement_js(p));
+        }
+        row.set("placements", Js::Arr(list));
+        self.put(ctx, &key, row);
     }
 
     fn queue_voting(&mut self, ctx: &mut Ctx, records: Vec<VotingRecord>) {
@@ -429,7 +605,7 @@ impl Run<'_> {
                         .with("clean", Js::u8s(v.clean.clone())),
                 );
             }
-            ctx.put(&format!("consistency/{}", pad(record.index)), row);
+            self.put(ctx, &format!("consistency/{}", pad(record.index)), row);
         }
     }
 
@@ -466,17 +642,11 @@ impl Run<'_> {
                         "placements",
                         Js::Arr(placements.iter().map(placement_js).collect()),
                     );
-                ctx.put(&format!("plan/{}", pad(index)), plan);
+                self.store_plan(ctx, index, plan, &placements);
                 self.solved = index + 1;
                 let message = ctx.tr("progress.duplicateReuse", &[]);
-                let frames = ctx.frames;
-                ctx.report(
-                    self.solved,
-                    time,
-                    &message,
-                    Some(self.solved as f64 / frames as f64),
-                    None,
-                );
+                let fraction = self.progress(ctx);
+                ctx.report(self.solved, time, &message, Some(fraction), None);
                 return Ok(());
             }
             Begin::NeedFrame { .. } => {}
@@ -524,17 +694,11 @@ impl Run<'_> {
                             Js::Arr(done.placements.iter().map(placement_js).collect()),
                         )
                         .with("duplicate", fields.duplicate);
-                    ctx.put(&format!("plan/{}", pad(index)), plan);
+                    self.store_plan(ctx, index, plan, &done.placements);
                     self.solved = index + 1;
                     let message = ctx.tr("progress.solveFrame", &[]);
-                    let frames = ctx.frames;
-                    ctx.report(
-                        self.solved,
-                        time,
-                        &message,
-                        Some(self.solved as f64 / frames as f64),
-                        None,
-                    );
+                    let fraction = self.progress(ctx);
+                    ctx.report(self.solved, time, &message, Some(fraction), None);
                     return Ok(());
                 }
             }
@@ -542,48 +706,14 @@ impl Run<'_> {
     }
 }
 
-/// Runs the solve pass.
-pub fn solve(
-    ctx: &mut Ctx,
-    source: &mut dyn FrameSource,
-    features: Features,
-) -> Result<(), String> {
-    ctx.phase = "solving";
-    ctx.status = "solving";
-    ctx.persist();
-    let regions = ctx
-        .regions
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| kind_str(r) != "ignore")
-        .map(|(i, r)| SolveRegion {
-            id: r.id.clone(),
-            name: region_name(r),
-            moving: kind_str(r) == "moving",
-            kind: kind_str(r).to_string(),
-            unassigned: r.unassigned,
-            code: (i + 1) as u8,
-            shape: shape(r),
-            epochs: r.epochs.clone(),
-            sticky: r.sticky.clone(),
-            nest: None,
-        })
-        .collect();
-    let session = SolveSession::new(SolveConfig {
-        width: ctx.info.width,
-        height: ctx.info.height,
-        factor: ctx.factor as u32,
-        radius: ctx.refine_radius,
-        noise: ctx.noise,
-        voting_budget: VOTING_RING_BYTES,
-        regions,
-    });
-    let mut run = Run {
-        session,
-        keyframes: HashMap::new(),
-        features: &features,
-        solved: 0,
-    };
+/// One decode of the frames through `run`, as far as the scan rows and the decoder go.
+fn sweep(ctx: &mut Ctx, source: &mut dyn FrameSource, run: &mut Run) -> Result<(), String> {
+    let until = run
+        .parents
+        .is_some()
+        .then(|| run.session.nested_until())
+        .flatten();
+    run.until = until;
     let mut ended_naturally = false;
     let mut missing_scan = false;
     {
@@ -646,23 +776,80 @@ pub fn solve(
             if run.solved >= ctx.frames {
                 break;
             }
+            // A nested run ends after the last frame in which a container is in sight.
+            if until.is_some_and(|n| run.solved >= n) {
+                break;
+            }
         }
     }
     if ended_naturally || missing_scan {
         let (frames, solved) = (ctx.frames, run.solved);
         ctx.pass_mismatch("solve", frames, solved);
     }
-    // Finalise every frame still in the voting ring, then relax the pose graph.
+    Ok(())
+}
+
+/// What a run left once its pose graph was relaxed.
+struct Finished {
+    graph: PoseGraph,
+    residual: f64,
+    iterations: u32,
+    /// Containers the pass found scrolling inside its regions.
+    found: Vec<NestedFound>,
+    /// On a nested run: the frames each confirmed container's parent shows it in, and the containers not confirmed.
+    moments: Vec<(String, Vec<(u32, Rect)>)>,
+    rejected: Vec<String>,
+    held: Option<Held>,
+}
+
+fn graph_residual(ctx: &mut Ctx, residual: f64, iterations: u32) {
+    ctx.emit(&|l| {
+        Obj::new()
+            .with("code", "GRAPH_RESIDUAL")
+            .with("severity", "warning")
+            .with(
+                "message",
+                t(
+                    l,
+                    "diag.GRAPH_RESIDUAL.message",
+                    &[("residual", Param::Str(&to_fixed(residual, 2)))],
+                ),
+            )
+            .with(
+                "detail",
+                Obj::new()
+                    .with("residual", residual)
+                    .with("iterations", iterations),
+            )
+            .with("action", t(l, "diag.GRAPH_RESIDUAL.action", &[]))
+    });
+}
+
+/// Finalises every frame still in the voting ring, relaxes the pose graph and reports a large residual (a held run
+/// keeps the relaxed rows and the residual with the rest of what it holds).
+fn finish(ctx: &mut Ctx, mut run: Run) -> Finished {
     let drained = run.session.drain_voting();
     // Draining also reports what the pass found once it had seen every frame (nested containers).
     run.apply(ctx);
     run.queue_voting(ctx, drained);
     let mut graph = run.session.take_graph();
     let solved = run.solved;
+    let (found, moments, rejected) = (
+        std::mem::take(&mut run.found),
+        std::mem::take(&mut run.moments),
+        std::mem::take(&mut run.rejected),
+    );
+    let mut held = run.held.take();
+    let nested = run.parents.is_some();
     drop(run);
-    ctx.processed = solved;
-    let message = ctx.tr("progress.optimizing", &[]);
-    ctx.event("optimizing", 0.0, solved, 0.0, message);
+    if !nested {
+        ctx.processed = solved;
+    }
+    // When a second run will follow, the solve progress has not ended yet: the optimizing phase comes after it.
+    if nested || found.is_empty() {
+        let message = ctx.tr("progress.optimizing", &[]);
+        ctx.event("optimizing", 0.0, solved, 0.0, message);
+    }
     let (residual, iterations) = match graph.begin_optimize() {
         None => (0.0, 0),
         Some(mut optimizer) => {
@@ -683,42 +870,320 @@ pub fn solve(
                 (0.0, 0)
             } else {
                 let (outcome, writes) = graph.finish_optimize(optimizer);
-                store_writes(ctx, &writes);
+                match &mut held {
+                    Some(held) => pose_rows(&writes, &mut |k, v| held.put(k, v)),
+                    None => store_writes(ctx, &writes),
+                }
                 (outcome.residual, outcome.iterations)
             }
         }
     };
     if residual > 1.0 {
-        ctx.emit(&|l| {
-            Obj::new()
-                .with("code", "GRAPH_RESIDUAL")
-                .with("severity", "warning")
-                .with(
-                    "message",
-                    t(
-                        l,
-                        "diag.GRAPH_RESIDUAL.message",
-                        &[("residual", Param::Str(&to_fixed(residual, 2)))],
-                    ),
-                )
-                .with(
-                    "detail",
-                    Obj::new()
-                        .with("residual", residual)
-                        .with("iterations", iterations),
-                )
-                .with("action", t(l, "diag.GRAPH_RESIDUAL.action", &[]))
-        });
+        match &mut held {
+            Some(held) => held.residual = Some((residual, iterations)),
+            None => graph_residual(ctx, residual, iterations),
+        }
     }
+    Finished {
+        graph,
+        residual,
+        iterations,
+        found,
+        moments,
+        rejected,
+        held,
+    }
+}
+
+fn session(ctx: &Ctx, regions: Vec<SolveRegion>) -> SolveSession {
+    SolveSession::new(SolveConfig {
+        width: ctx.info.width,
+        height: ctx.info.height,
+        factor: ctx.factor as u32,
+        radius: ctx.refine_radius,
+        noise: ctx.noise,
+        voting_budget: VOTING_RING_BYTES,
+        regions,
+    })
+}
+
+/// Runs the solve pass.
+pub fn solve(
+    ctx: &mut Ctx,
+    source: &mut dyn FrameSource,
+    features: Features,
+) -> Result<(), String> {
+    ctx.phase = "solving";
+    ctx.status = "solving";
+    ctx.solve_progress = 0.0;
+    ctx.persist();
+    let regions = ctx
+        .regions
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| kind_str(r) != "ignore")
+        .map(|(i, r)| SolveRegion {
+            id: r.id.clone(),
+            name: region_name(r),
+            moving: kind_str(r) == "moving",
+            kind: kind_str(r).to_string(),
+            unassigned: r.unassigned,
+            code: (i + 1) as u8,
+            shape: shape(r),
+            epochs: r.epochs.clone(),
+            sticky: r.sticky.clone(),
+            nest: None,
+        })
+        .collect();
+    let mut run = Run {
+        session: session(ctx, regions),
+        keyframes: HashMap::new(),
+        features: &features,
+        solved: 0,
+        found: Vec::new(),
+        moments: Vec::new(),
+        rejected: Vec::new(),
+        held: None,
+        candidates: 0,
+        until: None,
+        parents: None,
+    };
+    sweep(ctx, source, &mut run)?;
+    let done = finish(ctx, run);
     ctx.put(
         "graph-summary",
         Obj::new()
-            .with("loops", graph.loops())
-            .with("residual", residual)
-            .with("iterations", iterations),
+            .with("loops", done.graph.loops())
+            .with("residual", done.residual)
+            .with("iterations", done.iterations),
     );
+    if !done.found.is_empty() && !ctx.stop_requested && !ctx.partial {
+        solve_nested(ctx, source, &features, done.found)?;
+    }
     ctx.persist();
     Ok(())
+}
+
+/// The containers `found` as regions of their own (`solve.ts`'s `nestedRegions`): their solve regions, their rows
+/// for `regions`, their parents and their entries in [`Ctx::nested`].
+struct Children {
+    regions: Vec<SolveRegion>,
+    ids: Vec<String>,
+    rows: Vec<Js>,
+    parents: HashMap<String, String>,
+    nested: Vec<NestedRegion>,
+}
+
+fn nested_children(ctx: &Ctx, found: &[&NestedFound], plans: &[Option<Obj>]) -> Children {
+    let base = match ctx.get("regions") {
+        Some(Js::Arr(a)) => a,
+        _ => Vec::new(),
+    };
+    let mut c = Children {
+        regions: Vec::new(),
+        ids: Vec::new(),
+        rows: Vec::new(),
+        parents: HashMap::new(),
+        nested: Vec::new(),
+    };
+    for f in found {
+        let Some(parent) = ctx.regions.iter().position(|r| r.id == f.region) else {
+            continue;
+        };
+        let Some(Js::Obj(mut row)) = base.get(parent).cloned() else {
+            continue;
+        };
+        let r = &ctx.regions[parent];
+        let id = format!("{}-nested-{}", r.id, c.regions.len());
+        // The closed vocabulary's name for the region at this index (`src/i18n/names.ts`).
+        let n = (base.len() + c.regions.len() + 1).to_string();
+        let name = t(Locale::Zh, "names.contentCanvas", &[("n", Param::Str(&n))]);
+        row.set("id", id.as_str());
+        row.set("name", name.as_str());
+        row.remove("epochs");
+        row.remove("sticky");
+        row.set("parent", r.id.as_str());
+        row.set(
+            "nest",
+            Obj::new()
+                .with("canvas", f.canvas.as_str())
+                .with("footprint", rect(f.footprint))
+                .with("open", f.open as u32),
+        );
+        c.rows.push(Js::Obj(row));
+        let parent_poses = plans
+            .iter()
+            .map(
+                |plan| match plan.as_ref().and_then(|p| p.get("placements")) {
+                    Some(Js::Arr(list)) => list.iter().find_map(|q| match q {
+                        Js::Obj(q)
+                            if q.str("layer") == Some(r.id.as_str())
+                                && q.str("canvasId") == Some(f.canvas.as_str())
+                                && !q.bool("skip") =>
+                        {
+                            Some((q.num("x"), q.num("y")))
+                        }
+                        _ => None,
+                    }),
+                    _ => None,
+                },
+            )
+            .collect();
+        c.regions.push(SolveRegion {
+            id: id.clone(),
+            name,
+            moving: true,
+            kind: "moving".to_string(),
+            unassigned: r.unassigned,
+            code: (parent + 1) as u8,
+            shape: shape(r),
+            epochs: Vec::new(),
+            sticky: Vec::new(),
+            nest: Some(Nest {
+                canvas: f.canvas.clone(),
+                footprint: f.footprint,
+                open: f.open,
+                parent_poses,
+            }),
+        });
+        c.parents.insert(id.clone(), r.id.clone());
+        c.ids.push(id.clone());
+        c.nested.push(NestedRegion { id, parent });
+    }
+    c
+}
+
+fn run_nested(
+    ctx: &mut Ctx,
+    source: &mut dyn FrameSource,
+    features: &Features,
+    children: &mut Children,
+    held: bool,
+) -> Result<Finished, String> {
+    let mut run = Run {
+        session: session(ctx, std::mem::take(&mut children.regions)),
+        keyframes: HashMap::new(),
+        features,
+        solved: 0,
+        found: Vec::new(),
+        moments: Vec::new(),
+        rejected: Vec::new(),
+        held: held.then(Held::default),
+        candidates: 0,
+        until: None,
+        parents: Some(children.parents.clone()),
+    };
+    sweep(ctx, source, &mut run)?;
+    Ok(finish(ctx, run))
+}
+
+/// Adds the confirmed containers to the run and shows each in its parent's print at its moment.
+fn keep_nested(ctx: &mut Ctx, children: Children, moments: Vec<(String, Vec<(u32, Rect)>)>) {
+    let mut rows = match ctx.get("regions") {
+        Some(Js::Arr(a)) => a,
+        _ => Vec::new(),
+    };
+    rows.extend(children.rows);
+    ctx.put("regions", Js::Arr(rows));
+    ctx.nested.extend(children.nested);
+    show_moments(ctx, &children.parents, moments);
+}
+
+/// Solves the containers the first run found scrolling inside its regions, each as a region of its own clipped to its
+/// footprint (`engine::solve::Nest`), in a second run over the frames (`solve.ts`'s `solveNested`). The run's rows
+/// are held back until it has confirmed its containers: when it confirms them all they are stored; when it confirms
+/// some, those are solved again on their own; a container it does not confirm stays part of its parent.
+fn solve_nested(
+    ctx: &mut Ctx,
+    source: &mut dyn FrameSource,
+    features: &Features,
+    found: Vec<NestedFound>,
+) -> Result<(), String> {
+    let plans: Vec<Option<Obj>> = (0..ctx.processed)
+        .map(|i| match ctx.get(&format!("plan/{}", pad(i))) {
+            Some(Js::Obj(o)) => Some(o),
+            _ => None,
+        })
+        .collect();
+    let usable: Vec<&NestedFound> = found
+        .iter()
+        .filter(|f| ctx.regions.iter().any(|r| r.id == f.region))
+        .collect();
+    let mut children = nested_children(ctx, &usable, &plans);
+    if children.regions.is_empty() {
+        return Ok(());
+    }
+    let probe = run_nested(ctx, source, features, &mut children, true)?;
+    if ctx.stop_requested || ctx.partial {
+        return Ok(());
+    }
+    if probe.rejected.is_empty() {
+        let held = probe.held.unwrap_or_default();
+        for (key, value) in held.rows {
+            ctx.put(&key, value);
+        }
+        for d in &held.diagnostics {
+            ctx.emit(&|l| solve_diagnostic(d, l));
+        }
+        if let Some((residual, iterations)) = held.residual {
+            graph_residual(ctx, residual, iterations);
+        }
+        ctx.canvas_count += held.canvases;
+        keep_nested(ctx, children, probe.moments);
+        return Ok(());
+    }
+    let confirmed: Vec<&NestedFound> = usable
+        .iter()
+        .zip(&children.ids)
+        .filter(|(_, id)| !probe.rejected.contains(id))
+        .map(|(f, _)| *f)
+        .collect();
+    if confirmed.is_empty() {
+        return Ok(());
+    }
+    let mut kept = nested_children(ctx, &confirmed, &plans);
+    let run = run_nested(ctx, source, features, &mut kept, false)?;
+    keep_nested(ctx, kept, run.moments);
+    Ok(())
+}
+
+/// Takes each moment frame's clip back out of the parent placement's occlusions, so the parent's print holds the
+/// container as it was in one state of its own scroll (`solve.ts`'s `showMoments`).
+fn show_moments(
+    ctx: &mut Ctx,
+    parents: &HashMap<String, String>,
+    moments: Vec<(String, Vec<(u32, Rect)>)>,
+) {
+    for (region, frames) in moments {
+        let parent = parents.get(&region).map(String::as_str);
+        for (frame, clip) in frames {
+            let key = format!("plan/{}", pad(frame));
+            let Some(Js::Obj(mut row)) = ctx.get(&key) else {
+                continue;
+            };
+            let Some(Js::Arr(list)) = row.get_mut("placements") else {
+                continue;
+            };
+            let Some(Js::Obj(q)) = list
+                .iter_mut()
+                .find(|q| matches!(q, Js::Obj(q) if q.str("layer") == parent && !q.bool("skip")))
+            else {
+                continue;
+            };
+            let Some(Js::Arr(occlusions)) = q.get_mut("occlusions") else {
+                continue;
+            };
+            let target = rect(clip);
+            let Some(k) = occlusions.iter().rposition(|o| *o == target) else {
+                continue;
+            };
+            occlusions.remove(k);
+            if occlusions.is_empty() {
+                q.remove("occlusions");
+            }
+            ctx.put(&key, row);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -214,7 +214,8 @@ export const pipelineSections: Catalog<typeof zh> = {
         'A textura no topo indica uma interface fixa no ecrã, não movimento da página. Essa obstrução fixa não é gravada na camada móvel. A interface original de referência é preservada na versão com moldura.',
     },
     NESTED_LAYER_FOUND: {
-      message: 'Uma parte desta região desloca-se por si: em {{frames}} fotogramas o seu conteúdo não se moveu com a região.',
+      message:
+        'Uma parte desta região desloca-se por si: em {{frames}} fotogramas o seu conteúdo não se moveu com a região, por isso tem uma imagem própria.',
     },
     FRAGMENT_ATTACHED: {
       message:

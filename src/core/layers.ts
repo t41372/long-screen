@@ -86,7 +86,14 @@ export class RegionAtlas {
     const plane = this.plane(frame);
     return plane.labels ??= plane.resident.bytes();
   }
+  /** The region's code in the label planes; a nested container (`Region.parent`) has its parent's, as it owns its
+   *  parent's pixels frame by frame (`Region.nest`), not pixels of its own. */
   code(region: Region): number {
+    if (region.parent) {
+      const parent = this.regions.find((r) => r.id === region.parent);
+      if (!parent) throw new Error(`Region ${region.id} names a parent ${region.parent} that is not part of this atlas.`);
+      return this.code(parent);
+    }
     const index = this.regions.indexOf(region);
     if (index < 0) {
       throw new Error(`Region ${region.id} is not part of this atlas.`);

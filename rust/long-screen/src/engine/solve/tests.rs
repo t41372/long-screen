@@ -955,6 +955,107 @@ fn boxed_frame(page: &[u8], inner: &[u8], offset: usize, own: usize) -> Vec<u8> 
     out
 }
 
+/// Solves a box inside a page (`boxed_frame`) as a nested container along `path` (page offset, the box's own
+/// scroll), with the parent's poses exact; the placements, then the effects of draining the pass.
+fn solve_box(path: &[(usize, usize)]) -> (Vec<Placement>, Vec<Effect>) {
+    let page = page();
+    let inner = {
+        // A second texture: the page flipped, so nothing in it matches the page.
+        let mut flipped = vec![0u8; page.len()];
+        for y in 0..PAGE {
+            flipped[y * W * 4..(y + 1) * W * 4]
+                .copy_from_slice(&page[(PAGE - 1 - y) * W * 4..(PAGE - y) * W * 4]);
+        }
+        flipped
+    };
+    let nest = Nest {
+        canvas: "page-part-0".to_string(),
+        footprint: Rect {
+            x: BOX_LEFT as f64,
+            y: BOX_TOP as f64,
+            width: BOX_W as f64,
+            height: BOX_H as f64,
+        },
+        open: 0,
+        parent_poses: path.iter().map(|&(o, _)| Some((0.0, o as f64))).collect(),
+    };
+    let mut s = session(true);
+    s.regions[0].nest = Some(nest);
+    let mut host = Host::default();
+    let placed = path
+        .iter()
+        .enumerate()
+        .map(|(t, &(o, own))| {
+            host.frame(&mut s, t as u32, &boxed_frame(&page, &inner, o, own))
+                .placements[0]
+                .clone()
+        })
+        .collect();
+    s.drain_voting();
+    host.take(&mut s);
+    (placed, std::mem::take(&mut host.effects))
+}
+
+// Failure cases for keeping a nested container after its own run: one that never scrolled by itself (the page carried
+// it all along: a repeated layout or a still widget the first pass mistook); one whose own run broke into pieces (an
+// auto-advancing carousel jumps further than it shows, new_ip_8); one that did scroll by itself in one piece (kept,
+// with the frames its parent shows it in).
+#[test]
+fn a_nested_container_is_kept_only_when_its_own_run_follows_it_scrolling() {
+    let moments = |effects: &[Effect]| {
+        effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::NestedMoment { frames, .. } => Some(frames.len()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let rejected = |effects: &[Effect]| {
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::NestedRejected { .. }))
+    };
+    // Carried: the page scrolls 8 rows a frame, the box never on its own.
+    let carried: Vec<(usize, usize)> = (0..30).map(|t| (t * 8, 0)).collect();
+    let (_, effects) = solve_box(&carried);
+    assert!(
+        rejected(&effects) && moments(&effects).is_empty(),
+        "carried"
+    );
+    // Jumping: the page stands at 160 while the box's content jumps 120 rows (more than the 100 it shows) every 4th
+    // frame.
+    let jumping: Vec<(usize, usize)> = (0..30)
+        .map(|t| {
+            (
+                if t < 20 { t * 8 } else { 160 },
+                if t < 20 { 0 } else { (t - 19) / 4 * 120 },
+            )
+        })
+        .collect();
+    let (_, effects) = solve_box(&jumping);
+    assert!(
+        rejected(&effects) && moments(&effects).is_empty(),
+        "jumping"
+    );
+    // Scrolling: the page scrolls to 160, stands while the box scrolls 6 rows a frame, then moves on.
+    let mut scrolling = Vec::new();
+    let (mut offset, mut own) = (0usize, 0usize);
+    for t in 0..40 {
+        if t > 0 {
+            if t <= 20 || t > 30 {
+                offset += 8;
+            } else {
+                own += 6;
+            }
+        }
+        scrolling.push((offset, own));
+    }
+    let (_, effects) = solve_box(&scrolling);
+    assert!(!rejected(&effects), "scrolling");
+    assert_eq!(moments(&effects).len(), 1, "scrolling");
+}
+
 // Failure cases for a nested container's own solve: starting anywhere but at the parent's pose; following the page
 // instead of its own content; registering on the page around it; frames where it is off screen placed anyway; the
 // rest of the region not occluded for it.
@@ -991,6 +1092,7 @@ fn a_nested_container_follows_its_own_content_inside_its_footprint() {
     let parent_poses: Vec<Option<(f64, f64)>> =
         path.iter().map(|&(o, _)| Some((0.0, o as f64))).collect();
     let nest = Nest {
+        canvas: "page-part-0".to_string(),
         footprint: Rect {
             x: BOX_LEFT as f64,
             y: BOX_TOP as f64,

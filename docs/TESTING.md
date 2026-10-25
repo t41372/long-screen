@@ -50,7 +50,7 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 头less 运行 + Playwr
 
 `toolbar-collapse`（地址栏收起使正文可视区在录制中途变大，issue #1）现在是精确检查：学习器认出栏在第 30 帧从 96 行收到 48 行，栏与页面按时期交接这条带，missing/invented/mismatched/maxError 都是 0（以前只断言错误像素低于 10%，invented 实测 48,360）。归属随时间变化（`Region.epochs`）由 `tests/unit/region-epochs.test.ts` 端到端验证：`toolbar-collapse` 及其「收起后往回滚过起点」的变体，用手放的、带时期的区域跑完整流水线，页面画布要逐像素正确（missing/invented/mismatched/maxError 为 0），而且任何一帧看见过的页面像素都在画布上（`test-results/region-epochs.json`）。第二个变体专门让收起空出的那条带里出现只在那里看得见的内容：哪一遍若一直读第一张标签平面，结果就等于不带时期、页面从第 96 行开始的手放布局，少 30,720 个像素。
 
-嵌套滚动的三个场景（`NESTED_SCENARIO_NAMES`：`nested-scroll-box`、`pane-majority`、`pane-rare-scroll`）不在目录里：它们的两层落在同一个引擎区域，逐层像素检查会把另一层的像素算成 `invented`，表达不了现状。`tests/unit/nested-scroll.test.ts` 量它们（`test-results/nested-scroll.json`：每层落在哪个区域、是否与另一层共用、位姿误差与像素计数），外层「现在是对的」照常断言，内层的失败像 `unlearnedFixed` 一样当已知局限守着——引擎一旦给内层自己的区域或跟上它的位姿就失败，届时把场景搬进目录做逐像素检查。
+嵌套滚动的四个场景（`NESTED_SCENARIO_NAMES`：`nested-scroll-box`、`pane-majority`、`pane-majority-revisit`、`pane-rare-scroll`）还不在目录里。场景里的内层有 `Layer.parent`，验证时内层对应引擎给它的子区域（`Region.parent`），外层被内层盖住的像素不算外层的期望；外层画布上内层的位置若是内层某一个自身滚动状态的样子，计为 `moment`（取吻合最多的那个状态，其余计为 `momentMismatched`），不算 `invented`。内层在某一帧显示的像素若与外层在它底下的真值相同（外层的页面，或页面以外、视口以外的背景），这个像素分不出属于哪一层，两层都不算它 `missing` 或 `invented`——与 `ambiguousPeriod` 同一类：像素层面不可分辨。`tests/unit/nested-scroll.test.ts` 量它们（`test-results/nested-scroll.json`），对的部分照常断言，剩下的当棘轮守着：`nested-scroll-box` 的卡片两侧没有纹理，由外层画下，而盒子的底色与页面在盒子底下的颜色不同，所以算内层的 `missing`；`pane-majority` 的右栏文字比 footprint 的边早 4 px 开始；两层都把 `pane-majority-revisit` 最后一帧的一步量短 1 px（2c 之前就有），内层回环把它摊开（`maxError` 0.95）。棘轮归零后把场景搬进目录做逐像素检查。`pane-rare-scroll` 的右栏仍被凝固规则冻成固定区域（§十）。
 
 ## 运行测试与复现
 

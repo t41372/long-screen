@@ -203,7 +203,8 @@ export const pipelineSections: Catalog<typeof zh> = {
         'Texture at the top of the frame indicates screen-fixed UI rather than page movement; this observation’s fixed occlusion is not written into the moving canvas. The original reference UI is kept in the framed presentation.',
     },
     NESTED_LAYER_FOUND: {
-      message: 'Part of this region scrolls by itself: in {{frames}} frames its content did not move with the region.',
+      message:
+        'Part of this region scrolls by itself: in {{frames}} frames its content did not move with the region, so it gets a print of its own.',
     },
     FRAGMENT_ATTACHED: {
       message:

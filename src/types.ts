@@ -79,6 +79,9 @@ export interface Region {
   /** A nested scroll container: the id of the region it scrolls inside. It shares that region's rect and atlas code
    *  and owns, frame by frame, only its footprint there. */
   parent?: string;
+  /** Where a nested container is: the parent's canvas, its footprint there (native pixels) and the sides on which it
+   *  may continue past it (1 left, 2 right, 4 top, 8 bottom). */
+  nest?: { canvas: string; footprint: Rect; open: number };
 }
 export interface Settings {
   analysisSize: number;
@@ -192,6 +195,9 @@ export interface Placement {
   skip?: boolean;
   /** Native-screen sticky occluders for this observation; not missing page margins. */
   occlusions?: Rect[];
+  /** A nested container's screen rectangle this frame, which its parent's placement must leave out. Moved onto the
+   *  parent's placement by the solve pass; never stored. */
+  clip?: Rect;
 }
 /** A fragment that later evidence tied to another canvas: every placement on `id` maps rigidly onto `target`. */
 export interface Attachment {

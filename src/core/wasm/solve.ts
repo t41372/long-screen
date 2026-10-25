@@ -13,10 +13,12 @@ import { FreeGuard, type Resident, ResidentFrame } from './memory.ts';
 import { PoseGraphState, type PoseWrite, readWrites } from './pose-graph.ts';
 import type { VotingRecord, VotingVerdict } from './voting.ts';
 
-/** A region the pass tracks, with its code in the atlas label plane. */
+/** A region the pass tracks, with its code in the atlas label plane; a nested container also with its parent's
+ *  pose on the container's canvas frame by frame (null where the parent was elsewhere). */
 export interface SolveRegionInput {
   region: Region;
   code: number;
+  parentPoses?: ({ x: number; y: number } | null)[];
 }
 /** Something the pass did that the host carries out, in order. */
 export type SolveEffect =
@@ -26,7 +28,10 @@ export type SolveEffect =
   | { kind: 'attach'; attachment: Attachment }
   | { kind: 'keyframe'; keyframe: Keyframe }
   | { kind: 'graph'; write: PoseWrite }
-  | { kind: 'diagnostic'; diagnostic: EngineDiagnostic };
+  | { kind: 'diagnostic'; diagnostic: EngineDiagnostic }
+  | { kind: 'nested'; nested: { region: string; canvas: string; footprint: Rect; open: number } }
+  | { kind: 'nestedMoment'; region: string; frames: { frame: number; clip: Rect }[] }
+  | { kind: 'nestedRejected'; region: string };
 export type SolvePoll = { keyframes: string[] } | { placements: Placement[]; joinedRing: boolean; voting: VotingRecord[] };
 export type SolveBegin = { duplicate: Placement[] } | { gray: boolean };
 
@@ -45,6 +50,7 @@ function readPlacements(r: ByteReader): Placement[] {
     const layer = r.str(), canvasId = r.str(), node = r.str(), x = r.f64(), y = r.f64(), confidence = r.f64();
     const uncertain = r.bool(), time = r.f64(), skip = r.bool(), occlusions: Rect[] = [];
     for (let k = r.u32(); k > 0; k--) occlusions.push(readRect(r));
+    const clip = r.bool() ? readRect(r) : undefined;
     out.push({
       layer,
       canvasId,
@@ -56,6 +62,7 @@ function readPlacements(r: ByteReader): Placement[] {
       time,
       ...(skip ? { skip: true } : {}),
       ...(occlusions.length ? { occlusions } : {}),
+      ...(clip ? { clip } : {}),
     });
   }
   return out;
@@ -137,7 +144,21 @@ function readEffect(r: ByteReader): SolveEffect {
       return { kind: 'keyframe', keyframe: readKeyframe(r) };
     case 3:
       return { kind: 'graph', write: readWrites(r)[0] };
-    case 5:
+    case 5: {
+      const region = r.str(), canvas = r.str(), footprint = readRect(r), open = r.u8();
+      return { kind: 'nested', nested: { region, canvas, footprint, open } };
+    }
+    case 6: {
+      const region = r.str(), frames: { frame: number; clip: Rect }[] = [];
+      for (let n = r.u32(); n > 0; n--) {
+        const frame = r.u32();
+        frames.push({ frame, clip: readRect(r) });
+      }
+      return { kind: 'nestedMoment', region, frames };
+    }
+    case 7:
+      return { kind: 'nestedRejected', region: r.str() };
+    case 8:
       return { kind: 'canvasDropped', id: r.str() };
     default:
       return { kind: 'diagnostic', diagnostic: readDiagnostic(r) };
@@ -215,6 +236,16 @@ export class SolveSessionState {
   drain(): VotingRecord[] {
     return readVoting(this.result(this.exports.ls_solve_drain(this.handle), 'solve drain'));
   }
+  /** How many frames the session's nested containers need: past the last one in which any is in sight there is
+   *  nothing for them to solve. Undefined for a session without them. */
+  nestedUntil(): number | undefined {
+    const n = this.exports.ls_solve_nested_until(this.handle);
+    return n < 0 ? undefined : n;
+  }
+  /** How many nested containers the pass would report now, for the progress of a run that will solve them. */
+  nestedCandidates(): number {
+    return this.exports.ls_solve_nested_candidates(this.handle);
+  }
   /** Hands the pose graph over; the caller frees it. */
   takeGraph(): PoseGraphState {
     return new PoseGraphState(this.core, this.exports, this.core.check(this.exports.ls_solve_take_graph(this.handle), 'solve graph'));
@@ -235,7 +266,7 @@ export function solveSession(
 ): SolveSessionState {
   const { width, height, factor, radius, noise, regions } = options;
   const w = new ByteWriter().u32(width).u32(height).u32(factor).i32(radius).f64(noise).u32(regions.length);
-  for (const { region, code } of regions) {
+  for (const { region, code, parentPoses } of regions) {
     w.str(region.id).str(region.name).str(region.kind).bool(region.kind === 'moving').bool(!!region.unassigned).u8(code);
     w.u32(region.epochs?.length ?? 0);
     for (const epoch of region.epochs ?? []) {
@@ -244,6 +275,13 @@ export function solveSession(
     }
     w.u32(region.sticky?.length || 0);
     for (const s of region.sticky || []) w.f64(s.x).f64(s.y).f64(s.width).f64(s.height);
+    const nest = region.nest && parentPoses ? region.nest : undefined;
+    w.bool(!!nest);
+    if (nest) {
+      const f = nest.footprint;
+      w.f64(f.x).f64(f.y).f64(f.width).f64(f.height).u8(nest.open).str(nest.canvas).u32(parentPoses!.length);
+      for (const p of parentPoses!) w.bool(!!p).f64(p?.x ?? 0).f64(p?.y ?? 0);
+    }
   }
   const sizes: number[] = [regions.length * VOTING_REGION_BYTES];
   for (const { region: r } of regions) {

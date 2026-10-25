@@ -201,7 +201,8 @@ export const pipelineSections: Catalog<typeof zh> = {
         'Details boven in het frame wijzen op een vaste interface in plaats van paginabeweging. Deze vaste bedekking is niet in het bewegende canvas opgenomen. De oorspronkelijke interface blijft bewaard in de weergave met kader.',
     },
     NESTED_LAYER_FOUND: {
-      message: 'Een deel van dit gebied scrolt zelfstandig: in {{frames}} frames bewoog de inhoud niet mee met het gebied.',
+      message:
+        'Een deel van dit gebied scrolt zelfstandig: in {{frames}} frames bewoog de inhoud niet mee met het gebied, dus het krijgt een eigen afbeelding.',
     },
     FRAGMENT_ATTACHED: {
       message:

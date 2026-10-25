@@ -9,8 +9,9 @@
 //! are a container's footprint in the region's canvas.
 
 use crate::kernels::geometry::js_hypot;
+use crate::kernels::geometry::Rect;
 use crate::kernels::motion::{translation_hypotheses, MatchPoints};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Side of a cell, in analysis pixels.
 pub const CELL: i64 = 8;
@@ -266,11 +267,14 @@ impl Nested {
             if won {
                 v.other = v.other.saturating_add(1);
                 self.won.entry(key).or_default().push(self.frame);
-                // Within two cells of the region's edge counts as reaching it: the last cells can be blank.
-                v.open |= (bx < rx0 + 2 * CELL) as u8
-                    | ((bx + 2 * CELL >= rx1) as u8) << 1
-                    | ((by < ry0 + 2 * CELL) as u8) << 2
-                    | ((by + 2 * CELL >= ry1) as u8) << 3;
+                // Within two cells of the region's edge counts as reaching it: the last cells can be blank. On the
+                // side where the container's content enters, the band one step wide shows nothing the previous frame
+                // had, so it takes no votes at all (pane-majority: 16 px a frame at the screen's bottom edge).
+                let reach = |entering: i64| 2 * CELL + entering.max(0);
+                v.open |= (bx < rx0 + reach(-ox)) as u8
+                    | ((bx + reach(ox) >= rx1) as u8) << 1
+                    | ((by < ry0 + reach(-oy)) as u8) << 2
+                    | ((by + reach(oy) >= ry1) as u8) << 3;
             } else {
                 v.region = v.region.saturating_add(1);
             }
@@ -386,7 +390,9 @@ impl Nested {
             let half = (inner + outer) / 2.0;
             // From inside outward, through lines that are over halfway or have no votes (content entering at the
             // container's leading edge matches nothing in the previous frame), up to the first line under halfway.
-            let mut at = coarse + inward * (cell / 2);
+            // The walk starts a whole cell inside: the coarse edge is the last cell's, up to a cell past the line
+            // (nested-scroll-box: cells to 1064, the box's last row 1057, its border 1059).
+            let mut at = coarse + inward * cell;
             for _ in 0..3 * cell {
                 let next = at - inward;
                 if p.share(next).is_some_and(|s| s < half) {
@@ -553,6 +559,111 @@ impl Nested {
     }
 }
 
+/// Cell side, in native pixels, of the coverage [`Moments`] counts.
+const MOMENT_CELL: f64 = 32.0;
+
+/// The states a nested container's own scroll went through, for the one its parent's print shows: each state is one
+/// own scroll on one of the container's canvases, with the frames it was seen in and what of the footprint they
+/// showed.
+#[derive(Default)]
+pub struct Moments {
+    states: Vec<Moment>,
+    /// The frames in which its own scroll changed, and the state of the frame before.
+    moved: u32,
+    last: Option<(String, (i64, i64))>,
+}
+
+struct Moment {
+    canvas: String,
+    scroll: (i64, i64),
+    frames: Vec<(u32, Rect)>,
+    /// [`MOMENT_CELL`] cells of the parent's canvas the frames showed whole.
+    cells: HashSet<(i64, i64)>,
+}
+
+impl Moments {
+    /// Frame `frame` showed the container on `canvas` at own scroll `scroll` (its pose less its parent's, whole
+    /// pixels) inside `clip`, its screen rectangle; `parent` is the parent's pose then.
+    pub fn add(
+        &mut self,
+        canvas: &str,
+        scroll: (i64, i64),
+        frame: u32,
+        clip: Rect,
+        parent: (f64, f64),
+    ) {
+        if self
+            .last
+            .as_ref()
+            .is_some_and(|(c, s)| c == canvas && *s != scroll)
+        {
+            self.moved += 1;
+        }
+        self.last = Some((canvas.to_string(), scroll));
+        let at = match self
+            .states
+            .iter()
+            .position(|m| m.canvas == canvas && m.scroll == scroll)
+        {
+            Some(at) => at,
+            None => {
+                self.states.push(Moment {
+                    canvas: canvas.to_string(),
+                    scroll,
+                    frames: Vec::new(),
+                    cells: HashSet::new(),
+                });
+                self.states.len() - 1
+            }
+        };
+        let m = &mut self.states[at];
+        m.frames.push((frame, clip));
+        let (x0, y0) = (clip.x + parent.0, clip.y + parent.1);
+        let span =
+            |a: f64, b: f64| (a / MOMENT_CELL).ceil() as i64..(b / MOMENT_CELL).floor() as i64;
+        for cy in span(y0, y0 + clip.height) {
+            for cx in span(x0, x0 + clip.width) {
+                m.cells.insert((cx, cy));
+            }
+        }
+    }
+
+    /// The frames in which the container's own scroll changed from the frame before it was seen in.
+    pub fn moved(&self) -> u32 {
+        self.moved
+    }
+
+    /// Whether the container scrolled by itself: it was seen in two states of its own scroll on one canvas.
+    pub fn scrolled(&self) -> bool {
+        self.states
+            .iter()
+            .enumerate()
+            .any(|(i, a)| self.states[i + 1..].iter().any(|b| b.canvas == a.canvas))
+    }
+
+    /// The frames of the state the parent's print shows, with their clips: one state, so the print holds the
+    /// container as it was at one moment. The order follows the reveal pass's for a dynamic component's moment
+    /// (docs/ARCHITECTURE.md §七): a state that showed everything any state showed first, then one seen in more than
+    /// one frame (corroborated), then the one that showed more, then the later.
+    pub fn choose(&self) -> Vec<(u32, Rect)> {
+        let all: HashSet<&(i64, i64)> = self.states.iter().flat_map(|m| &m.cells).collect();
+        let rank = |m: &Moment| {
+            let last = m.frames.iter().map(|f| f.0).max().unwrap_or(0);
+            (
+                m.cells.len() == all.len(),
+                m.frames.len() > 1,
+                m.cells.len(),
+                last,
+            )
+        };
+        self.states
+            .iter()
+            .max_by_key(|m| rank(m))
+            .map(|m| m.frames.clone())
+            .unwrap_or_default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -568,19 +679,92 @@ mod tests {
     /// A page scrolled by `page` rows with a box at screen rows/cols given in page coordinates (40..120, 60..100)
     /// whose own content is scrolled by `own` rows.
     fn frame(page: i64, own: i64) -> Vec<u8> {
+        boxed(page, own, (40, 60, 120, 100), false)
+    }
+
+    /// `frame` with the box at `b` (x0, y0, x1, y1 in page coordinates); with `border`, as on nested-scroll-box, the
+    /// eight page rows under it are flat but for a dark line one row below the box.
+    fn boxed(page: i64, own: i64, b: (i64, i64, i64, i64), border: bool) -> Vec<u8> {
         let mut out = vec![0u8; W * H];
         for y in 0..H as i64 {
             for x in 0..W as i64 {
                 let (wx, wy) = (x, y + page);
-                out[(y * W as i64 + x) as usize] =
-                    if (40..120).contains(&wx) && (60..100).contains(&wy) {
-                        texture(wx, wy + own, 7)
+                let inside = (b.0..b.2).contains(&wx) && (b.1..b.3).contains(&wy);
+                let under =
+                    border && (b.0 - 4..b.2 + 4).contains(&wx) && (b.3..b.3 + 8).contains(&wy);
+                out[(y * W as i64 + x) as usize] = if inside {
+                    texture(wx, wy + own, 7)
+                } else if under {
+                    if wy == b.3 + 1 {
+                        20
                     } else {
-                        texture(wx, wy, 1)
-                    };
+                        200
+                    }
+                } else {
+                    texture(wx, wy, 1)
+                };
             }
         }
         out
+    }
+
+    /// The page scrolls 3 rows a frame, stands at 30 while the box scrolls `speed` rows a frame, then moves on; every
+    /// frame is observed as the solve pass does.
+    fn scrolled(frames: impl Fn(i64, i64) -> Vec<u8>, speed: i64) -> Nested {
+        let rect = (0, 0, W as i64, H as i64);
+        let mut n = Nested::new();
+        let (mut page, mut own) = (0, 0);
+        for t in 1..40i64 {
+            let (p0, o0) = (page, own);
+            if t <= 10 || t > 30 {
+                page += 3;
+            } else {
+                own += speed;
+            }
+            let (a, b) = (frames(p0, o0), frames(page, own));
+            let step = (0.0, (page - p0) as f64);
+            let other = if own != o0 {
+                (0.0, (own - o0) as f64)
+            } else {
+                (0.0, 20.0)
+            };
+            let pose = (0.0, page as f64);
+            n.observe(&a, &b, W, H, step, other, pose, rect, |_, _| true);
+            if own == o0 {
+                continue;
+            }
+            let rgba = |g: &[u8]| g.iter().flat_map(|&v| [v, v, v, 255]).collect::<Vec<u8>>();
+            n.observe_native(
+                &rgba(&a),
+                &rgba(&b),
+                W,
+                H,
+                step,
+                other,
+                pose,
+                rect,
+                |_, _| true,
+            );
+        }
+        n
+    }
+
+    // Failure cases for the edges, from nested-scroll-box: the border line under a box that scrolls toward it stands
+    // still and must stop the walk; a box that reaches the region's bottom and scrolls more than two cells a frame
+    // shows its last rows nothing from the previous frame, so they take no votes, and it is still open there. (The
+    // coarse cells running most of a cell past the box's last row is the scenario's case: these frames do not
+    // reproduce it.)
+    #[test]
+    fn a_bordered_box_ends_at_its_border_and_a_fast_one_at_the_region_edge_stays_open() {
+        let bordered = scrolled(|page, own| boxed(page, own, (40, 60, 120, 98), true), 5);
+        let found = bordered.footprints();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(bordered.edges(&found[0], 1)[3], Some(98), "{:?}", found[0]);
+        // Standing at 30, the page shows rows 30..150: a box from 60 down past 150 reaches the screen's bottom.
+        let tall = scrolled(|page, own| boxed(page, own, (40, 60, 120, 400), false), 20);
+        let found = tall.footprints();
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].open & 8, 8, "{:?}", found[0]);
     }
 
     fn matches(step: (f64, f64), n: usize) -> Vec<MatchPoints> {
@@ -721,6 +905,68 @@ mod tests {
         }
         assert!(jumpy.footprints().is_empty());
     }
+
+    fn clip(y: f64, height: f64) -> Rect {
+        Rect {
+            x: 0.0,
+            y,
+            width: 128.0,
+            height,
+        }
+    }
+
+    // Failure cases for the moment a parent's print shows: one complete frame against a complete state seen twice
+    // (the second is corroborated); a complete state against an incomplete one seen in more frames; two complete,
+    // corroborated states (the later); the same scroll on another canvas (a fragment: not the same state); nothing
+    // complete (corroborated, then the most shown); no state at all.
+    #[test]
+    fn a_parent_shows_its_container_complete_corroborated_and_late() {
+        let still = (0.0, 0.0);
+        let mut m = Moments::default();
+        m.add("c", (0, 0), 1, clip(0.0, 128.0), still);
+        m.add("c", (0, 40), 2, clip(0.0, 128.0), still);
+        m.add("c", (0, 40), 3, clip(0.0, 128.0), still);
+        assert_eq!(
+            m.choose(),
+            vec![(2, clip(0.0, 128.0)), (3, clip(0.0, 128.0))]
+        );
+        let mut m = Moments::default();
+        m.add("c", (0, 0), 1, clip(0.0, 128.0), still);
+        for f in 2..6 {
+            m.add("c", (0, 40), f, clip(64.0, 64.0), still);
+        }
+        assert_eq!(m.choose(), vec![(1, clip(0.0, 128.0))]);
+        let mut m = Moments::default();
+        m.add("c", (0, 0), 1, clip(0.0, 128.0), still);
+        m.add("c", (0, 0), 2, clip(0.0, 128.0), still);
+        m.add("c", (0, 40), 7, clip(0.0, 128.0), still);
+        m.add("c", (0, 40), 8, clip(0.0, 128.0), still);
+        assert_eq!(
+            m.choose(),
+            vec![(7, clip(0.0, 128.0)), (8, clip(0.0, 128.0))]
+        );
+        let mut m = Moments::default();
+        m.add("c", (0, 0), 1, clip(0.0, 128.0), still);
+        m.add("d", (0, 0), 2, clip(0.0, 128.0), still);
+        m.add("c", (0, 40), 3, clip(0.0, 128.0), still);
+        m.add("c", (0, 40), 4, clip(0.0, 128.0), still);
+        assert_eq!(
+            m.choose(),
+            vec![(3, clip(0.0, 128.0)), (4, clip(0.0, 128.0))]
+        );
+        // The parent moves the container: the frames show different parts of the footprint, and no state all of it.
+        let mut m = Moments::default();
+        m.add("c", (0, 0), 1, clip(0.0, 64.0), (0.0, 0.0));
+        m.add("c", (0, 0), 2, clip(0.0, 64.0), (0.0, 32.0));
+        m.add("c", (0, 40), 3, clip(0.0, 96.0), (0.0, 0.0));
+        m.add("c", (0, 80), 4, clip(0.0, 64.0), (0.0, 64.0));
+        m.add("c", (0, 80), 5, clip(0.0, 64.0), (0.0, 64.0));
+        m.add("c", (0, 120), 6, clip(0.0, 32.0), (0.0, 96.0));
+        m.add("c", (0, 120), 7, clip(0.0, 32.0), (0.0, 64.0));
+        assert_eq!(m.choose(), vec![(1, clip(0.0, 64.0)), (2, clip(0.0, 64.0))]);
+        assert!(Moments::default().choose().is_empty());
+    }
+
     // Failure case from five real recordings (pub_1, own_d, own_e, own_h: a list whose rows look alike): a band one
     // or two cells tall takes "the second translation" because it shows a row the next one down showed a frame
     // before, 58 or 41 analysis pixels away, more than the band is tall. A container cannot move further between

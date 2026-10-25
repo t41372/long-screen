@@ -202,7 +202,8 @@ export const pipelineSections: Catalog<typeof zh> = {
         'Pola di bagian atas bingkai menunjukkan UI yang tetap pada layar, bukan gerakan halaman. Bagian penutup yang tetap ini tidak ditulis ke kanvas bergerak. UI acuan asli tetap disimpan dalam tampilan berbingkai.',
     },
     NESTED_LAYER_FOUND: {
-      message: 'Sebagian wilayah ini menggulir sendiri: dalam {{frames}} bingkai isinya tidak ikut bergerak bersama wilayah.',
+      message:
+        'Sebagian wilayah ini menggulir sendiri: dalam {{frames}} bingkai isinya tidak ikut bergerak bersama wilayah, jadi bagian itu mendapat gambar sendiri.',
     },
     FRAGMENT_ATTACHED: {
       message:

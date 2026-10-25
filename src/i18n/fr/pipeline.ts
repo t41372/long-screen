@@ -215,7 +215,8 @@ export const pipelineSections: Catalog<typeof zh> = {
         'Les détails en haut de l’image indiquent une interface fixe à l’écran, et non un mouvement de la page. Cette zone masquante n’est pas ajoutée au contenu mobile. L’interface de référence reste dans la vue encadrée.',
     },
     NESTED_LAYER_FOUND: {
-      message: 'Une partie de cette zone défile d’elle-même : sur {{frames}} images, son contenu n’a pas suivi le mouvement de la zone.',
+      message:
+        'Une partie de cette zone défile d’elle-même : sur {{frames}} images, son contenu n’a pas suivi le mouvement de la zone ; elle a donc sa propre image.',
     },
     FRAGMENT_ATTACHED: {
       message:

@@ -365,6 +365,8 @@ export interface CoreExports {
   ls_solve_effects(handle: number): number;
   ls_solve_drain(handle: number): number;
   ls_solve_take_graph(handle: number): number;
+  ls_solve_nested_candidates(handle: number): number;
+  ls_solve_nested_until(handle: number): number;
   ls_keyframe_index_new(): number;
   ls_keyframe_index_free(handle: number): void;
   ls_keyframe_index_add(handle: number, input: number, len: number, features: number, count: number): number;

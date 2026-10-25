@@ -128,6 +128,7 @@ pub extern "C" fn ls_track_odometry(
         f,
         radius: radius as i32,
         mask,
+        reference: None,
         roi: read_rect(roi_bytes),
         rect: read_rect(rect_bytes),
         region: region_defs.as_ref().map(|defs| &defs[0]),

@@ -76,6 +76,17 @@ impl Store {
                 }
                 Effect::Graph(write) => self.graph(write),
                 Effect::Diagnostic(d) => self.diagnostics.push(d.code),
+                Effect::Nested(n) => {
+                    self.rows.insert(format!("nested/{}", n.region), n.canvas);
+                }
+                Effect::NestedRejected { region } => {
+                    self.rows
+                        .insert(format!("rejected/{region}"), String::new());
+                }
+                Effect::NestedMoment { region, frames } => {
+                    self.rows
+                        .insert(format!("moment/{region}"), frames.len().to_string());
+                }
             }
         }
     }

@@ -166,10 +166,19 @@ pub fn reveal(ctx: &mut Ctx, source: &mut dyn FrameSource) -> Result<(), String>
         .keys("canvas/")
         .into_iter()
         .filter_map(|k| match ctx.get(&k) {
-            Some(Js::Obj(m)) if m.str("kind") == Some("moving") => Some(RevealCanvas {
-                id: m.str("id").unwrap_or_default().to_string(),
-                bounds: m.get("bounds").and_then(read_rect)?,
-            }),
+            // A nested container's canvas is a print of its own: its parent already leaves its rectangle out.
+            Some(Js::Obj(m))
+                if m.str("kind") == Some("moving")
+                    && !ctx
+                        .nested
+                        .iter()
+                        .any(|n| Some(n.id.as_str()) == m.str("layer")) =>
+            {
+                Some(RevealCanvas {
+                    id: m.str("id").unwrap_or_default().to_string(),
+                    bounds: m.get("bounds").and_then(read_rect)?,
+                })
+            }
             _ => None,
         })
         .collect();

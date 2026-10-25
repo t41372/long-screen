@@ -64,6 +64,19 @@ export function matchRegion(result: VerifiableRun, layer: Layer, kind: Region['k
   }
   return candidates[0].r;
 }
+/** What a nested layer's parent shows at screen pixel (x, y) in `frame` under it: the parent's page there, or the
+ *  background past its page's edge or outside its viewport (two panes side by side: the screen behind both). */
+function parentUnder(scenario: Scenario, layer: Layer, frame: number): (x: number, y: number) => number | undefined {
+  const parent = scenario.layers.find((l) => l.id === layer.parent);
+  if (!parent) return () => undefined;
+  const v = viewportAt(parent, frame), p = parent.path[frame], w = parent.world, data = w.at(frame);
+  return (x, y) => {
+    const inside = x >= v.x && y >= v.y && x < v.x + v.width && y < v.y + v.height;
+    const wx = x - v.x + p.x, wy = y - v.y + p.y;
+    const c = inside && wx >= 0 && wy >= 0 && wx < w.width && wy < w.height ? w.rgb(data, wx, wy) : scenario.background;
+    return (c[0] << 16) | (c[1] << 8) | c[2];
+  };
+}
 /** Whether a later layer of the scenario covers screen pixel (x, y) in `frame`: layers draw in order, so only the
  *  topmost one is visible there. */
 function coveredByLater(scenario: Scenario, layer: Layer, frame: number, x: number, y: number): boolean {
@@ -155,6 +168,11 @@ export interface LayerReport {
    *  taken before the reveal stage replaces flagged blocks, and can be far larger. */
   provisional: number;
   expected: number;
+  /** Covered pixels where a nested layer (Layer.parent) covered this one, showing that layer as it was in one state
+   *  of its own scroll: the state the most of them match. They are not counted as invented. */
+  moment: number;
+  /** Covered pixels where a nested layer covered this one that do not match that state. */
+  momentMismatched: number;
   /** Body pixels the atlas assigned to this region (per frame). */
   regionPixels: number;
   /** Per-fragment ground-truth verification (every non-attached fragment of this layer's region). */
@@ -177,6 +195,8 @@ interface CanvasCheck {
   /** Covered pixels whose tile still carries the provisional bit once the run is over (after the reveal stage). */
   provisional: number;
   expected: number;
+  moment: number;
+  momentMismatched: number;
   pixelChecked: boolean;
 }
 /** Verifies one canvas (main or fragment) of a layer's region against the generating world.
@@ -231,6 +251,8 @@ async function verifyCanvas(
       covered: 0,
       provisional: 0,
       expected: 0,
+      moment: 0,
+      momentMismatched: 0,
       pixelChecked: false,
     };
   }
@@ -261,6 +283,17 @@ async function verifyCanvas(
   const everVisible = new Set<number>(), everClean = new Set<number>();
   const inRect = (x: number, y: number, rects: { x: number; y: number; width: number; height: number }[]): boolean =>
     rects.some((r) => x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height);
+  // What each nested layer of this one showed, per state of its own scroll (its translation less this layer's): canvas
+  // position → colour. A parent's canvas may hold its nested layer as it was in one such state.
+  const children = scenario.layers.filter((l) => l.parent === layer.id), states = new Map<string, Map<number, number>>();
+  // Canvas positions a nested layer showed only as its parent under it would have (`parentUnder`); for a parent,
+  // positions under a nested layer where the nested layer showed what the parent has there.
+  const alike = new Map<number, Set<number>>();
+  const markAlike = (at: number, packed: number) => {
+    let values = alike.get(at);
+    if (!values) alike.set(at, values = new Set());
+    values.add(packed);
+  };
   for (const e of entries) {
     const p = layer.path[e.frame],
       v = viewportAt(layer, e.frame),
@@ -270,6 +303,24 @@ async function verifyCanvas(
       rendered = renderFrame(scenario, e.frame),
       img = rendered.image;
     const dynamicRects = rendered.dynamicRects[layer.id] || [], labels = atlas.labelsAt(e.frame);
+    const under = layer.parent ? parentUnder(scenario, layer, e.frame) : undefined;
+    for (const child of children) {
+      const cv = viewportAt(child, e.frame), own = layerTranslation(child, e.frame), at = layerTranslation(layer, e.frame);
+      const ownUnder = parentUnder(scenario, child, e.frame);
+      const key = `${child.id}:${own.x - at.x}:${own.y - at.y}`;
+      let state = states.get(key);
+      if (!state) states.set(key, state = new Map());
+      for (let y = cv.y; y < cv.y + cv.height; y++) {
+        for (let x = cv.x; x < cv.x + cv.width; x++) {
+          if (coveredByLater(scenario, child, e.frame, x, y)) continue;
+          const cx = x + px - bx, cy = y + py - by;
+          if (cx < 0 || cy < 0 || cx >= bw || cy >= bh) continue;
+          const j = (y * img.width + x) * 4, packed = (img.data[j] << 16) | (img.data[j + 1] << 8) | img.data[j + 2];
+          state.set(cy * bw + cx, packed);
+          if (ownUnder(x, y) === packed) markAlike(cy * bw + cx, packed);
+        }
+      }
+    }
     for (let y = v.y; y < v.y + v.height; y++) {
       for (let x = v.x; x < v.x + v.width; x++) {
         // A nested layer shares its parent's atlas code; it owns its whole viewport. Any layer is only expected where
@@ -284,7 +335,13 @@ async function verifyCanvas(
           }
         }
         const cx = x + px - bx, cy = y + py - by;
-        if (cx >= 0 && cy >= 0 && cx < bw && cy < bh) {
+        // Where a nested layer shows what its parent under it would (a blank margin on the same background), which
+        // layer drew the pixel cannot be told from the pixels: like `ambiguousPeriod`, it is neither expected here
+        // nor invented.
+        const j = (y * img.width + x) * 4, shown = (img.data[j] << 16) | (img.data[j + 1] << 8) | img.data[j + 2];
+        if (under && under(x, y) === shown) {
+          if (cx >= 0 && cy >= 0 && cx < bw && cy < bh) markAlike(cy * bw + cx, shown);
+        } else if (cx >= 0 && cy >= 0 && cx < bw && cy < bh) {
           expected[cy * bw + cx] = 1;
         }
         const wi = (y - v.y + p.y) * worldW + (x - v.x + p.x);
@@ -346,7 +403,7 @@ async function verifyCanvas(
   for (let i = 0; i < expected.length; i++) {
     expectedCount += expected[i];
   }
-  const size = result.tileSize;
+  const size = result.tileSize, shown: [number, number][] = [];
   // What the canvas holds inside each `atomic` dynamic, per world pixel, to be matched against one frame at a time below.
   const atomic = (layer.dynamics || []).filter((d) => d.atomic), atomicSeen = atomic.map(() => new Map<number, number>());
   for await (const { value: t } of iterate<TileIndex>(store, `tile-index/${canvas.id}/0/`)) {
@@ -366,7 +423,18 @@ async function verifyCanvas(
       const cx = t.x * size + (i % size), cy = t.y * size + Math.floor(i / size), ex = cx - bx, ey = cy - by;
       const isExpected = ex >= 0 && ey >= 0 && ex < bw && ey < bh && expected[ey * bw + ex];
       if (!isExpected) {
-        invented++;
+        const at = ey * bw + ex;
+        if (
+          ex >= 0 && ey >= 0 && ex < bw && ey < bh &&
+          alike.get(at)?.has((pixels[i * 4] << 16) | (pixels[i * 4 + 1] << 8) | pixels[i * 4 + 2])
+        ) {
+          continue;
+        }
+        if (states.size && ex >= 0 && ey >= 0 && ex < bw && ey < bh && [...states.values()].some((s) => s.has(at))) {
+          shown.push([at, (pixels[i * 4] << 16) | (pixels[i * 4 + 1] << 8) | pixels[i * 4 + 2]]);
+        } else {
+          invented++;
+        }
         continue;
       }
       expected[ey * bw + ex] = 2;
@@ -413,6 +481,10 @@ async function verifyCanvas(
       missing++;
     }
   }
+  let moment = 0;
+  for (const state of states.values()) {
+    moment = Math.max(moment, shown.filter(([at, packed]) => state.get(at) === packed).length);
+  }
   // Torn: of the atomic rect's pixels on this canvas, those that disagree with the frame (among this canvas's frames)
   // whose drawing of the rect matches the most of them.
   let torn = 0;
@@ -457,6 +529,8 @@ async function verifyCanvas(
     covered,
     provisional,
     expected: expectedCount,
+    moment,
+    momentMismatched: shown.length - moment,
     pixelChecked: true,
   };
 }
@@ -561,6 +635,8 @@ export async function verifyLayer(result: VerifiableRun, layer: Layer, options: 
     covered: main.covered,
     provisional: main.provisional,
     expected: main.expected,
+    moment: main.moment,
+    momentMismatched: main.momentMismatched,
     regionPixels,
     fragmentReports,
   };

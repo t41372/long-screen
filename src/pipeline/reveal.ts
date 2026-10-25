@@ -30,9 +30,10 @@ function skippedRow(d: EngineDiagnostic): Diagnostic {
 
 export async function reveal(ctx: RunContext): Promise<void> {
   if (ctx.stopped || ctx.partial || !ctx.atlas || ctx.processed < 2) return;
-  const metas: CanvasMeta[] = [];
+  // A nested container's canvas (Region.parent) is a print of its own: its parent already leaves its rectangle out.
+  const layers = ctx.regions.filter((r) => r.kind === 'moving' && !r.parent), metas: CanvasMeta[] = [];
   for await (const { value } of iterate<CanvasMeta>(ctx.store, 'canvas/')) {
-    if (value.kind === 'moving') metas.push(value);
+    if (value.kind === 'moving' && layers.some((r) => r.id === value.layer)) metas.push(value);
   }
   const atlas = ctx.atlas, { width, height } = ctx.source.info;
   const session = core().revealSession({
@@ -41,7 +42,7 @@ export async function reveal(ctx: RunContext): Promise<void> {
     noise: ctx.noise,
     tileSize: ctx.tiles.size,
     frames: ctx.processed,
-    layers: ctx.regions.filter((r) => r.kind === 'moving').map((r) => ({ id: r.id, rect: r.rect, code: atlas.code(r) })),
+    layers: layers.map((r) => ({ id: r.id, rect: r.rect, code: atlas.code(r) })),
     canvases: metas.map((m) => ({ id: m.id, bounds: m.bounds })),
   });
   let started = 0;

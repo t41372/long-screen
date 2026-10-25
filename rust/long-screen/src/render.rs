@@ -750,6 +750,15 @@ pub fn render(ctx: &mut Ctx, source: &mut dyn FrameSource) -> Result<(), String>
             owned_pixels: atlas.owned(i + 1).0,
             owned_epochs: atlas.owned(i + 1).1,
         })
+        // A nested container owns its parent's pixels, frame by frame through its placements' occlusions.
+        .chain(ctx.nested.iter().map(|n| RenderRegion {
+            id: n.id.clone(),
+            kind: RegionKind::Moving,
+            rect: ctx.regions[n.parent].rect,
+            code: (n.parent + 1) as u8,
+            owned_pixels: atlas.owned(n.parent + 1).0,
+            owned_epochs: atlas.owned(n.parent + 1).1,
+        }))
         .collect();
     let mut session = RenderSession::new(RenderConfig {
         width: ctx.info.width,

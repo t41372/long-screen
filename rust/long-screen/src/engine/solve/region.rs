@@ -15,7 +15,7 @@ use crate::engine::diagnostic::{Diagnostic, Severity, Value};
 use crate::engine::keyframes::Retrieval;
 use crate::engine::pose_graph::EdgeKind;
 use crate::kernels::chrome::sticky_occlusions;
-use crate::kernels::features::{match_features, Feature};
+use crate::kernels::features::{extract_features, match_features, Feature, MAX_FEATURES_DEFAULT};
 use crate::kernels::geometry::{js_round, Rect};
 use crate::kernels::motion::{extract_patches, probe_scale, Gray, MatchPoints, Patch};
 use crate::kernels::region::filter_features;
@@ -177,6 +177,13 @@ fn js_max(a: f64, b: f64) -> f64 {
     }
 }
 
+/// A nested container's clip when it is wide and tall enough to register: one keyframe patch ([`PATCH_SIZE`]). A
+/// sliver at the screen's edge holds no patch to relocalize with and, on a step as long as it is thin, does not
+/// overlap itself (nested-scroll-box, frame 84: 9 px left, 16 px step); the container is out of sight there.
+pub(super) fn observable(clip: Option<Rect>) -> Option<Rect> {
+    clip.filter(|c| c.width >= PATCH_SIZE as f64 && c.height >= PATCH_SIZE as f64)
+}
+
 fn gray(p: &Plane) -> Gray<'_> {
     Gray {
         width: p.width,
@@ -272,7 +279,9 @@ impl SolveSession {
         labels: &[u8],
     ) -> Result<Outcome, SolveError> {
         if let Some(nest) = &self.regions[i].nest {
-            self.states[i].clip = nest.clip(ctx.index, self.regions[i].shape.rect);
+            let clip = nest.clip(ctx.index, self.regions[i].shape.rect);
+            let state = &mut self.states[i];
+            state.previous_clip = std::mem::replace(&mut state.clip, clip);
         }
         let mut s = self.setup(i, ctx);
         let registration = self.registration_plane(labels);
@@ -285,12 +294,13 @@ impl SolveSession {
                 self.states[i].canvas_id = String::new();
                 self.new_canvas(i, ctx.time);
                 // A nested container starts where its parent is: its canvas is the parent's, moved by its own scroll.
+                // On whole pixels, as its own steps are: the parent's optimized poses carry fractions.
                 let start = self.regions[i]
                     .nest
                     .as_ref()
                     .and_then(|n| n.parent_poses.get(ctx.index as usize).copied().flatten());
                 if let Some(pose) = start {
-                    self.states[i].pose = pose;
+                    self.states[i].pose = (pose.0.round(), pose.1.round());
                 }
             }
             Gate::FixedInit => self.new_canvas(i, ctx.time),
@@ -402,7 +412,9 @@ impl SolveSession {
     /// The region's read-mostly values and the mutable locals at their starting values.
     fn patch_support(&self, i: usize, s: &Step) -> Option<Rect> {
         let full = self.regions[i].shape.rect;
-        (s.registration_rect != full).then_some(Rect {
+        // A nested container's patches already lie inside its clip of the keyframe's frame, which this frame's clip
+        // need not be (its parent may have moved since).
+        (s.registration_rect != full && self.regions[i].nest.is_none()).then_some(Rect {
             x: s.registration_rect.x - full.x,
             y: s.registration_rect.y - full.y,
             width: s.registration_rect.width,
@@ -428,14 +440,31 @@ impl SolveSession {
             self.width as f64,
             self.height as f64,
         );
-        let (registration_rect, own) = match (&r.nest, state.clip) {
-            // A nested container registers on its own rectangle only, every frame, however few features it has.
-            (Some(_), Some(clip)) => (
-                clip,
-                own.into_iter()
-                    .filter(|p| clip.contains(p.x as f64 * f, p.y as f64 * f))
-                    .collect(),
-            ),
+        let (registration_rect, own) = match (&r.nest, observable(state.clip)) {
+            // A nested container registers on its own rectangle only, every frame, however few features it has. Its
+            // features are found inside that rectangle: the frame's strongest corners (`MAX_FEATURES_DEFAULT` of
+            // them) mostly lie in the parent around it and would leave a small container a handful.
+            (Some(_), Some(clip)) => {
+                let roi = Rect {
+                    x: clip.x / f,
+                    y: clip.y / f,
+                    width: clip.width / f,
+                    height: clip.height / f,
+                };
+                let (gray, w, h) = (&ctx.gray.data, ctx.gray.width, ctx.gray.height);
+                let found = extract_features(gray, w, h, MAX_FEATURES_DEFAULT, Some(roi));
+                (
+                    clip,
+                    found
+                        .into_iter()
+                        .map(|mut p| {
+                            p.score = p.score as f32 as f64;
+                            p
+                        })
+                        .filter(|p| clip.contains(p.x as f64 * f, p.y as f64 * f))
+                        .collect(),
+                )
+            }
             (Some(_), None) => (rect, Vec::new()),
             (None, _) => track::registration_features(rect, state.registration_support, own, f),
         };
@@ -525,6 +554,27 @@ impl SolveSession {
 
     /// Frame-to-frame odometry: analysis-scale hypotheses, block-aware audit, then a native-pixel decision.
     fn odometry_step(&mut self, i: usize, ctx: &FrameCtx, s: &mut Step, labels: &[u8]) {
+        if self.regions[i].nest.is_some() {
+            let (w, h) = (self.width, self.height);
+            let state = &mut self.states[i];
+            state.reference.clear();
+            state.reference.resize(w * h, 0);
+            if let Some(c) = state.previous_clip {
+                let (x0, x1) = (
+                    (c.x.floor().max(0.0) as usize),
+                    ((c.x + c.width).ceil() as usize).min(w),
+                );
+                let (y0, y1) = (
+                    (c.y.floor().max(0.0) as usize),
+                    ((c.y + c.height).ceil() as usize).min(h),
+                );
+                for y in y0..y1 {
+                    let row = y * w;
+                    state.reference[row + x0..row + x1]
+                        .copy_from_slice(&labels[row + x0..row + x1]);
+                }
+            }
+        }
         let r = &self.regions[i];
         let state = &self.states[i];
         let previous_gray = self
@@ -536,6 +586,10 @@ impl SolveSession {
             f: self.factor as f64,
             radius: self.radius,
             mask: Some((labels, r.code)),
+            reference: r
+                .nest
+                .as_ref()
+                .map(|_| (state.reference.as_slice(), r.code)),
             roi: Rect {
                 x: s.registration_rect.x / self.factor as f64,
                 y: s.registration_rect.y / self.factor as f64,
@@ -559,7 +613,9 @@ impl SolveSession {
         let mut est = track::odometry(inputs);
         // A large jump may leave texture only at the output region's edge. The support
         // window must not turn that observable overlap into a new fragment.
+        // Not for a nested container: the whole window is its parent's.
         if s.registration_rect != r.shape.rect
+            && r.nest.is_none()
             && est.decision == OdometryDecision::Lost
             && est.rescue.is_none()
         {
@@ -794,9 +850,14 @@ impl SolveSession {
         if let Some((now, before)) = carried {
             let state = &mut self.states[i];
             state.pose = (
-                state.pose.0 + now.0 - before.0,
-                state.pose.1 + now.1 - before.1,
+                (state.pose.0 + now.0 - before.0).round(),
+                (state.pose.1 + now.1 - before.1).round(),
             );
+        }
+        // A nested container whose footprint is off screen, or shows only a sliver, has nothing to observe; that is
+        // not a lost frame.
+        if self.regions[i].nest.is_some() && observable(self.states[i].clip).is_none() {
+            return;
         }
         let canvas_id = self.states[i].canvas_id.clone();
         self.diagnostic(
@@ -1612,7 +1673,9 @@ impl SolveSession {
                 }
             }
         }
+        // One level: a nested container is not searched for containers of its own.
         if moving
+            && self.regions[i].nest.is_none()
             && !s.skip
             && matches!(s.decision, Decision::Tracked | Decision::Static)
             && s.via_anchor.is_none()
@@ -1669,6 +1732,24 @@ impl SolveSession {
                     .region(*first),
             );
         }
+        let clip = self.states[i]
+            .clip
+            .filter(|_| self.regions[i].nest.is_some());
+        // The state of its own scroll a nested container is in, for the moment its parent's print shows.
+        let parent = self.regions[i]
+            .nest
+            .as_ref()
+            .and_then(|n| n.parent_poses.get(ctx.index as usize).copied().flatten());
+        if let (Some(clip), Some(parent), false) = (clip, parent, s.skip) {
+            let state = &mut self.states[i];
+            let scroll = (
+                (state.pose.0 - parent.0).round() as i64,
+                (state.pose.1 - parent.1).round() as i64,
+            );
+            state
+                .moments
+                .add(&state.canvas_id, scroll, ctx.index, clip, parent);
+        }
         let state = &mut self.states[i];
         let placement = Placement {
             layer,
@@ -1685,6 +1766,7 @@ impl SolveSession {
             time: ctx.time,
             skip: s.skip,
             occlusions,
+            clip,
         };
         if moving {
             state.blind = !s.textured;

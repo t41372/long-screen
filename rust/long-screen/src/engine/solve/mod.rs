@@ -83,6 +83,8 @@ pub struct SolveRegion {
 /// Where a nested container is: its footprint in its parent's canvas and the parent's pose there frame by frame.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Nest {
+    /// The parent's canvas the footprint is on.
+    pub canvas: String,
     /// Native pixels of the parent's canvas.
     pub footprint: Rect,
     /// Sides on which the container may continue past the footprint (1 left, 2 right, 4 top, 8 bottom): there it
@@ -205,6 +207,19 @@ pub struct Placement {
     pub time: f64,
     pub skip: bool,
     pub occlusions: Vec<Rect>,
+    /// A nested container's screen rectangle this frame: what its parent's placement must leave out, also on a frame
+    /// the container itself is skipped. The host moves it onto the parent's placement; it is never stored with this one.
+    pub clip: Option<Rect>,
+}
+
+/// A container found scrolling inside a moving region (`track::nested`): the region, the canvas and the footprint
+/// in it (native pixels), and the sides on which it may continue past the footprint.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NestedFound {
+    pub region: String,
+    pub canvas: String,
+    pub footprint: Rect,
+    pub open: u8,
 }
 
 /// The cause a new fragment's diagnostic names: a magnification change (`scale`, `error`), or none.
@@ -228,6 +243,18 @@ pub enum Effect {
     /// Store pose graph rows: one `put` or one `putMany`.
     Graph(Write),
     Diagnostic(Diagnostic),
+    /// A container scrolling inside a region, for the host to solve on its own (`Nest`).
+    Nested(NestedFound),
+    /// The frames in which a nested container's parent shows it, after the last frame: the host takes each frame's
+    /// clip back out of the parent placement's occlusions, so the parent's print holds the container at one moment.
+    NestedMoment {
+        region: String,
+        frames: Vec<(u32, Rect)>,
+    },
+    /// After the last frame: a nested container its own run did not confirm, for the host to give back to its parent.
+    NestedRejected {
+        region: String,
+    },
 }
 
 /// One region slot's finalised voting verdict: the analysis box it covers and its two LSB-first bitsets.
@@ -328,8 +355,14 @@ struct RegionState {
     started: bool,
     /// Per canvas of the region, the votes for a container scrolling inside it (`track::nested`).
     nested: HashMap<String, crate::kernels::track::nested::Nested>,
-    /// A nested container's screen rectangle this frame (`Nest::clip`).
+    /// A nested container's screen rectangle this frame (`Nest::clip`), and last frame's.
     clip: Option<Rect>,
+    previous_clip: Option<Rect>,
+    /// A nested container's own-scroll states (`track::nested::Moments`).
+    moments: crate::kernels::track::nested::Moments,
+    /// A nested container's label plane for the previous frame: its parent's labels inside `previous_clip` only,
+    /// where odometry may read the previous frame (`track::OdometryInputs::reference`). Reused frame to frame.
+    reference: Vec<u8>,
 }
 
 /// The frame being solved.
@@ -478,6 +511,9 @@ impl SolveSession {
                 started: false,
                 nested: HashMap::new(),
                 clip: None,
+                previous_clip: None,
+                moments: Default::default(),
+                reference: Vec::new(),
             })
             .collect();
         SolveSession {
@@ -800,30 +836,94 @@ impl SolveSession {
     }
 
     /// Finalises every frame still resident in the voting ring (the end of the pass).
+    /// How many frames a run of nested containers needs: up to the last in which any of them is in sight, as its
+    /// parent's poses place it (`region::observable`); `None` for a run without them. The host stops decoding there:
+    /// past it every container would only be skipped.
+    pub fn nested_until(&self) -> Option<u32> {
+        self.regions
+            .iter()
+            .filter_map(|r| r.nest.as_ref().map(|n| (n, r.shape.rect)))
+            .map(|(n, rect)| {
+                (0..n.parent_poses.len() as u32)
+                    .rev()
+                    .find(|&i| region::observable(n.clip(i, rect)).is_some())
+                    .map_or(0, |i| i + 1)
+            })
+            .max()
+    }
+
+    /// How many containers the pass would report if it ended now (`report_nested`), for the hosts' progress: a run
+    /// that finds some solves them in a second run over the frames.
+    pub fn nested_candidates(&self) -> usize {
+        self.states
+            .iter()
+            .flat_map(|s| s.nested.values())
+            .map(|n| n.footprints().len())
+            .sum()
+    }
+
     pub fn drain_voting(&mut self) -> Vec<VotingRecord> {
         let finalized = self.voting.drain();
         let records = self.records(finalized);
         self.report_nested();
+        // A nested container is kept when its own run confirms it: it scrolled by itself and stayed one canvas (no
+        // fragment left unattached). Otherwise the first pass mistook something for it: a repeated layout the page
+        // carried, a carousel that jumps further than it shows.
+        for (state, region) in self.states.iter().zip(&self.regions) {
+            if region.nest.is_none() {
+                continue;
+            }
+            let pieces = self
+                .canvases
+                .values()
+                .filter(|c| c.layer == region.id && c.attached_to.is_none())
+                .count();
+            let frames = state.moments.choose();
+            if pieces == 1 && state.moments.scrolled() && !frames.is_empty() {
+                let nest = region.nest.as_ref().expect("a nested region");
+                let moved = state.moments.moved() as f64;
+                self.effects.push(Effect::Diagnostic(
+                    Diagnostic::new("NESTED_LAYER_FOUND", Severity::Info)
+                        .canvas(&nest.canvas)
+                        .region(nest.footprint)
+                        .param("frames", moved)
+                        .detail(Value::Object(vec![
+                            ("footprint", Value::rect(nest.footprint)),
+                            ("open", Value::Number(nest.open as f64)),
+                            ("frames", Value::Number(moved)),
+                        ])),
+                ));
+                self.effects.push(Effect::NestedMoment {
+                    region: region.id.clone(),
+                    frames,
+                });
+            } else {
+                self.effects.push(Effect::NestedRejected {
+                    region: region.id.clone(),
+                });
+            }
+        }
         records
     }
 
-    /// The containers found scrolling inside the moving regions (`track::nested`), one `NESTED_LAYER_FOUND` each,
-    /// with the footprint in the canvas's native coordinates. Only reported: nothing is reconstructed for them yet.
+    /// The containers found scrolling inside the moving regions (`track::nested`), one [`Effect::Nested`] each, with
+    /// the footprint in the canvas's native coordinates, for the host to solve. `NESTED_LAYER_FOUND` waits for the
+    /// container's own run to confirm it.
     fn report_nested(&mut self) {
         let factor = self.factor as i64;
         let mut found = Vec::new();
-        for state in &self.states {
+        for (state, region) in self.states.iter().zip(&self.regions) {
             let mut canvases: Vec<&String> = state.nested.keys().collect();
             canvases.sort();
             for canvas in canvases {
                 let nested = &state.nested[canvas];
                 for fp in nested.footprints() {
                     let edges = nested.edges(&fp, factor);
-                    found.push((canvas.clone(), fp, edges));
+                    found.push((region.id.clone(), canvas.clone(), fp, edges));
                 }
             }
         }
-        for (canvas, fp, [left, top, right, bottom]) in found {
+        for (region_id, canvas, fp, [left, top, right, bottom]) in found {
             let x0 = left.unwrap_or(fp.x0 * factor) as f64;
             let y0 = top.unwrap_or(fp.y0 * factor) as f64;
             let x1 = right.unwrap_or(fp.x1 * factor) as f64;
@@ -834,17 +934,12 @@ impl SolveSession {
                 width: x1 - x0,
                 height: y1 - y0,
             };
-            self.diagnostic(
-                Diagnostic::new("NESTED_LAYER_FOUND", Severity::Info)
-                    .canvas(&canvas)
-                    .region(region)
-                    .param("frames", fp.frames as f64)
-                    .detail(Value::Object(vec![
-                        ("footprint", Value::rect(region)),
-                        ("open", Value::Number(fp.open as f64)),
-                        ("frames", Value::Number(fp.frames as f64)),
-                    ])),
-            );
+            self.effects.push(Effect::Nested(NestedFound {
+                region: region_id,
+                canvas,
+                footprint: region,
+                open: fp.open,
+            }));
         }
     }
 
