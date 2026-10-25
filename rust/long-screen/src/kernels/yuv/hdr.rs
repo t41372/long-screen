@@ -263,8 +263,11 @@ fn pixel_linear(lin: [f32; 3], srgb: &[u8]) -> ([u8; 4], bool) {
     )
 }
 
-/// Entries of the per-chunk memo of converted colours.
-const MEMO_SIZE: usize = 4096;
+/// Entries of the per-chunk memo of converted colours (128 KB on the chunk's stack). With 4,096 entries the colours
+/// of an iPhone or HDR Mac frame (7,000 to 12,000 distinct) kept evicting each other: 2.7-5.9 % of the pixels of
+/// three pub_4 frames and a new_ip_8 frame missed and were converted again, 0-1.8 % with 16,384, and the conversion
+/// took 10-28 % less time (single thread, sizes alternated in one process).
+const MEMO_SIZE: usize = 16384;
 
 /// A direct-mapped memo of `pixel`'s result by Y'CbCr bytes, kept per pool chunk. A screen recording holds few
 /// distinct non-neutral colours (about 7,000 to 12,000 per 3456 × 2234 frame of an iPhone recording), repeated
