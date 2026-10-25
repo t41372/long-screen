@@ -222,6 +222,11 @@ export class PreciseSource implements FrameSource {
     info.notices = [];
     const stats: SourceStats = this.stats = { frames: 0, converted: 0, decodeMS: 0, convertMS: 0 };
     let ended = false, producerDone = false, failure: unknown = null, submitted = 0, received = 0, lastOutput = performance.now();
+    // WebCodecs promises presentation order, but WebKit's decoder hands some B-frames back in decode order (35 of
+    // the 90 frames of tests/fixtures/bframes-pyramid.mp4). Holding back as many frames as the stream ever reorders
+    // (`reorderDepth`, 0 without B-frames) and releasing the earliest restores the order; on a decoder that already
+    // keeps it, the frames only leave a few frames later.
+    const held: VideoFrame[] = [], reorder = demux.reorderDepth ?? 0;
     const decoder = new VideoDecoder({
       output: (frame) => {
         received++;
@@ -229,7 +234,10 @@ export class PreciseSource implements FrameSource {
         if (ended) {
           frame.close();
         } else {
-          queue.push(frame);
+          let at = held.length;
+          while (at > 0 && held[at - 1].timestamp > frame.timestamp) at--;
+          held.splice(at, 0, frame);
+          while (held.length > reorder) queue.push(held.shift()!);
         }
         signal.notify();
       },
@@ -300,6 +308,14 @@ export class PreciseSource implements FrameSource {
           failure = e;
         }
       } finally {
+        // Every frame still held for reordering has arrived once the decoder has flushed or the stream has failed.
+        for (const frame of held.splice(0)) {
+          if (ended || this.cancelled) {
+            frame.close();
+          } else {
+            queue.push(frame);
+          }
+        }
         producerDone = true;
         signal.notify();
       }

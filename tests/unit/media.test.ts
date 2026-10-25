@@ -48,8 +48,20 @@ for (const name of ['scroll.mp4', 'scroll.mov', 'fragmented.mp4', 'scroll.webm',
     if (name.startsWith('negative')) {
       assert(packets.some((p, i) => i > 0 && p.timestamp < packets[i - 1].timestamp), 'negative composition offsets must reorder packets');
     }
+    // Two B-frames between references: each presents before at most one packet decoded ahead of it.
+    assertEquals(d.reorderDepth, name === 'scroll.webm' ? undefined : 1);
   });
 }
+Deno.test('demux: reorderDepth counts the packets a B-frame waits behind (0 without B-frames, 2 in a B-pyramid)', async () => {
+  // bframes-pyramid.mp4 has up to three B-frames with the middle one a reference (ffprobe: no packet presents
+  // before more than two packets decoded ahead of it); prores.mov is intra-only.
+  const pyramid = await new MediabunnyDemuxer(await fixture('bframes-pyramid.mp4')).init();
+  assertEquals([pyramid.frameCount, pyramid.reorderDepth], [90, 2]);
+  const intra = await new MediabunnyDemuxer(await fixture('prores.mov')).init();
+  assertEquals(intra.reorderDepth, 0);
+  pyramid.dispose();
+  intra.dispose();
+});
 Deno.test('demux: ReplayKit-style version-0 ctts yields the same timeline as the signed version-1 box', async () => {
   const a = await new MediabunnyDemuxer(await fixture('negative-cts.mov')).init(),
     b = await new MediabunnyDemuxer(await fixture('negative-cts-v0.mov')).init();

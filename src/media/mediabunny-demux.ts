@@ -19,6 +19,8 @@ import { t } from '../i18n/index.ts';
  *  equivalent for. WebM/Matroska gets its own small check below for the latter (an empty file after the metadata
  *  duration is trusted). */
 const EBML_SIGNATURE = [0x1a, 0x45, 0xdf, 0xa3];
+/** How many earlier packets `reorderDepth` looks back over: H.264 and HEVC hold at most 16 frames for reordering. */
+const REORDER_WINDOW = 16;
 async function isEbml(file: Blob): Promise<boolean> {
   const head = new Uint8Array(await file.slice(0, 4).arrayBuffer());
   return EBML_SIGNATURE.every((b, i) => head[i] === b);
@@ -93,6 +95,7 @@ export class MediabunnyDemuxer implements Demuxer {
   rotation = 0;
   duration = 0;
   frameCount?: number;
+  reorderDepth?: number;
   warnings: string[] = [];
   private input?: Input;
   private sink!: EncodedPacketSink;
@@ -182,7 +185,9 @@ export class MediabunnyDemuxer implements Demuxer {
           throw new Error('No decodable video samples were found.');
         }
       } else {
-        let count = 0, end = 0;
+        // `recent`: presentation times of the latest REORDER_WINDOW packets in decode order.
+        let count = 0, end = 0, depth = 0;
+        const recent: number[] = [];
         try {
           for await (const p of this.sink.packets(undefined, undefined, { metadataOnly: true })) {
             if (p.byteLength === 0) {
@@ -190,6 +195,9 @@ export class MediabunnyDemuxer implements Demuxer {
             }
             count++;
             end = Math.max(end, p.timestamp + p.duration);
+            depth = Math.max(depth, recent.reduce((n, t) => t > p.timestamp ? n + 1 : n, 0));
+            recent.push(p.timestamp);
+            if (recent.length > REORDER_WINDOW) recent.shift();
           }
         } catch (e) {
           // Our own "Fragment has no sample size" always propagates; mediabunny's zero-sample-track internal
@@ -199,6 +207,7 @@ export class MediabunnyDemuxer implements Demuxer {
           }
         }
         this.frameCount = count;
+        this.reorderDepth = depth;
         // ISOBMFF: isobmff-probe.ts's mdhd/elst-based duration always wins when present — it is deliberately
         // *shorter* than the walk's own end for an edit-trimmed recording (the edit list drops a leading pre-roll
         // that the sample table still lists), so Math.max would silently undo the trim. Only a fragmented file
