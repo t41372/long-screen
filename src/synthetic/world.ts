@@ -338,6 +338,9 @@ export interface Expectations {
   /** Ratchet on `torn` (pixels of an `atomic` dynamic stitched from more than one moment), main canvas and every
    *  fragment. Defaults to 0. */
   maxTorn?: number;
+  /** Ratchet on the temporal conflicts a fixed overlay's canvas reports where the band itself shows moving content (the
+   *  page seen through a sheet's rounded corners). Defaults to 0: a static band reports none. */
+  maxFixedConflicts?: number;
 }
 export interface RenderedFrame {
   image: RGBA;

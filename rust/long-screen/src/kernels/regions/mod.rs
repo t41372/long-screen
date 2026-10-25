@@ -30,7 +30,7 @@ mod tests;
 
 pub use atlas::{label_atlas, AtlasMask, AtlasRegion};
 use band_fn::band;
-use bands::{detect_bands, strongest_cut, Bands};
+use bands::{detect_bands, extend_past_bar_edges, strongest_cut, Bands};
 use cells::{group_and_label, union_find_cells};
 use construct::{apply_cell_granularity, apply_pane_divider, build_regions, expand_bands};
 use crops::{
@@ -72,6 +72,9 @@ pub struct FinishInput<'a> {
     pub pixel_fixed: &'a [f64],
     pub pixel_moving: &'a [f64],
     pub native_row_change: Option<&'a [f64]>,
+    /// `Learner::native_row_middle`: the native row change over the middle half of each row. `None` (the frozen TS
+    /// oracle's accumulators) leaves every band's native edge to the change test.
+    pub native_row_middle: Option<&'a [f64]>,
     pub native_col_change: Option<&'a [f64]>,
     /// `Learner::row_fixed` / `Learner::row_moving`: per analysis row, the sampled pixels at which the stationary
     /// hypothesis beat the main motion by more than 6 levels, and the reverse. `None` keeps the change-only bands.
@@ -162,7 +165,7 @@ pub fn finish(
     let cols = (width + cell - 1) / cell.max(1);
     let rows = (height + cell - 1) / cell.max(1);
     let reference = input.reference.as_ref();
-    let bands = detect_bands(
+    let mut bands = detect_bands(
         width,
         height,
         input.informative_frames,
@@ -176,6 +179,20 @@ pub fn finish(
         native_height,
         factor as f64,
     );
+    // Only with the row votes and the middle-of-row change: the frozen TS oracle has neither, and its band edges stay
+    // the change test's.
+    if let (Some(_), Some(middle)) = (input.row_fixed, input.native_row_middle) {
+        extend_past_bar_edges(
+            &mut bands,
+            width,
+            height,
+            input.informative_frames,
+            (input.pixel_fixed, input.pixel_moving),
+            middle,
+            input.native_frames,
+            factor as f64,
+        );
+    }
     let vertical_cut = strongest_cut(input.col_gain, input.informative_frames);
     let horizontal_cut = strongest_cut(input.horizontal_gain, input.informative_frames);
     let mut ds = union_find_cells(

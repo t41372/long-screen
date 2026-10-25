@@ -328,6 +328,7 @@ export const SCENARIO_NAMES = [
   'edge-arc-turn',
   'overscroll-sideways',
   'scroll-back-cards',
+  'map-sheet-corners',
 ] as const;
 export type ScenarioName = typeof SCENARIO_NAMES[number];
 /** Nested scrolling, which the engine does not reconstruct yet (docs/ARCHITECTURE.md §九): a scroll box that moves
@@ -2069,6 +2070,77 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         overlays: [fixedBand('header', { x: 0, y: 0, width: 320, height: 32 }, 99)],
         frames: frames(path.length),
         expect: expect({ fragments: { body: 0 }, diagnostics: { present: [], absent: ['PROCESSING_ERROR'] } }),
+      };
+    }
+    case 'map-sheet-corners': {
+      // Google Maps' place sheet over a satellite map (new_ip_6, new_ip_7): a white sheet pinned to the bottom of the
+      // screen whose top corners are rounded, so its first rows show the panning map at both ends and their mean change
+      // stays above the change test's 0.9 while their middle stands still. Every pixel of the imagery changes as the map
+      // pans. Ideal: the sheet's band starts at its top edge, and nothing of its white edge is burnt into the map.
+      const PW = 390, PH = 844, SHEET = 180, R = 30;
+      const world = new World(1800, 2400, [96, 110, 84]);
+      for (let ty = 0, k = 0; ty < world.height; ty += 120) {
+        for (let tx = 0; tx < world.width; tx += 120, k++) world.picture({ x: tx, y: ty, width: 120, height: 120 }, 9100 + k);
+      }
+      const path: Point[] = [];
+      let x = 700, y = 900;
+      const step = (dx: number, dy: number) => {
+        x += dx, y += dy;
+        path.push({ x: Math.round(x), y: Math.round(y) });
+      };
+      path.push({ x, y });
+      const drag = (frames: number, dx: number, dy: number) => {
+        for (let i = 0; i < frames; i++) step(dx, dy);
+      };
+      const fling = (frames: number, dx: number, dy: number, decay: number) => {
+        for (let i = 0; i < frames; i++) step(dx * decay ** i, dy * decay ** i);
+      };
+      drag(14, -9, 14);
+      fling(22, -26, 40, .86);
+      drag(8, 0, 0);
+      drag(12, 18, -6);
+      fling(20, 34, -12, .85);
+      drag(6, 0, 0);
+      drag(16, -12, -18);
+      fling(18, -20, -30, .87);
+      const top = PH - SHEET;
+      // The rows of the rounded corners: the sheet spans [inset, PW - inset) there.
+      const inset = (d: number) => Math.round(R - Math.sqrt(R * R - (R - d) * (R - d)));
+      const sheet: Overlay = {
+        id: 'sheet',
+        kind: 'fixed',
+        draw: (frame) => {
+          for (let d = 0; d < SHEET; d++) {
+            const i = d < R ? inset(d) : 0;
+            fillRGBA(frame, { x: i, y: top + d, width: PW - 2 * i, height: 1 }, [255, 255, 255]);
+          }
+          fillRGBA(frame, { x: PW / 2 - 24, y: top + 10, width: 48, height: 5 }, [200, 200, 204]);
+          fillRGBA(frame, { x: 20, y: top + 40, width: 180, height: 16 }, [32, 33, 36]);
+          fillRGBA(frame, { x: 20, y: top + 70, width: 120, height: 10 }, [112, 117, 122]);
+          fillRGBA(frame, { x: PW - 60, y: top + 36, width: 36, height: 36 }, [66, 133, 244]);
+          // The checked rects leave out the corners, where the map shows through.
+          return [{ x: R, y: top, width: PW - 2 * R, height: R }, { x: 0, y: top + R, width: PW, height: SHEET - R }];
+        },
+      };
+      return {
+        name,
+        description:
+          '手机上平移卫星图：底部钉着一张白色地点卡片，卡片上缘是圆角，最上面几行两端露出地图、中间不动；影像每个像素都随平移变化。',
+        width: PW,
+        height: PH,
+        background: [96, 110, 84],
+        layers: [{ id: 'body', viewport: { x: 0, y: 0, width: PW, height: PH }, world, path }],
+        overlays: [sheet],
+        frames: frames(path.length),
+        // Measured before the sheet's native edge was put at its rounded top (504db78): the band started 13 rows down
+        // (677), and the sheet's white edge was burnt into the map: contaminatedOverlay 6,979 (2,789 recoverable),
+        // missing 36, mismatched 54. Now the band starts at 664 and the map canvas is exact. The sheet's canvas holds
+        // the map seen through its corners, 6 temporal conflicts there by construction.
+        expect: expect({
+          fragments: { body: 0 },
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
+          maxFixedConflicts: 6,
+        }),
       };
     }
     default:

@@ -45,6 +45,40 @@ pub(super) fn native_edge(
     }
 }
 
+/// The native edge of a top (`direction` 1) or bottom (−1) band whose bar `bands::extend_past_bar_edges` found to
+/// reach past it, `estimate` being the analysis row it found: within the same window as `native_edge` around that
+/// row, the row where the native change steps up most from the bar's side to the page's (the first page row of a top
+/// band, the first bar row of a bottom band). Falls back to the scaled estimate without native evidence.
+pub(super) fn steepest_edge(
+    stats: Option<&[f64]>,
+    estimate: i64,
+    scale: f64,
+    direction: i8,
+    limit: i64,
+    native_frames: f64,
+) -> i64 {
+    let guess = js_round(estimate as f64 * scale) as i64;
+    let stats = match stats {
+        Some(s) if native_frames != 0.0 => s,
+        _ => return guess,
+    };
+    let window = js_ceil(2.0 * scale) as i64 + 1;
+    let (lo, hi) = (1i64.max(guess - window), (limit - 1).min(guess + window));
+    let mut best = (f64::NEG_INFINITY, guess);
+    for edge in lo..=hi {
+        let (above, below) = (stat_at(stats, edge - 1), stat_at(stats, edge));
+        let step = if direction == 1 {
+            below - above
+        } else {
+            above - below
+        };
+        if step > best.0 {
+            best = (step, edge);
+        }
+    }
+    best.1
+}
+
 /// Native band edges and the native-pixel content rectangle (`finish()`'s "Native-precision band edges" block).
 pub struct NativeEdges {
     pub top: i64,
@@ -66,7 +100,16 @@ pub fn compute_native_edges(
     native_width: f64,
     native_height: f64,
 ) -> NativeEdges {
-    let native_top = if bands.top > 0 {
+    let native_top = if let Some(edge) = bands.bar_edge.0 {
+        steepest_edge(
+            native_row_change,
+            edge,
+            factor,
+            1,
+            native_height as i64,
+            native_frames,
+        )
+    } else if bands.top > 0 {
         native_edge(
             native_row_change,
             bands.top,
@@ -79,7 +122,16 @@ pub fn compute_native_edges(
     } else {
         0
     };
-    let native_bottom = if bands.bottom < height {
+    let native_bottom = if let Some(edge) = bands.bar_edge.1 {
+        steepest_edge(
+            native_row_change,
+            edge,
+            factor,
+            -1,
+            native_height as i64,
+            native_frames,
+        )
+    } else if bands.bottom < height {
         native_edge(
             native_row_change,
             bands.bottom,

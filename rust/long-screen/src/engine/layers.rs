@@ -147,6 +147,7 @@ impl RegionLearner {
             pixel_fixed: &l.pixel_fixed,
             pixel_moving: &l.pixel_moving,
             native_row_change: optional(&l.native_row_change),
+            native_row_middle: optional(&l.native_row_middle),
             native_col_change: optional(&l.native_col_change),
             row_fixed: Some(&l.row_fixed),
             row_moving: Some(&l.row_moving),

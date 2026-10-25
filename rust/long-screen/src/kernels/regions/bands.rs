@@ -15,6 +15,12 @@ pub struct Bands {
     pub right: i64,
     pub exact_left: Option<f64>,
     pub exact_right: Option<f64>,
+    /// Whether the change test itself found the top / bottom band (not the row votes).
+    pub by_change: (bool, bool),
+    /// The analysis row past which `extend_past_bar_edges` found a bar's real edge, on the top / bottom side: the
+    /// band's native edge is then the steepest step of the native row change near it (`crops::steepest_edge`). The
+    /// band itself (the analysis cells each region takes) stays where the change test put it.
+    pub bar_edge: (Option<i64>, Option<i64>),
 }
 
 /// Mean of the middle rows of the reference frame, sampled every 3rd row, per analysis column (`middleMean` in
@@ -406,6 +412,7 @@ pub fn detect_bands(
     factor: f64,
 ) -> Bands {
     let (mut top, mut bottom) = (0i64, height);
+    let mut by_change = (false, false);
     if informative_frames >= 2.0 {
         while (top as f64) < height as f64 * 0.45
             && stat_at(row_change, top) / informative_frames < 0.9
@@ -423,6 +430,7 @@ pub fn detect_bands(
         if height - bottom < 6 || bottom as f64 <= height as f64 * 0.55 {
             bottom = height;
         }
+        by_change = (top > 0, bottom < height);
         // Translucent chrome (iOS 26 glass bars, frosted headers) shows the scrolling page through itself, so
         // none of its rows passes the change test and that side gets no band at all. Only on such a side, a row
         // also counts as stationary when its fixed icons and text are evident: at its sampled pixels standing
@@ -680,6 +688,73 @@ pub fn detect_bands(
         right,
         exact_left,
         exact_right,
+        by_change,
+        bar_edge: (None, None),
+    }
+}
+
+/// Share of a row's sampled pixels that must belong to fixed objects (`fixed_pixels`) for a row past the edge of a band
+/// the change test found to belong to the bar. A bar standing over the page holds nearly every pixel of its own rows:
+/// the rounded top rows of Google Maps' place sheet (new_ip_6, new_ip_7) 0.94–1.0; a fade over the page holds about
+/// half (pub_2: 0.57). Page rows beside an opaque bar reach it too, because the motion lands on the bar while the page
+/// there is blank (new_ip_4, new_ip_8: 0.94–1.0); their middle changes as the page does.
+const BAR_EDGE_FIXED_SHARE: f64 = 0.9;
+
+/// Finds the real edge of a bar whose first rows the change test left out of its band because their mean change
+/// reached 0.9: a bar with rounded corners shows the page through them (new_ip_6: 28 native px of Google Maps' place
+/// sheet, whose white edge then stayed in the moving layer and was burnt into the map along every pan). A row past
+/// the band belongs to the bar when nearly all its sampled pixels belong to fixed objects (`BAR_EDGE_FIXED_SHARE`) and
+/// each of its native rows passes the change test's own threshold on the middle half of the row (`middle`,
+/// `Learner::native_row_middle`), which the corners and the page beyond them cannot reach. A header that slides or
+/// changes over the page changes across the whole row, so it stays out (`header-lag-collapse`); so do the page rows
+/// beside a bar, a fade, and an analysis row that still holds some of the page's native rows. A walk that runs up to
+/// the band cap (45 % / 55 %) has found no bar edge. Only the native edge moves (`bar_edge`, read by
+/// `crops::steepest_edge`): there the whole-row change falls from the page's to the corners' sliver in one native
+/// row (24.3 to 7.2 at 2418 on new_ip_6), while every row of the sliver stays above 0.9. The band (which analysis
+/// cells each region takes) stays.
+#[allow(clippy::too_many_arguments)]
+pub fn extend_past_bar_edges(
+    bands: &mut Bands,
+    width: i64,
+    height: i64,
+    informative_frames: f64,
+    pixel_votes: (&[f64], &[f64]),
+    middle: &[f64],
+    native_frames: f64,
+    factor: f64,
+) {
+    if informative_frames < 2.0 || native_frames == 0.0 || width < 5 || height < 5 {
+        return;
+    }
+    let native_height = middle.len() as i64;
+    let native_range = |from: i64, to: i64| {
+        let a = ((from as f64 * factor) as i64).clamp(0, native_height);
+        let b = ((to as f64 * factor) as i64).clamp(0, native_height);
+        a..b
+    };
+    let samples = ((width - 4 + 3) / 4) as f64;
+    let joins = |y: i64| {
+        fixed_pixels(pixel_votes, y, width, height, informative_frames) as f64
+            >= BAR_EDGE_FIXED_SHARE * samples
+            && native_range(y, y + 1).all(|n| middle[n as usize] / native_frames < 0.9)
+    };
+    if bands.by_change.0 {
+        let mut y = bands.top;
+        while (y as f64) < height as f64 * 0.45 && joins(y) {
+            y += 1;
+        }
+        if y > bands.top && (y as f64) < height as f64 * 0.45 {
+            bands.bar_edge.0 = Some(y);
+        }
+    }
+    if bands.by_change.1 {
+        let mut y = bands.bottom - 1;
+        while y as f64 > height as f64 * 0.55 && joins(y) {
+            y -= 1;
+        }
+        if y + 1 < bands.bottom && y as f64 > height as f64 * 0.55 {
+            bands.bar_edge.1 = Some(y + 1);
+        }
     }
 }
 

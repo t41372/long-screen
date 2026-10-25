@@ -115,6 +115,7 @@ unsafe fn run_finish(ptr: u32) -> Option<Vec<regions::RegionOut>> {
         pixel_fixed: as_f64_slice(pixel_fixed),
         pixel_moving: as_f64_slice(pixel_moving),
         native_row_change: native_row_change_bytes.map(as_f64_slice),
+        native_row_middle: None,
         native_col_change: native_col_change_bytes.map(as_f64_slice),
         // The descriptor carries the frozen TS oracle's accumulators, which have no row votes; the engine's own
         // `RegionLearner::finish` passes them.

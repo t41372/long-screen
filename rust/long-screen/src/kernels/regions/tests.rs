@@ -124,6 +124,7 @@ fn finish_falls_back_to_one_solid_pane_with_no_evidence() {
         pixel_fixed: &zeros,
         pixel_moving: &zeros,
         native_row_change: None,
+        native_row_middle: None,
         native_col_change: None,
         row_fixed: None,
         row_moving: None,
@@ -189,6 +190,7 @@ fn learn(width: usize, height: usize, frames: &[Vec<u8>]) -> Vec<RegionOut> {
         pixel_fixed: &learner.pixel_fixed,
         pixel_moving: &learner.pixel_moving,
         native_row_change: None,
+        native_row_middle: None,
         native_col_change: None,
         row_fixed: None,
         row_moving: None,
@@ -418,6 +420,7 @@ fn learn_fields_seeing(
         pixel_fixed: &learner.pixel_fixed,
         pixel_moving: &learner.pixel_moving,
         native_row_change: None,
+        native_row_middle: None,
         native_col_change: None,
         reference: with_reference.then(|| Rgba {
             width,
@@ -955,4 +958,195 @@ fn the_walk_does_not_cross_more_than_a_bars_spacing_of_page() {
     // A walk whose first row follows the page finds no bar, as before.
     let bands = vote_bands(&|y| if (3..40).contains(&y) { BAR } else { PAGE });
     assert_eq!(bands.top, 0);
+}
+
+// A bottom sheet whose top corners are rounded (new_ip_6 and new_ip_7, Google Maps' place sheet): the page shows
+// through the corners in the sheet's first rows, so their mean change stays above 0.9 for 28 native px and the change
+// test ends the band there, leaving the sheet's white edge in the moving layer, where every pan burns it into the map.
+// Ways a band edge past those rows could go wrong, written before it was allowed (the numbers are the engine's own
+// accumulators on the 32 recordings):
+// - page rows next to a bar, whose sampled pixels vote "still" because the motion lands on the bar, join it
+//   (new_ip_4, new_ip_8: 0.94–1.0 of the samples, but each native row changes as much as the page does);
+// - a fade over the page joins the bar (pub_2: 0.57 of the samples still);
+// - a header that slides over the page and stands still in between joins the bar (`header-lag-collapse`: its rows
+//   change across their whole width while it slides);
+// - an analysis row holding the page's last native rows joins it (new_mac_2's top bar);
+// - rows standing still down to the walk's cap are taken as a bar's edge;
+// - the native edge is put where the change falls under 0.9 instead of at the sheet's edge;
+// - the top side is not mirrored.
+struct Sheet {
+    /// Per frame, the native change of the sheet's rounded rows over the whole row (from their first row on), and over
+    /// the middle half of the row.
+    edge_change: (f64, f64),
+    edge_middle: f64,
+    /// Sampled pixels (of 50) of the rounded rows that stand still.
+    fixed_samples: usize,
+    /// First analysis row of the rounded rows (they end at 252, where the change test's band starts).
+    from: usize,
+    top: bool,
+}
+
+const SHEET: Sheet = Sheet {
+    edge_change: (6.0, 1.0),
+    edge_middle: 0.1,
+    fixed_samples: 50,
+    from: 248,
+    top: false,
+};
+
+/// The bands and native band edges for a 204×300 analysis frame at factor 5 (1020×1500 native): page rows change by
+/// 5 a frame (30 native, in the middle too), the sheet's rounded rows run from 3 native rows into analysis row `t.from`
+/// (1243 for 248) to 1260, its body below them stands still. Returns the bands as the change test found them, after
+/// `extend_past_bar_edges`, and both native edges (top or bottom, as `t.top` asks).
+fn sheet_bands(t: Sheet) -> (Bands, Bands, i64, i64) {
+    let (w, h, factor) = (204usize, 300usize, 5usize);
+    let (nw, nh) = (w * factor, h * factor);
+    let frames = 10.0;
+    let flip = |y: usize, n: usize| if t.top { n - 1 - y } else { y };
+    let (mut row_change, mut native, mut middle) = (vec![0.0; h], vec![0.0; nh], vec![0.0; nh]);
+    let (mut pixel_fixed, pixel_moving) = (vec![0.0; w * h], vec![0.0; w * h]);
+    for y in 0..h {
+        let change = if y < t.from {
+            5.0
+        } else if y < 252 {
+            1.5
+        } else {
+            0.0
+        };
+        row_change[flip(y, h)] = change * frames;
+        if (t.from..252).contains(&y) {
+            for k in 0..t.fixed_samples {
+                pixel_fixed[flip(y, h) * w + 2 + 4 * k] = frames;
+            }
+        }
+    }
+    // The rounded rows start 3 native rows into analysis row `t.from`.
+    let first = t.from * factor + 3;
+    for n in 0..nh {
+        let (change, mid) = if n < first {
+            (30.0, 30.0)
+        } else if n < 1260 {
+            let (a, b) = t.edge_change;
+            (
+                a + (b - a) * (n - first) as f64 / (1259 - first) as f64,
+                t.edge_middle,
+            )
+        } else {
+            (0.1, 0.1)
+        };
+        native[flip(n, nh)] = change * frames;
+        middle[flip(n, nh)] = mid * frames;
+    }
+    let (row_fixed, row_moving) = (vec![0.0; h], vec![0.0; h]);
+    let col_moving = vec![frames; w];
+    let col_mean = vec![0.0; w];
+    let detect = || {
+        super::bands::detect_bands(
+            w as i64,
+            h as i64,
+            frames,
+            &row_change,
+            Some((&row_fixed, &row_moving)),
+            (&pixel_fixed, &pixel_moving),
+            &col_moving,
+            &col_mean,
+            None,
+            nw as f64,
+            nh as f64,
+            factor as f64,
+        )
+    };
+    let (found, mut bands) = (detect(), detect());
+    super::bands::extend_past_bar_edges(
+        &mut bands,
+        w as i64,
+        h as i64,
+        frames,
+        (&pixel_fixed, &pixel_moving),
+        &middle,
+        frames,
+        factor as f64,
+    );
+    let edge = |b: &Bands| {
+        let e = compute_native_edges(
+            b,
+            Some(&native),
+            None,
+            frames,
+            h as i64,
+            w as i64,
+            factor as f64,
+            nw as f64,
+            nh as f64,
+        );
+        if t.top {
+            e.top
+        } else {
+            e.bottom
+        }
+    };
+    let (before, after) = (edge(&found), edge(&bands));
+    (found, bands, before, after)
+}
+
+#[test]
+fn a_sheet_with_rounded_corners_starts_at_its_top_edge() {
+    let (found, bands, before, after) = sheet_bands(SHEET);
+    assert_eq!(found.bottom, 252);
+    // Analysis row 248 still holds three native rows of the page; the native edge is the sheet's own. The band (the
+    // analysis cells) stays.
+    assert_eq!(
+        (bands.bottom, bands.bar_edge.1, after),
+        (252, Some(249), 1243),
+        "change test: {before}"
+    );
+}
+
+#[test]
+fn a_top_bar_with_rounded_lower_corners_ends_at_its_bottom_edge() {
+    let (found, bands, _, after) = sheet_bands(Sheet { top: true, ..SHEET });
+    assert_eq!(found.top, 48);
+    assert_eq!(
+        (bands.top, bands.bar_edge.0, after),
+        (48, Some(51), 1500 - 1243)
+    );
+}
+
+#[test]
+fn page_rows_whose_pixels_vote_still_beside_a_bar_stay_page() {
+    // Every sampled pixel stands still often enough, but each native row changes as much as the page, in the middle too.
+    let (found, bands, before, after) = sheet_bands(Sheet {
+        edge_change: (30.0, 30.0),
+        edge_middle: 30.0,
+        ..SHEET
+    });
+    assert_eq!((bands.bar_edge.1, after), (None, before));
+    assert_eq!(bands.bottom, found.bottom);
+}
+
+#[test]
+fn a_header_changing_across_its_width_stays_out() {
+    // Its pixels stand still in most frames and never follow the page, but it slides over the page now and then: its
+    // rows change in the middle as well, a little above the change test's threshold.
+    let (_, bands, before, after) = sheet_bands(Sheet {
+        edge_middle: 1.2,
+        ..SHEET
+    });
+    assert_eq!((bands.bar_edge.1, after), (None, before));
+}
+
+#[test]
+fn a_fade_over_the_page_stays_page() {
+    // Only about half the samples stand still.
+    let (_, bands, before, after) = sheet_bands(Sheet {
+        fixed_samples: 28,
+        ..SHEET
+    });
+    assert_eq!((bands.bar_edge.1, after), (None, before));
+}
+
+#[test]
+fn rows_standing_still_down_to_the_cap_are_no_bar_edge() {
+    let (_, bands, before, after) = sheet_bands(Sheet { from: 150, ..SHEET });
+    assert_eq!((bands.bar_edge.1, after), (None, before));
 }

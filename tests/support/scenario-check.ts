@@ -272,7 +272,10 @@ async function checkResult(name: string, scenario: Scenario, result: RunResult):
       if (!e.limitation) {
         assertEquals(f.mismatched, 0, `${name}/${overlay.id}: fixed pixels differ from the observed band`);
         if (overlay.settled === undefined) {
-          assertEquals(f.conflicts, 0, `${name}/${overlay.id}: a static band reported temporal conflicts`);
+          assert(
+            f.conflicts <= (e.maxFixedConflicts ?? 0),
+            `${name}/${overlay.id}: a static band reported temporal conflicts (${f.conflicts})`,
+          );
         } else {
           // The framed print keeps the reference frame's chrome, without the pointer that was in it.
           const chrome = await verifyFramedChrome(result, rect);

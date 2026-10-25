@@ -77,6 +77,9 @@ pub struct Learner {
     pub horizontal_gain: Vec<f64>,
     /// Native-resolution statistics, allocated on the first native pair.
     pub native_row_change: Vec<f64>,
+    /// `native_row_change` over the middle half of each row only (`[w/4, 3w/4)`), where a bar's rounded corners and
+    /// the page they show cannot reach (`regions::bands::extend_past_bar_edges`).
+    pub native_row_middle: Vec<f64>,
     pub native_col_change: Vec<f64>,
     pub native_col_mean: Vec<f64>,
     pub native_frames: u32,
@@ -117,6 +120,7 @@ impl Learner {
             col_gain: vec![0.0; cols],
             horizontal_gain: vec![0.0; rows],
             native_row_change: Vec::new(),
+            native_row_middle: Vec::new(),
             native_col_change: Vec::new(),
             native_col_mean: Vec::new(),
             native_frames: 0,
@@ -287,6 +291,7 @@ impl Learner {
     fn add_native(&mut self, a: &[u8], b: &[u8], w: usize, h: usize) {
         if self.native_row_change.is_empty() {
             self.native_row_change = vec![0.0; h];
+            self.native_row_middle = vec![0.0; h];
             self.native_col_change = vec![0.0; w];
             self.native_col_mean = vec![0.0; w];
             self.native_width = w;
@@ -308,20 +313,31 @@ impl Learner {
                 / 3.0
         };
         let rows_out = SyncPtr(self.native_row_change.as_mut_ptr());
+        let middle_out = SyncPtr(self.native_row_middle.as_mut_ptr());
+        let (middle_from, middle_to) = (w / 4, w - w / 4);
         let chunks = crate::kernels::pool::chunks_for(h * w.div_ceil(step), 32 * 1024);
         crate::kernels::pool::par_for(chunks, |c| {
             for y in crate::kernels::pool::split(h, chunks, c)
                 ..crate::kernels::pool::split(h, chunks, c + 1)
             {
                 let (mut sum, mut n) = (0.0f64, 0u32);
+                let (mut middle, mut m) = (0.0f64, 0u32);
                 let mut x = 0;
                 while x < w {
-                    sum += sample((y * w + x) * 4);
+                    let v = sample((y * w + x) * 4);
+                    sum += v;
                     n += 1;
+                    if (middle_from..middle_to).contains(&x) {
+                        middle += v;
+                        m += 1;
+                    }
                     x += step;
                 }
                 // SAFETY: row `y` belongs to this chunk alone.
-                unsafe { *rows_out.get().add(y) += sum / (n.max(1) as f64) };
+                unsafe {
+                    *rows_out.get().add(y) += sum / (n.max(1) as f64);
+                    *middle_out.get().add(y) += middle / (m.max(1) as f64);
+                }
             }
         });
         let samples = h.div_ceil(vstep);
