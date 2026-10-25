@@ -284,6 +284,8 @@ export const SCENARIO_NAMES = [
   'sticky-toc-duty-31',
   'sticky-toc-duty-40',
   'sticky-toc-title',
+  'edge-arc-turn',
+  'overscroll-sideways',
 ] as const;
 export type ScenarioName = typeof SCENARIO_NAMES[number];
 /** Nested scrolling, which the engine does not reconstruct yet (docs/ARCHITECTURE.md §九): a scroll box that moves
@@ -1200,6 +1202,93 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         expect: expect({
           fragments: { body: 0 },
           bounds: { x: 0, y: HEADER, width: 900, height: 1800 },
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
+        }),
+      };
+    }
+    case 'edge-arc-turn': {
+      // The demo recording's path (static/demo/sample.mp4) on a page with plain margins: it starts still at the
+      // page's top-left, pans right along the top bowed 30 and then 20 px down, runs down the right side bowed 36 and
+      // 24 px in, holds in the bottom-right corner and heads back. Each bow eases into its turn like a spring and holds
+      // its far point for a few frames while the other axis keeps moving, 20 px inside the top and 23 px inside the
+      // right side; read as springs, those turns became page edges and the plain margin past them, one colour like an
+      // overscroll band, was left out of the print. No frame runs past the page.
+      const world = makeWorld(1500, 1100, 251, 'cards', 2);
+      world.fill({ x: 1500 - 48, y: 0, width: 48, height: 1100 }, [251, 250, 246]);
+      const ease = {
+        in: (t: number) => t * t,
+        out: (t: number) => 1 - (1 - t) * (1 - t),
+        inOut: (t: number) => (1 - Math.cos(Math.PI * t)) / 2,
+      };
+      const path: Point[] = [];
+      let at = { x: 0, y: 0 };
+      const hold = (n: number) => {
+        for (let i = 0; i < n; i++) path.push({ x: Math.round(at.x), y: Math.round(at.y) });
+      };
+      const move = (to: Point, n: number, e: (t: number) => number, bow: number) => {
+        const length = Math.hypot(to.x - at.x, to.y - at.y) || 1;
+        const normal = { x: -(to.y - at.y) / length, y: (to.x - at.x) / length };
+        for (let i = 1; i <= n; i++) {
+          const t = i / n, s = e(t), bend = bow * Math.sin(Math.PI * t);
+          path.push({
+            x: Math.round(at.x + (to.x - at.x) * s + normal.x * bend),
+            y: Math.round(at.y + (to.y - at.y) * s + normal.y * bend),
+          });
+        }
+        at = to;
+      };
+      hold(9);
+      move({ x: 430, y: 0 }, 28, ease.in, 30);
+      move({ x: 860, y: 0 }, 28, ease.out, 20);
+      move({ x: 860, y: 350 }, 28, ease.inOut, 36);
+      move({ x: 860, y: 700 }, 28, ease.inOut, 24);
+      hold(12);
+      move({ x: 300, y: 400 }, 30, ease.inOut, 0);
+      return {
+        name,
+        description: '沿页缘弯着平移：在录到范围的最外端折返、像回弹一样缓停，但页面在别处才停稳，折返处不是页面的边。',
+        width: W,
+        height: H,
+        background: [251, 250, 246],
+        layers: [body(world, path)],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 251)],
+        frames: frames(path.length),
+        expect: expect({
+          fragments: { body: 0 },
+          bounds: { x: 0, y: HEADER, width: 1500, height: 1100 },
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
+        }),
+      };
+    }
+    case 'overscroll-sideways': {
+      // A real spring while the page pans sideways (test_1, test_4): the page is flung down into its bottom edge while
+      // the hand already scrolls right 40 px a frame, runs 40 px past the edge, springs back while still panning, comes
+      // to rest at the edge and later scrolls away. The overscroll background past the edge is not page content, so
+      // the print must end at the page's bottom edge.
+      const world = makeWorld(2000, 1400, 253, 'cards', 3);
+      const path: Point[] = [];
+      for (let i = 0; i < 5; i++) path.push({ x: 0, y: 600 });
+      for (const y of [660, 730, 800, 860, 910, 950, 980, 1000, 1020, 1034, 1040, 1037, 1031, 1024, 1018, 1013, 1009]) {
+        path.push({ x: path[path.length - 1].x + (y > 1000 || path.length > 18 ? 40 : 0), y });
+      }
+      for (const y of [1006, 1004, 1003, 1002, 1001, 1000, 1000, 1000]) path.push({ x: path[path.length - 1].x + 40, y });
+      const rest = path[path.length - 1];
+      for (let i = 0; i < 10; i++) path.push({ ...rest });
+      for (const y of [960, 880, 780, 680, 600]) path.push({ x: rest.x, y });
+      return {
+        name,
+        description: '横向平移中的回弹：页面越过底边再弹回，弹回时仍在横向平移，越界露出的底色不是页面内容。',
+        width: W,
+        height: H,
+        background: [226, 229, 234],
+        layers: [body(world, path, { pageEdges: true })],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 253)],
+        frames: frames(path.length),
+        expect: expect({
+          fragments: { body: 0 },
+          // The first frame's pose (0, 600) is the canvas origin: the page from row 600 to its bottom edge (row 1400),
+          // and the 680 px the path pans right plus one viewport across.
+          bounds: { x: 0, y: HEADER, width: 680 + W, height: 800 },
           diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
       };
