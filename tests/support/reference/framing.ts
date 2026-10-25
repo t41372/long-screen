@@ -62,7 +62,7 @@ export function referenceFrameCoordinate(
   if (y >= p.y + p.height) return undefined;
   return { x: x < p.x ? x : x - dx, y };
 }
-function mode(values: number[]): number {
+function mode(values: number[]): [number, number] {
   const counts = new Map<number, number>();
   let best = values[0] || 0, count = 0;
   for (const v of values) {
@@ -73,22 +73,57 @@ function mode(values: number[]): number {
       best = v;
     }
   }
-  return best;
+  return [best, count];
+}
+const near = (v: number, c: number): boolean => {
+  for (let k = 0; k < 32; k += 8) if (Math.abs(((v >>> k) & 255) - ((c >>> k) & 255)) > 8) return false;
+  return true;
+};
+/** The colour a row or column extends with on its own: its mode, when the row has one background colour (Rust
+ *  `Background::extension`): the mode holds at least a fifth of the pane's samples exactly, or more than half of
+ *  them lie within 8 levels of it in every channel. A row without one (a Dock of icons over the wallpaper) stays
+ *  transparent unless `continueBand` gives it a neighbour's colour. */
+function extension(samples: number[]): number {
+  const [best, exact] = mode(samples);
+  const n = samples.filter((v) => near(v, best)).length;
+  return samples.length > 0 && (exact * 5 >= samples.length || n * 2 > samples.length) ? best : 0;
+}
+/** Rust `continue_band`: within one band of chrome rows (columns), a row without a colour of its own continues an
+ *  extended neighbour's colour when more than half of its samples lie within 8 levels of it; forwards, then
+ *  backwards over the rows still without one. */
+function continueBand(fill: Uint32Array, start: number, end: number, samplesOf: (i: number) => number[]): void {
+  const agrees = (i: number, colour: number) => {
+    const s = samplesOf(i);
+    return s.filter((v) => near(v, colour)).length * 2 > s.length;
+  };
+  for (let i = start + 1; i < end; i++) {
+    if (!fill[i] && fill[i - 1] && agrees(i, fill[i - 1])) fill[i] = fill[i - 1];
+  }
+  for (let i = end - 2; i >= start; i--) {
+    if (!fill[i] && fill[i + 1] && agrees(i, fill[i + 1])) fill[i] = fill[i + 1];
+  }
 }
 function backgrounds(image: RGBA, pane: Rect): { rows: Uint32Array; columns: Uint32Array } {
   const pixels = new Uint32Array(image.data.buffer, image.data.byteOffset, image.data.length / 4);
   const rows = new Uint32Array(image.height), columns = new Uint32Array(image.width);
   const xs = Math.max(1, Math.floor(pane.width / 128)), ys = Math.max(1, Math.floor(pane.height / 128));
-  for (let y = 0; y < image.height; y++) {
+  const rowSamples = (y: number) => {
     const samples: number[] = [];
     for (let x = pane.x; x < pane.x + pane.width; x += xs) samples.push(pixels[y * image.width + x]);
-    rows[y] = mode(samples);
-  }
-  for (let x = 0; x < image.width; x++) {
+    return samples;
+  };
+  const columnSamples = (x: number) => {
     const samples: number[] = [];
     for (let y = pane.y; y < pane.y + pane.height; y += ys) samples.push(pixels[y * image.width + x]);
-    columns[x] = mode(samples);
-  }
+    return samples;
+  };
+  for (let y = 0; y < image.height; y++) rows[y] = extension(rowSamples(y));
+  for (let x = 0; x < image.width; x++) columns[x] = extension(columnSamples(x));
+  const clamp = (v: number, n: number) => Math.min(Math.max(0, v), n);
+  continueBand(rows, 0, clamp(pane.y, image.height), rowSamples);
+  continueBand(rows, clamp(pane.y + pane.height, image.height), image.height, rowSamples);
+  continueBand(columns, 0, clamp(pane.x, image.width), columnSamples);
+  continueBand(columns, clamp(pane.x + pane.width, image.width), image.width, columnSamples);
   return { rows, columns };
 }
 export async function referenceBuildFramedCanvas(
