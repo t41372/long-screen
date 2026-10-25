@@ -49,6 +49,8 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 头less 运行 + Playwr
 - `toolbar-collapse`：地址栏收起使正文可视区在录制中途变大。断言只要求完成、报告冲突、错误像素低于 10%；`invented` 额外棘轮在今天实测值（48,360）之上 +~5%。这是已知局限，不是通过。
 - `blank`：大面积纯色时无纹理帧不被画到任何位置，断言其产生 `UNOBSERVABLE_FRAME` 与独立片段。
 
+嵌套滚动的三个场景（`NESTED_SCENARIO_NAMES`：`nested-scroll-box`、`pane-majority`、`pane-rare-scroll`）不在目录里：它们的两层落在同一个引擎区域，逐层像素检查会把另一层的像素算成 `invented`，表达不了现状。`tests/unit/nested-scroll.test.ts` 量它们（`test-results/nested-scroll.json`：每层落在哪个区域、是否与另一层共用、位姿误差与像素计数），外层「现在是对的」照常断言，内层的失败像 `unlearnedFixed` 一样当已知局限守着——引擎一旦给内层自己的区域或跟上它的位姿就失败，届时把场景搬进目录做逐像素检查。
+
 ## 运行测试与复现
 
 `DEFAULT_SETTINGS` 包含 `framing: 'context'` 与 `compute: 'auto'`，这样 `deno task test`（不显式覆盖 settings 的每个场景）跑的是应用实际发货的配置——每个场景真正跑过带外框呈现阶段和 `auto` 的 WebGPU/CPU 校准，而不是被 worker 校验隐式降级成 `region`/`cpu`。测试与场景数量会随开发持续变化；不要把某一次跑出的数字当成固定基线，以 `deno task test` / `deno task test:browser` 自己这次的输出、以及 `test-results/` 为准。

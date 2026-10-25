@@ -278,6 +278,12 @@ export const SCENARIO_NAMES = [
   'header-lag-collapse',
 ] as const;
 export type ScenarioName = typeof SCENARIO_NAMES[number];
+/** Nested scrolling, which the engine does not reconstruct yet (docs/ARCHITECTURE.md §九): a scroll box that moves
+ *  with its page, a narrow pane scrolling beside a wide still one inside a panning layout (own_a), and a pane that
+ *  scrolls in only a few frames (the stationary-region rule's known limitation, §十). Not in the catalogue: their
+ *  layers share one engine region, which the per-layer pixel checks cannot express. `tests/unit/nested-scroll.test.ts`
+ *  measures them and guards what they show today. */
+export const NESTED_SCENARIO_NAMES = ['nested-scroll-box', 'pane-majority', 'pane-rare-scroll'] as const;
 /** Deterministic recordings with exact ground truth. Each one isolates a behaviour named in the requirements. */
 export function buildScenario(name: ScenarioName | string): Scenario {
   const W = 640, H = 448, HEADER = 48, bodyViewport = { x: 0, y: HEADER, width: W, height: H - HEADER };
@@ -465,6 +471,107 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           fragments: { left: 0, right: 0 },
           diagnostics: { present: ['MULTIPLE_SCROLL_LAYERS'], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
+      };
+    }
+    case 'nested-scroll-box': {
+      // A scroll box inside an article (13% of the body viewport): it moves with the page, and while the page stands
+      // still for 30 frames only the box scrolls. The box's screen rectangle is the page's rectangle for it moved by
+      // the page path and clipped to the body viewport, so its pose is the page's translation plus its own scroll.
+      const page = makeWorld(900, 2400, 301, 'article'), inner = makeWorld(320, 1400, 302, 'cards');
+      const box = { x: 160, y: 900, width: 320, height: 110 };
+      page.fill(box, [236, 236, 230]);
+      page.stroke({ x: box.x - 2, y: box.y - 2, width: box.width + 4, height: box.height + 4 }, [120, 126, 118]);
+      const pagePath: Point[] = [], viewports: Rect[] = [], boxPath: Point[] = [];
+      const bottom = bodyViewport.y + bodyViewport.height;
+      for (let i = 0; i < 90; i++) {
+        const p = { x: 0, y: i < 35 ? i * 20 : i < 65 ? 700 : 700 + (i - 65) * 16 }, scroll = i < 35 ? 0 : i < 65 ? (i - 35) * 20 : 600;
+        const top = bodyViewport.y + box.y - p.y,
+          y0 = Math.max(bodyViewport.y, Math.min(bottom, top)),
+          y1 = Math.max(y0, Math.min(bottom, top + box.height));
+        pagePath.push(p);
+        viewports.push({ x: box.x - p.x, y: y0, width: box.width, height: y1 - y0 });
+        boxPath.push({ x: 0, y: scroll + y0 - top });
+      }
+      return {
+        name,
+        description: '长文里的内嵌滚动框跟着页面走；页面停住时只有它自己滚。',
+        width: W,
+        height: H,
+        background: [251, 250, 246],
+        layers: [body(page, pagePath), { id: 'box', viewport: viewports[40], viewports, world: inner, path: boxPath }],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 31)],
+        frames: frames(pagePath.length),
+        expect: expect({ fragments: { body: -1, box: -1 }, limitation: true }),
+      };
+    }
+    case 'pane-majority': {
+      // own_a's shape: a two-pane layout wider than the screen (a pinch-zoomed page). The view starts on the narrow
+      // right pane and pans down, pans left until the wide left pane fills two thirds of it, the right pane alone
+      // scrolls 320 px, then the view pans back right and up over what it saw first.
+      const LEFT = 420, RIGHT = 480;
+      const left = makeWorld(LEFT, 2400, 311, 'cards'), right = makeWorld(RIGHT, 3200, 312, 'article');
+      const view: Point[] = [], own: number[] = [];
+      for (let i = 0; i < 90; i++) {
+        if (i < 20) view.push({ x: 260, y: i * 12 }), own.push(0);
+        else if (i < 35) view.push({ x: Math.round(260 - (i - 19) * 260 / 15), y: 240 }), own.push(0);
+        else if (i < 55) view.push({ x: 0, y: 240 }), own.push((i - 34) * 16);
+        else if (i < 70) view.push({ x: Math.round((i - 54) * 260 / 15), y: 240 }), own.push(320);
+        else view.push({ x: 260, y: 240 - (i - 69) * 12 }), own.push(320);
+      }
+      const pane = (id: string, origin: number, world: World, base: number): Layer => {
+        const viewports: Rect[] = [], path: Point[] = [];
+        view.forEach((v, i) => {
+          const x0 = Math.max(0, origin - v.x), x1 = Math.min(W, origin + world.width - v.x);
+          viewports.push({ x: x0, y: HEADER, width: Math.max(0, x1 - x0), height: H - HEADER });
+          path.push({ x: x0 + v.x - origin, y: v.y + (id === 'right' ? own[i] : 0) });
+        });
+        return { id, viewport: viewports[base], viewports, world, path };
+      };
+      return {
+        name,
+        description: '宽的静止左栏占视口多数时，窄右栏自己滚动，之后整个版面二维平移（own_a 的形状）。',
+        width: W,
+        height: H,
+        background: [251, 250, 246],
+        layers: [pane('left', 0, left, 45), pane('right', LEFT, right, 10)],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 32)],
+        frames: frames(view.length),
+        expect: expect({ fragments: { left: -1, right: -1 }, limitation: true }),
+      };
+    }
+    case 'pane-rare-scroll': {
+      // Two fixed panes like `panes`, but the right one (40% of the body) scrolls in only six frames while the left
+      // one scrolls throughout: the nested container docs/ARCHITECTURE.md §十 says the stationary-region rule freezes.
+      const left = makeWorld(380, 2400, 321, 'cards'), right = makeWorld(256, 1600, 322, 'article');
+      const n = 80, lp: Point[] = [], rp: Point[] = [];
+      for (let i = 0; i < n; i++) {
+        lp.push({ x: 0, y: i * 6 });
+        rp.push({ x: 0, y: 20 * (Math.max(0, Math.min(3, i - 29)) + Math.max(0, Math.min(3, i - 59))) });
+      }
+      const divider: Overlay = {
+        id: 'divider',
+        kind: 'fixed',
+        draw: (frame) => {
+          const r = { x: 380, y: HEADER, width: 4, height: H - HEADER };
+          fillRGBA(frame, r, [57, 67, 55]);
+          return [r];
+        },
+      };
+      return {
+        name,
+        description: '两个固定 pane，右边那个只在六帧里自己滚动。',
+        width: W,
+        height: H,
+        background: [251, 250, 246],
+        layers: [{ id: 'left', viewport: { x: 0, y: HEADER, width: 380, height: H - HEADER }, world: left, path: lp }, {
+          id: 'right',
+          viewport: { x: 384, y: HEADER, width: 256, height: H - HEADER },
+          world: right,
+          path: rp,
+        }],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 33), divider],
+        frames: frames(n),
+        expect: expect({ fragments: { left: -1, right: -1 }, limitation: true }),
       };
     }
     case 'gap': {
