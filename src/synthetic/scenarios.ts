@@ -965,26 +965,20 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         kind: 'dynamic',
         draw: (frame, index, time) => index < 30 ? tall.draw(frame, index, time) : short.draw(frame, index, time),
       };
-      // maxInvented ratchets the known-limitation reconstruction: today's measured invented 48,360px (test-results/scenarios-d.json), +~5%.
-      // maxProvisional is back at its default 0: the measured provisionalPixels is 0. The old 42,759 (measured
-      // 40,722) was left over from an earlier engine. The per-frame viewports did not remove it: the 51 frames are
-      // byte-identical to the earlier description with a fixed body viewport and a `collapse` overlay painting the
-      // exposed rows, so the viewports change only what the verifier expects, not what the engine sees.
+      // Issue #1. The learner finds the bar's collapse (rust/long-screen/src/kernels/regions/epochs.rs::band_collapse:
+      // 96 → 48 rows at frame 30) and gives the bar and the page ownership epochs, so every check is exact. Before
+      // epochs the page region kept the bar's rows 18–96 and the first frame wrote the tall bar's lower part into the
+      // page canvas: invented 48,360 px (620 × 78), checked only against a 10% limit.
       return {
         name,
-        description: '地址栏收起：正文可视区在录制中途变大。已知局限，只要求不崩溃、不伪造。',
+        description: '地址栏收起：正文可视区在录制中途变大，栏与页面按时期交接这条带。',
         width: W,
         height: H,
         background: [251, 250, 246],
         layers: [layer],
         overlays: [header],
         frames: frames(path.length),
-        expect: expect({
-          fragments: { body: -1 },
-          limitation: true,
-          maxInvented: 50800,
-          diagnostics: { present: ['TEMPORAL_OR_ALIGNMENT_CONFLICT'], absent: ['PROCESSING_ERROR', 'NONFINITE_POSE'] },
-        }),
+        expect: expect({ fragments: { body: 0 } }),
       };
     }
     case 'chrome-everything': {

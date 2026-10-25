@@ -131,3 +131,20 @@ Deno.test('region epochs: write report', async () => {
     JSON.stringify({ command: 'deno test --allow-read --allow-write --allow-env tests/unit/region-epochs.test.ts', reports }, null, 1),
   );
 });
+
+Deno.test("region epochs: the learner gives toolbar-collapse's bar and page the collapse at frame 30", async () => {
+  const scenario = buildScenario('toolbar-collapse');
+  const result = await runScenario(scenario, scenario.settings ?? {});
+  try {
+    const bar = result.regions.find((r) => r.kind === 'fixed' && r.rect.y === 0 && r.rect.width === W)!;
+    const page = result.regions.find((r) => r.kind === 'moving')!;
+    assertEquals(bar.rect.height, TALL);
+    assertEquals(bar.epochs, [{ from: COLLAPSE, exclusions: [band] }]);
+    const [before, after] = page.epochs!;
+    assertEquals([before.from, after.from], [0, COLLAPSE]);
+    assertEquals(before.exclusions[0].y + before.exclusions[0].height, TALL);
+    assertEquals(after.exclusions[0].y + after.exclusions[0].height, SHORT);
+  } finally {
+    result.dispose();
+  }
+});

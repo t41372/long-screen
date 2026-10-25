@@ -328,14 +328,14 @@ impl ScanSession {
             .expect("step_motion runs with a previous frame");
         let field = estimate(&previous, current, aw, ah)?;
         if informative_field(&field) {
-            self.learn(&field, &previous, current);
+            self.learn(&field, &previous, current, true);
             self.baseline = Some(current.clone());
         } else if let Some(baseline) = self.baseline.clone() {
             let gap = current.index - baseline.index;
             if gap >= LONG_BASELINE_MIN_GAP {
                 let long = estimate(&baseline, current, aw, ah)?;
                 if informative_field(&long) {
-                    self.learn(&long, &baseline, current);
+                    self.learn(&long, &baseline, current, false);
                     self.baseline = Some(current.clone());
                 } else if gap > LONG_BASELINE_MAX_GAP {
                     self.baseline = Some(current.clone());
@@ -345,7 +345,8 @@ impl ScanSession {
         Ok(field)
     }
 
-    fn learn(&mut self, field: &MotionField, from: &Observed, to: &Observed) {
+    /// Feeds one field to the region learner; `consecutive` when it spans two consecutive frames (not a long baseline).
+    fn learn(&mut self, field: &MotionField, from: &Observed, to: &Observed, consecutive: bool) {
         let motions: Vec<FieldMotion> = field
             .motions
             .iter()
@@ -372,8 +373,13 @@ impl ScanSession {
             self.width,
             self.height,
         ));
-        self.learner
-            .add(&learner_field, &from.gray, &to.gray, native);
+        if consecutive {
+            self.learner
+                .add_consecutive(to.index, &learner_field, &from.gray, &to.gray, native);
+        } else {
+            self.learner
+                .add(&learner_field, &from.gray, &to.gray, native);
+        }
     }
 
     /// Builds the run's regions (none when no frame was analysed) from the learned evidence, or from `manual` when

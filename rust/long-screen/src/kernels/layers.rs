@@ -82,6 +82,11 @@ pub struct Learner {
     pub native_frames: u32,
     pub native_width: usize,
     pub native_height: usize,
+    /// For the last informative field: the first analysis row from the top, within the upper 45%, where the strongest
+    /// moving model explained the sampled pixels clearly better than staying put (at least 3 samples, more than twice
+    /// as many as the other way) — where the moving page started below whatever stays on top in that frame. `None`
+    /// without a moving model or such a row. `regions::band_collapse` reads it frame by frame.
+    pub last_top_moving: Option<u32>,
 }
 
 impl Learner {
@@ -115,6 +120,7 @@ impl Learner {
             native_col_change: Vec::new(),
             native_col_mean: Vec::new(),
             native_frames: 0,
+            last_top_moving: None,
             native_width: 0,
             native_height: 0,
         }
@@ -240,7 +246,9 @@ impl Learner {
                 moving = Some(m);
             }
         }
+        self.last_top_moving = None;
         if let Some(moving) = moving {
+            let (mut fixed_votes, mut moving_votes) = (vec![0u32; height], vec![0u32; height]);
             let dx = crate::kernels::geometry::js_round(moving.x) as i64;
             let dy = crate::kernels::geometry::js_round(moving.y) as i64;
             let (w, h) = (width as i64, height as i64);
@@ -258,14 +266,20 @@ impl Learner {
                     if stationary + 6 < motion {
                         self.row_fixed[y as usize] += 1.0;
                         self.pixel_fixed[i] += 1.0;
+                        fixed_votes[y as usize] += 1;
                     }
                     if motion + 6 < stationary {
                         self.row_moving[y as usize] += 1.0;
                         self.pixel_moving[i] += 1.0;
+                        moving_votes[y as usize] += 1;
                     }
                     x += 4;
                 }
             }
+            let upper = (height as f64 * 0.45) as usize;
+            self.last_top_moving = (0..upper)
+                .find(|&y| moving_votes[y] >= 3 && moving_votes[y] > 2 * fixed_votes[y])
+                .map(|y| y as u32);
         }
         true
     }

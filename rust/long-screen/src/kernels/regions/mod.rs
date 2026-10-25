@@ -35,7 +35,10 @@ use construct::{apply_cell_granularity, apply_pane_divider, build_regions, expan
 use crops::{
     assign_native_crops, compute_native_edges, recompute_bounding_boxes, refine_vertical_cut_crops,
 };
-pub use epochs::{epoch_index, epoch_starts, exclusions_at, extra_exclusions, RegionEpoch};
+pub use epochs::{
+    apply_collapse, band_collapse, epoch_index, epoch_starts, exclusions_at, extra_exclusions,
+    Collapse, RegionEpoch,
+};
 use merge::{cleanup_sticky_headers, finalize, freeze_stationary_regions, merge_small_regions};
 
 /// Borrowed RGBA8 image (`RGBA` in types.ts), used only for texture/appearance evidence.

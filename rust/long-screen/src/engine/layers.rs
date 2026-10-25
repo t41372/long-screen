@@ -35,6 +35,9 @@ struct NativeFrame {
 pub struct RegionLearner {
     learner: Learner,
     reference: Option<NativeFrame>,
+    /// Per consecutive informative pair: the later frame and the analysis row where the moving page started at the
+    /// top (`Learner::last_top_moving`), for `regions::band_collapse`.
+    top_series: Vec<(u32, u32)>,
 }
 
 impl RegionLearner {
@@ -43,6 +46,7 @@ impl RegionLearner {
         RegionLearner {
             learner: Learner::new(width, height),
             reference: None,
+            top_series: Vec::new(),
         }
     }
 
@@ -74,6 +78,23 @@ impl RegionLearner {
                     })
                 }
             }
+        }
+        informative
+    }
+
+    /// [`RegionLearner::add`] for the pair of consecutive frames ending at `frame`, which also records where the
+    /// moving page started at the top, so `finish` can tell a top band that collapses (issue #1).
+    pub fn add_consecutive(
+        &mut self,
+        frame: u32,
+        field: &Field<'_>,
+        prev: &[u8],
+        current: &[u8],
+        native: Option<(&[u8], &[u8], usize, usize)>,
+    ) -> bool {
+        let informative = self.add(field, prev, current, native);
+        if let (true, Some(row)) = (informative, self.learner.last_top_moving) {
+            self.top_series.push((frame, row));
         }
         informative
     }
@@ -131,7 +152,11 @@ impl RegionLearner {
             row_moving: Some(&l.row_moving),
             reference,
         };
-        regions::finish(&input, native_width, native_height, factor)
+        let mut out = regions::finish(&input, native_width, native_height, factor);
+        if let Some(collapse) = regions::band_collapse(&self.top_series, factor) {
+            regions::apply_collapse(&mut out, collapse, native_width);
+        }
+        out
     }
 }
 

@@ -43,13 +43,12 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 头less 运行 + Playwr
 
 固定覆盖物默认要求固定画布等于第 0 帧、零冲突。声明了 `Overlay.settled` 的固定覆盖物（`menu-bar`）在录制中会变：它的固定画布必须与那一帧只画固定覆盖物（不画指针等动态覆盖物）的样子逐像素相同；带外框成品里这一段外框必须与参照帧（第 0 帧）只画固定覆盖物的样子相同，即保留第 0 帧的布局、去掉其中的指针（`verifyFramedChrome`）；冲突数不要求为零，因为栏确实变过。`live-bar` 的栏一直在变（三分之一的帧都换了状态），声明 `settled: 0`：固定画布必须保留第 0 帧原样，外框同样是参照帧。
 
-三个场景**声明**了不同的期望，而不是被放宽：
+两个场景**声明**了不同的期望，而不是被放宽：
 
 - `repeated-list-reversal`：完全相同的列表行中途反向，向上 15px 与向下 29px 在像素上无法区分。断言改为“误差只能是行高 44px 的整数倍”，并要求出现 `AMBIGUOUS_PATTERN` 与低置信标记；`invented`/`mismatched` 额外棘轮在今天实测值（563,200 / 73,026）之上 +~5%，不是无限放开。
-- `toolbar-collapse`：地址栏收起使正文可视区在录制中途变大。断言只要求完成、报告冲突、错误像素低于 10%；`invented` 额外棘轮在今天实测值（48,360）之上 +~5%。这是已知局限，不是通过。
 - `blank`：大面积纯色时无纹理帧不被画到任何位置，断言其产生 `UNOBSERVABLE_FRAME` 与独立片段。
 
-归属随时间变化（`Region.epochs`）由 `tests/unit/region-epochs.test.ts` 端到端验证：`toolbar-collapse` 及其「收起后往回滚过起点」的变体，用手放的、带时期的区域跑完整流水线，页面画布要逐像素正确（missing/invented/mismatched/maxError 为 0），而且任何一帧看见过的页面像素都在画布上（`test-results/region-epochs.json`）。第二个变体专门让收起空出的那条带里出现只在那里看得见的内容：哪一遍若一直读第一张标签平面，结果就等于不带时期、页面从第 96 行开始的手放布局，少 30,720 个像素。
+`toolbar-collapse`（地址栏收起使正文可视区在录制中途变大，issue #1）现在是精确检查：学习器认出栏在第 30 帧从 96 行收到 48 行，栏与页面按时期交接这条带，missing/invented/mismatched/maxError 都是 0（以前只断言错误像素低于 10%，invented 实测 48,360）。归属随时间变化（`Region.epochs`）由 `tests/unit/region-epochs.test.ts` 端到端验证：`toolbar-collapse` 及其「收起后往回滚过起点」的变体，用手放的、带时期的区域跑完整流水线，页面画布要逐像素正确（missing/invented/mismatched/maxError 为 0），而且任何一帧看见过的页面像素都在画布上（`test-results/region-epochs.json`）。第二个变体专门让收起空出的那条带里出现只在那里看得见的内容：哪一遍若一直读第一张标签平面，结果就等于不带时期、页面从第 96 行开始的手放布局，少 30,720 个像素。
 
 嵌套滚动的三个场景（`NESTED_SCENARIO_NAMES`：`nested-scroll-box`、`pane-majority`、`pane-rare-scroll`）不在目录里：它们的两层落在同一个引擎区域，逐层像素检查会把另一层的像素算成 `invented`，表达不了现状。`tests/unit/nested-scroll.test.ts` 量它们（`test-results/nested-scroll.json`：每层落在哪个区域、是否与另一层共用、位姿误差与像素计数），外层「现在是对的」照常断言，内层的失败像 `unlearnedFixed` 一样当已知局限守着——引擎一旦给内层自己的区域或跟上它的位姿就失败，届时把场景搬进目录做逐像素检查。
 
