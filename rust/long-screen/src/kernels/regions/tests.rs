@@ -871,12 +871,26 @@ fn without_the_votes_the_walk_stops_at_the_thumb() {
 
 /// `glass_bands_over` with the row votes of every row given by `votes(y)` (standing still, following, per frame).
 fn vote_bands(votes: &dyn Fn(usize) -> (f64, f64)) -> super::bands::Bands {
+    vote_bands_with_objects(votes, &|_| 0)
+}
+
+/// `objects(y)`: how many of row `y`'s sampled columns (every 4th from 2) belong to an object standing still in half
+/// the frames and never following the page.
+fn vote_bands_with_objects(
+    votes: &dyn Fn(usize) -> (f64, f64),
+    objects: &dyn Fn(usize) -> usize,
+) -> super::bands::Bands {
     let (w, h) = (204usize, 300usize);
     let frames = 10.0;
     let row_change = vec![5.0 * frames; h];
     let row_fixed: Vec<f64> = (0..h).map(|y| frames * votes(y).0).collect();
     let row_moving: Vec<f64> = (0..h).map(|y| frames * votes(y).1).collect();
-    let (pixel_fixed, pixel_moving) = (vec![0.0; w * h], vec![0.0; w * h]);
+    let (mut pixel_fixed, pixel_moving) = (vec![0.0; w * h], vec![0.0; w * h]);
+    for y in 0..h {
+        for i in 0..objects(y) {
+            pixel_fixed[y * w + 2 + 4 * i] = 0.5 * frames;
+        }
+    }
     super::bands::detect_bands(
         w as i64,
         h as i64,
@@ -939,6 +953,34 @@ fn rows_the_page_moves_too_often_end_a_bar() {
         _ => PAGE,
     });
     assert_eq!(bands.bottom, 290);
+}
+
+// pub_6's status bar: the rows through the bottom of the Dynamic Island stand still only 1.08 to 1.42 times as often
+// as they follow the page, because the page shows through on both sides of the island, but the island's own pixels
+// stand still in every frame (25 sampled pixels a row). The walk stopped above them and the band cut the island in
+// two, its lower half torn in the print. own_f's rows under ChatGPT's input box (1.16 to 1.32) hold no such pixel.
+const DILUTED: (f64, f64) = (11.0, 10.0);
+
+#[test]
+fn rows_whose_objects_stand_still_do_not_cut_a_bar() {
+    let bands = vote_bands_with_objects(
+        &|y| match y {
+            10..13 => DILUTED,
+            _ if y < 20 => BAR,
+            _ => PAGE,
+        },
+        &|y| if (10..13).contains(&y) { 10 } else { 0 },
+    );
+    assert_eq!(bands.top, 20);
+    let bands = vote_bands_with_objects(
+        &|y| match y {
+            10..13 => DILUTED,
+            _ if y < 20 => BAR,
+            _ => PAGE,
+        },
+        &|_| 0,
+    );
+    assert_eq!(bands.top, 10);
 }
 
 #[test]

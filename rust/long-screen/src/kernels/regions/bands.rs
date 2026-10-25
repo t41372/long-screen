@@ -454,8 +454,12 @@ pub fn detect_bands(
             };
             // A bar's rows over the glass stand still only about 1.5 to 2 times as often as they follow the page
             // near its edges, so the walk crosses a gap of at most `FIXED_ROW_GAP` native px of rows just under the
-            // ratio (`STATIONARY_GAP_RATIO`) when a row that stands still follows it; the band still ends at the last
-            // row that stands still.
+            // ratio (`STATIONARY_GAP_RATIO`), or of rows that still hold a fixed object (`FIXED_ROW_SAMPLES`), when a
+            // row that stands still follows it; the band still ends at the last row that stands still. An object
+            // narrower than the row leaves the page showing through on both sides, which dilutes the row's ratio but
+            // not the object's own pixels: pub_6's rows through the bottom of the Dynamic Island read 1.08 to 1.42
+            // with 25 fixed samples each, and the band cut the island in two. The page under own_f's input box (1.16
+            // to 1.32) holds none.
             let near = |y: i64| {
                 stationary_by_votes(
                     fixed,
@@ -465,7 +469,8 @@ pub fn detect_bands(
                     height,
                     informative_frames,
                     STATIONARY_GAP_RATIO,
-                )
+                ) || fixed_pixels(pixel_votes, y, width, height, informative_frames)
+                    >= FIXED_ROW_SAMPLES
             };
             let gap_rows = js_ceil(FIXED_ROW_GAP / factor) as i64;
             if top == 0 {
