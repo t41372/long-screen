@@ -3,6 +3,7 @@ import type { Demuxer, Packet } from './reader.ts';
 import { BlobReader } from './reader.ts';
 import { probeIsobmff } from './isobmff-probe.ts';
 import { t } from '../i18n/index.ts';
+import { audFirst, nalLengthSize } from './hevc.ts';
 /** Container demuxing on top of mediabunny's packet-level API (`Input` + `BlobSource` + `EncodedPacketSink`).
  *  Decoding itself is still WebCodecs, driven from `source.ts` — but its *output* is not unchanged: mediabunny
  *  reports a video track's `VideoColorSpace` (`colorSpace` on the returned `VideoDecoderConfig`), which the hand-
@@ -227,9 +228,11 @@ export class MediabunnyDemuxer implements Demuxer {
     }
   }
   async *packets(): AsyncGenerator<Packet> {
+    // HEVC key chunks go to the decoder with their access unit delimiter first (src/media/hevc.ts).
+    const lengthSize = /^(hev1|hvc1)\./.test(this.config.codec) ? nalLengthSize(this.config.description) : undefined;
     for await (const p of this.sink.packets()) {
       yield {
-        data: p.data,
+        data: lengthSize && p.type === 'key' ? audFirst(p.data, lengthSize) : p.data,
         timestamp: Math.round(p.timestamp * 1e6),
         duration: Math.round(p.duration * 1e6),
         key: p.type === 'key',
