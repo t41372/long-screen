@@ -32,6 +32,7 @@ export interface ScenarioReport {
       contaminatedDynamic: number;
       torn: number;
       provisionalPixels: number;
+      renderProvisionalPixels: number;
       skipped: number;
       fragments: number;
       covered: number;
@@ -112,7 +113,8 @@ async function checkResult(name: string, scenario: Scenario, result: RunResult):
       analyticUnobservable: v.analyticUnobservable,
       contaminatedDynamic: v.contaminatedDynamic,
       torn: v.torn,
-      provisionalPixels: v.mainCanvas.provisionalPixels,
+      provisionalPixels: v.provisional,
+      renderProvisionalPixels: v.mainCanvas.provisionalPixels,
       skipped: v.skipped,
       fragments: v.fragments.length,
       covered: v.covered,
@@ -194,8 +196,8 @@ async function checkResult(name: string, scenario: Scenario, result: RunResult):
       }`,
     );
     assert(
-      v.mainCanvas.provisionalPixels <= (e.maxProvisional ?? 0),
-      `${name}/${layer.id}: provisionalPixels ${v.mainCanvas.provisionalPixels} exceeds ratchet ${e.maxProvisional ?? 0}`,
+      v.provisional <= (e.maxProvisional ?? 0),
+      `${name}/${layer.id}: provisionalPixels ${v.provisional} exceeds ratchet ${e.maxProvisional ?? 0}`,
     );
     assert(v.torn <= (e.maxTorn ?? 0), `${name}/${layer.id}: torn ${v.torn} exceeds ratchet ${e.maxTorn ?? 0}`);
     assert(

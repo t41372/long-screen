@@ -826,7 +826,7 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           maxContaminatedOverlay: 2904,
           maxContaminatedOverlayUnobservable: 1517,
           maxContaminatedOverlayRecoverable: 1311,
-          maxProvisional: 1832,
+          maxProvisional: 1304,
           diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
       };
@@ -1006,7 +1006,8 @@ export function buildScenario(name: ScenarioName | string): Scenario {
       // disagreement condemns frame 52 as well, with voting silent for both (a world position entering at
       // the leading edge one frame before the end is off screen in every ring partner that clears Dmin).
       // NONE of the 1,905 sit in analysis cells the voting interior mask (`RegionSlot.interior`, rust/long-screen/src/kernels/voting.rs) excludes from voting.
-      // maxProvisional is the net unhealed flag count at the end: measured 32,151px, +~5%.
+      // maxProvisional bounds the provisional bits left in the final tiles: 2,080 (the render pass alone ends with
+      // 32,151 net flags; the reveal stage replaces most of them).
       // The reveal stage (docs/ARCHITECTURE.md §七) then replaces most of the recoverable residue: measured 1,966px total
       // and 302px recoverable after it; maxContaminatedOverlay and maxContaminatedOverlayRecoverable are those +5%.
       return {
@@ -1037,7 +1038,7 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           maxContaminatedOverlayUnobservable: 1664,
           maxContaminatedOverlayRecoverable: 317,
           maxContaminatedDynamic: 60436,
-          maxProvisional: 33759,
+          maxProvisional: 2080,
           diagnostics: { present: ['TEMPORAL_OR_ALIGNMENT_CONFLICT'], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
       };
@@ -1369,12 +1370,13 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         // Measured on main (c65e33e): the collapsing bar is learned as part of the page region (fixed region only the
         // 48 px status bar), so the bar's frames land on top of the print: invented 35,490, mismatched 1,214,
         // provisional 610; ratchets are those +5 %. Ideal: all 0, and the status bar plus the collapsed bar fixed.
+        // That provisional figure is the render pass's own count; maxProvisional bounds the bits left in the final tiles: 510.
         expect: expect({
           fragments: { body: -1 },
           limitation: true,
           maxInvented: 37300,
           maxMismatched: 1280,
-          maxProvisional: 650,
+          maxProvisional: 510,
           diagnostics: { present: [], absent: ['PROCESSING_ERROR', 'NONFINITE_POSE'] },
         }),
       };
@@ -1465,13 +1467,15 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         // whose still rows lie below rows only the page explains has no band, frame 57 has none either: 640
         // px of the carousel under the expanding header move from contaminatedDynamic to contaminatedOverlay (17,944, all
         // but 32 of it unobservable; contaminatedDynamic 91,480), the same pixels, recoverable and provisional unchanged.
+        // Those provisional figures are the render pass's own count; maxProvisional bounds the bits left in the final
+        // tiles, after the reveal stage: 144.
         expect: expect({
           fragments: { body: 0 },
           maxContaminatedOverlay: 18170,
           maxContaminatedOverlayRecoverable: 34,
           maxContaminatedOverlayUnobservable: 91824,
           maxContaminatedDynamic: 96659,
-          maxProvisional: 65460,
+          maxProvisional: 144,
           diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
         }),
       };
@@ -1585,11 +1589,12 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         // seen clean before the TOC arrived (recoverable); 7,774 px are left provisional. Since a frame whose still rows
         // lie below rows only the page explains has no sticky band, frames 147 and 149 no longer take the TOC's rows
         // below scrolling text for a band from the region's top: 37,393 and 6,539. Ratchets are those +5 %. Ideal: contaminatedOverlay 0.
+        // The provisional figures are the render pass's own count; maxProvisional bounds the bits left in the final tiles: 816.
         expect: expect({
           fragments: { body: 0 },
           maxContaminatedOverlay: 39263,
           maxContaminatedOverlayRecoverable: 39263,
-          maxProvisional: 6866,
+          maxProvisional: 816,
           diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
         }),
       };
@@ -1801,7 +1806,8 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         frames: frames(path.length),
         // Measured on 6947e94 and since a walk may cross a thumb (the same): the thumb's pixels left on the page canvas
         // beside the page (576, 312 recoverable, the other 264 never seen clean; provisional 136) and in the margin
-        // (480: 348, 132; provisional 56). Ratchets are those +5 % (the unobservable share exactly). On 6947e94 the
+        // (480: 348, 132; provisional 56). Ratchets are those +5 % (the unobservable share exactly), except maxProvisional,
+        // which bounds the provisional bits left in the final tiles (60 and 28), not the render pass's count. On 6947e94 the
         // strip beyond the editor was frozen as a fixed region of its own, cut at an analysis cell (x 552), whose canvas
         // held the moving thumb and reported 25 temporal conflicts; the band walk now takes minimap and thumb as a right
         // band from the minimap's edge (x 556), with none.
@@ -1812,14 +1818,14 @@ export function buildScenario(name: ScenarioName | string): Scenario {
               maxContaminatedOverlay: 605,
               maxContaminatedOverlayRecoverable: 328,
               maxContaminatedOverlayUnobservable: 264,
-              maxProvisional: 143,
+              maxProvisional: 60,
             }
             : name === 'thumb-beside-margin'
             ? {
               maxContaminatedOverlay: 504,
               maxContaminatedOverlayRecoverable: 366,
               maxContaminatedOverlayUnobservable: 132,
-              maxProvisional: 59,
+              maxProvisional: 28,
             }
             : {}),
           diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
@@ -1845,10 +1851,10 @@ export function buildScenario(name: ScenarioName | string): Scenario {
       // Ratchets (contaminatedOverlay, all of it recoverable; provisional): see the measurement note below.
       const measured: Record<string, [number, number]> = {
         'sticky-toc-fade': [16851, 0],
-        'sticky-toc-duty-25': [3545, 166],
-        'sticky-toc-duty-31': [0, 341],
-        'sticky-toc-duty-40': [0, 223],
-        'sticky-toc-title': [17036, 13],
+        'sticky-toc-duty-25': [3545, 0],
+        'sticky-toc-duty-31': [0, 0],
+        'sticky-toc-duty-40': [0, 0],
+        'sticky-toc-title': [17036, 0],
       };
       const duty = name === 'sticky-toc-duty-25' ? .25 : name === 'sticky-toc-duty-40' ? .4 : .31;
       const title = name === 'sticky-toc-title', paused = name === 'sticky-toc-fade';
@@ -1936,7 +1942,8 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         // explains has no sticky band, the TOC's rows below scrolling text are no longer taken for a band from the top (duty 31 %
         // frame 175, fade frame 35, title frames 92–98, 138, 140), so the page rows above them are written again:
         // fade 16,048, duty 25 % 3,376, 31 % 0, 40 % 0, title 16,224; provisional 0, 158, 324, 212, 12. Ratchets are
-        // those +5 %. Ideal: contaminatedOverlay 0.
+        // those +5 %. Ideal: contaminatedOverlay 0. The provisional figures are the render pass's own count; no
+        // provisional bit is left in any of these final tiles, which is what maxProvisional bounds.
         expect: expect({
           fragments: { body: 0 },
           maxContaminatedOverlay: measured[name][0],

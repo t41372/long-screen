@@ -125,6 +125,10 @@ export interface LayerReport {
   /** See FragmentReport.torn. */
   torn: number;
   covered: number;
+  /** Covered main-canvas pixels whose tile still carries the provisional bit at the end of the run, after the
+   *  reveal stage: what `maxProvisional` bounds. `mainCanvas.provisionalPixels` is the render pass's own net count,
+   *  taken before the reveal stage replaces flagged blocks, and can be far larger. */
+  provisional: number;
   expected: number;
   /** Body pixels the atlas assigned to this region (per frame). */
   regionPixels: number;
@@ -145,6 +149,8 @@ interface CanvasCheck {
   analyticUnobservable: number;
   torn: number;
   covered: number;
+  /** Covered pixels whose tile still carries the provisional bit once the run is over (after the reveal stage). */
+  provisional: number;
   expected: number;
   pixelChecked: boolean;
 }
@@ -196,6 +202,7 @@ async function verifyCanvas(
       analyticUnobservable: 0,
       torn: 0,
       covered: 0,
+      provisional: 0,
       expected: 0,
       pixelChecked: false,
     };
@@ -304,6 +311,7 @@ async function verifyCanvas(
     contaminatedOverlayUnobservable = 0,
     contaminatedOverlayRecoverable = 0,
     unobservableProvisional = 0,
+    provisional = 0,
     covered = 0,
     expectedCount = 0;
   for (let i = 0; i < expected.length; i++) {
@@ -323,6 +331,9 @@ async function verifyCanvas(
         continue;
       }
       covered++;
+      if ((stored.provisional?.[i >> 3] ?? 0) & (1 << (i & 7))) {
+        provisional++;
+      }
       const cx = t.x * size + (i % size), cy = t.y * size + Math.floor(i / size), ex = cx - bx, ey = cy - by;
       const isExpected = ex >= 0 && ey >= 0 && ex < bw && ey < bh && expected[ey * bw + ex];
       if (!isExpected) {
@@ -415,6 +426,7 @@ async function verifyCanvas(
     analyticUnobservable,
     torn,
     covered,
+    provisional,
     expected: expectedCount,
     pixelChecked: true,
   };
@@ -518,6 +530,7 @@ export async function verifyLayer(result: VerifiableRun, layer: Layer, options: 
     contaminatedDynamic: main.contaminatedDynamic,
     torn: main.torn,
     covered: main.covered,
+    provisional: main.provisional,
     expected: main.expected,
     regionPixels,
     fragmentReports,

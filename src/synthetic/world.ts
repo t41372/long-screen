@@ -325,9 +325,11 @@ export interface Expectations {
    *  unconditionally in scenario-check.ts). Defaults to 0 — a scenario with real unobservable content records
    *  the analytic number as a comment where it declares this. */
   maxContaminatedOverlayUnobservable?: number;
-  /** Net provisional-pixel count (CanvasMeta.provisionalPixels) the main canvas must end at or below once the run
-   *  finishes: unhealed world-consistency mask flags still standing in the final result. Defaults to 0 (exact) —
-   *  a scenario with overlays/dynamics that a one-frame lookahead cannot fully heal declares a measured value. */
+  /** Main-canvas pixels whose tile still carries the provisional bit once the run finishes (after the reveal stage):
+   *  unhealed world-consistency mask flags still standing in the final result. The render pass's own net count
+   *  (CanvasMeta.provisionalPixels) is reported as `renderProvisionalPixels` but not bounded: the reveal stage
+   *  replaces many flagged blocks afterwards. Defaults to 0 (exact) — a scenario with overlays/dynamics that a
+   *  one-frame lookahead cannot fully heal declares a measured value. */
   maxProvisional?: number;
   /** Fixed overlays the engine is known not to learn as fixed (a measured limitation): a run in which no fixed canvas
    *  overlaps one is recorded in the report instead of failing. Once a fixed canvas covers it, the check fails until
