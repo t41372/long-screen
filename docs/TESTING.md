@@ -198,7 +198,7 @@ cargo run --release -p long-screen --example parity -- recording ../test_case/pu
 
 ## 仍未验证
 
-- 实体 Safari / iPhone / iPad / Android 全流程。移动尺寸截图不能替代真机。手机上的转换路线（iOS Safari 的 HDR 平面、Android Chrome 是否也交出无法拷贝的帧）只靠首帧核对兜底，没有实测。
+- 真机上可重放的验证。维护者 2026-10-10 在 iPhone Safari、iPad Safari 与 Android Chrome 上手动跑通过全流程（机型与录屏没有记录），真实 macOS Safari 只跑过 test_7；这些都不是带真值、能重跑的测试，移动尺寸截图也不能替代它们。手机上的转换路线（iOS Safari 的 HDR 平面、Android Chrome 是否也交出无法拷贝的帧）仍只靠首帧核对兜底，没有逐帧实测。
 - 300MB+ / 10 分钟以上真实录屏的完整三遍重建耗时与内存峰值。
 - 4GiB 以上导出、长期运行功耗。
 - 瓦片缓存上限（运行设置里的「瓦片缓存上限」）只约束自有瓦片缓存，放不下一帧要画的瓦片时自动加大（`MEMORY_BUDGET_RAISED`），不包括解码器、GPU、浏览器与核心的内存。
