@@ -664,11 +664,19 @@ pub fn estimate_motion(
         }
         labels = next;
     }
-    let strongest =
-        motions.iter().fold(
-            &motions[0],
+    // The strongest *measured* motion decides whether the frame's motion is known. The zero placeholder added above
+    // carries a fixed 0.5 prior and no matches; a measured motion's confidence is discounted by its patch error, and
+    // on a step of half an analysis pixel (an odd native step analysed at half size) every integer offset keeps
+    // half of each crisp edge's contrast as error, so a step with 150–220 matches fell below the placeholder and
+    // its frame was called unresolved. The placeholder still decides when nothing was measured.
+    let mut measured = motions.iter().filter(|m| m.support > 0);
+    let strongest = match measured.next() {
+        Some(first) => measured.fold(
+            first,
             |m, n| if n.confidence > m.confidence { n } else { m },
-        );
+        ),
+        None => &motions[0],
+    };
     let unknown = strongest.support < 4 && difference > 5.0;
     MotionField {
         motions,
@@ -2186,6 +2194,96 @@ mod tests {
             r.error < 14.0,
             "expected the true shift to clear the odometry gate, got {}",
             r.error
+        );
+    }
+
+    // Failure case for the motion field's `unknown` flag on an odd native step analysed at half size (a 1× screen
+    // recording, static/demo/sample.mp4 recorded with odd steps): the step is half an analysis pixel, so every
+    // integer offset leaves half of each crisp stroke's contrast as patch error, and the measured motion's
+    // confidence falls below the 0.5 prior of the zero placeholder `estimate_motion` adds when no hypothesis is
+    // still. The placeholder has no support, so taking it as the strongest motion called a frame with 150–220
+    // matches on one step unresolved (59 of 342 steps on the demo's odd variant, none on the even one).
+    #[test]
+    fn a_half_pixel_step_with_many_matches_is_not_unknown() {
+        let (w, h) = (480usize, 300usize);
+        let (nw, nh) = (2 * w + 64, 2 * h + 64);
+        // A whiteboard: a light page with thin dark strokes and a few filled shapes, at native resolution.
+        let mut rng = Rng::new(29);
+        let mut world = vec![245u8; nw * nh];
+        for _ in 0..260 {
+            let (x, y) = (
+                (rng.next_f64() * (nw - 40) as f64) as usize,
+                (rng.next_f64() * (nh - 40) as f64) as usize,
+            );
+            // Strokes two native pixels wide: one analysis pixel of ink on one phase, two half-inked ones on the other.
+            let (len, thick) = (8 + (rng.next_f64() * 30.0) as usize, 2);
+            let ink = (10.0 + rng.next_f64() * 40.0) as u8;
+            let vertical = rng.next_f64() < 0.5;
+            for t in 0..thick {
+                for l in 0..len {
+                    let (px, py) = if vertical {
+                        (x + t, y + l)
+                    } else {
+                        (x + l, y + t)
+                    };
+                    world[py * nw + px] = ink;
+                }
+            }
+        }
+        let frame = |ox: usize, oy: usize| -> Vec<u8> {
+            let mut rgba = vec![0u8; 2 * w * 2 * h * 4];
+            for y in 0..2 * h {
+                for x in 0..2 * w {
+                    let v = world[(oy + y) * nw + ox + x];
+                    rgba[(y * 2 * w + x) * 4..(y * 2 * w + x) * 4 + 4]
+                        .copy_from_slice(&[v, v, v, 255]);
+                }
+            }
+            let mut gray = vec![0u8; w * h];
+            crate::kernels::raster::downscale_gray(&rgba, 2 * w, 2 * h, 2, &mut gray);
+            gray
+        };
+        // Native step (15, 9): (7.5, 4.5) analysis pixels.
+        let (a, b) = (frame(20, 20), frame(35, 29));
+        let fa = extract_features(&a, w, h, 480, None);
+        let fb = extract_features(&b, w, h, 480, None);
+        let matches: Vec<MatchPoints> = match_features(&fa, &fb, true)
+            .iter()
+            .map(|m| MatchPoints {
+                ax: fa[m.a as usize].x as f64,
+                ay: fa[m.a as usize].y as f64,
+                bx: fb[m.b as usize].x as f64,
+                by: fb[m.b as usize].y as f64,
+                unique: m.unique,
+            })
+            .collect();
+        let ga = Gray {
+            width: w,
+            height: h,
+            data: &a,
+        };
+        let gb = Gray {
+            width: w,
+            height: h,
+            data: &b,
+        };
+        let field = estimate_motion(ga, gb, &matches, fb.len() as u32);
+        let step = field
+            .motions
+            .iter()
+            .find(|m| (m.x - 7.5).abs() <= 1.0 && (m.y - 4.5).abs() <= 1.0)
+            .expect("the step is among the hypotheses");
+        assert!(step.support >= 20, "{} matches on the step", step.support);
+        assert!(
+            !field.unknown,
+            "the step has {} matches (confidence {:.3}); motions {:?}",
+            step.support,
+            step.confidence,
+            field
+                .motions
+                .iter()
+                .map(|m| (m.x, m.y, m.support, m.confidence))
+                .collect::<Vec<_>>()
         );
     }
 }
