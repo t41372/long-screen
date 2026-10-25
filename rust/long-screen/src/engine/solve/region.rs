@@ -737,6 +737,25 @@ impl SolveSession {
 
     /// Lost: relocalizes onto an existing canvas, takes odometry's rescued step, or starts a new fragment.
     fn apply_lost(&mut self, i: usize, ctx: &FrameCtx, s: &mut Step, found: Option<Found>) {
+        #[cfg(test)]
+        let found = match self.seams.relocalize.as_mut() {
+            Some(seam) => {
+                let mut m = found
+                    .as_ref()
+                    .map(|m| (m.keyframe.clone(), m.offset, m.confidence));
+                seam(ctx.index, &mut m);
+                m.map(|(keyframe, offset, confidence)| Found {
+                    keyframe,
+                    offset,
+                    confidence,
+                    ambiguous: false,
+                    support: 40,
+                    unique: 30,
+                    error: 4.0,
+                })
+            }
+            None => found,
+        };
         let verdict = found.as_ref().is_some_and(|m| {
             track::relocalize_verdict(
                 Some(track::MatchInfo {
@@ -749,9 +768,33 @@ impl SolveSession {
         if let (true, Some(m)) = (verdict, found) {
             let canvas = resolve_target(&self.attachments, &m.keyframe.canvas_id).to_string();
             let shift = attachment_shift(&self.attachments, &m.keyframe.canvas_id);
+            let pose = track::target_pose((m.keyframe.x, m.keyframe.y), m.offset, shift);
+            // Leaving one canvas for another, the frame's pose on the canvas it leaves is known when odometry
+            // measured its step (the rescue the plain error rejected): that pose and the relocalized one are the same
+            // frame, so the canvas it leaves is tied onto the other. Without this, a fragment opened in a blurred
+            // stretch and left by a relocalization stayed a separate canvas although its last step was measured
+            // (new_ip_6: frames 1311-1452; frame 1453's rescue measured (-38, -12) from frame 1452, and the tie puts
+            // all 142 frames within 6 px of the independent registration).
+            let leaving = self.states[i].canvas_id.clone();
+            if let (Some(rescue), false, true) =
+                (s.rescue.as_ref(), s.zoom_change, leaving != canvas)
+            {
+                let state_pose = self.states[i].pose;
+                let measured = (state_pose.0 + rescue.delta.0, state_pose.1 + rescue.delta.1);
+                if is_valid_pose(measured.0, measured.1) && is_valid_pose(pose.0, pose.1) {
+                    self.record_attachment(
+                        &leaving,
+                        &canvas,
+                        (pose.0 - measured.0, pose.1 - measured.1),
+                        ctx,
+                        m.confidence.min(rescue.confidence),
+                        &m.keyframe.node,
+                    );
+                }
+            }
             let state = &mut self.states[i];
             state.canvas_id = canvas;
-            state.pose = track::target_pose((m.keyframe.x, m.keyframe.y), m.offset, shift);
+            state.pose = pose;
             state.last_node = None;
             state.anchor = Some(m.keyframe.clone());
             state.velocity = (0.0, 0.0);
@@ -1102,20 +1145,48 @@ impl SolveSession {
             return;
         };
         let state_pose = self.states[i].pose;
+        self.record_attachment(
+            &canvas_id,
+            &target,
+            (pose.0 - state_pose.0, pose.1 - state_pose.1),
+            ctx,
+            global.confidence,
+            &global.keyframe.node,
+        );
+        keys.attached_from = Some(canvas_id);
+        keys.attach_match = Some(global);
+        let state = &mut self.states[i];
+        state.canvas_id = target;
+        state.pose = pose;
+        state.last_node = None;
+        state.velocity = (0.0, 0.0);
+    }
+
+    /// Ties canvas `id` rigidly onto `target` by `shift` (a pose on `id` plus `shift` is the same pose on `target`):
+    /// stores the attachment, marks the canvas as attached and reports `FRAGMENT_ATTACHED`. `node` is the target
+    /// keyframe's pose-graph node the attachment follows when a later loop closure moves it.
+    fn record_attachment(
+        &mut self,
+        id: &str,
+        target: &str,
+        shift: (f64, f64),
+        ctx: &FrameCtx,
+        confidence: f64,
+        node: &str,
+    ) {
         let attachment = Attachment {
-            id: canvas_id.clone(),
-            target: target.clone(),
-            dx: pose.0 - state_pose.0,
-            dy: pose.1 - state_pose.1,
+            id: id.to_string(),
+            target: target.to_string(),
+            dx: shift.0,
+            dy: shift.1,
             frame: ctx.index,
-            confidence: global.confidence,
-            node: global.keyframe.node.clone(),
+            confidence,
+            node: node.to_string(),
         };
-        self.attachments
-            .insert(canvas_id.clone(), attachment.clone());
+        self.attachments.insert(id.to_string(), attachment.clone());
         self.effects.push(Effect::Attachment(attachment.clone()));
-        if let Some(meta) = self.canvases.get_mut(&canvas_id) {
-            meta.attached_to = Some(target.clone());
+        if let Some(meta) = self.canvases.get_mut(id) {
+            meta.attached_to = Some(target.to_string());
             let meta = meta.clone();
             self.effects.push(Effect::Canvas {
                 meta,
@@ -1126,7 +1197,7 @@ impl SolveSession {
             Diagnostic::new("FRAGMENT_ATTACHED", Severity::Info)
                 .at(ctx.index, ctx.time)
                 .canvas(&attachment.target)
-                .confidence(global.confidence)
+                .confidence(confidence)
                 .detail(Value::Object(vec![
                     ("id", Value::Text(attachment.id.clone())),
                     ("target", Value::Text(attachment.target.clone())),
@@ -1137,13 +1208,6 @@ impl SolveSession {
                     ("node", Value::Text(attachment.node.clone())),
                 ])),
         );
-        keys.attached_from = Some(canvas_id);
-        keys.attach_match = Some(global);
-        let state = &mut self.states[i];
-        state.canvas_id = target;
-        state.pose = pose;
-        state.last_node = None;
-        state.velocity = (0.0, 0.0);
     }
 
     /// Corrects a thin-overlap step against a same-canvas revisit before the node exists, so the odometry edge

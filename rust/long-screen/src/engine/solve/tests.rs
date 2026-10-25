@@ -4,8 +4,9 @@
 //! by odometry or drift control, which must start a fresh fragment and never reach a placement; an attachment or
 //! thin-overlap correction with an invalid pose, which must be rejected before anything is stored; a step the plain
 //! native error rejected but odometry measured, which must be placed instead of starting a fragment (and only then),
-//! and which an anchor re-acquisition that contradicts it must not replace; and frames still in the voting ring when
-//! the frames end, which must still be finalised.
+//! and which an anchor re-acquisition that contradicts it must not replace; a fragment left by a lost frame that
+//! relocalizes onto another canvas after odometry measured its step, which must be tied to that canvas (and only
+//! then); and frames still in the voting ring when the frames end, which must still be finalised.
 //!
 //! Frames are windows onto a synthetic textured page; [`Seams`] replaces a core decision where a test needs one.
 
@@ -17,6 +18,9 @@ use crate::kernels::track::{
 
 type OdometrySeam = Box<dyn FnMut(u32, &mut OdometryEstimate) -> bool>;
 type Seam<T> = Box<dyn FnMut(&mut Option<T>)>;
+/// A lost frame's relocalization: the matched keyframe, the frame's offset from it and the match's confidence.
+pub(crate) type Relocalization = (Arc<Keyframe>, (f64, f64), f64);
+type RelocalizeSeam = Box<dyn FnMut(u32, &mut Option<Relocalization>)>;
 
 /// Replacements for core decisions. `odometry` may edit a frame's estimate and returns whether that frame's anchor
 /// re-acquisition fails; `reacquire` may replace a re-acquisition's result; `thin` also opens the thin-overlap gate.
@@ -28,6 +32,8 @@ pub(crate) struct Seams {
     pub drift: Option<Seam<DriftEstimate>>,
     pub attach: Option<Seam<(f64, f64)>>,
     pub thin: Option<Seam<((f64, f64), f64)>>,
+    /// Replaces a lost frame's relocalization (an unambiguous match).
+    pub relocalize: Option<RelocalizeSeam>,
 }
 
 const W: usize = 160;
@@ -811,4 +817,116 @@ fn a_frame_placed_through_the_anchor_weighs_a_sticky_block_with_the_pose_step() 
         frames[3].placements[0].occlusions
     );
     assert!(!frames[4].placements[0].occlusions.contains(&PANEL));
+}
+
+// A fragment that is never tied back (new_ip_6, Google Maps satellite: frames 1311-1452 opened a fragment in a blurred
+// stretch, and frame 1453 was lost on it and relocalized straight onto the main canvas; the fragment was left as a
+// separate canvas although odometry had measured that very step from the fragment's last frame, so the frame's pose
+// on both canvases was known). Ways the tie could go wrong, written before it was made:
+// - the lost frame relocalizes onto another canvas and the fragment it leaves stays apart (the failure itself);
+// - the fragment is tied without a measured step (odometry gave no rescue): nothing relates its poses to the other
+//   canvas then;
+// - the tie uses the fragment's previous pose instead of the measured step, or the other canvas's keyframe without
+//   the match's offset;
+// - a relocalization onto the region's own canvas, or a magnification change, ties anything.
+/// C scrolls up a page from 600 (frames 0-5); frame 6 jumps to 380, where no keyframe exists, and opens a fragment F
+/// that scrolls down 15 px a frame to 425 (frame 9); frame 10 moves 75 px on to 500, back over C's first frame. Frame 10
+/// is lost (its anchor re-acquisition fails too) and relocalizes onto C's first keyframe at offset `(0, -100)`;
+/// odometry offers the measured 75 px step as a rescue when `rescue`. The frames after it scroll on down 7 px a frame.
+fn lost_off_a_fragment(rescue: bool, onto_own_canvas: bool) -> (Host, Vec<FrameDone>) {
+    let page = page();
+    let (mut host, mut s) = (Host::default(), session(true));
+    let offsets: Vec<usize> = (0..6)
+        .map(|i| 600 - i * 7)
+        .chain([380, 395, 410, 425, 500])
+        .chain((1..8).map(|i| 500 + i * 7))
+        .collect();
+    let mut frames = Vec::new();
+    for (i, &o) in offsets.iter().enumerate().take(6) {
+        frames.push(host.frame(&mut s, i as u32, window(&page, o)));
+    }
+    let first = host
+        .keyframes
+        .values()
+        .find(|k| k.frame == 0)
+        .cloned()
+        .map(Arc::new)
+        .expect("frame 0 is a keyframe");
+    s.seams.odometry = Some(Box::new(move |frame, est| {
+        if frame != 10 {
+            return false;
+        }
+        est.decision = OdometryDecision::Lost;
+        est.rescue = rescue.then_some(Rescue {
+            phase_support: false,
+            delta: (0.0, 75.0),
+            confidence: 0.4,
+            ambiguous: false,
+            weak_step: false,
+            step_error: 20.0,
+        });
+        true
+    }));
+    s.seams.relocalize = Some(Box::new(move |frame, found| match frame {
+        6 => *found = None,
+        10 if onto_own_canvas => {}
+        10 => *found = Some((first.clone(), (0.0, -100.0), 0.8)),
+        _ => {}
+    }));
+    for (i, &o) in offsets.iter().enumerate().skip(6) {
+        frames.push(host.frame(&mut s, i as u32, window(&page, o)));
+    }
+    (host, frames)
+}
+
+fn attachments(host: &Host) -> Vec<&crate::engine::attachments::Attachment> {
+    host.effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Attachment(a) => Some(a),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_fragment_left_by_a_measured_step_onto_another_canvas_is_tied_to_it() {
+    let (host, frames) = lost_off_a_fragment(true, false);
+    assert_eq!(
+        frames[6].placements[0].canvas_id,
+        "body-part-1",
+        "{:?}",
+        host.codes()
+    );
+    assert_eq!(frames[10].placements[0].canvas_id, "body-part-0");
+    assert_eq!(frames[10].placements[0].y, -100.0);
+    let tied = attachments(&host);
+    assert_eq!(tied.len(), 1, "{:?}", host.codes());
+    // Frame 10 is at 0 + 15 * 3 + 75 = 120 on the fragment and at -100 on C: every fragment frame moves by -220, so
+    // frame 6 (page 380) lands where C's page 380 is (600 at the origin).
+    assert_eq!(
+        (
+            tied[0].id.as_str(),
+            tied[0].target.as_str(),
+            tied[0].dx,
+            tied[0].dy,
+            tied[0].frame
+        ),
+        ("body-part-1", "body-part-0", 0.0, -220.0, 10)
+    );
+    assert!(host.codes().contains(&"FRAGMENT_ATTACHED"));
+}
+
+#[test]
+fn a_fragment_without_a_measured_step_stays_apart() {
+    let (host, frames) = lost_off_a_fragment(false, false);
+    assert_eq!(frames[10].placements[0].canvas_id, "body-part-0");
+    assert!(attachments(&host).is_empty(), "{:?}", host.codes());
+}
+
+#[test]
+fn a_relocalization_onto_the_fragment_itself_ties_nothing() {
+    let (host, frames) = lost_off_a_fragment(true, true);
+    assert_eq!(frames[6].placements[0].canvas_id, "body-part-1");
+    assert!(attachments(&host).is_empty(), "{:?}", host.codes());
 }
