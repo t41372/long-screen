@@ -261,27 +261,40 @@ impl LayerStats {
                     (fx0 + fw - c + px).div_euclid(c) + 1,
                 ];
                 let (cx_lo, cx_hi) = (lo.into_iter().max().unwrap(), hi.into_iter().min().unwrap());
-                for cx in cx_lo..cx_hi.max(cx_lo) {
-                    let sx = cx * c - px;
-                    let (lx, mx) = (cx - k, (sx - fx0) as usize);
-                    if m0[mx] == 0 || m0[mx + 1] == 0 || m1[mx] == 0 || m1[mx + 1] == 0 {
+                if cx_hi <= cx_lo {
+                    continue;
+                }
+                // The run of cells walked in step: two mask bytes and two RGBA pixels of each of the cell's two rows,
+                // and the accumulator of the layer cell it is credited to (sx = 2cx - px, mx = sx - fx0, lx = cx - k).
+                let n = (cx_hi - cx_lo) as usize;
+                let sx0 = cx_lo * c - px;
+                let (mx0, i0) = ((sx0 - fx0) as usize, sx0 as usize * 4);
+                // SAFETY: world row `cy` maps to screen-cell row `ly` alone, chunks own disjoint world rows, and
+                // `cx_lo - k .. cx_hi - k` lies inside the layer's `cw` cells.
+                let accs = unsafe {
+                    std::slice::from_raw_parts_mut(
+                        cells.get().add((ly * cw + cx_lo - k) as usize),
+                        n,
+                    )
+                };
+                let masks = m0[mx0..mx0 + 2 * n]
+                    .chunks_exact(2)
+                    .zip(m1[mx0..mx0 + 2 * n].chunks_exact(2));
+                let pixels = f0[i0..i0 + 8 * n]
+                    .chunks_exact(8)
+                    .zip(f1[i0..i0 + 8 * n].chunks_exact(8));
+                for (cx, (((a, b), (p, q)), acc)) in
+                    (cx_lo..cx_hi).zip(masks.zip(pixels).zip(accs.iter_mut()))
+                {
+                    if a[0] == 0 || a[1] == 0 || b[0] == 0 || b[1] == 0 {
                         continue;
                     }
                     let Some(rv) = reference.cell(cx, cy) else {
                         continue;
                     };
-                    let i = sx as usize * 4;
-                    let mut o = [0u32; 3];
-                    for (k, v) in o.iter_mut().enumerate() {
-                        *v = (f0[i + k] as u32
-                            + f0[i + 4 + k] as u32
-                            + f1[i + k] as u32
-                            + f1[i + 4 + k] as u32
-                            + 2)
-                            / 4;
-                    }
-                    // SAFETY: world row `cy` maps to screen-cell row `ly` alone, and chunks own disjoint world rows.
-                    let acc = unsafe { &mut *cells.get().add((ly * cw + lx) as usize) };
+                    let o: [u32; 3] = std::array::from_fn(|k| {
+                        (p[k] as u32 + p[4 + k] as u32 + q[k] as u32 + q[4 + k] as u32 + 2) / 4
+                    });
                     acc.add(o, [rv[0] as u32, rv[1] as u32, rv[2] as u32], tau);
                     compared += 1;
                 }
@@ -290,5 +303,159 @@ impl LayerStats {
             unsafe { *counted.get().add(k) = compared };
         });
         counts.iter().sum()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kernels::reveal::{CanvasView, Footprint, Frame};
+
+    // Failure cases of walking a row of cells over slices: an off-by-one at either end of the run (the frame edge, the
+    // footprint edge, the layer's last cell, an odd pose putting the cell's second column outside), a mask byte read
+    // from the wrong column or row, a cell credited to the wrong accumulator, a cell the reference does not know
+    // compared anyway, or the count of compared cells differing from the cells actually added.
+
+    /// A small deterministic generator (the tests need varied layouts, not statistical quality).
+    struct Lcg(u64);
+    impl Lcg {
+        fn next(&mut self) -> u32 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (self.0 >> 33) as u32
+        }
+        fn below(&mut self, n: u32) -> u32 {
+            self.next() % n
+        }
+    }
+
+    /// Every world cell checked one by one against the definition in `accumulate_cells`'s documentation.
+    fn naive<R: CellRef + Sync>(
+        stats: &mut LayerStats,
+        frame: &Frame<'_>,
+        fp: &Footprint<'_>,
+        reference: &R,
+        pose: (i64, i64),
+        tau: i32,
+    ) -> usize {
+        let (px, py) = pose;
+        let c = CELL as i64;
+        let (rx0, ry0, rx1, ry1) = reference.cells();
+        let mut compared = 0;
+        for cy in ry0..ry1 {
+            for cx in rx0..rx1 {
+                let (sx, sy) = (cx * c - px, cy * c - py);
+                let inside = |x: i64, y: i64| {
+                    x >= 0
+                        && y >= 0
+                        && x < frame.width as i64
+                        && y < frame.height as i64
+                        && x >= fp.x
+                        && y >= fp.y
+                        && x < fp.x + fp.width as i64
+                        && y < fp.y + fp.height as i64
+                        && fp.mask[((y - fp.y) * fp.width as i64 + (x - fp.x)) as usize] != 0
+                };
+                if !(inside(sx, sy)
+                    && inside(sx + 1, sy)
+                    && inside(sx, sy + 1)
+                    && inside(sx + 1, sy + 1))
+                {
+                    continue;
+                }
+                let (lx, ly) = ((sx - stats.x).div_euclid(c), (sy - stats.y).div_euclid(c));
+                if lx < 0 || ly < 0 || lx >= stats.cw as i64 || ly >= stats.ch as i64 {
+                    continue;
+                }
+                let Some(rv) = reference.cell(cx, cy) else {
+                    continue;
+                };
+                let px_at = |x: i64, y: i64, k: usize| {
+                    frame.rgba[(y as usize * frame.width + x as usize) * 4 + k] as u32
+                };
+                let o: [u32; 3] = std::array::from_fn(|k| {
+                    (px_at(sx, sy, k)
+                        + px_at(sx + 1, sy, k)
+                        + px_at(sx, sy + 1, k)
+                        + px_at(sx + 1, sy + 1, k)
+                        + 2)
+                        / 4
+                });
+                stats.cells[(ly * stats.cw as i64 + lx) as usize].add(
+                    o,
+                    [rv[0] as u32, rv[1] as u32, rv[2] as u32],
+                    tau,
+                );
+                compared += 1;
+            }
+        }
+        compared
+    }
+
+    #[test]
+    fn a_row_of_cells_walked_in_step_is_every_cell_checked_one_by_one() {
+        let mut rng = Lcg(7);
+        let key = |c: &Acc| {
+            (
+                c.n, c.bad, c.sr, c.so, c.srr, c.sro, c.soo, c.br, c.bg, c.bb, c.bl, c.bll,
+            )
+        };
+        for case in 0..300 {
+            let (w, h) = (8 + rng.below(30) as usize, 6 + rng.below(24) as usize);
+            let rgba: Vec<u8> = (0..w * h * 4).map(|_| rng.below(256) as u8).collect();
+            // The reference canvas: random pixels, about one pixel in eight not covered.
+            let (vx, vy) = (rng.below(9) as i64 - 4, rng.below(9) as i64 - 4);
+            let (vw, vh) = (w + rng.below(6) as usize, h + rng.below(6) as usize);
+            let canvas: Vec<u8> = (0..vw * vh * 4).map(|_| rng.below(256) as u8).collect();
+            let mut coverage = vec![0u8; (vw * vh).div_ceil(8)];
+            for i in 0..vw * vh {
+                if rng.below(8) != 0 {
+                    coverage[i >> 3] |= 1 << (i & 7);
+                }
+            }
+            let reference = CellMap::from_canvas(&CanvasView {
+                x: vx,
+                y: vy,
+                width: vw,
+                height: vh,
+                rgba: &canvas,
+                coverage: &coverage,
+            });
+            // A layer and a footprint that each may be offset from the frame and cut by its edges.
+            let (lx, ly) = (rng.below(5) as i64 - 2, rng.below(5) as i64 - 2);
+            let (fx, fy) = (rng.below(5) as i64 - 2, rng.below(5) as i64 - 2);
+            let (fw, fh) = (w - rng.below(4) as usize, h - rng.below(4) as usize);
+            let mask: Vec<u8> = (0..fw * fh).map(|_| u8::from(rng.below(6) != 0)).collect();
+            let fp = Footprint {
+                x: fx,
+                y: fy,
+                width: fw,
+                height: fh,
+                mask: &mask,
+            };
+            let frame = Frame {
+                rgba: &rgba,
+                width: w,
+                height: h,
+            };
+            let pose = (rng.below(11) as i64 - 5, rng.below(11) as i64 - 5);
+            let tau = rng.below(40) as i32;
+            let mut walked =
+                LayerStats::new(lx, ly, w - rng.below(3) as usize, h - rng.below(3) as usize);
+            let mut checked = walked.clone();
+            let n_walked = walked.accumulate_cells(&frame, &fp, &reference, pose, tau);
+            let n_checked = naive(&mut checked, &frame, &fp, &reference, pose, tau);
+            assert_eq!(n_walked, n_checked, "case {case}: compared cells");
+            assert!(
+                walked
+                    .cells
+                    .iter()
+                    .map(key)
+                    .eq(checked.cells.iter().map(key)),
+                "case {case}: accumulators differ"
+            );
+        }
     }
 }
