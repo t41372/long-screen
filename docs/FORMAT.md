@@ -68,6 +68,8 @@ worldY = tileY * tileSize + inTileY
 
 `regions.json` 是自动分层与手动区域的最终记录：每条 `Region` 包含 kind、rect、可选 crop/solid，以及归属掩码——`mask` 以 base64 编码（不是 jsonl 惯用的数字数组），配 `maskWidth`/`maskHeight`（掩码本身的像素尺寸）与 `factor`（原生→分析坐标的整数缩放，查表用 `floor(x/factor)`，不是四舍五入的比例）。
 
+区域的归属可以随时间变（`epochs`，可选，只在有变化时出现）：`[{ from, exclusions }]` 按 `from` 升序，表示从第 `from` 帧起，这个区域在自己的 `exclusions` 之外再排除这些矩形，直到它的下一个时期开始；第一个时期之前没有额外排除。区域的 `rect` 整段不变，变的只是它拥有哪些像素——例如地址栏收起：栏的下半截在收起前属于栏，收起后属于页面。所有遍都按帧取对应时期的归属（`rust/long-screen/src/kernels/regions/epochs.rs`）。没有 `epochs` 的区域整段归属不变，与这个字段出现之前的记录完全相同。
+
 ## 时间与诊断
 
 `temporal.jsonl` 的 rect 使用所属画布坐标，记录 chosenFrame / chosenTime / complete / revisions，以及一份 `blocks`：本次时间补丁实际覆盖的绝对 `[bx,by]` 16px 块坐标列表，不是 rect 对应的密集矩形——一个不规则形状的更新不会把整个外接矩形都标记为已合并。complete 指算法选择的区域在一次观察中完整可见，不代表语义视频边界正确或全页面同一时刻。

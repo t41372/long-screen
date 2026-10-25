@@ -82,7 +82,8 @@ pub struct Ctx<'a> {
     pub refine_radius: i32,
     pub noise: f64,
     pub regions: Vec<RegionOut>,
-    pub atlas: Option<(Vec<u8>, Vec<u32>)>,
+    /// Pixel ownership per epoch (`engine::layers::Atlas`); one plane for a run whose regions have no epochs.
+    pub atlas: Option<crate::engine::layers::Atlas>,
     pub duplicates: u32,
     pub skipped_paints: u64,
     pub voted_layers: u32,

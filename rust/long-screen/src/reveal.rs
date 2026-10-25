@@ -91,7 +91,8 @@ fn sweep(
     let name = pass_name(pass);
     let message = ctx.tr(&format!("progress.reveal.{name}"), &[]);
     let offset = PASSES.iter().position(|p| *p == pass).unwrap_or(0) as f64;
-    let labels = ctx.atlas.as_ref().ok_or("no region atlas")?.0.clone();
+    let atlas = ctx.atlas.clone().ok_or("no region atlas")?;
+    let mut last = 0;
     let (width, height) = (ctx.info.width, ctx.info.height);
     let started = Instant::now();
     let (mut core_ms, mut write_ms, mut wait_ms, mut upload_ms, mut converted) =
@@ -125,8 +126,9 @@ fn sweep(
             }
             upload_ms += ms(mark);
             let mark = Instant::now();
+            last = frame.index;
             session
-                .push_frame(frame.index, Some(&labels))
+                .push_frame(frame.index, Some(&atlas.at(frame.index).0))
                 .map_err(|e| format!("{e:?}"))?;
             core_ms += ms(mark);
             let mark = Instant::now();
@@ -143,7 +145,7 @@ fn sweep(
         }
     }
     session
-        .end_pass(Some(&labels))
+        .end_pass(Some(&atlas.at(last).0))
         .map_err(|e| format!("{e:?}"))?;
     until(ctx, session, clock, |s| matches!(s, Step::PassDone(_)))?;
     ctx.timing(&format!("reveal.{name}MS"), ms(started));

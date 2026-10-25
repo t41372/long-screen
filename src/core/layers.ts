@@ -36,36 +36,73 @@ export class LayerLearner {
     return this.live.finish(nativeWidth, nativeHeight, manual, factor);
   }
 }
+/** The frames at which any region's ownership changes (its `epochs`), ascending and unique, starting with 0 — the
+ *  host-side mirror of `rust/long-screen/src/kernels/regions/epochs.rs::epoch_starts`, which the native host uses. */
+export function epochStarts(regions: readonly Region[]): number[] {
+  const starts = new Set([0]);
+  for (const r of regions) for (const e of r.epochs ?? []) starts.add(e.from);
+  return [...starts].sort((a, b) => a - b);
+}
+/** A region as it stands at `frame`: its own exclusions plus those of the last epoch starting at or before it
+ *  (`epochs.rs::exclusions_at`). A region without epochs is returned as it is. */
+export function regionAt(region: Region, frame: number): Region {
+  if (!region.epochs?.length) return region;
+  const extra = [...region.epochs].reverse().find((e) => e.from <= frame)?.exclusions ?? [];
+  return { ...region, exclusions: [...(region.exclusions ?? []), ...extra] };
+}
 /** Native-resolution pixel ownership computed once per run: compositing loops index a byte instead of testing
  *  region membership per pixel (`rust/long-screen/src/kernels/region.rs::Region::contains`, via `filter_features` and the
- *  atlas label plane below). `resident` is the label plane's ONLY copy in core memory — solve/render/compositor
- *  read it directly (`atlas.resident`) instead of re-uploading `atlas.labels`, so the plane crosses the JS/Wasm
- *  boundary exactly once, at construction. `resident` lives for the whole run; call `dispose()` exactly once
- *  (run()'s finally) when it is no longer needed. */
+ *  atlas label plane below). One label plane per ownership epoch (`Region.epochs`); a run whose regions have no
+ *  epochs has exactly one, `resident`. Each plane is the label plane's ONLY copy in core memory —
+ *  solve/render/compositor/reveal read the plane of the frame they work on (`residentAt`) instead of re-uploading
+ *  it, so a plane crosses the JS/Wasm boundary exactly once, at construction. The planes live for the whole run;
+ *  call `dispose()` exactly once (run()'s finally) when they are no longer needed. */
 export class RegionAtlas {
-  /** Core-resident label plane (0 = owned by no region, otherwise index + 1 into `regions`; first-containing-
-   *  region wins). The single source of truth; `labels` below is a cached copy of it, only materialised the
-   *  first time a JS-side reader actually needs one. */
-  readonly resident: Resident;
-  /** Per-code pixel counts computed once in the same Rust call that builds `resident`, so count() is O(1)
-   *  without a second scan (in Rust OR in TS) of the label plane. */
-  private readonly counts: Uint32Array;
-  private cachedLabels?: Uint8Array;
+  /** First frame of each plane, ascending, starting at 0. */
+  readonly starts: number[];
+  /** Core-resident label planes (0 = owned by no region, otherwise index + 1 into `regions`; first-containing-
+   *  region wins), one per start; codes are the same in every plane. */
+  private readonly planes: { resident: Resident; counts: Uint32Array; labels?: Uint8Array }[];
   constructor(readonly regions: Region[], readonly width: number, readonly height: number) {
     // Throws this exact message regardless of whether the Rust core rejects the count itself or this early
     // check catches it first (rust/wasm/src/regions.rs::ls_regions_label_atlas): one message, two paths.
     if (regions.length > 254) {
       throw new Error('Too many regions for the pixel atlas.');
     }
-    const { resident, counts } = core().labelAtlasResident(regions, width, height);
-    this.resident = resident;
-    this.counts = counts;
+    this.starts = epochStarts(regions);
+    this.planes = [];
+    try {
+      for (const start of this.starts) {
+        this.planes.push(core().labelAtlasResident(regions.map((r) => regionAt(r, start)), width, height));
+      }
+    } catch (e) {
+      this.dispose();
+      throw e;
+    }
   }
-  /** Plain-array view of the label plane, for the few JS-side readers (tests, synthetic verify, the
+  /** The first plane (the whole run's, when no region has epochs). */
+  get resident(): Resident {
+    return this.planes[0].resident;
+  }
+  private plane(frame: number): { resident: Resident; counts: Uint32Array; labels?: Uint8Array } {
+    let i = 0;
+    while (i + 1 < this.starts.length && this.starts[i + 1] <= frame) i++;
+    return this.planes[i];
+  }
+  /** The plane in effect at `frame`. */
+  residentAt(frame: number): Resident {
+    return this.plane(frame).resident;
+  }
+  /** Plain-array view of the first label plane, for the few JS-side readers (tests, synthetic verify, the
    *  Uint8Array/Resident overload of consistencyMask's `atlas` parameter): copied out of `resident` and cached on
    *  first access, so a caller that never reads it pays nothing and one that does pays once, not per frame. */
   get labels(): Uint8Array {
-    return this.cachedLabels ??= this.resident.bytes();
+    return this.labelsAt(0);
+  }
+  /** Plain-array view of the plane in effect at `frame`, copied out once per plane on first access. */
+  labelsAt(frame: number): Uint8Array {
+    const plane = this.plane(frame);
+    return plane.labels ??= plane.resident.bytes();
   }
   code(region: Region): number {
     const index = this.regions.indexOf(region);
@@ -77,14 +114,19 @@ export class RegionAtlas {
   contains(code: number, x: number, y: number): boolean {
     return x >= 0 && y >= 0 && x < this.width && y < this.height && this.labels[y * this.width + x] === code;
   }
-  /** Pixel count owned by a region (used for coverage accounting and tests). */
-  count(code: number): number {
-    return this.counts[code] || 0;
+  /** Pixel count owned by a region at `frame` (used for coverage accounting and tests). */
+  count(code: number, frame = 0): number {
+    return this.plane(frame).counts[code] || 0;
   }
-  /** Releases the core-resident label plane; the atlas is unusable afterwards. Idempotent (`Resident.free()`
+  /** How many pixels each plane after the first gives `code`, from that plane's first frame on (the render
+   *  session's `ownedEpochs`); empty when there is one plane. */
+  owned(code: number): [number, number][] {
+    return this.starts.slice(1).map((start, i) => [start, this.planes[i + 1].counts[code] || 0]);
+  }
+  /** Releases the core-resident label planes; the atlas is unusable afterwards. Idempotent (`Resident.free()`
    *  already guards repeat calls), so it is safe to call from both a pass's own cleanup and run()'s finally. */
   dispose(): void {
-    this.resident.free();
+    for (const p of this.planes ?? []) p.resident.free();
   }
 }
 

@@ -12,7 +12,7 @@ import { iterate } from '../storage/db.ts';
 import { PoseGraph } from '../core/pose-graph.ts';
 import { Compositor } from '../core/compositor.ts';
 import { pad } from '../core/math.ts';
-import { core, type EngineDiagnostic, type RenderMeta, type RenderNeed, type RenderSessionHandle } from '../core/wasm.ts';
+import { core, type EngineDiagnostic, type RenderMeta, type RenderNeed, type RenderSessionHandle, type Resident } from '../core/wasm.ts';
 import { releaseUnlessHeld } from '../media/pool.ts';
 import { decodePNG, encodeRGBA } from '../codec/png.ts';
 import type { ConsistencyRecord } from './consistency.ts';
@@ -78,7 +78,7 @@ export class RenderPass {
       noise: ctx.noise,
       regions: ctx.regions.map((r) => {
         const code = atlas.code(r);
-        return { id: r.id, kind: r.kind, rect: r.rect, code, ownedPixels: atlas.count(code) };
+        return { id: r.id, kind: r.kind, rect: r.rect, code, ownedPixels: atlas.count(code), ownedEpochs: atlas.owned(code) };
       }),
       attachments,
     });
@@ -167,7 +167,7 @@ export class RenderPass {
       votes.push({ index, record: await ctx.store.get<ConsistencyRecord>(`consistency/${pad(index)}`) });
     }
     session.begin({ index: frame.index, time: frame.time, plan, hasPrev: !!prevImage, prevPlan, hasNext: !!nextImage, nextPlan, votes });
-    const need = await this.drive((index) => {
+    const need = await this.drive(ctx.atlas!.residentAt(frame.index), (index) => {
       const image = index === frame.index ? frame.image : index < frame.index ? prevImage! : nextImage!;
       const { width, height } = ctx.source.info;
       if (image.width !== width || image.height !== height) {
@@ -177,10 +177,11 @@ export class RenderPass {
     });
     return { observation: need.observation, latest: need.latest === undefined ? undefined : this.liveMeta(need.latest) };
   }
-  /** Steps the session until its job is done, answering what it asks for; `frameFor` supplies the ring's frames, and
-   * without it (the finishing job) a frame request is an error and the session's counters are left out, as the
-   * native host leaves them. */
-  private async drive(frameFor?: (index: number) => RGBA): Promise<Extract<RenderNeed, { kind: 'done' }>> {
+  /** Steps the session until its job is done, answering what it asks for; `labels` is the label plane of the frame
+   * it composites (the first frame's for the finishing job, as the native host does), `frameFor` supplies the ring's
+   * frames, and without it (the finishing job) a frame request is an error and the session's counters are left out,
+   * as the native host leaves them. */
+  private async drive(labels: Resident, frameFor?: (index: number) => RGBA): Promise<Extract<RenderNeed, { kind: 'done' }>> {
     const ctx = this.ctx, session = this.session;
     const graph = await this.graph.engine();
     for (;;) {
@@ -188,7 +189,7 @@ export class RenderPass {
         this.compositor.engine,
         ctx.tiles.engine,
         graph,
-        ctx.atlas!.resident,
+        labels,
         performance.now(),
       );
       if (frameFor) {
@@ -226,7 +227,7 @@ export class RenderPass {
   private async finishFixed(): Promise<void> {
     const ctx = this.ctx, session = this.session;
     try {
-      if (session.beginFinish()) await this.drive();
+      if (session.beginFinish()) await this.drive(ctx.atlas!.residentAt(0));
     } catch (error) {
       session.cancel(this.compositor.engine);
       ctx.partial = true;

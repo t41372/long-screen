@@ -108,7 +108,7 @@ class SolveRun {
     releaseUnlessHeld(image);
     const gray = begin.gray ? await ctx.gray(current) : undefined;
     const stored = scan.duplicate ? undefined : await ctx.store.get<CompactFeatures>(`scan-features/${pad(frame.index)}`);
-    const labels = ctx.atlas!.resident;
+    const labels = ctx.atlas!.residentAt(frame.index);
     let poll = await this.step(() => session.run(gray, stored, labels));
     while ('keyframes' in poll) {
       const rows: (Keyframe | undefined)[] = [];

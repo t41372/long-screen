@@ -5,7 +5,7 @@
  *  in TS, over data the caller already holds); `labelAtlasResident` builds `RegionAtlas`'s label plane directly
  *  into a NEW core-resident buffer (never copied out and back — the caller owns and frees it) plus the per-code
  *  pixel counts, in one call. */
-import type { Rect, Region } from '../../types.ts';
+import type { Rect, Region, RegionEpoch } from '../../types.ts';
 import type { Core } from './core.ts';
 import type { CoreExports } from './exports.ts';
 import { MANUAL_REGION_BYTES, REGION_HEADER_BYTES, REGIONS_FINISH_DESC_BYTES, VOTING_REGION_BYTES } from './exports.ts';
@@ -222,7 +222,8 @@ const UNASSIGNED_NAME = '未指定区域 · 屏幕坐标观察';
 
 /** Decodes a finished region set (`rust/wasm/src/regions.rs::write_finished`) at `r`'s position. An automatic
  *  layout is read from its regions handle; a hand-placed one keeps the caller's own `manual` region objects (their
- *  keys are the settings' own) and adds what the engine decided: ids, exclusions and the unassigned region. */
+ *  keys are the settings' own, `epochs` included) and adds what the engine decided: ids, exclusions and the
+ *  unassigned region. An automatic region whose ownership changes during the run carries the engine's `epochs`. */
 export function readFinished(
   core: Core,
   exports: CoreExports,
@@ -232,15 +233,26 @@ export function readFinished(
   factor: number,
   manual: Region[],
 ): Region[] {
-  const count = r.u32(), decided: { unassigned: boolean; exclusions: Rect[] }[] = [];
+  const count = r.u32(), decided: { unassigned: boolean; exclusions: Rect[]; epochs: RegionEpoch[] }[] = [];
+  const rects = (): Rect[] => {
+    const out: Rect[] = [];
+    for (let n = r.u32(), k = 0; k < n; k++) out.push({ x: r.f64(), y: r.f64(), width: r.f64(), height: r.f64() });
+    return out;
+  };
   for (let i = 0; i < count; i++) {
     r.u32();
-    const unassigned = r.u32() === 1, exclusions: Rect[] = [];
-    for (let n = r.u32(), k = 0; k < n; k++) exclusions.push({ x: r.f64(), y: r.f64(), width: r.f64(), height: r.f64() });
-    decided.push({ unassigned, exclusions });
+    const unassigned = r.u32() === 1, exclusions = rects(), epochs: RegionEpoch[] = [];
+    for (let n = r.u32(), k = 0; k < n; k++) epochs.push({ from: r.u32(), exclusions: rects() });
+    decided.push({ unassigned, exclusions, epochs });
   }
   const handle = r.u32();
-  if (!manual.length) return readRegions(core, exports, handle, width, height, factor);
+  if (!manual.length) {
+    const regions = readRegions(core, exports, handle, width, height, factor);
+    regions.forEach((region, i) => {
+      if (decided[i]?.epochs.length) region.epochs = decided[i].epochs;
+    });
+    return regions;
+  }
   try {
     const [headersPtr] = core.scratch([count * REGION_HEADER_BYTES]);
     core.check(exports.ls_regions_read_headers(handle, headersPtr), 'regions read headers');

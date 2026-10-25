@@ -141,7 +141,7 @@ export class Compositor {
       canvas: p.canvasId,
       region: region.rect,
       code,
-      ownedPixels: this.atlas.count(code),
+      ownedPixels: this.atlas.count(code, frame),
       x: p.x,
       y: p.y,
       frame,
@@ -149,7 +149,7 @@ export class Compositor {
       confidence: p.confidence,
       uncertain: !!p.uncertain,
       occlusions: p.occlusions,
-    }, { image: residentFrame ?? image, labels: this.atlas.resident, consistent });
+    }, { image: residentFrame ?? image, labels: this.atlas.residentAt(frame), consistent });
     // Defense in depth, not the graceful path (that is the render session's own pose check before it gets here).
     if (status === COMPOSITOR_OUTSIDE_CANVAS) {
       throw new Error(`Placement (${p.x}, ${p.y}) puts region ${region.id} outside the addressable canvas.`);

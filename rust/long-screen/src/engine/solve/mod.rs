@@ -32,6 +32,7 @@ use crate::kernels::features::{extract_features, Feature};
 use crate::kernels::geometry::Rect;
 use crate::kernels::raster::{downscale_gray, downscaled_size, grayscale};
 use crate::kernels::region::{Mask, Region as Shape};
+use crate::kernels::regions::{exclusions_at, RegionEpoch};
 use crate::kernels::voting::{Finalized, Ring};
 use std::collections::HashMap;
 use std::fmt;
@@ -66,7 +67,11 @@ pub struct SolveRegion {
     pub unassigned: bool,
     /// The region's code in the atlas label plane.
     pub code: u8,
+    /// Its shape; `shape.exclusions` are its own, before any epoch's.
     pub shape: Shape,
+    /// Ownership changes over the recording (`kernels::regions::RegionEpoch`): from each epoch's frame on, the
+    /// shape also excludes that epoch's rects. Empty for a region that owns the same pixels throughout.
+    pub epochs: Vec<RegionEpoch>,
 }
 
 pub struct SolveConfig {
@@ -304,6 +309,8 @@ pub struct SolveSession {
     states: Vec<RegionState>,
     /// Voting slot of each region (moving regions only).
     voting_slot: Vec<Option<usize>>,
+    /// Each region's own exclusions; the epoch in effect adds to them (`apply_epochs`).
+    own_exclusions: Vec<Vec<Rect>>,
     voting: Ring,
     canvas_slots: HashMap<String, u32>,
     graph: PoseGraph,
@@ -374,6 +381,7 @@ impl SolveSession {
                 voting_slot.push(None);
             }
         }
+        let own_exclusions = regions.iter().map(|r| r.shape.exclusions.clone()).collect();
         let voting = Ring::new(
             factor as i32,
             noise,
@@ -421,6 +429,7 @@ impl SolveSession {
             regions,
             states,
             voting_slot,
+            own_exclusions,
             voting,
             canvas_slots: HashMap::new(),
             graph: PoseGraph::new(),
@@ -476,6 +485,24 @@ impl SolveSession {
         std::mem::take(&mut self.effects)
     }
 
+    /// Gives every region with epochs the exclusions in effect at frame `index`, and its voting slot the matching
+    /// inside and interior cells. Regions without epochs are never touched.
+    fn apply_epochs(&mut self, index: u32) {
+        for i in 0..self.regions.len() {
+            if self.regions[i].epochs.is_empty() {
+                continue;
+            }
+            let exclusions = exclusions_at(&self.own_exclusions[i], &self.regions[i].epochs, index);
+            if exclusions == self.regions[i].shape.exclusions {
+                continue;
+            }
+            if let Some(slot) = self.voting_slot[i] {
+                self.voting.reshape(slot, exclusions.clone());
+            }
+            self.regions[i].shape.exclusions = exclusions;
+        }
+    }
+
     /// Starts frame `index` at `time` with its scan record.
     pub fn begin_frame(
         &mut self,
@@ -486,6 +513,7 @@ impl SolveSession {
         if !matches!(self.stage, Stage::Idle) {
             return Err(SolveError::BadInput("a frame is already in progress"));
         }
+        self.apply_epochs(index);
         if scan.duplicate && self.states.iter().all(|s| !s.blind) {
             if let Some(previous) = &mut self.previous_plan {
                 for p in previous.iter_mut() {

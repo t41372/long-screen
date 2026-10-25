@@ -68,6 +68,16 @@ fn session(moving: bool) -> SolveSession {
 }
 
 fn session_sized(moving: bool, width: usize, height: usize) -> SolveSession {
+    session_with(moving, width, height, Vec::new(), Vec::new())
+}
+
+fn session_with(
+    moving: bool,
+    width: usize,
+    height: usize,
+    exclusions: Vec<Rect>,
+    epochs: Vec<RegionEpoch>,
+) -> SolveSession {
     let rect = Rect {
         x: 0.0,
         y: 0.0,
@@ -90,11 +100,12 @@ fn session_sized(moving: bool, width: usize, height: usize) -> SolveSession {
             code: 1,
             shape: Shape {
                 rect,
-                exclusions: Vec::new(),
+                exclusions,
                 crop: None,
                 solid: false,
                 mask: None,
             },
+            epochs,
         }],
     })
 }
@@ -645,4 +656,69 @@ fn registration_support_preserves_a_thin_overlap_step() {
             assert_eq!(host.canvases().len(), 1);
         }
     }
+}
+
+// Failure cases for ownership epochs in the solve session: a frame before an epoch already using its exclusions;
+// the switch happening a frame late, or only on frames that mint a keyframe; the voting slot keeping the old inside
+// and interior cells; a region without epochs being touched; the region's own exclusions lost when an epoch adds or
+// removes some.
+#[test]
+fn a_region_takes_each_epochs_exclusions_from_its_first_frame() {
+    let page = page();
+    let own = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: W as f64,
+        height: 4.0,
+    };
+    let band = Rect {
+        x: 0.0,
+        y: 40.0,
+        width: W as f64,
+        height: 20.0,
+    };
+    let epochs = vec![
+        RegionEpoch {
+            from: 3,
+            exclusions: vec![band],
+        },
+        RegionEpoch {
+            from: 6,
+            exclusions: Vec::new(),
+        },
+    ];
+    let mut s = session_with(true, W, H, vec![own], epochs);
+    let interior_of = |s: &SolveSession| {
+        s.voting.slots[0]
+            .interior
+            .iter()
+            .filter(|&&c| c == 1)
+            .count()
+    };
+    let mut host = Host::default();
+    let mut interiors = Vec::new();
+    for i in 0..8u32 {
+        host.frame(&mut s, i, window(&page, i as usize * 7));
+        let expected = if (3..6).contains(&i) {
+            vec![own, band]
+        } else {
+            vec![own]
+        };
+        assert_eq!(s.regions[0].shape.exclusions, expected, "frame {i}");
+        interiors.push(interior_of(&s));
+    }
+    assert!(
+        interiors[3] < interiors[2],
+        "the band leaves the interior: {interiors:?}"
+    );
+    assert_eq!(interiors[2], interiors[6], "and comes back");
+    assert_eq!(interiors[3], interiors[5]);
+    // Without epochs nothing changes, frame after frame.
+    let mut plain = session(true);
+    let before = plain.voting.slots[0].interior.clone();
+    for i in 0..4u32 {
+        Host::default().frame(&mut plain, i, window(&page, i as usize * 7));
+    }
+    assert!(plain.regions[0].shape.exclusions.is_empty());
+    assert_eq!(plain.voting.slots[0].interior, before);
 }

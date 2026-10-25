@@ -107,6 +107,7 @@ fn a_native_host_solves_a_scroll_and_its_return_and_relaxes_the_graph() {
                 solid: false,
                 mask: None,
             },
+            epochs: Vec::new(),
         }],
     });
     let labels = vec![1u8; W * H];

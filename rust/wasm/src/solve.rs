@@ -1,8 +1,9 @@
 //! The solve pass's session (`long_screen::engine::solve::SolveSession`), one handle per `src/core/wasm/solve.ts`
 //! instance. Inputs and results are `bytes.rs` records:
 //!
-//! - region (`ls_solve_new`): str id, str name, str kind, u8 moving, u8 unassigned, u8 code; its shape is the
-//!   matching `VOTING_REGION_BYTES` descriptor.
+//! - region (`ls_solve_new`): str id, str name, str kind, u8 moving, u8 unassigned, u8 code, u32 epochs and per
+//!   epoch u32 first frame, u32 n + rects (its extra exclusions); its shape is the matching `VOTING_REGION_BYTES`
+//!   descriptor.
 //! - feature: i32 x, i32 y, f64 score, 8 × u32 descriptor
 //! - keyframe: str id, node, canvasId, layer, u32 frame, u32 n + features, u32 width, u32 height, blob gray,
 //!   f64 x, y, scaleX, scaleY, u32 n + patches (f64 x, f64 y, u32 size, blob data)
@@ -27,6 +28,7 @@ use long_screen::engine::solve::{
 };
 use long_screen::kernels::features::{Feature, DESCRIPTOR_WORDS};
 use long_screen::kernels::geometry::Rect;
+use long_screen::kernels::regions::RegionEpoch;
 use std::sync::Arc;
 
 struct Session {
@@ -287,6 +289,22 @@ pub extern "C" fn ls_solve_new(input: u32, len: u32, shapes: u32) -> i32 {
         for shape in shapes {
             let (id, name, kind) = (c.str()?, c.str()?, c.str()?);
             let (moving, unassigned, code) = (c.bool()?, c.bool()?, c.u8()?);
+            let epochs = (0..c.u32()?)
+                .map(|_| {
+                    let from = c.u32()?;
+                    let exclusions = (0..c.u32()?)
+                        .map(|_| {
+                            Some(Rect {
+                                x: c.f64()?,
+                                y: c.f64()?,
+                                width: c.f64()?,
+                                height: c.f64()?,
+                            })
+                        })
+                        .collect::<Option<_>>()?;
+                    Some(RegionEpoch { from, exclusions })
+                })
+                .collect::<Option<_>>()?;
             regions.push(SolveRegion {
                 id: id.to_string(),
                 name: name.to_string(),
@@ -295,6 +313,7 @@ pub extern "C" fn ls_solve_new(input: u32, len: u32, shapes: u32) -> i32 {
                 unassigned,
                 code,
                 shape,
+                epochs,
             });
         }
         (width > 0 && height > 0).then_some(SolveConfig {

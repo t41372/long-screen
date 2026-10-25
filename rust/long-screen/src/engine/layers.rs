@@ -8,6 +8,8 @@
 
 use crate::kernels::geometry::Rect;
 use crate::kernels::layers::{Field, Learner};
+#[cfg(test)]
+use crate::kernels::regions::RegionEpoch;
 use crate::kernels::regions::{self, AtlasMask, AtlasRegion, FinishInput, Kind, RegionOut, Rgba};
 
 /// Name of the region that owns whatever native pixels a hand-placed layout leaves uncovered. Region names are a
@@ -173,6 +175,7 @@ fn manual_regions(
             solid: false,
             factor,
             band_side: None,
+            epochs: Vec::new(),
         };
     let mut out: Vec<RegionOut> = manual
         .iter()
@@ -210,17 +213,31 @@ fn manual_regions(
 /// The native-resolution label plane for `regions` (0 = no region, otherwise index + 1; the first region that
 /// contains a pixel owns it) and the per-code pixel counts, or `None` past 254 regions. Regions are described the
 /// way the page's region rows carry them: an automatic region always has a crop (its own rect when it has none),
-/// and a solid region's mask is not consulted.
+/// and a solid region's mask is not consulted. Each region's own exclusions apply, not its epochs'
+/// ([`label_atlas_epochs`]).
 pub fn label_atlas(
     regions: &[RegionOut],
     width: usize,
     height: usize,
 ) -> Option<(Vec<u8>, Vec<u32>)> {
+    label_at(regions, width, height, None)
+}
+
+/// [`label_atlas`] with the exclusions in effect at `frame` (`None`: the regions' own only).
+fn label_at(
+    regions: &[RegionOut],
+    width: usize,
+    height: usize,
+    frame: Option<u32>,
+) -> Option<(Vec<u8>, Vec<u32>)> {
     let defs: Vec<AtlasRegion> = regions
         .iter()
         .map(|r| AtlasRegion {
             rect: r.rect,
-            exclusions: r.exclusions.clone(),
+            exclusions: match frame {
+                Some(f) => regions::exclusions_at(&r.exclusions, &r.epochs, f),
+                None => r.exclusions.clone(),
+            },
             crop: if r.manual {
                 r.crop
             } else {
@@ -242,6 +259,46 @@ pub fn label_atlas(
     let mut labels = vec![0u8; width * height];
     let counts = regions::label_atlas(&defs, width, height, &mut labels)?;
     Some((labels, counts))
+}
+
+/// The run's pixel ownership over time: one label plane (and its per-code counts) per epoch start
+/// (`kernels::regions::RegionEpoch`). Codes are the same in every plane: region order never changes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Atlas {
+    /// The first frame of each plane, ascending, starting at 0.
+    pub starts: Vec<u32>,
+    pub planes: Vec<(Vec<u8>, Vec<u32>)>,
+}
+
+impl Atlas {
+    /// The label plane and counts in effect at `frame`.
+    pub fn at(&self, frame: u32) -> &(Vec<u8>, Vec<u32>) {
+        &self.planes[regions::epoch_index(&self.starts, frame)]
+    }
+
+    /// How many pixels the first plane gives `code`, then how many each later plane does from its first frame on.
+    pub fn owned(&self, code: usize) -> (f64, Vec<(u32, f64)>) {
+        let count = |p: &(Vec<u8>, Vec<u32>)| p.1.get(code).copied().unwrap_or(0) as f64;
+        (
+            count(&self.planes[0]),
+            self.starts
+                .iter()
+                .zip(&self.planes)
+                .skip(1)
+                .map(|(s, p)| (*s, count(p)))
+                .collect(),
+        )
+    }
+}
+
+/// One label plane per epoch start of `regions`; a run without epochs gets exactly [`label_atlas`]'s plane.
+pub fn label_atlas_epochs(regions: &[RegionOut], width: usize, height: usize) -> Option<Atlas> {
+    let starts = regions::epoch_starts(regions.iter().map(|r| r.epochs.as_slice()));
+    let planes = starts
+        .iter()
+        .map(|&s| label_at(regions, width, height, Some(s)))
+        .collect::<Option<Vec<_>>>()?;
+    Some(Atlas { starts, planes })
 }
 
 #[cfg(test)]
@@ -400,5 +457,49 @@ mod tests {
             "A excludes the later B"
         );
         assert_eq!(counts, vec![0, 16, 16]);
+    }
+
+    // Failure cases: a run without epochs getting anything but label_atlas's one plane; a plane built with the
+    // epoch of the wrong frame; codes or region order changing between planes; owned counts not following the plane
+    // in effect.
+    #[test]
+    fn the_atlas_has_one_plane_per_epoch_start() {
+        let mut out = RegionLearner::new(4, 4).finish(
+            8.0,
+            4.0,
+            &[
+                manual("bar", Kind::Fixed, rect(0.0, 0.0, 8.0, 2.0)),
+                manual("page", Kind::Moving, rect(0.0, 1.0, 8.0, 3.0)),
+            ],
+            2,
+        );
+        let plain = label_atlas_epochs(&out, 8, 4).unwrap();
+        assert_eq!(plain.starts, vec![0]);
+        assert_eq!(plain.planes, vec![label_atlas(&out, 8, 4).unwrap()]);
+        // Row 1 is the bar's until frame 5, the page's from then on (the hand-placed bar no longer excludes the page).
+        let row = rect(0.0, 1.0, 8.0, 1.0);
+        out[0].exclusions.clear();
+        out[0].epochs = vec![RegionEpoch {
+            from: 5,
+            exclusions: vec![row],
+        }];
+        out[1].epochs = vec![
+            RegionEpoch {
+                from: 0,
+                exclusions: vec![row],
+            },
+            RegionEpoch {
+                from: 5,
+                exclusions: Vec::new(),
+            },
+        ];
+        let atlas = label_atlas_epochs(&out, 8, 4).unwrap();
+        assert_eq!(atlas.starts, vec![0, 5]);
+        assert_eq!(&atlas.at(4).0[8..16], &[1; 8], "row 1 before the change");
+        assert_eq!(&atlas.at(5).0[8..16], &[2; 8], "row 1 after the change");
+        assert_eq!(&atlas.at(99).0[..8], &[1; 8]);
+        assert_eq!(&atlas.at(0).0[16..], &[2; 16]);
+        assert_eq!(atlas.owned(1), (16.0, vec![(5, 8.0)]));
+        assert_eq!(atlas.owned(2), (16.0, vec![(5, 24.0)]));
     }
 }

@@ -235,10 +235,10 @@ async function verifyCanvas(
       py = pose.y - originWorld.y,
       rendered = renderFrame(scenario, e.frame),
       img = rendered.image;
-    const dynamicRects = rendered.dynamicRects[layer.id] || [];
+    const dynamicRects = rendered.dynamicRects[layer.id] || [], labels = atlas.labelsAt(e.frame);
     for (let y = v.y; y < v.y + v.height; y++) {
       for (let x = v.x; x < v.x + v.width; x++) {
-        if (atlas.labels[y * W + x] !== code) {
+        if (labels[y * W + x] !== code) {
           continue;
         }
         if (layer.pageEdges) {

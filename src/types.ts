@@ -47,6 +47,12 @@ export interface MotionField {
   unknown: boolean;
   zoom: number;
 }
+/** Extra exclusions a region carries from frame `from` on, until its next epoch starts: its ownership changes during
+ *  the run while its rect stays put (rust/long-screen/src/kernels/regions/epochs.rs). */
+export interface RegionEpoch {
+  from: number;
+  exclusions: Rect[];
+}
 export interface Region {
   id: string;
   name: string;
@@ -65,6 +71,8 @@ export interface Region {
   solid?: boolean;
   /** Integer analysis factor the mask was built at; native→analysis mask lookups use floor(x/factor), not a rounded ratio. */
   factor?: number;
+  /** Ownership changes during the run, ascending by `from`; absent when the region owns the same pixels throughout. */
+  epochs?: RegionEpoch[];
 }
 export interface Settings {
   analysisSize: number;

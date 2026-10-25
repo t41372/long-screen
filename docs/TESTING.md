@@ -49,6 +49,8 @@ macOS（Darwin 27），Deno 2.9.7，真实 Google Chrome 头less 运行 + Playwr
 - `toolbar-collapse`：地址栏收起使正文可视区在录制中途变大。断言只要求完成、报告冲突、错误像素低于 10%；`invented` 额外棘轮在今天实测值（48,360）之上 +~5%。这是已知局限，不是通过。
 - `blank`：大面积纯色时无纹理帧不被画到任何位置，断言其产生 `UNOBSERVABLE_FRAME` 与独立片段。
 
+归属随时间变化（`Region.epochs`）由 `tests/unit/region-epochs.test.ts` 端到端验证：`toolbar-collapse` 及其「收起后往回滚过起点」的变体，用手放的、带时期的区域跑完整流水线，页面画布要逐像素正确（missing/invented/mismatched/maxError 为 0），而且任何一帧看见过的页面像素都在画布上（`test-results/region-epochs.json`）。第二个变体专门让收起空出的那条带里出现只在那里看得见的内容：哪一遍若一直读第一张标签平面，结果就等于不带时期、页面从第 96 行开始的手放布局，少 30,720 个像素。
+
 嵌套滚动的三个场景（`NESTED_SCENARIO_NAMES`：`nested-scroll-box`、`pane-majority`、`pane-rare-scroll`）不在目录里：它们的两层落在同一个引擎区域，逐层像素检查会把另一层的像素算成 `invented`，表达不了现状。`tests/unit/nested-scroll.test.ts` 量它们（`test-results/nested-scroll.json`：每层落在哪个区域、是否与另一层共用、位姿误差与像素计数），外层「现在是对的」照常断言，内层的失败像 `unlearnedFixed` 一样当已知局限守着——引擎一旦给内层自己的区域或跟上它的位姿就失败，届时把场景搬进目录做逐像素检查。
 
 ## 运行测试与复现

@@ -175,6 +175,15 @@ pub fn region_js(r: &RegionOut, mask: bool) -> Js {
     }
     o.set("crop", rect(r.crop.unwrap_or(r.rect)));
     o.set("solid", r.solid);
+    if !r.epochs.is_empty() {
+        let epochs = r.epochs.iter().map(|e| {
+            Js::Obj(Obj::new().with("from", e.from).with(
+                "exclusions",
+                Js::Arr(e.exclusions.iter().map(|x| rect(*x)).collect()),
+            ))
+        });
+        o.set("epochs", Js::Arr(epochs.collect()));
+    }
     Js::Obj(o)
 }
 
@@ -361,9 +370,9 @@ fn finish(
     let session = session.unwrap_or_else(|| ScanSession::new(width, height, ctx.factor));
     let done = session.finish(&[]);
     drop(session);
-    let (labels, counts) = crate::engine::layers::label_atlas(&done.regions, width, height)
+    let atlas = crate::engine::layers::label_atlas_epochs(&done.regions, width, height)
         .ok_or("Too many regions for the pixel atlas.")?;
-    ctx.atlas = Some((labels, counts));
+    ctx.atlas = Some(atlas);
     ctx.project_regions = Js::Arr(done.regions.iter().map(|r| region_js(r, false)).collect());
     let rows = Js::Arr(done.regions.iter().map(|r| region_js(r, true)).collect());
     ctx.put("regions", rows);

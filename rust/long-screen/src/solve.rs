@@ -476,7 +476,13 @@ impl Run<'_> {
         } else {
             self.features.get(&index).map(features)
         };
-        let labels = &ctx.atlas.as_ref().ok_or("no region atlas")?.0.clone();
+        let labels = &ctx
+            .atlas
+            .as_ref()
+            .ok_or("no region atlas")?
+            .at(index)
+            .0
+            .clone();
         let mut poll = self.session.run_frame(None, stored, labels);
         self.apply(ctx);
         loop {
@@ -541,6 +547,7 @@ pub fn solve(
             unassigned: r.unassigned,
             code: (i + 1) as u8,
             shape: shape(r),
+            epochs: r.epochs.clone(),
         })
         .collect();
     let session = SolveSession::new(SolveConfig {

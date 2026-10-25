@@ -22,6 +22,7 @@ mod bands;
 mod cells;
 mod construct;
 mod crops;
+mod epochs;
 mod merge;
 #[cfg(test)]
 mod tests;
@@ -34,6 +35,7 @@ use construct::{apply_cell_granularity, apply_pane_divider, build_regions, expan
 use crops::{
     assign_native_crops, compute_native_edges, recompute_bounding_boxes, refine_vertical_cut_crops,
 };
+pub use epochs::{epoch_index, epoch_starts, exclusions_at, extra_exclusions, RegionEpoch};
 use merge::{cleanup_sticky_headers, finalize, freeze_stationary_regions, merge_small_regions};
 
 /// Borrowed RGBA8 image (`RGBA` in types.ts), used only for texture/appearance evidence.
@@ -106,6 +108,9 @@ pub struct RegionOut {
     /// cells touch more than one band keeps only the LAST band `expand_bands` visits (1, 2, 3, then 4) —
     /// reproduced here, not "fixed", because `native_crops` reads it the same way.
     pub band_side: Option<u8>,
+    /// Ownership changes over the recording ([`RegionEpoch`]); empty for a region that owns the same pixels
+    /// throughout.
+    pub epochs: Vec<RegionEpoch>,
 }
 
 #[inline]

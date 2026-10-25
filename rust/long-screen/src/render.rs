@@ -296,7 +296,9 @@ struct Pass {
     session: RenderSession,
     compositor: Compositor,
     graph: Option<PoseGraph>,
-    labels: Vec<u8>,
+    /// Pixel ownership per epoch; each step reads the plane of the frame it composites, and the finish reads the
+    /// first frame's.
+    atlas: crate::engine::layers::Atlas,
     metas: HashMap<String, Obj>,
     base: (u64, f64, f64),
     last_flush: f64,
@@ -425,7 +427,7 @@ impl Pass {
                     cache: &mut ctx.tiles.cache,
                     compositor: &mut self.compositor,
                     graph: self.graph.as_ref().unwrap(),
-                    labels: &self.labels,
+                    labels: &self.atlas.at(index).0,
                     now,
                 };
                 self.session.step(&mut io)
@@ -533,7 +535,7 @@ impl Pass {
                         cache: &mut ctx.tiles.cache,
                         compositor: &mut self.compositor,
                         graph: self.graph.as_ref().ok_or("no pose graph")?,
-                        labels: &self.labels,
+                        labels: &self.atlas.at(0).0,
                         now,
                     };
                     self.session.step(&mut io)
@@ -715,7 +717,7 @@ pub fn render(ctx: &mut Ctx, source: &mut dyn FrameSource) -> Result<(), String>
     ctx.phase = "rendering";
     ctx.status = "rendering";
     ctx.persist();
-    let (labels, counts) = ctx.atlas.clone().ok_or("no region atlas")?;
+    let atlas = ctx.atlas.clone().ok_or("no region atlas")?;
     let attachments = ctx
         .keys("attach/")
         .into_iter()
@@ -745,7 +747,8 @@ pub fn render(ctx: &mut Ctx, source: &mut dyn FrameSource) -> Result<(), String>
             },
             rect: r.rect,
             code: (i + 1) as u8,
-            owned_pixels: counts.get(i + 1).copied().unwrap_or(0) as f64,
+            owned_pixels: atlas.owned(i + 1).0,
+            owned_epochs: atlas.owned(i + 1).1,
         })
         .collect();
     let mut session = RenderSession::new(RenderConfig {
@@ -776,7 +779,7 @@ pub fn render(ctx: &mut Ctx, source: &mut dyn FrameSource) -> Result<(), String>
         session,
         compositor,
         graph: None,
-        labels,
+        atlas,
         metas: HashMap::new(),
         base: (ctx.skipped_paints, ctx.tile_total, ctx.observed_pixels),
         last_flush: 0.0,

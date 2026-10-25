@@ -26,6 +26,7 @@ fn region(id: &str, kind: RegionKind, r: Rect, code: u8) -> RenderRegion {
         rect: r,
         code,
         owned_pixels: r.width * r.height,
+        owned_epochs: Vec::new(),
     }
 }
 
@@ -709,4 +710,25 @@ fn the_tile_budget_is_raised_to_what_one_frame_paints() {
     );
     let mut roomy = TileCache::new(TILE, 4096.0).unwrap();
     assert_eq!(s.configure_tiles(&mut roomy, 4096.0), None);
+}
+
+// Failure cases: a frame before the first later atlas taking its count; a frame exactly at a start keeping the
+// previous count; a region without later atlases changing at all.
+#[test]
+fn owned_pixels_follow_the_atlas_in_effect() {
+    let r = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 10.0,
+        height: 10.0,
+    };
+    let mut region = region("page", RegionKind::Moving, r, 1);
+    assert_eq!(region.owned_at(1_000), 100.0);
+    region.owned_pixels = 60.0;
+    region.owned_epochs = vec![(30, 100.0), (40, 80.0)];
+    assert_eq!(region.owned_at(0), 60.0);
+    assert_eq!(region.owned_at(29), 60.0);
+    assert_eq!(region.owned_at(30), 100.0);
+    assert_eq!(region.owned_at(39), 100.0);
+    assert_eq!(region.owned_at(40), 80.0);
 }

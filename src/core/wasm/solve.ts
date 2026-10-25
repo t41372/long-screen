@@ -233,6 +233,11 @@ export function solveSession(
   const w = new ByteWriter().u32(width).u32(height).u32(factor).i32(radius).f64(noise).u32(regions.length);
   for (const { region, code } of regions) {
     w.str(region.id).str(region.name).str(region.kind).bool(region.kind === 'moving').bool(!!region.unassigned).u8(code);
+    w.u32(region.epochs?.length ?? 0);
+    for (const epoch of region.epochs ?? []) {
+      w.u32(epoch.from).u32(epoch.exclusions.length);
+      for (const e of epoch.exclusions) w.f64(e.x).f64(e.y).f64(e.width).f64(e.height);
+    }
   }
   const sizes: number[] = [regions.length * VOTING_REGION_BYTES];
   for (const { region: r } of regions) {
