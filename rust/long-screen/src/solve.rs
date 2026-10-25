@@ -548,6 +548,7 @@ pub fn solve(
             code: (i + 1) as u8,
             shape: shape(r),
             epochs: r.epochs.clone(),
+            sticky: r.sticky.clone(),
         })
         .collect();
     let session = SolveSession::new(SolveConfig {

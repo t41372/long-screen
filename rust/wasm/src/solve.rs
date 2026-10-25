@@ -2,8 +2,8 @@
 //! instance. Inputs and results are `bytes.rs` records:
 //!
 //! - region (`ls_solve_new`): str id, str name, str kind, u8 moving, u8 unassigned, u8 code, u32 epochs and per
-//!   epoch u32 first frame, u32 n + rects (its extra exclusions); its shape is the matching `VOTING_REGION_BYTES`
-//!   descriptor.
+//!   epoch u32 first frame, u32 n + rects (its extra exclusions), u32 n + rects (its candidate sticky blocks); its
+//!   shape is the matching `VOTING_REGION_BYTES` descriptor.
 //! - feature: i32 x, i32 y, f64 score, 8 × u32 descriptor
 //! - keyframe: str id, node, canvasId, layer, u32 frame, u32 n + features, u32 width, u32 height, blob gray,
 //!   f64 x, y, scaleX, scaleY, u32 n + patches (f64 x, f64 y, u32 size, blob data)
@@ -305,6 +305,16 @@ pub extern "C" fn ls_solve_new(input: u32, len: u32, shapes: u32) -> i32 {
                     Some(RegionEpoch { from, exclusions })
                 })
                 .collect::<Option<_>>()?;
+            let mut sticky = Vec::new();
+            for _ in 0..c.u32()? {
+                let (x, y, width, height) = (c.f64()?, c.f64()?, c.f64()?, c.f64()?);
+                sticky.push(Rect {
+                    x,
+                    y,
+                    width,
+                    height,
+                });
+            }
             regions.push(SolveRegion {
                 id: id.to_string(),
                 name: name.to_string(),
@@ -314,6 +324,7 @@ pub extern "C" fn ls_solve_new(input: u32, len: u32, shapes: u32) -> i32 {
                 code,
                 shape,
                 epochs,
+                sticky,
             });
         }
         (width > 0 && height > 0).then_some(SolveConfig {

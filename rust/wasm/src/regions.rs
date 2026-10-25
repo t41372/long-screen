@@ -464,9 +464,9 @@ pub(crate) unsafe fn read_manual(ptr: u32, count: u32) -> Option<Vec<ManualRegio
 }
 
 /// Writes a finished region set for the adapter: u32 count, then per region u32 manual, u32 unassigned, u32
-/// exclusion count and the exclusion rects, u32 epoch count and per epoch u32 first frame, u32 n + rects; then u32 a
-/// regions handle (`ls_regions_read_*`, `ls_regions_free`)
-/// holding the regions themselves.
+/// exclusion count and the exclusion rects, u32 epoch count and per epoch u32 first frame, u32 n + rects, u32
+/// sticky-block count and the blocks; then u32 a regions handle (`ls_regions_read_*`, `ls_regions_free`) holding the
+/// regions themselves.
 pub(crate) fn write_finished(w: &mut Out, regions: Vec<regions::RegionOut>) {
     w.u32(regions.len() as u32);
     for r in &regions {
@@ -486,6 +486,12 @@ pub(crate) fn write_finished(w: &mut Out, regions: Vec<regions::RegionOut>) {
                 for v in [e.x, e.y, e.width, e.height] {
                     w.f64(v);
                 }
+            }
+        }
+        w.u32(r.sticky.len() as u32);
+        for s in &r.sticky {
+            for v in [s.x, s.y, s.width, s.height] {
+                w.f64(v);
             }
         }
     }

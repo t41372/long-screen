@@ -309,6 +309,7 @@ mod tests {
             factor: 1,
             band_side: None,
             epochs: Vec::new(),
+            sticky: Vec::new(),
         }
     }
 

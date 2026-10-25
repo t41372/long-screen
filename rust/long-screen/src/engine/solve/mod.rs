@@ -72,6 +72,9 @@ pub struct SolveRegion {
     /// Ownership changes over the recording (`kernels::regions::RegionEpoch`): from each epoch's frame on, the
     /// shape also excludes that epoch's rects. Empty for a region that owns the same pixels throughout.
     pub epochs: Vec<RegionEpoch>,
+    /// Candidate sticky blocks (the `sticky` of the region row), native pixels; each observation excludes those its
+    /// page motion does not explain (`chrome::sticky_occlusions`).
+    pub sticky: Vec<Rect>,
 }
 
 pub struct SolveConfig {

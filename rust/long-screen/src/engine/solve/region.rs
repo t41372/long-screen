@@ -1404,15 +1404,20 @@ impl SolveSession {
         let canvas_id = self.states[i].canvas_id.clone();
         let occlusions = match self.previous_slot {
             Some(previous) if track::occlusion_eligible(has_previous, moving, s.decision.tag()) => {
-                let carry: Vec<Rect> = self
-                    .previous_plan
-                    .as_ref()
-                    .and_then(|plan| {
-                        plan.iter()
-                            .find(|p| p.layer == layer && p.canvas_id == canvas_id)
-                    })
-                    .map(|p| p.occlusions.clone())
-                    .unwrap_or_default();
+                let before = self.previous_plan.as_ref().and_then(|plan| {
+                    plan.iter()
+                        .find(|p| p.layer == layer && p.canvas_id == canvas_id)
+                });
+                let carry: Vec<Rect> = before.map(|p| p.occlusions.clone()).unwrap_or_default();
+                // The page's step for the candidate sticky blocks: what the pose moved since the previous placement on
+                // this canvas. Odometry's step is not it for a pose re-acquired through the anchor or relocalized (the
+                // lost step, zero), nor after drift control moved the pose, and a block's faint-panel test weighs the
+                // page a pixel at a time. Without a previous placement on the canvas, odometry's own step, if any.
+                let pose = self.states[i].pose;
+                let block_motion =
+                    before
+                        .map(|p| (pose.0 - p.x, pose.1 - p.y))
+                        .or((s.via_anchor.is_none() && !s.relocalized).then_some(s.delta));
                 sticky_occlusions(
                     &self.frames[previous],
                     &self.frames[self.current_slot],
@@ -1422,6 +1427,8 @@ impl SolveSession {
                     s.delta.0,
                     s.delta.1,
                     &carry,
+                    &self.regions[i].sticky,
+                    block_motion,
                 )
             }
             _ => Vec::new(),

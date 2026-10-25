@@ -184,6 +184,12 @@ pub fn region_js(r: &RegionOut, mask: bool) -> Js {
         });
         o.set("epochs", Js::Arr(epochs.collect()));
     }
+    if !r.sticky.is_empty() {
+        o.set(
+            "sticky",
+            Js::Arr(r.sticky.iter().map(|&s| rect(s)).collect()),
+        );
+    }
     Js::Obj(o)
 }
 

@@ -24,6 +24,7 @@ mod construct;
 mod crops;
 mod epochs;
 mod merge;
+mod sticky;
 #[cfg(test)]
 mod tests;
 
@@ -114,6 +115,9 @@ pub struct RegionOut {
     /// Ownership changes over the recording ([`RegionEpoch`]); empty for a region that owns the same pixels
     /// throughout.
     pub epochs: Vec<RegionEpoch>,
+    /// Candidate sticky blocks of a moving region, native pixels (`sticky::sticky_blocks`): blocks that stand still
+    /// for part of the recording, which the solve pass occludes in the frames whose page motion does not explain them.
+    pub sticky: Vec<Rect>,
 }
 
 #[inline]
@@ -313,5 +317,20 @@ pub fn finish(
         reference,
         factor as f64,
     );
-    finalize(regions, &valid, edges.content)
+    let mut regions = finalize(regions, &valid, edges.content);
+    // Sticky blocks read the vote accumulators the row votes come with; without them (the change-only learner the
+    // frozen oracle mirrors) there are none.
+    if input.row_fixed.is_some() {
+        for r in regions.iter_mut() {
+            r.sticky = sticky::sticky_blocks(
+                r,
+                (input.pixel_fixed, input.pixel_moving),
+                width,
+                height,
+                input.informative_frames,
+                factor as f64,
+            );
+        }
+    }
+    regions
 }

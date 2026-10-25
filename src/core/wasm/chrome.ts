@@ -37,20 +37,40 @@ export function stickyOcclusions(
   region: Rect,
   motion: Point,
   carry: Rect[],
+  blocks: Rect[] = [],
+  blockMotion: Point | null = motion,
 ): Rect[] {
-  const bytes = current.width * current.height * 4, capacity = Math.max(carry.length, 1);
-  const [pPrev, pCur, pRegion, pCarry, out] = core.scratch([
+  const bytes = current.width * current.height * 4, capacity = Math.max(carry.length, 1) + blocks.length;
+  const [pPrev, pCur, pRegion, pCarry, pBlocks, out] = core.scratch([
     previous instanceof ResidentFrame ? 0 : bytes,
     current instanceof ResidentFrame ? 0 : bytes,
     32,
     carry.length * 32,
+    blocks.length * 32,
     capacity * 32,
   ]);
   const prev = core.placeFrame(previous, pPrev), cur = core.placeFrame(current, pCur);
   core.writeRect(pRegion, region);
   carry.forEach((r, i) => core.writeRect(pCarry + i * 32, r));
+  blocks.forEach((r, i) => core.writeRect(pBlocks + i * 32, r));
   const count = core.check(
-    core.exports.ls_sticky_occlusions(prev, cur, current.width, current.height, pRegion, motion.x, motion.y, pCarry, carry.length, out),
+    core.exports.ls_sticky_occlusions(
+      prev,
+      cur,
+      current.width,
+      current.height,
+      pRegion,
+      motion.x,
+      motion.y,
+      pCarry,
+      carry.length,
+      pBlocks,
+      blocks.length,
+      blockMotion?.x ?? 0,
+      blockMotion?.y ?? 0,
+      blockMotion ? 1 : 0,
+      out,
+    ),
     'stickyOcclusions',
   );
   const view = new DataView(core.exports.memory.buffer, out, count * 32);

@@ -233,7 +233,7 @@ export function readFinished(
   factor: number,
   manual: Region[],
 ): Region[] {
-  const count = r.u32(), decided: { unassigned: boolean; exclusions: Rect[]; epochs: RegionEpoch[] }[] = [];
+  const count = r.u32(), decided: { unassigned: boolean; exclusions: Rect[]; epochs: RegionEpoch[]; sticky: Rect[] }[] = [];
   const rects = (): Rect[] => {
     const out: Rect[] = [];
     for (let n = r.u32(), k = 0; k < n; k++) out.push({ x: r.f64(), y: r.f64(), width: r.f64(), height: r.f64() });
@@ -243,13 +243,15 @@ export function readFinished(
     r.u32();
     const unassigned = r.u32() === 1, exclusions = rects(), epochs: RegionEpoch[] = [];
     for (let n = r.u32(), k = 0; k < n; k++) epochs.push({ from: r.u32(), exclusions: rects() });
-    decided.push({ unassigned, exclusions, epochs });
+    decided.push({ unassigned, exclusions, epochs, sticky: rects() });
   }
   const handle = r.u32();
   if (!manual.length) {
     const regions = readRegions(core, exports, handle, width, height, factor);
+    // Epochs and then candidate sticky blocks go last, as the native `regions` row writes them (rust/long-screen/src/scan.rs).
     regions.forEach((region, i) => {
       if (decided[i]?.epochs.length) region.epochs = decided[i].epochs;
+      if (decided[i]?.sticky.length) region.sticky = decided[i].sticky;
     });
     return regions;
   }

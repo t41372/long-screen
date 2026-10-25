@@ -238,6 +238,8 @@ export function solveSession(
       w.u32(epoch.from).u32(epoch.exclusions.length);
       for (const e of epoch.exclusions) w.f64(e.x).f64(e.y).f64(e.width).f64(e.height);
     }
+    w.u32(region.sticky?.length || 0);
+    for (const s of region.sticky || []) w.f64(s.x).f64(s.y).f64(s.width).f64(s.height);
   }
   const sizes: number[] = [regions.length * VOTING_REGION_BYTES];
   for (const { region: r } of regions) {

@@ -66,7 +66,7 @@ worldY = tileY * tileSize + inTileY
 
 `analysis.jsonl` 有降采样运动场、假设、置信、zoom 检测等；它不是原始全尺寸画面，也不含每个特征点的 256-bit BRIEF 描述子（那些只在处理期间存在于 `scan-features/<frame>`，供回访检索用，解完即删，不进导出）。原文件既未包含，也未做强哈希绑定。
 
-`regions.json` 是自动分层与手动区域的最终记录：每条 `Region` 包含 kind、rect、可选 crop/solid，以及归属掩码——`mask` 以 base64 编码（不是 jsonl 惯用的数字数组），配 `maskWidth`/`maskHeight`（掩码本身的像素尺寸）与 `factor`（原生→分析坐标的整数缩放，查表用 `floor(x/factor)`，不是四舍五入的比例）。
+`regions.json` 是自动分层与手动区域的最终记录：每条 `Region` 包含 kind、rect、可选 crop/solid，以及归属掩码——`mask` 以 base64 编码（不是 jsonl 惯用的数字数组），配 `maskWidth`/`maskHeight`（掩码本身的像素尺寸）与 `factor`（原生→分析坐标的整数缩放，查表用 `floor(x/factor)`，不是四舍五入的比例）。运动区域可另带 `sticky`：候选黏性块的原生像素矩形列表（只在部分时间钉在屏幕上的面板，如只在部分帧出现的目录），求解时每一帧只在页面运动解释不了这块时把它当遮挡；没有候选块时不写这个键。
 
 区域的归属可以随时间变（`epochs`，可选，只在有变化时出现）：`[{ from, exclusions }]` 按 `from` 升序，表示从第 `from` 帧起，这个区域在自己的 `exclusions` 之外再排除这些矩形，直到它的下一个时期开始；第一个时期之前没有额外排除。区域的 `rect` 整段不变，变的只是它拥有哪些像素——例如地址栏收起：栏的下半截在收起前属于栏，收起后属于页面。所有遍都按帧取对应时期的归属（`rust/long-screen/src/kernels/regions/epochs.rs`）。没有 `epochs` 的区域整段归属不变，与这个字段出现之前的记录完全相同。
 

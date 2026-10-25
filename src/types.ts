@@ -73,6 +73,9 @@ export interface Region {
   factor?: number;
   /** Ownership changes during the run, ascending by `from`; absent when the region owns the same pixels throughout. */
   epochs?: RegionEpoch[];
+  /** Candidate sticky blocks of a moving region, native pixels: blocks that stand still for part of the recording (a
+   *  table of contents shown some of the time), excluded in the observations whose page motion does not explain them. */
+  sticky?: Rect[];
 }
 export interface Settings {
   analysisSize: number;

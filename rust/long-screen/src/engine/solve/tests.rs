@@ -106,6 +106,7 @@ fn session_with(
                 mask: None,
             },
             epochs,
+            sticky: Vec::new(),
         }],
     })
 }
@@ -721,4 +722,93 @@ fn a_region_takes_each_epochs_exclusions_from_its_first_frame() {
     }
     assert!(plain.regions[0].shape.exclusions.is_empty());
     assert_eq!(plain.voting.slots[0].interior, before);
+}
+
+/// The page under a static textured panel inside `PANEL` (a table of contents pinned to the screen; the block learned
+/// for it takes a few rows of the page above and below, as cell-aligned blocks do).
+const PANEL: Rect = Rect {
+    x: 20.0,
+    y: 40.0,
+    width: 24.0,
+    height: 48.0,
+};
+
+fn panel_over_page(frame: u32, page: &[u8]) -> Vec<u8> {
+    let mut out = window(page, frame as usize * 7).to_vec();
+    let mut seed = 0x51ed_270bu32;
+    for y in 44..84 {
+        for x in 20..44 {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let v = (seed % 256) as u8;
+            out[(y * W + x) * 4..(y * W + x) * 4 + 3].copy_from_slice(&[v, v, v]);
+        }
+    }
+    out
+}
+
+// Failure case for a candidate sticky block on a frame placed through the anchor (sticky-toc-duty-40's frames 36, 38,
+// 40, 86 and 87, where the table of contents itself threw odometry off): the lost odometry step, (0, 0), read as a
+// paused page, so the block stayed excluded because the previous frame had excluded it, whatever the page showed
+// there. Here the panel vanished the frame before and page content scrolls through its place: weighed with what the
+// pose moved, the page's step explains the block and it is written.
+#[test]
+fn a_frame_placed_through_the_anchor_weighs_a_sticky_block_with_the_pose_step() {
+    let page = page();
+    let (mut host, mut s) = (Host::default(), session(true));
+    s.regions[0].sticky = vec![PANEL];
+    let armed = std::rc::Rc::new(std::cell::Cell::new(false));
+    let arm = armed.clone();
+    s.seams.odometry = Some(Box::new(move |frame, est| {
+        if frame == 3 {
+            est.decision = OdometryDecision::Lost;
+            est.delta = (0.0, 0.0);
+            est.rescue = None;
+            arm.set(true);
+        }
+        false
+    }));
+    s.seams.reacquire = Some(Box::new(move |top| {
+        if armed.replace(false) {
+            *top = Some(ReacquireEstimate {
+                x: 0,
+                y: 21,
+                ambiguous: false,
+                confidence: 0.9,
+                error: 2.0,
+            });
+        }
+    }));
+    let frames: Vec<FrameDone> = (0..5)
+        .map(|i| {
+            let pixels = if i >= 2 {
+                window(&page, i as usize * 7).to_vec()
+            } else {
+                panel_over_page(i, &page)
+            };
+            host.frame(&mut s, i, &pixels)
+        })
+        .collect();
+    let poses: Vec<f64> = frames.iter().map(|f| f.placements[0].y).collect();
+    assert_eq!(
+        poses,
+        vec![0.0, 7.0, 14.0, 21.0, 28.0],
+        "{:?}",
+        host.codes()
+    );
+    assert!(
+        frames[1].placements[0].occlusions.contains(&PANEL),
+        "the panel over a moving page is excluded"
+    );
+    assert!(
+        frames[2].placements[0].occlusions.contains(&PANEL),
+        "so is the frame it vanishes in"
+    );
+    assert!(
+        !frames[3].placements[0].occlusions.contains(&PANEL),
+        "the anchor frame shows the page there and writes it: {:?}",
+        frames[3].placements[0].occlusions
+    );
+    assert!(!frames[4].placements[0].occlusions.contains(&PANEL));
 }

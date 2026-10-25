@@ -108,17 +108,17 @@ const STATIONARY_COLUMN_SHARE: f64 = 0.25;
 /// as fixed chrome on a side the change test left without a band. Page content scrolling under a glass bar sits
 /// near 1 : 14 (new_ip_3's middle rows) and at worst about 1 : 2 on any recording; the bars' own rows are 1.5 : 1
 /// and up.
-const STATIONARY_VOTE_RATIO: f64 = 1.5;
+pub(super) const STATIONARY_VOTE_RATIO: f64 = 1.5;
 /// Share of a row's sampled pixels (every 4th column) that must vote for standing still per informative frame,
 /// so a row with almost no structure cannot pass on a handful of votes.
-const STATIONARY_VOTE_SHARE: f64 = 0.03;
+pub(super) const STATIONARY_VOTE_SHARE: f64 = 0.03;
 
 /// Share of a row's sampled pixels at which standing still must win, per informative frame, on at least one row
 /// of a band found by the votes. Bars hold icons and text: the densest row of each such band on the recordings is
 /// at 0.41–0.62. A fade over the page bottom holds none, yet the motion hypothesis fails there too, because the fade
 /// dims each row of the page differently as it scrolls through: own_f's 29-row fade under ChatGPT's input box peaks
 /// at 0.087 and stays page content.
-const STATIONARY_STRUCTURE_SHARE: f64 = 0.2;
+pub(super) const STATIONARY_STRUCTURE_SHARE: f64 = 0.2;
 
 /// Share of the informative frames in which standing still must explain a sampled pixel (and `STATIONARY_VOTE_RATIO`
 /// times as often as the main motion) for the pixel to count as part of a fixed object (`fixed_pixels`). Over the

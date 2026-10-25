@@ -1850,11 +1850,11 @@ export function buildScenario(name: ScenarioName | string): Scenario {
       const DW = 864, DH = 560, CHROME = 56, n = 210;
       // Ratchets (contaminatedOverlay, all of it recoverable; provisional): see the measurement note below.
       const measured: Record<string, [number, number]> = {
-        'sticky-toc-fade': [16851, 0],
-        'sticky-toc-duty-25': [3545, 0],
+        'sticky-toc-fade': [0, 0],
+        'sticky-toc-duty-25': [0, 0],
         'sticky-toc-duty-31': [0, 0],
         'sticky-toc-duty-40': [0, 0],
-        'sticky-toc-title': [17036, 0],
+        'sticky-toc-title': [3343, 0],
       };
       const duty = name === 'sticky-toc-duty-25' ? .25 : name === 'sticky-toc-duty-40' ? .4 : .31;
       const title = name === 'sticky-toc-title', paused = name === 'sticky-toc-fade';
@@ -1941,9 +1941,14 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         // 345. The page title is never cut out (missing 0). Since a frame whose still rows lie below rows only the page
         // explains has no sticky band, the TOC's rows below scrolling text are no longer taken for a band from the top (duty 31 %
         // frame 175, fade frame 35, title frames 92–98, 138, 140), so the page rows above them are written again:
-        // fade 16,048, duty 25 % 3,376, 31 % 0, 40 % 0, title 16,224; provisional 0, 158, 324, 212, 12. Ratchets are
-        // those +5 %. Ideal: contaminatedOverlay 0. The provisional figures are the render pass's own count; no
-        // provisional bit is left in any of these final tiles, which is what maxProvisional bounds.
+        // fade 16,048, duty 25 % 3,376, 31 % 0, 40 % 0, title 16,224; provisional 0, 158, 324, 212, 12. Since region
+        // learning names the TOC as a candidate sticky block and each observation whose page motion does not explain it
+        // excludes it (faint fading frames included): 0 everywhere but title 3,184 (the pale box's edge, 1–3 levels off
+        // the page, outside the block's cells); the render pass's provisional flags 0, 150, 372, 380, 0. Duty 31 % and
+        // 40 % rise: the frames that now exclude the TOC (the faintest fading ones; and in 40 %, frames 36, 38, 40, 86
+        // and 87, which come through the anchor while the TOC throws odometry off) no longer heal the render pass's
+        // flags there. Those figures are the render pass's own count; no provisional bit is left in any of these final
+        // tiles, which is what maxProvisional bounds. Ratchets are the measured values +5 %. Ideal: contaminatedOverlay 0.
         expect: expect({
           fragments: { body: 0 },
           maxContaminatedOverlay: measured[name][0],

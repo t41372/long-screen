@@ -299,6 +299,11 @@ export interface CoreExports {
     motionY: number,
     carry: number,
     carryCount: number,
+    blocks: number,
+    blockCount: number,
+    blockMotionX: number,
+    blockMotionY: number,
+    blockMeasured: number,
     out: number,
   ): number;
   ls_regions_finish(desc: number): number;

@@ -129,14 +129,24 @@ export function stationaryBoundary(
 
 /** A sticky navigation band can move initially and become screen-fixed later. Its geometry is per-observation,
  * not a second scroll world. Only exclude an edge band when native texture agrees with zero motion and clearly
- * disagrees with the accepted page translation; uniform gutters alone never provide this evidence. (Rust core.) */
+ * disagrees with the accepted page translation; uniform gutters alone never provide this evidence. The region's candidate
+ * sticky blocks (`Region.sticky`) are excluded in the observations whose page motion does not explain them. (Rust core.) */
 export function stickyOcclusions(
   previous: RGBA | ResidentFrame,
   current: RGBA | ResidentFrame,
   region: Region,
   motion: { x: number; y: number },
   previousOcclusions: Rect[] = [],
+  blockMotion: { x: number; y: number } | null = motion,
 ): Rect[] {
   if (previous.width !== current.width || previous.height !== current.height) return [];
-  return core().stickyOcclusions(previous, current, region.crop || region.rect, motion, previousOcclusions);
+  return core().stickyOcclusions(
+    previous,
+    current,
+    region.crop || region.rect,
+    motion,
+    previousOcclusions,
+    region.sticky ?? [],
+    blockMotion,
+  );
 }

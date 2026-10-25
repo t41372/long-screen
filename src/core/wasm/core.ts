@@ -360,8 +360,16 @@ export class Core {
   ): number | undefined {
     return chrome.stationaryBoundary(this, image, axis, from, to, crossFrom, crossTo, choose);
   }
-  stickyOcclusions(previous: FrameInput, current: FrameInput, region: Rect, motion: Point, carry: Rect[]): Rect[] {
-    return chrome.stickyOcclusions(this, previous, current, region, motion, carry);
+  stickyOcclusions(
+    previous: FrameInput,
+    current: FrameInput,
+    region: Rect,
+    motion: Point,
+    carry: Rect[],
+    blocks: Rect[] = [],
+    blockMotion: Point | null = motion,
+  ): Rect[] {
+    return chrome.stickyOcclusions(this, previous, current, region, motion, carry, blocks, blockMotion);
   }
 
   consistencyMask(input: ConsistencyMaskInput): Uint8Array<ArrayBuffer> {

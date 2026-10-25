@@ -201,6 +201,7 @@ fn manual_regions(
             factor,
             band_side: None,
             epochs: Vec::new(),
+            sticky: Vec::new(),
         };
     let mut out: Vec<RegionOut> = manual
         .iter()

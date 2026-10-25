@@ -112,8 +112,173 @@ fn texture_difference(previous: &[u8], current: &[u8], i: usize, offset: i64) ->
 /// window stays a quarter of the page's step so content moving at a large share of the page's speed is not, and
 /// at least 8 px from the page's own step so a slow scroll cannot match the page itself. A row whose page partner
 /// (`y + dy`) falls outside the region takes no shift of its own: its page comparison reads screen chrome.
+///
+/// `blocks` are the region's candidate sticky blocks (`regions::sticky::sticky_blocks`): each is excluded in this
+/// observation too when the page's motion does not explain it (`block_unexplained`), weighed with `block_motion`: the
+/// page's step as the pose moved this observation. For a pose re-acquired through the anchor or relocalized that is
+/// not `motion` (the lost odometry step, a zero that is no pause: sticky-toc-duty-40's frames 36, 38, 40, 86 and 87,
+/// where the table of contents itself threw odometry off), and the host passes the pose's own step; `None` when
+/// there is none to give (a fresh fragment), and then the blocks keep only the carried ones (every pixel unchanged).
 #[allow(clippy::too_many_arguments)]
 pub fn sticky_occlusions(
+    previous: &[u8],
+    current: &[u8],
+    width: usize,
+    height: usize,
+    region: Rect,
+    motion_x: f64,
+    motion_y: f64,
+    carry_in: &[Rect],
+    blocks: &[Rect],
+    block_motion: Option<(f64, f64)>,
+) -> Vec<Rect> {
+    // With a step to weigh them by, blocks are decided below, not carried for their pixels: a block over a blank
+    // margin looks the same frame after frame while the page scrolls under it (sticky-toc-duty-31's frames 137–156
+    // carried the block after the table of contents had gone).
+    let band_carry: Vec<Rect> = match block_motion {
+        Some(_) => carry_in
+            .iter()
+            .filter(|c| !blocks.contains(c))
+            .copied()
+            .collect(),
+        None => carry_in.to_vec(),
+    };
+    let mut out = sticky_bands(
+        previous,
+        current,
+        width,
+        height,
+        region,
+        motion_x,
+        motion_y,
+        &band_carry,
+    );
+    let Some(block_motion) = block_motion else {
+        return out;
+    };
+    for block in blocks {
+        if !out.contains(block)
+            && block_unexplained(
+                previous,
+                current,
+                width,
+                height,
+                region,
+                *block,
+                block_motion,
+                carry_in.contains(block),
+            )
+        {
+            out.push(*block);
+        }
+    }
+    out
+}
+
+/// Textured samples a candidate block needs before either motion is weighed, as the sticky band's 64.
+const BLOCK_SAMPLES: u32 = 64;
+/// Share of a block's pixels whose page partner is flat (a blank margin) that the page's step leaves more than
+/// `BLOCK_CHANGE` apart, at which a moving page does not explain the block either: a panel fading in is too faint for
+/// its glyphs to be textured samples yet (new_mac_3's frame 1160, about 15 % opaque over a blank margin, whose text
+/// stayed faintly on the print), and its glyphs, some 6 % of the panel, stand out from the margin the page brings
+/// there. Partners on page texture are left out: a pose a pixel off leaves page edges apart, and that is no panel.
+const BLOCK_FAINT_SHARE: f64 = 0.02;
+/// While the page stands still: the difference at which a textured sample has changed, and the share of the block's
+/// samples that must have. A panel fading in over page text changes its own pixels by about a seventh of its
+/// contrast a frame (new_mac_3: some 19 levels) while the page text beside it stays put; a pointer crossing the
+/// block changes a sliver of it.
+const BLOCK_CHANGE: i64 = 12;
+const BLOCK_CHANGED_SHARE: f64 = 0.1;
+
+/// Whether the page's motion fails to explain a candidate sticky block in this observation. Its textured samples
+/// (a horizontal gradient of 24 or more, every 2nd row) are compared with the previous frame at the page's step: the
+/// block is excluded when that leaves them more than 18 apart on average (the band test's threshold). Standing still
+/// is not required: a table of contents fading in or out over scrolling content is explained by neither motion, and
+/// those frames are exactly the ones that leave faint text on the print. When the page's step explains the block
+/// (content scrolling through while the panel is away), or there is no texture to weigh (a blank margin), it is
+/// kept, so what the page shows there is written. A panel too faint for its glyphs to be textured samples (fading in,
+/// some 15 % opaque) is caught by the share of all its pixels the page's step leaves apart (`BLOCK_FAINT_SHARE`).
+/// While the page stands still its motion explains no change: the
+/// block is excluded when `BLOCK_CHANGED_SHARE` of its samples changed by more than `BLOCK_CHANGE`, and it stays
+/// excluded if the previous observation excluded it (`excluded_before`), pointer or no pointer moving over it: the
+/// screen still holds the panel, and the carried bands' rule (every pixel unchanged) would drop it for the rest of
+/// the pause at the first pointer move.
+#[allow(clippy::too_many_arguments)]
+fn block_unexplained(
+    previous: &[u8],
+    current: &[u8],
+    width: usize,
+    height: usize,
+    region: Rect,
+    block: Rect,
+    (motion_x, motion_y): (f64, f64),
+    excluded_before: bool,
+) -> bool {
+    let (w, h) = (width as i64, height as i64);
+    let moving = crate::kernels::geometry::js_hypot(motion_x, motion_y) >= 2.0;
+    let (dx, dy) = (js_round(motion_x) as i64, js_round(motion_y) as i64);
+    let step = 1i64.max(js_floor(block.width / 350.0) as i64);
+    let (x0, x1) = (
+        2i64.max(js_ceil(block.x) as i64),
+        (w - 2).min(js_floor(block.x + block.width) as i64),
+    );
+    let (y0, y1) = (
+        2i64.max(js_ceil(block.y) as i64),
+        (h - 2).min(js_floor(block.y + block.height) as i64),
+    );
+    if !moving && excluded_before {
+        return true;
+    }
+    let (mut changed, mut n, mut shifted, mut ns) = (0u32, 0u32, 0i64, 0u32);
+    let (mut off, mut total) = (0u32, 0u32);
+    let mut y = y0;
+    while y < y1 {
+        let mut x = x0;
+        while x < x1 {
+            let i = ((y * w + x) * 4) as usize;
+            let (px, py) = (x + dx, y + dy);
+            let partner = moving
+                && px >= 2
+                && px < w - 2
+                && py >= 2
+                && py < h - 2
+                && region.contains(px as f64, py as f64);
+            if partner {
+                let j = ((py * w + px) * 4) as usize;
+                // Only where the page's step brings a flat partner (a blank margin): a page edge a pixel off in the
+                // pose is no faint panel.
+                if (previous[j - 4] as i32 - previous[j + 4] as i32).abs() < BLOCK_CHANGE as i32 {
+                    total += 1;
+                    if (previous[j] as i64 - current[i] as i64).abs() > BLOCK_CHANGE {
+                        off += 1;
+                    }
+                }
+            }
+            if (current[i - 4] as i32 - current[i + 4] as i32).abs() >= 24 {
+                if (previous[i] as i64 - current[i] as i64).abs() > BLOCK_CHANGE {
+                    changed += 1;
+                }
+                n += 1;
+                if partner {
+                    let j = ((py * w + px) * 4) as usize;
+                    shifted += (previous[j] as i64 - current[i] as i64).abs();
+                    ns += 1;
+                }
+            }
+            x += step;
+        }
+        y += 2;
+    }
+    if !moving {
+        return n >= BLOCK_SAMPLES && changed as f64 >= BLOCK_CHANGED_SHARE * n as f64;
+    }
+    (ns >= BLOCK_SAMPLES && shifted as f64 / ns as f64 > 18.0)
+        || (total >= BLOCK_SAMPLES && off as f64 >= BLOCK_FAINT_SHARE * total as f64)
+}
+
+/// The sticky band for one observation: the evidence above, or the carried bands.
+#[allow(clippy::too_many_arguments)]
+fn sticky_bands(
     previous: &[u8],
     current: &[u8],
     width: usize,
@@ -408,7 +573,18 @@ mod tests {
     }
 
     fn bands(previous: &[u8], current: &[u8], dy: f64) -> Vec<Rect> {
-        sticky_occlusions(previous, current, W, H, region(), 0.0, dy, &[])
+        sticky_occlusions(
+            previous,
+            current,
+            W,
+            H,
+            region(),
+            0.0,
+            dy,
+            &[],
+            &[],
+            Some((0.0, dy)),
+        )
     }
 
     fn band_bottom(found: &[Rect]) -> Option<f64> {
@@ -447,7 +623,18 @@ mod tests {
             width: W as f64,
             height: H as f64 - 20.0,
         };
-        let found = sticky_occlusions(&previous, &current, W, H, region, 0.0, -40.0, &[]);
+        let found = sticky_occlusions(
+            &previous,
+            &current,
+            W,
+            H,
+            region,
+            0.0,
+            -40.0,
+            &[],
+            &[],
+            Some((0.0, -40.0)),
+        );
         assert_eq!(band_bottom(&found), Some(26.0 + BAND as f64));
     }
 
@@ -487,7 +674,19 @@ mod tests {
             width: W as f64,
             height: H as f64 - 40.0,
         };
-        assert!(sticky_occlusions(&previous, &current, W, H, region, 0.0, -37.0, &[]).is_empty());
+        assert!(sticky_occlusions(
+            &previous,
+            &current,
+            W,
+            H,
+            region,
+            0.0,
+            -37.0,
+            &[],
+            &[],
+            Some((0.0, -37.0))
+        )
+        .is_empty());
     }
 
     #[test]
@@ -614,8 +813,251 @@ mod tests {
             width: W as f64,
             height: (H as i64 - top) as f64,
         };
-        let found = sticky_occlusions(&previous, &current, W, H, region, 0.0, step as f64, &[]);
+        let found = sticky_occlusions(
+            &previous,
+            &current,
+            W,
+            H,
+            region,
+            0.0,
+            step as f64,
+            &[],
+            &[],
+            Some((0.0, step as f64)),
+        );
         assert!(found.is_empty(), "{found:?}");
+    }
+}
+
+#[cfg(test)]
+mod block_tests {
+    //! Ways the candidate-block test can fail, written before it: a table of contents standing on screen over a
+    //! scrolling page is written; one fading in or out (while the page scrolls, or while it stands still) is written,
+    //! which leaves the faint text new_mac_3's print shows; page content the block's area shows while the panel is
+    //! away is excluded, or a blank margin there is.
+    use super::*;
+
+    const W: usize = 400;
+    const H: usize = 600;
+    const BLOCK: Rect = Rect {
+        x: 40.0,
+        y: 150.0,
+        width: 100.0,
+        height: 300.0,
+    };
+
+    fn noise(x: i64, y: i64, seed: u32) -> u8 {
+        let mut v =
+            (x as u32).wrapping_mul(0x9e37_79b9) ^ (y as u32).wrapping_mul(0x85eb_ca6b) ^ seed;
+        v ^= v >> 15;
+        v = v.wrapping_mul(0x2c1b_3c6d);
+        v ^= v >> 12;
+        (v & 0xff) as u8
+    }
+
+    /// The page at `page` (textured everywhere, or blank left of x 160 when `margin`), with the table of contents
+    /// over `BLOCK` at opacity `alpha`: dark glyph rows on a pale box.
+    fn frame(page: i64, alpha: f64, margin: bool) -> Vec<u8> {
+        let mut out = vec![255u8; W * H * 4];
+        for y in 0..H as i64 {
+            for x in 0..W as i64 {
+                let under = if margin && x < 160 {
+                    247.0
+                } else {
+                    noise(x, y + page, 1) as f64
+                };
+                let inside = BLOCK.contains(x as f64, y as f64);
+                let toc = if (y - 150) % 21 < 8 && (54..134).contains(&x) {
+                    (noise(x, y, 9) / 2) as f64
+                } else {
+                    247.0
+                };
+                let v = if inside {
+                    under * (1.0 - alpha) + toc * alpha
+                } else {
+                    under
+                };
+                let i = (y as usize * W + x as usize) * 4;
+                out[i..i + 3].fill(v.round() as u8);
+            }
+        }
+        out
+    }
+
+    fn region() -> Rect {
+        Rect {
+            x: 0.0,
+            y: 0.0,
+            width: W as f64,
+            height: H as f64,
+        }
+    }
+
+    fn occluded(previous: &[u8], current: &[u8], dy: f64, carry: &[Rect]) -> bool {
+        sticky_occlusions(
+            previous,
+            current,
+            W,
+            H,
+            region(),
+            0.0,
+            dy,
+            carry,
+            &[BLOCK],
+            Some((0.0, dy)),
+        )
+        .contains(&BLOCK)
+    }
+
+    #[test]
+    fn a_table_of_contents_on_screen_over_a_scrolling_page_is_excluded() {
+        assert!(occluded(
+            &frame(0, 1.0, true),
+            &frame(40, 1.0, true),
+            40.0,
+            &[]
+        ));
+        assert!(occluded(
+            &frame(0, 1.0, false),
+            &frame(40, 1.0, false),
+            40.0,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn a_fading_table_of_contents_is_excluded() {
+        // Fading in while the page scrolls, over a blank margin and over page content.
+        assert!(occluded(
+            &frame(0, 0.4, true),
+            &frame(40, 0.6, true),
+            40.0,
+            &[]
+        ));
+        assert!(occluded(
+            &frame(0, 0.4, false),
+            &frame(40, 0.6, false),
+            40.0,
+            &[]
+        ));
+        // Fading out while the page stands still.
+        assert!(occluded(
+            &frame(40, 0.6, true),
+            &frame(40, 0.4, true),
+            0.0,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn what_the_page_shows_while_the_panel_is_away_is_kept() {
+        // Page content scrolling through the block's area.
+        assert!(!occluded(
+            &frame(0, 0.0, false),
+            &frame(40, 0.0, false),
+            40.0,
+            &[]
+        ));
+        // A blank margin: neither motion is weighed.
+        assert!(!occluded(
+            &frame(0, 0.0, true),
+            &frame(40, 0.0, true),
+            40.0,
+            &[]
+        ));
+        // A paused page with the panel unchanged and not excluded before.
+        assert!(!occluded(
+            &frame(40, 1.0, true),
+            &frame(40, 1.0, true),
+            0.0,
+            &[]
+        ));
+        // ... and excluded before: it stays excluded (the carried band rule).
+        assert!(occluded(
+            &frame(40, 1.0, true),
+            &frame(40, 1.0, true),
+            0.0,
+            &[BLOCK]
+        ));
+    }
+
+    #[test]
+    fn a_panel_too_faint_for_textured_samples_is_excluded() {
+        // new_mac_3's frame 1160: the table of contents some 15 % opaque over a blank margin while the page scrolls.
+        // Its glyphs are not 24 apart from their neighbours yet, so the textured samples are too few to weigh, and its
+        // faint text stayed on the print; the glyphs still stand out from the margin the page's step brings there.
+        assert!(occluded(
+            &frame(0, 0.0, true),
+            &frame(40, 0.15, true),
+            40.0,
+            &[]
+        ));
+        // The margin alone, nothing fading in, is still written.
+        assert!(!occluded(
+            &frame(0, 0.0, true),
+            &frame(40, 0.0, true),
+            40.0,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn a_block_over_a_blank_margin_is_not_carried_while_the_page_scrolls() {
+        // sticky-toc-duty-31's frames 137–156: the TOC gone, the block over a blank margin looks the same frame after
+        // frame while the page scrolls; carried for its unchanged pixels it stayed excluded. With a step to weigh it
+        // by, the block is decided by the page's motion, which explains the margin.
+        let (previous, current) = (frame(0, 0.0, true), frame(40, 0.0, true));
+        assert!(!occluded(&previous, &current, 40.0, &[BLOCK]));
+    }
+
+    /// `frame` with a pointer (a 10 × 16 white box) at `at`.
+    fn pointer(mut f: Vec<u8>, at: (usize, usize)) -> Vec<u8> {
+        for y in at.1..at.1 + 16 {
+            for x in at.0..at.0 + 10 {
+                f[(y * W + x) * 4..(y * W + x) * 4 + 3].fill(255);
+            }
+        }
+        f
+    }
+
+    #[test]
+    fn a_paused_panel_stays_excluded_while_a_pointer_moves_over_it() {
+        // new_mac_3's frames 1262–1332: the panel was excluded, then the page paused and the pointer moved over it, so
+        // not every pixel under it was unchanged and the carried exclusion was dropped for the rest of the pause.
+        let (previous, current) = (
+            pointer(frame(40, 1.0, true), (60, 200)),
+            pointer(frame(40, 1.0, true), (70, 230)),
+        );
+        assert!(occluded(&previous, &current, 0.0, &[BLOCK]));
+        // Not excluded before, the same frames keep it (a pointer is no panel appearing).
+        assert!(!occluded(&previous, &current, 0.0, &[]));
+    }
+
+    #[test]
+    fn a_panel_fading_in_over_page_text_while_paused_is_excluded() {
+        // A block wider than the panel, the rest of it static page text: the panel's change is a fraction of the
+        // block's samples, and their mean change stays small (new_mac_3's frames 42–74, over the page title).
+        let wide = Rect {
+            width: 340.0,
+            ..BLOCK
+        };
+        let found = |p: &[u8], c: &[u8]| {
+            sticky_occlusions(
+                p,
+                c,
+                W,
+                H,
+                region(),
+                0.0,
+                0.0,
+                &[],
+                &[wide],
+                Some((0.0, 0.0)),
+            )
+            .contains(&wide)
+        };
+        assert!(found(&frame(40, 0.3, false), &frame(40, 0.5, false)));
+        assert!(!found(&frame(40, 0.5, false), &frame(40, 0.5, false)));
     }
 }
 
