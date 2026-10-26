@@ -314,7 +314,10 @@ impl Learner {
         };
         let rows_out = SyncPtr(self.native_row_change.as_mut_ptr());
         let middle_out = SyncPtr(self.native_row_middle.as_mut_ptr());
-        let (middle_from, middle_to) = (w / 4, w - w / 4);
+        // The first sampled columns at or past the middle half's two ends: the row is walked in three spans so the
+        // inner loops stay branch-free, adding to `sum` in the same left-to-right order as one walk would.
+        let middle_from = (w / 4).div_ceil(step) * step;
+        let middle_to = (w - w / 4).div_ceil(step) * step;
         let chunks = crate::kernels::pool::chunks_for(h * w.div_ceil(step), 32 * 1024);
         crate::kernels::pool::par_for(chunks, |c| {
             for y in crate::kernels::pool::split(h, chunks, c)
@@ -323,14 +326,22 @@ impl Learner {
                 let (mut sum, mut n) = (0.0f64, 0u32);
                 let (mut middle, mut m) = (0.0f64, 0u32);
                 let mut x = 0;
-                while x < w {
+                while x < middle_from.min(w) {
+                    sum += sample((y * w + x) * 4);
+                    n += 1;
+                    x += step;
+                }
+                while x < middle_to.min(w) {
                     let v = sample((y * w + x) * 4);
                     sum += v;
+                    middle += v;
                     n += 1;
-                    if (middle_from..middle_to).contains(&x) {
-                        middle += v;
-                        m += 1;
-                    }
+                    m += 1;
+                    x += step;
+                }
+                while x < w {
+                    sum += sample((y * w + x) * 4);
+                    n += 1;
                     x += step;
                 }
                 // SAFETY: row `y` belongs to this chunk alone.
