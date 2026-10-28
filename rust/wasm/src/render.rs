@@ -202,7 +202,8 @@ fn call(
 }
 
 /// Input: u32 width, u32 height, u32 factor, f64 noise, u32 regions, then per region str id, u8 kind (0 moving,
-/// 1 fixed, 2 ignore), rect, u8 code, f64 owned pixels; u32 attachments, then per attachment str id, str target,
+/// 1 fixed, 2 ignore), rect, u8 code, f64 owned pixels, u32 later atlases and per atlas u32 first frame, f64 owned
+/// pixels; u32 attachments, then per attachment str id, str target,
 /// f64 dx, dy, frame, confidence, str node. Returns a handle.
 #[no_mangle]
 pub extern "C" fn ls_render_new(input: u32, len: u32) -> i32 {
@@ -225,6 +226,9 @@ pub extern "C" fn ls_render_new(input: u32, len: u32) -> i32 {
                     rect: read_rect(c)?,
                     code: c.u8()?,
                     owned_pixels: c.f64()?,
+                    owned_epochs: (0..c.u32()?)
+                        .map(|_| Some((c.u32()?, c.f64()?)))
+                        .collect::<Option<_>>()?,
                 })
             })
             .collect::<Option<_>>()?;

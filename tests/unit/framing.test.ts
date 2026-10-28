@@ -23,9 +23,16 @@ const meta: CanvasMeta = {
   firstTime: 0,
   lastTime: 1,
 };
+/** A 12×10 reference frame: a gradient inside the 8×6 pane at (2, 2), and flat chrome around it, so every chrome row
+ *  and column has a background colour to extend (a row with none stays transparent, kernels/framing.rs). */
 function reference(): RGBA {
   const data = new Uint8ClampedArray(12 * 10 * 4);
-  for (let y = 0; y < 10; y++) for (let x = 0; x < 12; x++) data.set([x * 10, y * 10, 77, 255], (y * 12 + x) * 4);
+  for (let y = 0; y < 10; y++) {
+    for (let x = 0; x < 12; x++) {
+      const inPane = x >= 2 && x < 10 && y >= 2 && y < 8;
+      data.set(inPane ? [x * 10, y * 10, 77, 255] : [90, 100, 110, 255], (y * 12 + x) * 4);
+    }
+  }
   return { width: 12, height: 10, data };
 }
 /** Writes a fully opaque, fully covered source tile exactly the way TileStore.save persists one (tile + tile-index rows together). */

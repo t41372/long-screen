@@ -41,6 +41,43 @@ def test_the_print_is_the_page_that_scrolled_past(scroll, tmp_path):
         assert np.array_equal(np.asarray(png.convert("RGBA")), result.print_image())
 
 
+def test_the_result_package_is_the_pages_project_zip(scroll, tmp_path):
+    """write_package writes the page's result package: its fixed entries first, then each level-0 tile's PNG with its
+    coverage, provisional and quality records, the JSON-lines records and the summaries (docs/FORMAT.md)."""
+    import json
+    import zipfile
+
+    frames, _ = scroll
+    result = run(frames)
+    result.write_package(tmp_path / "package.zip")
+    with zipfile.ZipFile(tmp_path / "package.zip") as package:
+        names = package.namelist()
+        assert names[:4] == ["manifest.json", "index.html", "README.txt", "regions.json"]
+        manifest = json.loads(package.read("manifest.json"))
+        assert manifest["format"] == "long-screen/sparse-canvas" and manifest["version"] == 2
+        assert {c["id"] for c in manifest["canvases"]} == {c.id for c in result.canvases}
+        content = moving(result)
+        tiles = [n for n in names if n.startswith(f"tiles/{content.id}/0/")]
+        assert tiles, names
+        for tile in tiles:
+            xy = tile.rsplit("/", 1)[1][: -len(".png")]
+            for record in (f"coverage/{content.id}/{xy}.bin", f"provisional/{content.id}/{xy}.bin", f"quality/{content.id}/{xy}.json"):
+                assert record in names, record
+        assert names[-10:] == [
+            "observations.jsonl",
+            "diagnostics.jsonl",
+            "poses.jsonl",
+            "pose-edges.jsonl",
+            "analysis.jsonl",
+            "temporal.jsonl",
+            "attachments.jsonl",
+            "graph-summary.json",
+            "memory-stats.json",
+            "performance.json",
+        ]
+        assert b"%%" not in package.read("index.html")
+
+
 def test_a_generator_gives_the_same_rows_as_a_list(scroll):
     frames, _ = scroll
     duration = len(frames) / 30

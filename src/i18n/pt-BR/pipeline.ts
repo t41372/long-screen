@@ -209,6 +209,10 @@ export const pipelineSections: Catalog<typeof zh> = {
       message:
         'A textura no topo indica uma interface fixa na tela, não movimento da página. Essa obstrução fixa não é gravada na camada móvel. A interface original de referência é preservada na versão com moldura.',
     },
+    NESTED_LAYER_FOUND: {
+      message:
+        'Uma parte desta região rola por conta própria: em {{frames}} quadros o conteúdo dela não se moveu com a região, por isso ela ganha uma imagem própria.',
+    },
     FRAGMENT_ATTACHED: {
       message:
         'As evidências de uma nova passagem permitiram unir um fragmento independente inteiro a uma área existente. A trajetória relativa dentro do fragmento não mudou.',

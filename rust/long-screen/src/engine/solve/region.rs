@@ -15,7 +15,7 @@ use crate::engine::diagnostic::{Diagnostic, Severity, Value};
 use crate::engine::keyframes::Retrieval;
 use crate::engine::pose_graph::EdgeKind;
 use crate::kernels::chrome::sticky_occlusions;
-use crate::kernels::features::{match_features, Feature};
+use crate::kernels::features::{extract_features, match_features, Feature, MAX_FEATURES_DEFAULT};
 use crate::kernels::geometry::{js_round, Rect};
 use crate::kernels::motion::{extract_patches, probe_scale, Gray, MatchPoints, Patch};
 use crate::kernels::region::filter_features;
@@ -177,6 +177,13 @@ fn js_max(a: f64, b: f64) -> f64 {
     }
 }
 
+/// A nested container's clip when it is wide and tall enough to register: one keyframe patch ([`PATCH_SIZE`]). A
+/// sliver at the screen's edge holds no patch to relocalize with and, on a step as long as it is thin, does not
+/// overlap itself (nested-scroll-box, frame 84: 9 px left, 16 px step); the container is out of sight there.
+pub(super) fn observable(clip: Option<Rect>) -> Option<Rect> {
+    clip.filter(|c| c.width >= PATCH_SIZE as f64 && c.height >= PATCH_SIZE as f64)
+}
+
 fn gray(p: &Plane) -> Gray<'_> {
     Gray {
         width: p.width,
@@ -220,6 +227,45 @@ fn patches<'a>(
 }
 
 /// `String(n).padStart(10, '0')`.
+/// `rect` less `inner` (which lies inside it), as up to four rectangles: above, below, left and right of it.
+fn complement(rect: Rect, inner: Rect) -> Vec<Rect> {
+    let (rx1, ry1, ix1, iy1) = (
+        rect.x + rect.width,
+        rect.y + rect.height,
+        inner.x + inner.width,
+        inner.y + inner.height,
+    );
+    [
+        Rect {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: inner.y - rect.y,
+        },
+        Rect {
+            x: rect.x,
+            y: iy1,
+            width: rect.width,
+            height: ry1 - iy1,
+        },
+        Rect {
+            x: rect.x,
+            y: inner.y,
+            width: inner.x - rect.x,
+            height: inner.height,
+        },
+        Rect {
+            x: ix1,
+            y: inner.y,
+            width: rx1 - ix1,
+            height: inner.height,
+        },
+    ]
+    .into_iter()
+    .filter(|r| r.width > 0.0 && r.height > 0.0)
+    .collect()
+}
+
 fn pad(n: u32) -> String {
     format!("{n:0>10}")
 }
@@ -232,6 +278,11 @@ impl SolveSession {
         ctx: &FrameCtx,
         labels: &[u8],
     ) -> Result<Outcome, SolveError> {
+        if let Some(nest) = &self.regions[i].nest {
+            let clip = nest.clip(ctx.index, self.regions[i].shape.rect);
+            let state = &mut self.states[i];
+            state.previous_clip = std::mem::replace(&mut state.clip, clip);
+        }
         let mut s = self.setup(i, ctx);
         let registration = self.registration_plane(labels);
         let registration_labels = registration.as_deref().map_or(labels, Vec::as_slice);
@@ -242,6 +293,15 @@ impl SolveSession {
                 self.states[i].started = true;
                 self.states[i].canvas_id = String::new();
                 self.new_canvas(i, ctx.time);
+                // A nested container starts where its parent is: its canvas is the parent's, moved by its own scroll.
+                // On whole pixels, as its own steps are: the parent's optimized poses carry fractions.
+                let start = self.regions[i]
+                    .nest
+                    .as_ref()
+                    .and_then(|n| n.parent_poses.get(ctx.index as usize).copied().flatten());
+                if let Some(pose) = start {
+                    self.states[i].pose = (pose.0.round(), pose.1.round());
+                }
             }
             Gate::FixedInit => self.new_canvas(i, ctx.time),
             Gate::Fixed => {}
@@ -352,7 +412,9 @@ impl SolveSession {
     /// The region's read-mostly values and the mutable locals at their starting values.
     fn patch_support(&self, i: usize, s: &Step) -> Option<Rect> {
         let full = self.regions[i].shape.rect;
-        (s.registration_rect != full).then_some(Rect {
+        // A nested container's patches already lie inside its clip of the keyframe's frame, which this frame's clip
+        // need not be (its parent may have moved since).
+        (s.registration_rect != full && self.regions[i].nest.is_none()).then_some(Rect {
             x: s.registration_rect.x - full.x,
             y: s.registration_rect.y - full.y,
             width: s.registration_rect.width,
@@ -378,8 +440,34 @@ impl SolveSession {
             self.width as f64,
             self.height as f64,
         );
-        let (registration_rect, own) =
-            track::registration_features(rect, self.states[i].registration_support, own, f);
+        let (registration_rect, own) = match (&r.nest, observable(state.clip)) {
+            // A nested container registers on its own rectangle only, every frame, however few features it has. Its
+            // features are found inside that rectangle: the frame's strongest corners (`MAX_FEATURES_DEFAULT` of
+            // them) mostly lie in the parent around it and would leave a small container a handful.
+            (Some(_), Some(clip)) => {
+                let roi = Rect {
+                    x: clip.x / f,
+                    y: clip.y / f,
+                    width: clip.width / f,
+                    height: clip.height / f,
+                };
+                let (gray, w, h) = (&ctx.gray.data, ctx.gray.width, ctx.gray.height);
+                let found = extract_features(gray, w, h, MAX_FEATURES_DEFAULT, Some(roi));
+                (
+                    clip,
+                    found
+                        .into_iter()
+                        .map(|mut p| {
+                            p.score = p.score as f32 as f64;
+                            p
+                        })
+                        .filter(|p| clip.contains(p.x as f64 * f, p.y as f64 * f))
+                        .collect(),
+                )
+            }
+            (Some(_), None) => (rect, Vec::new()),
+            (None, _) => track::registration_features(rect, state.registration_support, own, f),
+        };
         let own = match state.screen_fixed.as_ref().filter(|c| c.any()) {
             Some(cells) => {
                 let kept: Vec<Feature> = own
@@ -466,6 +554,27 @@ impl SolveSession {
 
     /// Frame-to-frame odometry: analysis-scale hypotheses, block-aware audit, then a native-pixel decision.
     fn odometry_step(&mut self, i: usize, ctx: &FrameCtx, s: &mut Step, labels: &[u8]) {
+        if self.regions[i].nest.is_some() {
+            let (w, h) = (self.width, self.height);
+            let state = &mut self.states[i];
+            state.reference.clear();
+            state.reference.resize(w * h, 0);
+            if let Some(c) = state.previous_clip {
+                let (x0, x1) = (
+                    (c.x.floor().max(0.0) as usize),
+                    ((c.x + c.width).ceil() as usize).min(w),
+                );
+                let (y0, y1) = (
+                    (c.y.floor().max(0.0) as usize),
+                    ((c.y + c.height).ceil() as usize).min(h),
+                );
+                for y in y0..y1 {
+                    let row = y * w;
+                    state.reference[row + x0..row + x1]
+                        .copy_from_slice(&labels[row + x0..row + x1]);
+                }
+            }
+        }
         let r = &self.regions[i];
         let state = &self.states[i];
         let previous_gray = self
@@ -477,6 +586,10 @@ impl SolveSession {
             f: self.factor as f64,
             radius: self.radius,
             mask: Some((labels, r.code)),
+            reference: r
+                .nest
+                .as_ref()
+                .map(|_| (state.reference.as_slice(), r.code)),
             roi: Rect {
                 x: s.registration_rect.x / self.factor as f64,
                 y: s.registration_rect.y / self.factor as f64,
@@ -500,7 +613,9 @@ impl SolveSession {
         let mut est = track::odometry(inputs);
         // A large jump may leave texture only at the output region's edge. The support
         // window must not turn that observable overlap into a new fragment.
+        // Not for a nested container: the whole window is its parent's.
         if s.registration_rect != r.shape.rect
+            && r.nest.is_none()
             && est.decision == OdometryDecision::Lost
             && est.rescue.is_none()
         {
@@ -727,6 +842,23 @@ impl SolveSession {
         s.confidence = BLIND_CONFIDENCE;
         s.uncertain = true;
         self.states[i].velocity = (0.0, 0.0);
+        // A nested container out of sight keeps its own scroll and moves with its parent.
+        let carried = self.regions[i].nest.as_ref().and_then(|n| {
+            let at = |k: u32| n.parent_poses.get(k as usize).copied().flatten();
+            Some((at(ctx.index)?, at(ctx.index.checked_sub(1)?)?))
+        });
+        if let Some((now, before)) = carried {
+            let state = &mut self.states[i];
+            state.pose = (
+                (state.pose.0 + now.0 - before.0).round(),
+                (state.pose.1 + now.1 - before.1).round(),
+            );
+        }
+        // A nested container whose footprint is off screen, or shows only a sliver, has nothing to observe; that is
+        // not a lost frame.
+        if self.regions[i].nest.is_some() && observable(self.states[i].clip).is_none() {
+            return;
+        }
         let canvas_id = self.states[i].canvas_id.clone();
         self.diagnostic(
             Diagnostic::new("UNOBSERVABLE_FRAME", Severity::Warning)
@@ -737,6 +869,25 @@ impl SolveSession {
 
     /// Lost: relocalizes onto an existing canvas, takes odometry's rescued step, or starts a new fragment.
     fn apply_lost(&mut self, i: usize, ctx: &FrameCtx, s: &mut Step, found: Option<Found>) {
+        #[cfg(test)]
+        let found = match self.seams.relocalize.as_mut() {
+            Some(seam) => {
+                let mut m = found
+                    .as_ref()
+                    .map(|m| (m.keyframe.clone(), m.offset, m.confidence));
+                seam(ctx.index, &mut m);
+                m.map(|(keyframe, offset, confidence)| Found {
+                    keyframe,
+                    offset,
+                    confidence,
+                    ambiguous: false,
+                    support: 40,
+                    unique: 30,
+                    error: 4.0,
+                })
+            }
+            None => found,
+        };
         let verdict = found.as_ref().is_some_and(|m| {
             track::relocalize_verdict(
                 Some(track::MatchInfo {
@@ -749,9 +900,33 @@ impl SolveSession {
         if let (true, Some(m)) = (verdict, found) {
             let canvas = resolve_target(&self.attachments, &m.keyframe.canvas_id).to_string();
             let shift = attachment_shift(&self.attachments, &m.keyframe.canvas_id);
+            let pose = track::target_pose((m.keyframe.x, m.keyframe.y), m.offset, shift);
+            // Leaving one canvas for another, the frame's pose on the canvas it leaves is known when odometry
+            // measured its step (the rescue the plain error rejected): that pose and the relocalized one are the same
+            // frame, so the canvas it leaves is tied onto the other. Without this, a fragment opened in a blurred
+            // stretch and left by a relocalization stayed a separate canvas although its last step was measured
+            // (new_ip_6: frames 1311-1452; frame 1453's rescue measured (-38, -12) from frame 1452, and the tie puts
+            // all 142 frames within 6 px of the independent registration).
+            let leaving = self.states[i].canvas_id.clone();
+            if let (Some(rescue), false, true) =
+                (s.rescue.as_ref(), s.zoom_change, leaving != canvas)
+            {
+                let state_pose = self.states[i].pose;
+                let measured = (state_pose.0 + rescue.delta.0, state_pose.1 + rescue.delta.1);
+                if is_valid_pose(measured.0, measured.1) && is_valid_pose(pose.0, pose.1) {
+                    self.record_attachment(
+                        &leaving,
+                        &canvas,
+                        (pose.0 - measured.0, pose.1 - measured.1),
+                        ctx,
+                        m.confidence.min(rescue.confidence),
+                        &m.keyframe.node,
+                    );
+                }
+            }
             let state = &mut self.states[i];
             state.canvas_id = canvas;
-            state.pose = track::target_pose((m.keyframe.x, m.keyframe.y), m.offset, shift);
+            state.pose = pose;
             state.last_node = None;
             state.anchor = Some(m.keyframe.clone());
             state.velocity = (0.0, 0.0);
@@ -1102,31 +1277,55 @@ impl SolveSession {
             return;
         };
         let state_pose = self.states[i].pose;
+        self.record_attachment(
+            &canvas_id,
+            &target,
+            (pose.0 - state_pose.0, pose.1 - state_pose.1),
+            ctx,
+            global.confidence,
+            &global.keyframe.node,
+        );
+        keys.attached_from = Some(canvas_id);
+        keys.attach_match = Some(global);
+        let state = &mut self.states[i];
+        state.canvas_id = target;
+        state.pose = pose;
+        state.last_node = None;
+        state.velocity = (0.0, 0.0);
+    }
+
+    /// Ties canvas `id` rigidly onto `target` by `shift` (a pose on `id` plus `shift` is the same pose on `target`):
+    /// stores the attachment, marks the canvas as attached and reports `FRAGMENT_ATTACHED`. `node` is the target
+    /// keyframe's pose-graph node the attachment follows when a later loop closure moves it.
+    fn record_attachment(
+        &mut self,
+        id: &str,
+        target: &str,
+        shift: (f64, f64),
+        ctx: &FrameCtx,
+        confidence: f64,
+        node: &str,
+    ) {
         let attachment = Attachment {
-            id: canvas_id.clone(),
-            target: target.clone(),
-            dx: pose.0 - state_pose.0,
-            dy: pose.1 - state_pose.1,
+            id: id.to_string(),
+            target: target.to_string(),
+            dx: shift.0,
+            dy: shift.1,
             frame: ctx.index,
-            confidence: global.confidence,
-            node: global.keyframe.node.clone(),
+            confidence,
+            node: node.to_string(),
         };
-        self.attachments
-            .insert(canvas_id.clone(), attachment.clone());
+        self.attachments.insert(id.to_string(), attachment.clone());
         self.effects.push(Effect::Attachment(attachment.clone()));
-        if let Some(meta) = self.canvases.get_mut(&canvas_id) {
-            meta.attached_to = Some(target.clone());
-            let meta = meta.clone();
-            self.effects.push(Effect::Canvas {
-                meta,
-                created: false,
-            });
+        if let Some(meta) = self.canvases.get_mut(id) {
+            meta.attached_to = Some(target.to_string());
+            self.effects.push(Effect::CanvasDropped(id.to_string()));
         }
         self.diagnostic(
             Diagnostic::new("FRAGMENT_ATTACHED", Severity::Info)
                 .at(ctx.index, ctx.time)
                 .canvas(&attachment.target)
-                .confidence(global.confidence)
+                .confidence(confidence)
                 .detail(Value::Object(vec![
                     ("id", Value::Text(attachment.id.clone())),
                     ("target", Value::Text(attachment.target.clone())),
@@ -1137,13 +1336,6 @@ impl SolveSession {
                     ("node", Value::Text(attachment.node.clone())),
                 ])),
         );
-        keys.attached_from = Some(canvas_id);
-        keys.attach_match = Some(global);
-        let state = &mut self.states[i];
-        state.canvas_id = target;
-        state.pose = pose;
-        state.last_node = None;
-        state.velocity = (0.0, 0.0);
     }
 
     /// Corrects a thin-overlap step against a same-canvas revisit before the node exists, so the odometry edge
@@ -1345,6 +1537,88 @@ impl SolveSession {
         }
     }
 
+    /// Lets the region's cells vote between its step and the frame's second translation, if the feature matches the
+    /// step leaves unexplained have one (`track::nested`): the evidence for a container scrolling inside the region.
+    fn observe_nested(&mut self, i: usize, ctx: &FrameCtx, s: &Step) {
+        let (Some(previous), Some(before)) = (
+            self.previous_gray.clone(),
+            self.states[i].previous_features.as_ref(),
+        ) else {
+            return;
+        };
+        let f = self.factor as f64;
+        let step = (s.delta.0 / f, s.delta.1 / f);
+        let matches: Vec<MatchPoints> = match_features(before, &s.own, true)
+            .iter()
+            .map(|m| {
+                let (a, b) = (&before[m.a as usize], &s.own[m.b as usize]);
+                MatchPoints {
+                    ax: a.x as f64,
+                    ay: a.y as f64,
+                    bx: b.x as f64,
+                    by: b.y as f64,
+                    unique: m.unique,
+                }
+            })
+            .collect();
+        let Some(other) = track::nested::second_translation(&matches, step) else {
+            return;
+        };
+        let (factor, w, h) = (self.factor as i64, self.width as f64, self.height as f64);
+        let shape = &self.regions[i].shape;
+        let rect = (
+            (shape.rect.x / f).floor() as i64,
+            (shape.rect.y / f).floor() as i64,
+            ((shape.rect.x + shape.rect.width) / f).ceil() as i64,
+            ((shape.rect.y + shape.rect.height) / f).ceil() as i64,
+        );
+        let inside = |x: i64, y: i64| {
+            shape.contains(
+                (x * factor + factor / 2) as f64,
+                (y * factor + factor / 2) as f64,
+                w,
+                h,
+            )
+        };
+        let native_rect = (
+            shape.rect.x.floor() as i64,
+            shape.rect.y.floor() as i64,
+            (shape.rect.x + shape.rect.width).ceil() as i64,
+            (shape.rect.y + shape.rect.height).ceil() as i64,
+        );
+        let inside_native = |x: i64, y: i64| shape.contains(x as f64, y as f64, w, h);
+        let Some(previous_slot) = self.previous_slot else {
+            return;
+        };
+        let state = &mut self.states[i];
+        let pose = (state.pose.0 / f, state.pose.1 / f);
+        let nested = state.nested.entry(state.canvas_id.clone()).or_default();
+        if !nested.observe(
+            &previous.data,
+            &ctx.gray.data,
+            previous.width,
+            previous.height,
+            step,
+            other,
+            pose,
+            rect,
+            inside,
+        ) {
+            return;
+        }
+        nested.observe_native(
+            &self.frames[previous_slot],
+            &self.frames[self.current_slot],
+            self.width,
+            self.height,
+            s.delta,
+            (other.0 * f, other.1 * f),
+            state.pose,
+            native_rect,
+            inside_native,
+        );
+    }
+
     /// The second pose recovery, then the voting observation, sticky occlusions and the placement — all with the
     /// region's final pose and canvas this frame.
     fn close_region(&mut self, i: usize, ctx: &FrameCtx, mut s: Step) -> Outcome {
@@ -1358,8 +1632,7 @@ impl SolveSession {
                 .unwrap_or(self.regions[i].shape.rect),
         );
         let mut observed = false;
-        if moving && !s.skip {
-            let slot = self.voting_slot[i].expect("a moving region has a voting slot");
+        if let (true, false, Some(slot)) = (moving, s.skip, self.voting_slot[i]) {
             let canvas_id = self.states[i].canvas_id.clone();
             let canvas = self.canvas_slot(&canvas_id);
             let pose = self.states[i].pose;
@@ -1400,19 +1673,34 @@ impl SolveSession {
                 }
             }
         }
+        // One level: a nested container is not searched for containers of its own.
+        if moving
+            && self.regions[i].nest.is_none()
+            && !s.skip
+            && matches!(s.decision, Decision::Tracked | Decision::Static)
+            && s.via_anchor.is_none()
+            && !s.relocalized
+        {
+            self.observe_nested(i, ctx, &s);
+        }
         let has_previous = self.previous_slot.is_some();
         let canvas_id = self.states[i].canvas_id.clone();
         let occlusions = match self.previous_slot {
             Some(previous) if track::occlusion_eligible(has_previous, moving, s.decision.tag()) => {
-                let carry: Vec<Rect> = self
-                    .previous_plan
-                    .as_ref()
-                    .and_then(|plan| {
-                        plan.iter()
-                            .find(|p| p.layer == layer && p.canvas_id == canvas_id)
-                    })
-                    .map(|p| p.occlusions.clone())
-                    .unwrap_or_default();
+                let before = self.previous_plan.as_ref().and_then(|plan| {
+                    plan.iter()
+                        .find(|p| p.layer == layer && p.canvas_id == canvas_id)
+                });
+                let carry: Vec<Rect> = before.map(|p| p.occlusions.clone()).unwrap_or_default();
+                // The page's step for the candidate sticky blocks: what the pose moved since the previous placement on
+                // this canvas. Odometry's step is not it for a pose re-acquired through the anchor or relocalized (the
+                // lost step, zero), nor after drift control moved the pose, and a block's faint-panel test weighs the
+                // page a pixel at a time. Without a previous placement on the canvas, odometry's own step, if any.
+                let pose = self.states[i].pose;
+                let block_motion =
+                    before
+                        .map(|p| (pose.0 - p.x, pose.1 - p.y))
+                        .or((s.via_anchor.is_none() && !s.relocalized).then_some(s.delta));
                 sticky_occlusions(
                     &self.frames[previous],
                     &self.frames[self.current_slot],
@@ -1422,17 +1710,45 @@ impl SolveSession {
                     s.delta.0,
                     s.delta.1,
                     &carry,
+                    &self.regions[i].sticky,
+                    block_motion,
                 )
             }
             _ => Vec::new(),
         };
-        if let Some(first) = occlusions.first() {
+        // A nested container owns only its rectangle this frame: the rest of the region is occluded for it.
+        let occlusions = match (&self.regions[i].nest, self.states[i].clip) {
+            (Some(_), Some(clip)) => complement(self.regions[i].shape.rect, clip),
+            _ => occlusions,
+        };
+        if let Some(first) = occlusions
+            .first()
+            .filter(|_| self.regions[i].nest.is_none())
+        {
             self.diagnostic(
                 Diagnostic::new("STICKY_OCCLUSION", Severity::Info)
                     .at(ctx.index, ctx.time)
                     .canvas(&canvas_id)
                     .region(*first),
             );
+        }
+        let clip = self.states[i]
+            .clip
+            .filter(|_| self.regions[i].nest.is_some());
+        // The state of its own scroll a nested container is in, for the moment its parent's print shows.
+        let parent = self.regions[i]
+            .nest
+            .as_ref()
+            .and_then(|n| n.parent_poses.get(ctx.index as usize).copied().flatten());
+        if let (Some(clip), Some(parent), false) = (clip, parent, s.skip) {
+            let state = &mut self.states[i];
+            let scroll = (
+                (state.pose.0 - parent.0).round() as i64,
+                (state.pose.1 - parent.1).round() as i64,
+            );
+            state
+                .moments
+                .add(&state.canvas_id, scroll, ctx.index, clip, parent);
         }
         let state = &mut self.states[i];
         let placement = Placement {
@@ -1450,6 +1766,7 @@ impl SolveSession {
             time: ctx.time,
             skip: s.skip,
             occlusions,
+            clip,
         };
         if moving {
             state.blind = !s.textured;

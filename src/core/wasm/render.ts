@@ -18,6 +18,8 @@ export interface RenderRegionInput {
   /** The region's code in the atlas label plane, and how many pixels the atlas gives it. */
   code: number;
   ownedPixels: number;
+  /** How many pixels each later atlas gives it, from that atlas's first frame on (`RegionAtlas.owned`). */
+  ownedEpochs?: [number, number][];
 }
 export interface RenderSessionConfig {
   width: number;
@@ -279,7 +281,10 @@ export class RenderSessionHandle {
 
 export function renderSession(core: Core, exports: CoreExports, config: RenderSessionConfig): RenderSessionHandle {
   const w = new ByteWriter().u32(config.width).u32(config.height).u32(config.factor).f64(config.noise).u32(config.regions.length);
-  for (const r of config.regions) writeRect(w.str(r.id).u8(KINDS[r.kind]), r.rect).u8(r.code).f64(r.ownedPixels);
+  for (const r of config.regions) {
+    writeRect(w.str(r.id).u8(KINDS[r.kind]), r.rect).u8(r.code).f64(r.ownedPixels).u32(r.ownedEpochs?.length ?? 0);
+    for (const [from, owned] of r.ownedEpochs ?? []) w.u32(from).f64(owned);
+  }
   w.u32(config.attachments.length);
   for (const a of config.attachments) w.str(a.id).str(a.target).f64(a.dx).f64(a.dy).f64(a.frame).f64(a.confidence).str(a.node);
   const [ptr, len] = w.place(core);

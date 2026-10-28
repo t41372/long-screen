@@ -209,6 +209,10 @@ export const pipelineSections: Catalog<typeof zh> = {
       message:
         'La textura de la parte superior indica una interfaz fija en pantalla, no un movimiento de la página. Esa obstrucción fija no se escribe en el lienzo móvil. La interfaz de referencia original se conserva en la vista con marco.',
     },
+    NESTED_LAYER_FOUND: {
+      message:
+        'Una parte de esta región se desplaza por su cuenta: en {{frames}} fotogramas su contenido no se movió con la región, así que tiene su propia imagen.',
+    },
     FRAGMENT_ATTACHED: {
       message:
         'Las referencias de una nueva visita permitieron unir un fragmento independiente completo a un lienzo existente. La trayectoria relativa dentro del fragmento no cambia.',

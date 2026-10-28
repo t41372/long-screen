@@ -22,17 +22,23 @@ mod bands;
 mod cells;
 mod construct;
 mod crops;
+mod epochs;
 mod merge;
+mod sticky;
 #[cfg(test)]
 mod tests;
 
 pub use atlas::{label_atlas, AtlasMask, AtlasRegion};
 use band_fn::band;
-use bands::{detect_bands, strongest_cut, Bands};
+use bands::{detect_bands, extend_past_bar_edges, strongest_cut, Bands};
 use cells::{group_and_label, union_find_cells};
 use construct::{apply_cell_granularity, apply_pane_divider, build_regions, expand_bands};
 use crops::{
     assign_native_crops, compute_native_edges, recompute_bounding_boxes, refine_vertical_cut_crops,
+};
+pub use epochs::{
+    apply_collapse, band_collapse, epoch_index, epoch_starts, exclusions_at, extra_exclusions,
+    Collapse, RegionEpoch,
 };
 use merge::{cleanup_sticky_headers, finalize, freeze_stationary_regions, merge_small_regions};
 
@@ -66,6 +72,9 @@ pub struct FinishInput<'a> {
     pub pixel_fixed: &'a [f64],
     pub pixel_moving: &'a [f64],
     pub native_row_change: Option<&'a [f64]>,
+    /// `Learner::native_row_middle`: the native row change over the middle half of each row. `None` (the frozen TS
+    /// oracle's accumulators) leaves every band's native edge to the change test.
+    pub native_row_middle: Option<&'a [f64]>,
     pub native_col_change: Option<&'a [f64]>,
     /// `Learner::row_fixed` / `Learner::row_moving`: per analysis row, the sampled pixels at which the stationary
     /// hypothesis beat the main motion by more than 6 levels, and the reverse. `None` keeps the change-only bands.
@@ -106,6 +115,12 @@ pub struct RegionOut {
     /// cells touch more than one band keeps only the LAST band `expand_bands` visits (1, 2, 3, then 4) —
     /// reproduced here, not "fixed", because `native_crops` reads it the same way.
     pub band_side: Option<u8>,
+    /// Ownership changes over the recording ([`RegionEpoch`]); empty for a region that owns the same pixels
+    /// throughout.
+    pub epochs: Vec<RegionEpoch>,
+    /// Candidate sticky blocks of a moving region, native pixels (`sticky::sticky_blocks`): blocks that stand still
+    /// for part of the recording, which the solve pass occludes in the frames whose page motion does not explain them.
+    pub sticky: Vec<Rect>,
 }
 
 #[inline]
@@ -150,7 +165,7 @@ pub fn finish(
     let cols = (width + cell - 1) / cell.max(1);
     let rows = (height + cell - 1) / cell.max(1);
     let reference = input.reference.as_ref();
-    let bands = detect_bands(
+    let mut bands = detect_bands(
         width,
         height,
         input.informative_frames,
@@ -164,6 +179,20 @@ pub fn finish(
         native_height,
         factor as f64,
     );
+    // Only with the row votes and the middle-of-row change: the frozen TS oracle has neither, and its band edges stay
+    // the change test's.
+    if let (Some(_), Some(middle)) = (input.row_fixed, input.native_row_middle) {
+        extend_past_bar_edges(
+            &mut bands,
+            width,
+            height,
+            input.informative_frames,
+            (input.pixel_fixed, input.pixel_moving),
+            middle,
+            input.native_frames,
+            factor as f64,
+        );
+    }
     let vertical_cut = strongest_cut(input.col_gain, input.informative_frames);
     let horizontal_cut = strongest_cut(input.horizontal_gain, input.informative_frames);
     let mut ds = union_find_cells(
@@ -305,5 +334,20 @@ pub fn finish(
         reference,
         factor as f64,
     );
-    finalize(regions, &valid, edges.content)
+    let mut regions = finalize(regions, &valid, edges.content);
+    // Sticky blocks read the vote accumulators the row votes come with; without them (the change-only learner the
+    // frozen oracle mirrors) there are none.
+    if input.row_fixed.is_some() {
+        for r in regions.iter_mut() {
+            r.sticky = sticky::sticky_blocks(
+                r,
+                (input.pixel_fixed, input.pixel_moving),
+                width,
+                height,
+                input.informative_frames,
+                factor as f64,
+            );
+        }
+    }
+    regions
 }

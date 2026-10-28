@@ -124,6 +124,7 @@ fn finish_falls_back_to_one_solid_pane_with_no_evidence() {
         pixel_fixed: &zeros,
         pixel_moving: &zeros,
         native_row_change: None,
+        native_row_middle: None,
         native_col_change: None,
         row_fixed: None,
         row_moving: None,
@@ -189,6 +190,7 @@ fn learn(width: usize, height: usize, frames: &[Vec<u8>]) -> Vec<RegionOut> {
         pixel_fixed: &learner.pixel_fixed,
         pixel_moving: &learner.pixel_moving,
         native_row_change: None,
+        native_row_middle: None,
         native_col_change: None,
         row_fixed: None,
         row_moving: None,
@@ -418,6 +420,7 @@ fn learn_fields_seeing(
         pixel_fixed: &learner.pixel_fixed,
         pixel_moving: &learner.pixel_moving,
         native_row_change: None,
+        native_row_middle: None,
         native_col_change: None,
         reference: with_reference.then(|| Rgba {
             width,
@@ -718,4 +721,474 @@ fn still_pixels_down_the_whole_screen_do_not_extend_the_band() {
     // has found no bar edge, and the band stays as the votes found it.
     let bands = glass_bands_over(40, 15.0, 2.0, 0, &[(0, 300, 8)]);
     assert_eq!((bands.top, bands.bottom), (40, 300));
+}
+
+// A scrollbar's thumb at the window's edge (new_mac_4, a code editor): the thumb's columns move in about 40 % of the
+// frames, so the walk in from the right edge stops at them, and the blank strip outside the thumb has no structure:
+// no right band, and the minimap standing still inside the thumb stays in the moving layer. Ways a crossing could go
+// wrong, written before it was allowed (the numbers are the engine's own `pixel_fixed`/`pixel_moving` per sampled
+// pixel and frame on the recordings):
+// - a thumb with a fixed panel beside it is not crossed (new_mac_4: the thumb 0.07 / 0.0001, the minimap 0.12 / 0);
+// - columns that move with the page beside the thumb are taken (pub_1: 0.017 following under the thumb);
+// - what stands still beyond the thumb but is no panel is taken: a blank margin with a resting pointer (own_c, 3.8
+//   times as often still as following), an empty strip by the page's edge (own_g, 0.016 still);
+// - a thumb in the last columns, where no pixel is sampled, is crossed on no evidence;
+// - the crossing runs without the votes (the change-only bands) or on the left without being mirrored.
+struct Thumb {
+    /// Per sampled pixel and frame, in the thumb's columns: standing still, following the page.
+    thumb: (f64, f64),
+    /// The same beyond it, up to the page.
+    beyond: (f64, f64),
+    /// The thumb's first column (4 wide) and the page's last column + 1 (the panel is `[page, thumb - 8)`).
+    at: usize,
+    /// Share of the columns beyond the thumb that carry `beyond` (from the page's side); the rest stand still blank.
+    filled: f64,
+    page: usize,
+    votes: bool,
+    mirror: bool,
+}
+
+const THUMB: Thumb = Thumb {
+    thumb: (0.07, 0.0001),
+    beyond: (0.12, 0.0),
+    at: 528,
+    page: 440,
+    filled: 1.0,
+    votes: true,
+    mirror: false,
+};
+
+fn thumb_bands(t: Thumb) -> super::bands::Bands {
+    let (w, h) = (600usize, 100usize);
+    let frames = 40.0;
+    // `x` as seen from the right edge, or from the left one when mirrored.
+    let at = |x: usize| if t.mirror { w - 1 - x } else { x };
+    let mut col_moving = vec![0.0; w];
+    let mut col_mean = vec![200.0 * frames; w];
+    let (mut pixel_fixed, mut pixel_moving) = (vec![0.0; w * h], vec![0.0; w * h]);
+    for x in 0..w {
+        let c = at(x);
+        let (moves, votes, mean) = if x < t.page {
+            (1.0, (0.02, 0.4), 120.0 + (x % 9) as f64 * 9.0)
+        } else if x < t.at - 8 {
+            let inside = ((x - t.page) as f64) < t.filled * (t.at - 8 - t.page) as f64;
+            let votes = if inside { t.beyond } else { (0.0, 0.0) };
+            (0.0, votes, 90.0 + (x % 7) as f64 * 15.0)
+        } else if (t.at..t.at + 4).contains(&x) {
+            (0.4, t.thumb, 200.0)
+        } else {
+            (0.0, (0.0, 0.0), 200.0)
+        };
+        col_moving[c] = moves * frames;
+        col_mean[c] = mean * frames;
+        for y in 0..h {
+            pixel_fixed[y * w + c] = votes.0 * frames;
+            pixel_moving[y * w + c] = votes.1 * frames;
+        }
+    }
+    let row_change = vec![5.0 * frames; h];
+    let (row_fixed, row_moving) = (vec![0.0; h], vec![frames * 100.0; h]);
+    super::bands::detect_bands(
+        w as i64,
+        h as i64,
+        frames,
+        &row_change,
+        t.votes.then_some((&row_fixed[..], &row_moving[..])),
+        (&pixel_fixed, &pixel_moving),
+        &col_moving,
+        &col_mean,
+        None,
+        w as f64,
+        h as f64,
+        1.0,
+    )
+}
+
+#[test]
+fn a_fixed_panel_beyond_a_scrollbar_thumb_is_a_side_band() {
+    let bands = thumb_bands(THUMB);
+    assert_eq!((bands.left, bands.right), (0, 440));
+    let bands = thumb_bands(Thumb {
+        mirror: true,
+        ..THUMB
+    });
+    assert_eq!((bands.left, bands.right), (160, 600));
+}
+
+#[test]
+fn a_thumb_beside_what_follows_the_page_is_not_crossed() {
+    // pub_1: the page's notes show under and beside the thumb.
+    let bands = thumb_bands(Thumb {
+        thumb: (0.2, 0.017),
+        ..THUMB
+    });
+    assert_eq!((bands.left, bands.right), (0, 600));
+}
+
+#[test]
+fn what_stands_still_beyond_a_thumb_must_be_a_panel() {
+    // own_c: a blank margin with a resting pointer, 3.8 times as often still as following.
+    let bands = thumb_bands(Thumb {
+        beyond: (0.0675, 0.0178),
+        ..THUMB
+    });
+    assert_eq!(bands.right, 600);
+    // own_g: an empty strip by the page's edge, 0.016 standing still.
+    let bands = thumb_bands(Thumb {
+        beyond: (0.016, 0.0),
+        ..THUMB
+    });
+    assert_eq!(bands.right, 600);
+    // A blank margin with a button floating on it: what stands still there fills under half of its columns, however
+    // often it votes (thumb-beside-margin).
+    let bands = thumb_bands(Thumb {
+        beyond: (0.12, 0.0),
+        filled: 0.4,
+        ..THUMB
+    });
+    assert_eq!(bands.right, 600);
+}
+
+#[test]
+fn a_thumb_with_no_sampled_column_is_not_crossed() {
+    // The last two columns are never sampled; a thumb there carries no votes either way.
+    let bands = thumb_bands(Thumb {
+        at: 596,
+        page: 500,
+        ..THUMB
+    });
+    assert_eq!(bands.right, 600);
+}
+
+#[test]
+fn without_the_votes_the_walk_stops_at_the_thumb() {
+    let bands = thumb_bands(Thumb {
+        votes: false,
+        ..THUMB
+    });
+    assert_eq!(bands.right, 600);
+}
+
+/// `glass_bands_over` with the row votes of every row given by `votes(y)` (standing still, following, per frame).
+fn vote_bands(votes: &dyn Fn(usize) -> (f64, f64)) -> super::bands::Bands {
+    vote_bands_with_objects(votes, &|_| 0)
+}
+
+/// `objects(y)`: how many of row `y`'s sampled columns (every 4th from 2) belong to an object standing still in half
+/// the frames and never following the page.
+fn vote_bands_with_objects(
+    votes: &dyn Fn(usize) -> (f64, f64),
+    objects: &dyn Fn(usize) -> usize,
+) -> super::bands::Bands {
+    let (w, h) = (204usize, 300usize);
+    let frames = 10.0;
+    let row_change = vec![5.0 * frames; h];
+    let row_fixed: Vec<f64> = (0..h).map(|y| frames * votes(y).0).collect();
+    let row_moving: Vec<f64> = (0..h).map(|y| frames * votes(y).1).collect();
+    let (mut pixel_fixed, pixel_moving) = (vec![0.0; w * h], vec![0.0; w * h]);
+    for y in 0..h {
+        for i in 0..objects(y) {
+            pixel_fixed[y * w + 2 + 4 * i] = 0.5 * frames;
+        }
+    }
+    super::bands::detect_bands(
+        w as i64,
+        h as i64,
+        frames,
+        &row_change,
+        Some((&row_fixed, &row_moving)),
+        (&pixel_fixed, &pixel_moving),
+        &vec![frames; w],
+        &vec![0.0; w],
+        None,
+        w as f64,
+        h as f64,
+        1.0,
+    )
+}
+
+// new_ip_3's bottom bar: its last rows stand still only about 1.5 to 2 times as often as they follow the page (the
+// home indicator over the glass). Four more informative frames (an odd-step fix in motion) took row 564 from 1.53
+// to 1.48, the walk from the bottom edge stopped there with 9 rows and no dense structure, and the whole bottom band
+// was gone, its tab icons burnt into the print. Ways a gap-tolerant walk could fail, written before it:
+// - a bar with a few rows just under the ratio near its edge is still cut there;
+// - the walk crosses rows the page clearly moves: own_f's floating composer sits above rows at 1.16 to 1.32 where
+//   the page shows through, and crossing them made it a band reaching up over page text and a floating button;
+// - the walk crosses more than a bar's spacing of page rows into something standing still further in;
+// - the band ends inside the gap instead of at the last row that stands still.
+const BAR: (f64, f64) = (15.0, 2.0);
+const PAGE: (f64, f64) = (1.0, 15.0);
+/// Standing still 1.45 times as often as following the page: just under the ratio.
+const NEAR: (f64, f64) = (14.5, 10.0);
+/// 1.3 times: the page moves these rows too often for them to be the bar's.
+const UNDER: (f64, f64) = (13.0, 10.0);
+
+#[test]
+fn a_few_rows_just_under_the_ratio_do_not_cut_a_bar() {
+    let bands = vote_bands(&|y| match y {
+        3..6 => NEAR,
+        _ if y < 40 => BAR,
+        _ => PAGE,
+    });
+    assert_eq!(bands.top, 40);
+    let bands = vote_bands(&|y| match y {
+        294..297 => NEAR,
+        _ if y >= 260 => BAR,
+        _ => PAGE,
+    });
+    assert_eq!(bands.bottom, 260);
+}
+
+#[test]
+fn rows_the_page_moves_too_often_end_a_bar() {
+    let bands = vote_bands(&|y| match y {
+        10..12 => UNDER,
+        _ if y < 40 => BAR,
+        _ => PAGE,
+    });
+    assert_eq!(bands.top, 10);
+    let bands = vote_bands(&|y| match y {
+        288..290 => UNDER,
+        _ if y >= 260 => BAR,
+        _ => PAGE,
+    });
+    assert_eq!(bands.bottom, 290);
+}
+
+// pub_6's status bar: the rows through the bottom of the Dynamic Island stand still only 1.08 to 1.42 times as often
+// as they follow the page, because the page shows through on both sides of the island, but the island's own pixels
+// stand still in every frame (25 sampled pixels a row). The walk stopped above them and the band cut the island in
+// two, its lower half torn in the print. own_f's rows under ChatGPT's input box (1.16 to 1.32) hold no such pixel.
+const DILUTED: (f64, f64) = (11.0, 10.0);
+
+#[test]
+fn rows_whose_objects_stand_still_do_not_cut_a_bar() {
+    let bands = vote_bands_with_objects(
+        &|y| match y {
+            10..13 => DILUTED,
+            _ if y < 20 => BAR,
+            _ => PAGE,
+        },
+        &|y| if (10..13).contains(&y) { 10 } else { 0 },
+    );
+    assert_eq!(bands.top, 20);
+    let bands = vote_bands_with_objects(
+        &|y| match y {
+            10..13 => DILUTED,
+            _ if y < 20 => BAR,
+            _ => PAGE,
+        },
+        &|_| 0,
+    );
+    assert_eq!(bands.top, 10);
+}
+
+#[test]
+fn the_walk_does_not_cross_more_than_a_bars_spacing_of_page() {
+    // A bar of 10 rows, 25 rows of page (over the 20 px gap), then rows standing still again further in.
+    let bands = vote_bands(&|y| {
+        if y < 10 || (35..60).contains(&y) {
+            BAR
+        } else {
+            PAGE
+        }
+    });
+    assert_eq!(bands.top, 10);
+    // A gap at the end of the bar is not part of it: the band ends at the last row that stands still.
+    let bands = vote_bands(&|y| if y < 30 { BAR } else { PAGE });
+    assert_eq!(bands.top, 30);
+    // A walk whose first row follows the page finds no bar, as before.
+    let bands = vote_bands(&|y| if (3..40).contains(&y) { BAR } else { PAGE });
+    assert_eq!(bands.top, 0);
+}
+
+// A bottom sheet whose top corners are rounded (new_ip_6 and new_ip_7, Google Maps' place sheet): the page shows
+// through the corners in the sheet's first rows, so their mean change stays above 0.9 for 28 native px and the change
+// test ends the band there, leaving the sheet's white edge in the moving layer, where every pan burns it into the map.
+// Ways a band edge past those rows could go wrong, written before it was allowed (the numbers are the engine's own
+// accumulators on the 32 recordings):
+// - page rows next to a bar, whose sampled pixels vote "still" because the motion lands on the bar, join it
+//   (new_ip_4, new_ip_8: 0.94–1.0 of the samples, but each native row changes as much as the page does);
+// - a fade over the page joins the bar (pub_2: 0.57 of the samples still);
+// - a header that slides over the page and stands still in between joins the bar (`header-lag-collapse`: its rows
+//   change across their whole width while it slides);
+// - an analysis row holding the page's last native rows joins it (new_mac_2's top bar);
+// - rows standing still down to the walk's cap are taken as a bar's edge;
+// - the native edge is put where the change falls under 0.9 instead of at the sheet's edge;
+// - the top side is not mirrored.
+struct Sheet {
+    /// Per frame, the native change of the sheet's rounded rows over the whole row (from their first row on), and over
+    /// the middle half of the row.
+    edge_change: (f64, f64),
+    edge_middle: f64,
+    /// Sampled pixels (of 50) of the rounded rows that stand still.
+    fixed_samples: usize,
+    /// First analysis row of the rounded rows (they end at 252, where the change test's band starts).
+    from: usize,
+    top: bool,
+}
+
+const SHEET: Sheet = Sheet {
+    edge_change: (6.0, 1.0),
+    edge_middle: 0.1,
+    fixed_samples: 50,
+    from: 248,
+    top: false,
+};
+
+/// The bands and native band edges for a 204×300 analysis frame at factor 5 (1020×1500 native): page rows change by
+/// 5 a frame (30 native, in the middle too), the sheet's rounded rows run from 3 native rows into analysis row `t.from`
+/// (1243 for 248) to 1260, its body below them stands still. Returns the bands as the change test found them, after
+/// `extend_past_bar_edges`, and both native edges (top or bottom, as `t.top` asks).
+fn sheet_bands(t: Sheet) -> (Bands, Bands, i64, i64) {
+    let (w, h, factor) = (204usize, 300usize, 5usize);
+    let (nw, nh) = (w * factor, h * factor);
+    let frames = 10.0;
+    let flip = |y: usize, n: usize| if t.top { n - 1 - y } else { y };
+    let (mut row_change, mut native, mut middle) = (vec![0.0; h], vec![0.0; nh], vec![0.0; nh]);
+    let (mut pixel_fixed, pixel_moving) = (vec![0.0; w * h], vec![0.0; w * h]);
+    for y in 0..h {
+        let change = if y < t.from {
+            5.0
+        } else if y < 252 {
+            1.5
+        } else {
+            0.0
+        };
+        row_change[flip(y, h)] = change * frames;
+        if (t.from..252).contains(&y) {
+            for k in 0..t.fixed_samples {
+                pixel_fixed[flip(y, h) * w + 2 + 4 * k] = frames;
+            }
+        }
+    }
+    // The rounded rows start 3 native rows into analysis row `t.from`.
+    let first = t.from * factor + 3;
+    for n in 0..nh {
+        let (change, mid) = if n < first {
+            (30.0, 30.0)
+        } else if n < 1260 {
+            let (a, b) = t.edge_change;
+            (
+                a + (b - a) * (n - first) as f64 / (1259 - first) as f64,
+                t.edge_middle,
+            )
+        } else {
+            (0.1, 0.1)
+        };
+        native[flip(n, nh)] = change * frames;
+        middle[flip(n, nh)] = mid * frames;
+    }
+    let (row_fixed, row_moving) = (vec![0.0; h], vec![0.0; h]);
+    let col_moving = vec![frames; w];
+    let col_mean = vec![0.0; w];
+    let detect = || {
+        super::bands::detect_bands(
+            w as i64,
+            h as i64,
+            frames,
+            &row_change,
+            Some((&row_fixed, &row_moving)),
+            (&pixel_fixed, &pixel_moving),
+            &col_moving,
+            &col_mean,
+            None,
+            nw as f64,
+            nh as f64,
+            factor as f64,
+        )
+    };
+    let (found, mut bands) = (detect(), detect());
+    super::bands::extend_past_bar_edges(
+        &mut bands,
+        w as i64,
+        h as i64,
+        frames,
+        (&pixel_fixed, &pixel_moving),
+        &middle,
+        frames,
+        factor as f64,
+    );
+    let edge = |b: &Bands| {
+        let e = compute_native_edges(
+            b,
+            Some(&native),
+            None,
+            frames,
+            h as i64,
+            w as i64,
+            factor as f64,
+            nw as f64,
+            nh as f64,
+        );
+        if t.top {
+            e.top
+        } else {
+            e.bottom
+        }
+    };
+    let (before, after) = (edge(&found), edge(&bands));
+    (found, bands, before, after)
+}
+
+#[test]
+fn a_sheet_with_rounded_corners_starts_at_its_top_edge() {
+    let (found, bands, before, after) = sheet_bands(SHEET);
+    assert_eq!(found.bottom, 252);
+    // Analysis row 248 still holds three native rows of the page; the native edge is the sheet's own. The band (the
+    // analysis cells) stays.
+    assert_eq!(
+        (bands.bottom, bands.bar_edge.1, after),
+        (252, Some(249), 1243),
+        "change test: {before}"
+    );
+}
+
+#[test]
+fn a_top_bar_with_rounded_lower_corners_ends_at_its_bottom_edge() {
+    let (found, bands, _, after) = sheet_bands(Sheet { top: true, ..SHEET });
+    assert_eq!(found.top, 48);
+    assert_eq!(
+        (bands.top, bands.bar_edge.0, after),
+        (48, Some(51), 1500 - 1243)
+    );
+}
+
+#[test]
+fn page_rows_whose_pixels_vote_still_beside_a_bar_stay_page() {
+    // Every sampled pixel stands still often enough, but each native row changes as much as the page, in the middle too.
+    let (found, bands, before, after) = sheet_bands(Sheet {
+        edge_change: (30.0, 30.0),
+        edge_middle: 30.0,
+        ..SHEET
+    });
+    assert_eq!((bands.bar_edge.1, after), (None, before));
+    assert_eq!(bands.bottom, found.bottom);
+}
+
+#[test]
+fn a_header_changing_across_its_width_stays_out() {
+    // Its pixels stand still in most frames and never follow the page, but it slides over the page now and then: its
+    // rows change in the middle as well, a little above the change test's threshold.
+    let (_, bands, before, after) = sheet_bands(Sheet {
+        edge_middle: 1.2,
+        ..SHEET
+    });
+    assert_eq!((bands.bar_edge.1, after), (None, before));
+}
+
+#[test]
+fn a_fade_over_the_page_stays_page() {
+    // Only about half the samples stand still.
+    let (_, bands, before, after) = sheet_bands(Sheet {
+        fixed_samples: 28,
+        ..SHEET
+    });
+    assert_eq!((bands.bar_edge.1, after), (None, before));
+}
+
+#[test]
+fn rows_standing_still_down_to_the_cap_are_no_bar_edge() {
+    let (_, bands, before, after) = sheet_bands(Sheet { from: 150, ..SHEET });
+    assert_eq!((bands.bar_edge.1, after), (None, before));
 }

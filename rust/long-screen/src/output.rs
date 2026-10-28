@@ -144,6 +144,16 @@ impl RunResult {
         &self.store
     }
 
+    /// The run's id: its rows are stored under `run/<id>/`.
+    pub(crate) fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    /// The language the run's messages and names are in.
+    pub(crate) fn locale(&self) -> Locale {
+        self.locale
+    }
+
     fn row(&self, key: &str) -> Option<Js> {
         self.store.get(&format!("run/{}/{key}", self.run_id))
     }

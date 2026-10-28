@@ -30,9 +30,10 @@ function skippedRow(d: EngineDiagnostic): Diagnostic {
 
 export async function reveal(ctx: RunContext): Promise<void> {
   if (ctx.stopped || ctx.partial || !ctx.atlas || ctx.processed < 2) return;
-  const metas: CanvasMeta[] = [];
+  // A nested container's canvas (Region.parent) is a print of its own: its parent already leaves its rectangle out.
+  const layers = ctx.regions.filter((r) => r.kind === 'moving' && !r.parent), metas: CanvasMeta[] = [];
   for await (const { value } of iterate<CanvasMeta>(ctx.store, 'canvas/')) {
-    if (value.kind === 'moving') metas.push(value);
+    if (value.kind === 'moving' && layers.some((r) => r.id === value.layer)) metas.push(value);
   }
   const atlas = ctx.atlas, { width, height } = ctx.source.info;
   const session = core().revealSession({
@@ -41,7 +42,7 @@ export async function reveal(ctx: RunContext): Promise<void> {
     noise: ctx.noise,
     tileSize: ctx.tiles.size,
     frames: ctx.processed,
-    layers: ctx.regions.filter((r) => r.kind === 'moving').map((r) => ({ id: r.id, rect: r.rect, code: atlas.code(r) })),
+    layers: layers.map((r) => ({ id: r.id, rect: r.rect, code: atlas.code(r) })),
     canvases: metas.map((m) => ({ id: m.id, bounds: m.bounds })),
   });
   let started = 0;
@@ -96,10 +97,10 @@ export async function reveal(ctx: RunContext): Promise<void> {
 /** One decode of the solved frames through `pass`. Frames the pass does not read are decoded but not converted.
  *  Returns false when the run stopped. */
 async function sweep(ctx: RunContext, session: RevealSessionHandle, pass: RevealPass, wanted: Uint8Array): Promise<boolean> {
-  const message = t(`progress.reveal.${pass}`), offset = REVEAL_PASSES.indexOf(pass), labels = ctx.atlas!.resident;
+  const message = t(`progress.reveal.${pass}`), offset = REVEAL_PASSES.indexOf(pass), atlas = ctx.atlas!;
   const { width, height } = ctx.source.info;
   const started = performance.now();
-  let coreMS = 0, writeMS = 0, waitMS = 0, uploadMS = 0, converted = 0, waited = performance.now();
+  let coreMS = 0, writeMS = 0, waitMS = 0, uploadMS = 0, converted = 0, waited = performance.now(), last = 0;
   const want = (index: number) => wanted[index] === 1;
   // Frames the run converts on the CPU come as planes and convert straight into the session's frame buffer
   // (src/media/convert.ts).
@@ -137,7 +138,8 @@ async function sweep(ctx: RunContext, session: RevealSessionHandle, pass: Reveal
       releaseUnlessHeld(frame.image);
       uploadMS += performance.now() - mark;
       mark = performance.now();
-      session.push(frame.index, labels);
+      last = frame.index;
+      session.push(frame.index, atlas.residentAt(frame.index));
       coreMS += performance.now() - mark;
       mark = performance.now();
       await untilDone(ctx, session, 'nextFrame');
@@ -159,7 +161,8 @@ async function sweep(ctx: RunContext, session: RevealSessionHandle, pass: Reveal
       await it.return(undefined);
     } catch { /* already unwinding */ }
   }
-  session.end(labels);
+  // The runs still open vote with the last frame pushed.
+  session.end(atlas.residentAt(last));
   await untilDone(ctx, session, 'passDone');
   ctx.timings[`reveal.${pass}MS`] = performance.now() - started;
   ctx.timings[`reveal.${pass}.coreMS`] = coreMS;

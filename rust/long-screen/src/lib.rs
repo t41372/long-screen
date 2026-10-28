@@ -72,6 +72,8 @@ mod driver;
 #[cfg(feature = "driver")]
 mod output;
 #[cfg(feature = "driver")]
+mod package;
+#[cfg(feature = "driver")]
 mod present;
 #[cfg(feature = "driver")]
 mod render;

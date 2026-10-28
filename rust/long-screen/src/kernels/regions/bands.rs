@@ -15,6 +15,12 @@ pub struct Bands {
     pub right: i64,
     pub exact_left: Option<f64>,
     pub exact_right: Option<f64>,
+    /// Whether the change test itself found the top / bottom band (not the row votes).
+    pub by_change: (bool, bool),
+    /// The analysis row past which `extend_past_bar_edges` found a bar's real edge, on the top / bottom side: the
+    /// band's native edge is then the steepest step of the native row change near it (`crops::steepest_edge`). The
+    /// band itself (the analysis cells each region takes) stays where the change test put it.
+    pub bar_edge: (Option<i64>, Option<i64>),
 }
 
 /// Mean of the middle rows of the reference frame, sampled every 3rd row, per analysis column (`middleMean` in
@@ -108,17 +114,24 @@ const STATIONARY_COLUMN_SHARE: f64 = 0.25;
 /// as fixed chrome on a side the change test left without a band. Page content scrolling under a glass bar sits
 /// near 1 : 14 (new_ip_3's middle rows) and at worst about 1 : 2 on any recording; the bars' own rows are 1.5 : 1
 /// and up.
-const STATIONARY_VOTE_RATIO: f64 = 1.5;
+pub(super) const STATIONARY_VOTE_RATIO: f64 = 1.5;
 /// Share of a row's sampled pixels (every 4th column) that must vote for standing still per informative frame,
 /// so a row with almost no structure cannot pass on a handful of votes.
-const STATIONARY_VOTE_SHARE: f64 = 0.03;
+pub(super) const STATIONARY_VOTE_SHARE: f64 = 0.03;
+/// How far a row's ratio may fall under `STATIONARY_VOTE_RATIO` inside a band found by the votes when a row over it
+/// follows within `FIXED_ROW_GAP` (`vote_walk`). A glass bar's rows near its edge stand still only 1.5 to 2 times as
+/// often as they follow the page (new_ip_3's home indicator: 1.48 to 2.03, the 1.48 after four more frames had their
+/// motion measured), while the page showing through under a floating panel stays further down (own_f: 1.16 to 1.32
+/// under ChatGPT's input box, whose fade is page content; crossing those rows made the box a band reaching up over
+/// the page text and a floating button above it).
+pub(super) const STATIONARY_GAP_RATIO: f64 = 1.4;
 
 /// Share of a row's sampled pixels at which standing still must win, per informative frame, on at least one row
 /// of a band found by the votes. Bars hold icons and text: the densest row of each such band on the recordings is
 /// at 0.41–0.62. A fade over the page bottom holds none, yet the motion hypothesis fails there too, because the fade
 /// dims each row of the page differently as it scrolls through: own_f's 29-row fade under ChatGPT's input box peaks
 /// at 0.087 and stays page content.
-const STATIONARY_STRUCTURE_SHARE: f64 = 0.2;
+pub(super) const STATIONARY_STRUCTURE_SHARE: f64 = 0.2;
 
 /// Share of the informative frames in which standing still must explain a sampled pixel (and `STATIONARY_VOTE_RATIO`
 /// times as often as the main motion) for the pixel to count as part of a fixed object (`fixed_pixels`). Over the
@@ -142,6 +155,121 @@ const FIXED_ROW_GAP: f64 = 20.0;
 /// new_ip_3's add 195 and 325 px, the soft edges under the status bars of new_ip_9 and pub_6 and above new_ip_3's
 /// input bar 10–35 px.
 const FIXED_ROW_RUN: f64 = 60.0;
+
+/// Widest run of moving columns, in analysis columns and as a share of the width, that a side band's walk may cross
+/// when they never follow the page: a scrollbar's thumb and track. The thumbs on the recordings are 3–5 columns
+/// (0.5–0.9 % of the width).
+const THUMB_COLUMNS: i64 = 6;
+const THUMB_WIDTH_SHARE: f64 = 0.015;
+/// Votes for the page's motion per sampled pixel and informative frame under which a column never follows the page.
+/// new_mac_4's thumb columns: 0.0001 and 0; the columns a walk stops at beside pages that follow the page (pub_1's
+/// "stars today" notes under the thumb) 0.017.
+const THUMB_FOLLOW_SHARE: f64 = 0.002;
+/// How many times as often standing still must win as the page's motion, in the crossed columns and in what stands
+/// still beyond them, per sampled pixel: new_mac_4's thumb 650× and up, its minimap 700×; beyond the thumbs where no
+/// fixed panel stands, a blank margin with a resting pointer (own_c) 3.8×, the page's sparse notes (pub_1) 3.5×, an
+/// empty strip by a page's edge (own_g) 5.8×.
+const THUMB_VOTE_RATIO: f64 = 10.0;
+/// Share of the columns beyond a thumb that must each stand still as often as `STATIONARY_VOTE_SHARE`: a panel stands
+/// still across its width (new_mac_4's minimap: 38 of its 44 columns), while a button floating on a blank margin
+/// fills a few of the margin's columns however often it votes.
+const THUMB_PANEL_SHARE: f64 = 2.0 / 3.0;
+
+/// Votes per sampled pixel and informative frame, standing still and following the page, over the band rows
+/// `[top, bottom)` of the sampled column standing for analysis column `x` (`Learner::add` samples every 4th column,
+/// from 2, and not the last two). `None` where no column there is sampled: no evidence either way.
+#[allow(clippy::too_many_arguments)]
+fn column_votes(
+    votes: (&[f64], &[f64]),
+    x: i64,
+    width: i64,
+    height: i64,
+    top: i64,
+    bottom: i64,
+    frames: f64,
+) -> Option<(f64, f64)> {
+    let s = (x / 4) * 4 + 2;
+    let (y0, y1) = (top.max(2), bottom.min(height - 2));
+    if s >= width - 2 || y1 <= y0 {
+        return None;
+    }
+    let (fixed, moving) = votes;
+    let (mut f, mut m) = (0.0, 0.0);
+    for y in y0..y1 {
+        f += fixed[(y * width + s) as usize];
+        m += moving[(y * width + s) as usize];
+    }
+    let n = (y1 - y0) as f64 * frames;
+    Some((f / n, m / n))
+}
+
+/// Where a side band's walk stopped at a scrollbar's thumb: the edge of what stands still beyond it and the thumb's
+/// inner edge (the panel lies between them), or `None`. From
+/// `edge`, the walk's stop, the columns going inwards (`step` −1 on the right, +1 on the left) must start with a run
+/// of `THUMB_COLUMNS` at most that move but never follow the page (`column_votes`: standing still wins
+/// `STATIONARY_VOTE_SHARE` per pixel and frame, `THUMB_VOTE_RATIO` times as often as following, which stays under
+/// `THUMB_FOLLOW_SHARE`); past it the walk goes on over stationary columns to `inner`. What it crosses there must be
+/// a panel standing still: at least 6 columns (a band's minimum, the thumb not counted), its mean votes standing
+/// still as a glass bar's rows do and `THUMB_VOTE_RATIO` times as often as following, in `THUMB_PANEL_SHARE` of its
+/// columns each, and textured on its own (the thumb's ends give a blank margin vertical structure).
+#[allow(clippy::too_many_arguments)]
+fn past_thumb(
+    edge: i64,
+    step: i64,
+    within: impl Fn(i64) -> bool,
+    moved: impl Fn(i64) -> bool,
+    votes: (&[f64], &[f64]),
+    width: i64,
+    height: i64,
+    top: i64,
+    bottom: i64,
+    frames: f64,
+    texture: impl Fn(i64, i64) -> bool,
+) -> Option<(i64, i64)> {
+    // The column a step inwards from a boundary `b`: `b - 1` on the right, `b` on the left.
+    let col = |b: i64| if step < 0 { b - 1 } else { b };
+    let never_follows = |x: i64| {
+        column_votes(votes, x, width, height, top, bottom, frames).is_some_and(|(f, m)| {
+            f >= STATIONARY_VOTE_SHARE && m <= THUMB_FOLLOW_SHARE && f >= THUMB_VOTE_RATIO * m
+        })
+    };
+    let limit = THUMB_COLUMNS.min(js_floor(width as f64 * THUMB_WIDTH_SHARE) as i64);
+    let mut k = edge;
+    while within(k) && moved(col(k)) && never_follows(col(k)) && (k - edge).abs() < limit {
+        k += step;
+    }
+    if k == edge || !within(k) || moved(col(k)) {
+        return None;
+    }
+    let mut inner = k;
+    while within(inner) && !moved(col(inner)) {
+        inner += step;
+    }
+    let (from, to) = if step < 0 { (inner, k) } else { (k, inner) };
+    if !within(inner) || to - from < 6 {
+        return None;
+    }
+    let (mut f, mut m, mut n, mut standing) = (0.0, 0.0, 0.0, 0.0);
+    for x in from..to {
+        if let Some((cf, cm)) = column_votes(votes, x, width, height, top, bottom, frames) {
+            f += cf;
+            m += cm;
+            n += 1.0;
+            if cf >= STATIONARY_VOTE_SHARE {
+                standing += 1.0;
+            }
+        }
+    }
+    if n == 0.0
+        || f / n < STATIONARY_VOTE_SHARE
+        || f < THUMB_VOTE_RATIO * m
+        || standing < THUMB_PANEL_SHARE * n
+        || !texture(from, to)
+    {
+        return None;
+    }
+    Some((inner, k))
+}
 
 /// Sampled pixels of row `y` that a fixed object holds: standing still explained them in `FIXED_PIXEL_SHARE` of the
 /// informative frames and `STATIONARY_VOTE_RATIO` times as often as the main motion did. Unlike the row votes, the
@@ -197,6 +325,39 @@ fn last_row_of_fixed_objects(
     None
 }
 
+/// The vote walk from a screen edge: from row `start`, `step` rows at a time while `within` holds, over rows `still`
+/// takes and, once one row was taken, gaps of at most `gap_rows` rows it does not but `near` does, each followed by
+/// one it takes. Returns the first row past the band on the top side (`step` 1) and the last row before it on the
+/// bottom side (`step` −1): the band ends at the last row taken.
+fn vote_walk(
+    start: i64,
+    step: i64,
+    within: impl Fn(i64) -> bool,
+    still: &impl Fn(i64) -> bool,
+    near: &impl Fn(i64) -> bool,
+    gap_rows: i64,
+) -> i64 {
+    let (mut y, mut end) = (start, start);
+    while within(y) {
+        if still(y) {
+            y += step;
+            end = y;
+            continue;
+        }
+        if end == start {
+            break;
+        }
+        match (1..=gap_rows)
+            .take_while(|&k| near(y + (k - 1) * step))
+            .find(|&k| within(y + k * step) && still(y + k * step))
+        {
+            Some(k) => y += k * step,
+            None => break,
+        }
+    }
+    end
+}
+
 /// The row-vote test above.
 fn stationary_by_votes(
     fixed: &[f64],
@@ -205,13 +366,14 @@ fn stationary_by_votes(
     width: i64,
     height: i64,
     informative_frames: f64,
+    ratio: f64,
 ) -> bool {
     if height < 5 || width < 5 {
         return false;
     }
     let f = vote_share(fixed, y, width, height, informative_frames);
     let m = vote_share(moving, y, width, height, informative_frames);
-    f >= STATIONARY_VOTE_SHARE && f >= STATIONARY_VOTE_RATIO * m
+    f >= STATIONARY_VOTE_SHARE && f >= ratio * m
 }
 
 /// Votes per informative frame over the row's sampled pixels. `Learner::add` samples rows 2..height-2 only, so the
@@ -250,6 +412,7 @@ pub fn detect_bands(
     factor: f64,
 ) -> Bands {
     let (mut top, mut bottom) = (0i64, height);
+    let mut by_change = (false, false);
     if informative_frames >= 2.0 {
         while (top as f64) < height as f64 * 0.45
             && stat_at(row_change, top) / informative_frames < 0.9
@@ -267,6 +430,7 @@ pub fn detect_bands(
         if height - bottom < 6 || bottom as f64 <= height as f64 * 0.55 {
             bottom = height;
         }
+        by_change = (top > 0, bottom < height);
         // Translucent chrome (iOS 26 glass bars, frosted headers) shows the scrolling page through itself, so
         // none of its rows passes the change test and that side gets no band at all. Only on such a side, a row
         // also counts as stationary when its fixed icons and text are evident: at its sampled pixels standing
@@ -278,12 +442,46 @@ pub fn detect_bands(
         if let Some((fixed, moving)) = row_votes {
             let still = |y: i64| {
                 stat_at(row_change, y) / informative_frames < 0.9
-                    || stationary_by_votes(fixed, moving, y, width, height, informative_frames)
+                    || stationary_by_votes(
+                        fixed,
+                        moving,
+                        y,
+                        width,
+                        height,
+                        informative_frames,
+                        STATIONARY_VOTE_RATIO,
+                    )
             };
+            // A bar's rows over the glass stand still only about 1.5 to 2 times as often as they follow the page
+            // near its edges, so the walk crosses a gap of at most `FIXED_ROW_GAP` native px of rows just under the
+            // ratio (`STATIONARY_GAP_RATIO`), or of rows that still hold a fixed object (`FIXED_ROW_SAMPLES`), when a
+            // row that stands still follows it; the band still ends at the last row that stands still. An object
+            // narrower than the row leaves the page showing through on both sides, which dilutes the row's ratio but
+            // not the object's own pixels: pub_6's rows through the bottom of the Dynamic Island read 1.08 to 1.42
+            // with 25 fixed samples each, and the band cut the island in two. The page under own_f's input box (1.16
+            // to 1.32) holds none.
+            let near = |y: i64| {
+                stationary_by_votes(
+                    fixed,
+                    moving,
+                    y,
+                    width,
+                    height,
+                    informative_frames,
+                    STATIONARY_GAP_RATIO,
+                ) || fixed_pixels(pixel_votes, y, width, height, informative_frames)
+                    >= FIXED_ROW_SAMPLES
+            };
+            let gap_rows = js_ceil(FIXED_ROW_GAP / factor) as i64;
             if top == 0 {
-                while (top as f64) < height as f64 * 0.45 && still(top) {
-                    top += 1;
-                }
+                top = vote_walk(
+                    0,
+                    1,
+                    |y| (y as f64) < height as f64 * 0.45,
+                    &still,
+                    &near,
+                    gap_rows,
+                );
                 if top < 6
                     || top as f64 >= height as f64 * 0.45
                     || !holds_structure(fixed, 0, top, width, height, informative_frames)
@@ -303,9 +501,14 @@ pub fn detect_bands(
                 }
             }
             if bottom == height {
-                while bottom as f64 > height as f64 * 0.55 && still(bottom - 1) {
-                    bottom -= 1;
-                }
+                bottom = vote_walk(
+                    height - 1,
+                    -1,
+                    |y| (y + 1) as f64 > height as f64 * 0.55,
+                    &still,
+                    &near,
+                    gap_rows,
+                ) + 1;
                 if height - bottom < 6
                     || bottom as f64 <= height as f64 * 0.55
                     || !holds_structure(fixed, bottom, height, width, height, informative_frames)
@@ -333,6 +536,11 @@ pub fn detect_bands(
     };
     let (mut left, mut right) = (0i64, width);
     let (mut exact_left, mut exact_right) = (None, None);
+    // The inner edges of scrollbar thumbs the walks crossed: a panel's own edge is looked for between the walk's stop
+    // and a column short of the thumb, not at the thumb: the track's border runs the full height and is the strongest
+    // edge there (new_mac_4: x 3178, the thumb from 3180), while a minimap shares the editor's background and may show
+    // none, so the band then starts where the walk stopped.
+    let (mut thumb_left, mut thumb_right) = (None, None);
     if informative_frames >= 2.0 {
         while (left as f64) < width as f64 * 0.45
             && stat_at(col_moving, left) / informative_frames < STATIONARY_COLUMN_SHARE
@@ -343,6 +551,61 @@ pub fn detect_bands(
             && stat_at(col_moving, right - 1) / informative_frames < STATIONARY_COLUMN_SHARE
         {
             right -= 1;
+        }
+        // A scrollbar's thumb at the window's edge moves whenever the page does, so the walk stops at it although it
+        // never follows the page; a fixed panel standing still beyond it (new_mac_4's minimap) then stayed in the
+        // moving layer. With the votes at hand, the walk crosses such a thumb when what it reaches beyond is a panel
+        // standing still (`past_thumb`); the thumb then belongs to the band.
+        if row_votes.is_some() {
+            let moved =
+                |x: i64| stat_at(col_moving, x) / informative_frames >= STATIONARY_COLUMN_SHARE;
+            let texture = |from: i64, to: i64| {
+                textured(
+                    from,
+                    to,
+                    informative_frames,
+                    reference,
+                    &mm,
+                    col_mean,
+                    top,
+                    bottom,
+                    factor,
+                )
+            };
+            if (left as f64) < width as f64 * 0.45 {
+                if let Some(inner) = past_thumb(
+                    left,
+                    1,
+                    |b| (b as f64) < width as f64 * 0.45,
+                    moved,
+                    pixel_votes,
+                    width,
+                    height,
+                    top,
+                    bottom,
+                    informative_frames,
+                    texture,
+                ) {
+                    (left, thumb_left) = (inner.0, Some(inner.1));
+                }
+            }
+            if right as f64 > width as f64 * 0.55 {
+                if let Some(inner) = past_thumb(
+                    right,
+                    -1,
+                    |b| b as f64 > width as f64 * 0.55,
+                    moved,
+                    pixel_votes,
+                    width,
+                    height,
+                    top,
+                    bottom,
+                    informative_frames,
+                    texture,
+                ) {
+                    (right, thumb_right) = (inner.0, Some(inner.1));
+                }
+            }
         }
         if let Some(img) = reference {
             let scale = factor;
@@ -357,7 +620,7 @@ pub fn detect_bands(
                     img.width,
                     img.height,
                     Axis::X,
-                    0.0,
+                    thumb_left.map_or(0.0, |k| ((k + 1) as f64 * scale).floor()),
                     (left as f64 * scale).ceil(),
                     cross_from,
                     cross_to,
@@ -373,7 +636,7 @@ pub fn detect_bands(
                     img.height,
                     Axis::X,
                     (right as f64 * scale).floor(),
-                    native_width,
+                    thumb_right.map_or(native_width, |k| ((k - 1) as f64 * scale).ceil()),
                     cross_from,
                     cross_to,
                     Choose::First,
@@ -430,6 +693,73 @@ pub fn detect_bands(
         right,
         exact_left,
         exact_right,
+        by_change,
+        bar_edge: (None, None),
+    }
+}
+
+/// Share of a row's sampled pixels that must belong to fixed objects (`fixed_pixels`) for a row past the edge of a band
+/// the change test found to belong to the bar. A bar standing over the page holds nearly every pixel of its own rows:
+/// the rounded top rows of Google Maps' place sheet (new_ip_6, new_ip_7) 0.94–1.0; a fade over the page holds about
+/// half (pub_2: 0.57). Page rows beside an opaque bar reach it too, because the motion lands on the bar while the page
+/// there is blank (new_ip_4, new_ip_8: 0.94–1.0); their middle changes as the page does.
+const BAR_EDGE_FIXED_SHARE: f64 = 0.9;
+
+/// Finds the real edge of a bar whose first rows the change test left out of its band because their mean change
+/// reached 0.9: a bar with rounded corners shows the page through them (new_ip_6: 28 native px of Google Maps' place
+/// sheet, whose white edge then stayed in the moving layer and was burnt into the map along every pan). A row past
+/// the band belongs to the bar when nearly all its sampled pixels belong to fixed objects (`BAR_EDGE_FIXED_SHARE`) and
+/// each of its native rows passes the change test's own threshold on the middle half of the row (`middle`,
+/// `Learner::native_row_middle`), which the corners and the page beyond them cannot reach. A header that slides or
+/// changes over the page changes across the whole row, so it stays out (`header-lag-collapse`); so do the page rows
+/// beside a bar, a fade, and an analysis row that still holds some of the page's native rows. A walk that runs up to
+/// the band cap (45 % / 55 %) has found no bar edge. Only the native edge moves (`bar_edge`, read by
+/// `crops::steepest_edge`): there the whole-row change falls from the page's to the corners' sliver in one native
+/// row (24.3 to 7.2 at 2418 on new_ip_6), while every row of the sliver stays above 0.9. The band (which analysis
+/// cells each region takes) stays.
+#[allow(clippy::too_many_arguments)]
+pub fn extend_past_bar_edges(
+    bands: &mut Bands,
+    width: i64,
+    height: i64,
+    informative_frames: f64,
+    pixel_votes: (&[f64], &[f64]),
+    middle: &[f64],
+    native_frames: f64,
+    factor: f64,
+) {
+    if informative_frames < 2.0 || native_frames == 0.0 || width < 5 || height < 5 {
+        return;
+    }
+    let native_height = middle.len() as i64;
+    let native_range = |from: i64, to: i64| {
+        let a = ((from as f64 * factor) as i64).clamp(0, native_height);
+        let b = ((to as f64 * factor) as i64).clamp(0, native_height);
+        a..b
+    };
+    let samples = ((width - 4 + 3) / 4) as f64;
+    let joins = |y: i64| {
+        fixed_pixels(pixel_votes, y, width, height, informative_frames) as f64
+            >= BAR_EDGE_FIXED_SHARE * samples
+            && native_range(y, y + 1).all(|n| middle[n as usize] / native_frames < 0.9)
+    };
+    if bands.by_change.0 {
+        let mut y = bands.top;
+        while (y as f64) < height as f64 * 0.45 && joins(y) {
+            y += 1;
+        }
+        if y > bands.top && (y as f64) < height as f64 * 0.45 {
+            bands.bar_edge.0 = Some(y);
+        }
+    }
+    if bands.by_change.1 {
+        let mut y = bands.bottom - 1;
+        while y as f64 > height as f64 * 0.55 && joins(y) {
+            y -= 1;
+        }
+        if y + 1 < bands.bottom && y as f64 > height as f64 * 0.55 {
+            bands.bar_edge.1 = Some(y + 1);
+        }
     }
 }
 

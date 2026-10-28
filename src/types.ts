@@ -47,6 +47,12 @@ export interface MotionField {
   unknown: boolean;
   zoom: number;
 }
+/** Extra exclusions a region carries from frame `from` on, until its next epoch starts: its ownership changes during
+ *  the run while its rect stays put (rust/long-screen/src/kernels/regions/epochs.rs). */
+export interface RegionEpoch {
+  from: number;
+  exclusions: Rect[];
+}
 export interface Region {
   id: string;
   name: string;
@@ -65,6 +71,17 @@ export interface Region {
   solid?: boolean;
   /** Integer analysis factor the mask was built at; native→analysis mask lookups use floor(x/factor), not a rounded ratio. */
   factor?: number;
+  /** Ownership changes during the run, ascending by `from`; absent when the region owns the same pixels throughout. */
+  epochs?: RegionEpoch[];
+  /** Candidate sticky blocks of a moving region, native pixels: blocks that stand still for part of the recording (a
+   *  table of contents shown some of the time), excluded in the observations whose page motion does not explain them. */
+  sticky?: Rect[];
+  /** A nested scroll container: the id of the region it scrolls inside. It shares that region's rect and atlas code
+   *  and owns, frame by frame, only its footprint there. */
+  parent?: string;
+  /** Where a nested container is: the parent's canvas, its footprint there (native pixels) and the sides on which it
+   *  may continue past it (1 left, 2 right, 4 top, 8 bottom). */
+  nest?: { canvas: string; footprint: Rect; open: number };
 }
 export interface Settings {
   analysisSize: number;
@@ -178,6 +195,9 @@ export interface Placement {
   skip?: boolean;
   /** Native-screen sticky occluders for this observation; not missing page margins. */
   occlusions?: Rect[];
+  /** A nested container's screen rectangle this frame, which its parent's placement must leave out. Moved onto the
+   *  parent's placement by the solve pass; never stored. */
+  clip?: Rect;
 }
 /** A fragment that later evidence tied to another canvas: every placement on `id` maps rigidly onto `target`. */
 export interface Attachment {

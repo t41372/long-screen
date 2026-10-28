@@ -179,6 +179,7 @@ fn a_scrolled_page_renders_through_the_lookahead_loop_and_keeps_the_bar_out() {
             rect: whole,
             code: 1,
             owned_pixels: (W * H) as f64,
+            owned_epochs: Vec::new(),
         }],
         attachments: Vec::new(),
     });

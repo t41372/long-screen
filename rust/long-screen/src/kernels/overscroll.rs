@@ -84,16 +84,44 @@ const HEAVY_REST: u32 = 8;
 /// 3. Of the values around that group, the edge is the one the page rested at most often (the outer one on a tie):
 ///    a held drag rests past the edge for a moment, the page rests at the edge for much longer.
 /// 4. A frame further past the edge than the cap means the page goes on past it, so that side has no edge.
+/// 5. A page that came to a complete stop (both axes) past the edge [`HEAVY_REST`] times more often than at it
+///    stayed there the way it stays anywhere on the page: a spring only rests at the edge, and a finger holding a
+///    drag past it is the moment rule 3 sets against the page's rest at the edge. That side has no edge; the turn
+///    was an ordinary reversal at the far end of what the recording saw. Measured: the demo recording's bowed pans
+///    turn 20 px inside the top and 24 px inside the right side of the page, ease in like springs and hold there for
+///    5–7 frames while the other axis keeps moving 20–30 px a frame, and the whiteboard margin passes
+///    [`background_lines`]; the page stood still 9 frames at the true top and 13 at the true right side and never at
+///    the turns. Real springs settle with the page still moving sideways too (test_1 at 18–120 px a frame, test_4
+///    at 12–18), so the other axis's motion cannot tell them apart; what the real ones never do is stand still past
+///    the edge for longer than at it.
 pub fn page_edges(track: &[Pose], width: i64, height: i64) -> Edges {
     let along = |f: &dyn Fn(&Pose) -> i64| -> Vec<(u32, i64)> {
         track.iter().map(|p| (p.frame, f(p))).collect()
     };
+    // The places, as each side's outward coordinate, where the page stood completely still for a frame.
+    let still: Vec<&Pose> = track
+        .windows(2)
+        .filter(|w| joined(w[0].frame, w[1].frame) && (w[0].x, w[0].y) == (w[1].x, w[1].y))
+        .map(|w| &w[1])
+        .collect();
+    let stops = |f: &dyn Fn(&Pose) -> i64| -> Vec<i64> { still.iter().map(|p| f(p)).collect() };
+    let side = |u: &dyn Fn(&Pose) -> i64, extent: i64| {
+        edge(&along(u), extent).filter(|&e| !stays_past(&stops(u), e))
+    };
     Edges {
-        top: edge(&along(&|p| -p.y), height).map(|e| -e),
-        bottom: edge(&along(&|p| p.y), height),
-        left: edge(&along(&|p| -p.x), width).map(|e| -e),
-        right: edge(&along(&|p| p.x), width),
+        top: side(&|p| -p.y, height).map(|e| -e),
+        bottom: side(&|p| p.y, height),
+        left: side(&|p| -p.x, width).map(|e| -e),
+        right: side(&|p| p.x, width),
     }
+}
+
+/// Rule 5 of [`page_edges`]: the page stood still past `edge` (more than [`NEAR`] out) [`HEAVY_REST`] times more
+/// often than at it (within [`NEAR`]). `stops` are the outward coordinates of the frames it stood still at.
+fn stays_past(stops: &[i64], edge: i64) -> bool {
+    let at = stops.iter().filter(|&&u| (u - edge).abs() <= NEAR).count() as u32;
+    let past = stops.iter().filter(|&&u| u > edge + NEAR).count() as u32;
+    past >= at + HEAVY_REST
 }
 
 /// One return: where it ended and whether the page stayed there.

@@ -48,8 +48,20 @@ for (const name of ['scroll.mp4', 'scroll.mov', 'fragmented.mp4', 'scroll.webm',
     if (name.startsWith('negative')) {
       assert(packets.some((p, i) => i > 0 && p.timestamp < packets[i - 1].timestamp), 'negative composition offsets must reorder packets');
     }
+    // Two B-frames between references: each presents before at most one packet decoded ahead of it.
+    assertEquals(d.reorderDepth, name === 'scroll.webm' ? undefined : 1);
   });
 }
+Deno.test('demux: reorderDepth counts the packets a B-frame waits behind (0 without B-frames, 2 in a B-pyramid)', async () => {
+  // bframes-pyramid.mp4 has up to three B-frames with the middle one a reference (ffprobe: no packet presents
+  // before more than two packets decoded ahead of it); prores.mov is intra-only.
+  const pyramid = await new MediabunnyDemuxer(await fixture('bframes-pyramid.mp4')).init();
+  assertEquals([pyramid.frameCount, pyramid.reorderDepth], [90, 2]);
+  const intra = await new MediabunnyDemuxer(await fixture('prores.mov')).init();
+  assertEquals(intra.reorderDepth, 0);
+  pyramid.dispose();
+  intra.dispose();
+});
 Deno.test('demux: ReplayKit-style version-0 ctts yields the same timeline as the signed version-1 box', async () => {
   const a = await new MediabunnyDemuxer(await fixture('negative-cts.mov')).init(),
     b = await new MediabunnyDemuxer(await fixture('negative-cts-v0.mov')).init();
@@ -672,6 +684,8 @@ function installFakeDecoder(
     fail?: number;
     stall?: boolean;
     hangFlush?: boolean;
+    /** Deliver each output this many ms after decode(), as a task, the way WebCodecs does. */
+    outputDelay?: number;
     sizes?: Record<number, [number, number]>;
     unsupported?: boolean;
   } = {},
@@ -701,7 +715,11 @@ function installFakeDecoder(
         return;
       }
       this.pending.push(chunk);
-      this.emit(3);
+      if (options.outputDelay !== undefined) {
+        setTimeout(() => this.emit(3), options.outputDelay);
+      } else {
+        this.emit(3);
+      }
     }
     /** Like WebCodecs, output is in presentation order: the reorder window releases the earliest timestamp first. */
     private emit(keep: number) {
@@ -729,6 +747,14 @@ function installFakeDecoder(
     flush() {
       if (options.hangFlush) {
         return new Promise<void>(() => {}); // a stuck decoder: this promise never settles
+      }
+      if (options.outputDelay !== undefined) {
+        return new Promise<void>((resolve) =>
+          setTimeout(() => {
+            this.emit(0);
+            resolve();
+          }, options.outputDelay! + 1)
+        );
       }
       this.emit(0);
       return Promise.resolve();
@@ -980,6 +1006,30 @@ Deno.test('source: F17 — non-square pixels (pasp) do not trigger CONTAINER_SIZ
     const nonSquare = source.info.notices!.find((n) => n.code === 'NON_SQUARE_PIXELS');
     assert(nonSquare, JSON.stringify(source.info.notices));
     assertEquals(nonSquare!.count, truth.frames);
+  } finally {
+    fake.restore();
+  }
+});
+// A consumer that works on one frame longer than the stall timeout, without yielding, is not a stalled decoder. The
+// stall clock used to run from the decoder's last output: when the consumer came back for the next frame the queue
+// was empty, the decoder's answer was still a pending task, and the source reported DECODER_STALLED before it could
+// run. Failure cases: that false stall; a real stall (no output at all) no longer reported (the test above).
+Deno.test('source: a consumer busy for longer than the stall timeout on one frame is not a decoder stall', async () => {
+  const fake = installFakeDecoder({ outputDelay: 2 });
+  try {
+    const source = await openMedia(await fixture('scroll.mp4'), fakeConvert as never) as PreciseSource;
+    source.stallTimeout = 200;
+    let count = 0;
+    for await (const _ of source.frames()) {
+      if (count === 5) {
+        const until = performance.now() + 300;
+        while (performance.now() < until) {
+          // one long synchronous step, as a big core call is
+        }
+      }
+      count++;
+    }
+    assertEquals(count, truth.frames);
   } finally {
     fake.restore();
   }

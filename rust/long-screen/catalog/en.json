@@ -161,6 +161,9 @@
     "STICKY_OCCLUSION": {
       "message": "Texture at the top of the frame indicates screen-fixed UI rather than page movement; this observation’s fixed occlusion is not written into the moving canvas. The original reference UI is kept in the framed presentation."
     },
+    "NESTED_LAYER_FOUND": {
+      "message": "Part of this region scrolls by itself: in {{frames}} frames its content did not move with the region, so it gets a print of its own."
+    },
     "FRAGMENT_ATTACHED": {
       "message": "Revisit evidence reattached an independent fragment onto an existing canvas as a whole; the relative trajectory within the fragment is unchanged."
     },
@@ -204,5 +207,17 @@
     "ignored": "Ignored",
     "fragment": "unplaced fragment {{n}}",
     "framed": "framed"
+  },
+  "offline": {
+    "title": "Offline canvas",
+    "fit": "Fit",
+    "tip": "Local native-size tiles · drag / scroll to zoom",
+    "previewLevel": "Showing preview level {{level}}; zoom in to see native pixels",
+    "nativeTiles": "Showing native-size tiles",
+    "footer": "Checkerboard areas are unobserved / have no tiles; confidence is not a correctness probability. See diagnostics.jsonl and observations.jsonl."
+  },
+  "viewer": {
+    "lang": "en",
+    "dir": "ltr"
   }
 }

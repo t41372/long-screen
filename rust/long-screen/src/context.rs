@@ -82,7 +82,13 @@ pub struct Ctx<'a> {
     pub refine_radius: i32,
     pub noise: f64,
     pub regions: Vec<RegionOut>,
-    pub atlas: Option<(Vec<u8>, Vec<u32>)>,
+    /// The containers the solve pass found scrolling inside a moving region and solved as regions of their own
+    /// (`engine::solve::Nest`); each owns its parent's pixels, frame by frame, so it is not in `regions` or the atlas.
+    pub nested: Vec<NestedRegion>,
+    /// The solve pass's progress so far, over both of its runs (`solve.rs`'s `Run::progress`): it never goes back.
+    pub solve_progress: f64,
+    /// Pixel ownership per epoch (`engine::layers::Atlas`); one plane for a run whose regions have no epochs.
+    pub atlas: Option<crate::engine::layers::Atlas>,
     pub duplicates: u32,
     pub skipped_paints: u64,
     pub voted_layers: u32,
@@ -90,6 +96,12 @@ pub struct Ctx<'a> {
     pub timings: Obj,
     pub threads: usize,
     last_progress: Option<Instant>,
+}
+
+/// A nested container's region (`Region.parent` on the page): `parent` indexes [`Ctx::regions`].
+pub struct NestedRegion {
+    pub id: String,
+    pub parent: usize,
 }
 
 /// `Math.max(1, Math.ceil(Math.max(width, height) / Math.max(1, analysisSize)))`.
@@ -143,6 +155,8 @@ impl<'a> Ctx<'a> {
             refine_radius: (factor as f64 / 2.0).ceil().max(2.0) as i32 + 1,
             noise,
             regions: Vec::new(),
+            nested: Vec::new(),
+            solve_progress: 0.0,
             atlas: None,
             duplicates: 0,
             skipped_paints: 0,

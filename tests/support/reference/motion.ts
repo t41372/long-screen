@@ -338,7 +338,10 @@ export function estimateMotion(a: Gray, b: Gray, _previous?: MotionField, af?: F
     }
     labels.set(next);
   }
-  const strongest = motions.reduce((m, n) => n.confidence > m.confidence ? n : m, motions[0]);
+  // The strongest *measured* motion decides (Rust `estimate_motion`): the zero placeholder's 0.5 prior is not
+  // discounted by any error, a half-analysis-pixel step's confidence is.
+  const measured = motions.filter((m) => m.support > 0);
+  const strongest = measured.length ? measured.reduce((m, n) => n.confidence > m.confidence ? n : m, measured[0]) : motions[0];
   const unknown = strongest.support < 4 && difference > 5;
   return {
     motions,

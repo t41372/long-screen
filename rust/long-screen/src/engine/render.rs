@@ -78,6 +78,20 @@ pub struct RenderRegion {
     /// Its code in the atlas label plane and how many pixels the atlas gives it.
     pub code: u8,
     pub owned_pixels: f64,
+    /// How many pixels each later atlas gives it, from that atlas's first frame on, ascending
+    /// (`kernels::regions::RegionEpoch`); empty when one atlas serves the whole run.
+    pub owned_epochs: Vec<(u32, f64)>,
+}
+
+impl RenderRegion {
+    /// The pixels the atlas in effect at `frame` gives the region.
+    pub fn owned_at(&self, frame: u32) -> f64 {
+        self.owned_epochs
+            .iter()
+            .rev()
+            .find(|(from, _)| *from <= frame)
+            .map_or(self.owned_pixels, |(_, owned)| *owned)
+    }
 }
 
 /// One placement of a stored plan (`plan/<frame>`), in the row's field order. `skip` and `occlusions` are absent
@@ -843,7 +857,7 @@ impl RenderSession {
                             canvas: p.canvas.clone(),
                             region: region.rect,
                             code: region.code,
-                            owned_pixels: region.owned_pixels,
+                            owned_pixels: region.owned_at(frame_index),
                             x: p.x,
                             y: p.y,
                             frame: frame_index,
@@ -1211,7 +1225,7 @@ impl RenderSession {
                         canvas: paint.p.canvas.clone(),
                         region: region.rect,
                         code: region.code,
-                        owned_pixels: region.owned_pixels,
+                        owned_pixels: region.owned_at(index),
                         x: paint.p.x,
                         y: paint.p.y,
                         frame: index,

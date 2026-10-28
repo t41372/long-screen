@@ -217,7 +217,7 @@ impl VideoSource {
         let mut done = false;
         let mut index = 0u32;
         let mut last_step = 1.0 / 60.0;
-        Ok(Box::new(std::iter::from_fn(move || {
+        let frames = std::iter::from_fn(move || {
             if done && pending.is_none() {
                 return None;
             }
@@ -289,7 +289,74 @@ impl VideoSource {
                 index += 1;
                 Some(Ok(frame))
             }
-        })))
+        });
+        Ok(Box::new(Prefetched::start(frames)))
+    }
+}
+
+/// Frames decoded and converted ahead of the pass reading them.
+#[cfg(feature = "decode")]
+const PREFETCH: usize = 2;
+
+/// A read whose frames a thread of its own decodes and converts up to [`PREFETCH`] frames ahead, so the decoder
+/// works while the pass works on the frame before (a 4K HDR frame takes about as long to decode and convert as the
+/// reveal sweeps take to use it). The frames, their order and their contents are those of the read it wraps.
+#[cfg(feature = "decode")]
+struct Prefetched {
+    frames: Option<std::sync::mpsc::Receiver<Result<Frame, SourceError>>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+#[cfg(feature = "decode")]
+impl Prefetched {
+    fn start<I>(read: I) -> Prefetched
+    where
+        I: Iterator<Item = Result<Frame, SourceError>> + Send + 'static,
+    {
+        let (send, frames) = std::sync::mpsc::sync_channel(PREFETCH);
+        let worker = std::thread::spawn(move || {
+            for frame in read {
+                // The pass stopped reading (it dropped the receiver): stop decoding.
+                if send.send(frame).is_err() {
+                    break;
+                }
+            }
+        });
+        Prefetched {
+            frames: Some(frames),
+            worker: Some(worker),
+        }
+    }
+}
+
+#[cfg(feature = "decode")]
+impl Iterator for Prefetched {
+    type Item = Result<Frame, SourceError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.frames.as_ref()?.recv() {
+            Ok(frame) => Some(frame),
+            Err(_) => {
+                // The read ended, or its thread panicked: a panic reaches the pass rather than ending the read early.
+                self.frames.take();
+                if let Some(Err(panic)) = self.worker.take().map(|w| w.join()) {
+                    std::panic::resume_unwind(panic);
+                }
+                None
+            }
+        }
+    }
+}
+
+#[cfg(feature = "decode")]
+impl Drop for Prefetched {
+    /// Closes the channel, then waits for the thread to finish the frame it is decoding, so the decoder is closed
+    /// before the next pass opens another.
+    fn drop(&mut self) {
+        self.frames.take();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
     }
 }
 
@@ -414,5 +481,85 @@ impl FrameSource for RawSource {
             index += 1;
             Some(Ok(frame))
         })))
+    }
+}
+
+#[cfg(all(test, feature = "decode"))]
+mod tests {
+    use super::*;
+
+    // Failure cases of reading ahead on a thread: frames arriving out of order, dropped or repeated; an error not
+    // reaching the pass, or the read going on past it differently from the read it wraps; a pass that stops early
+    // leaving the thread blocked on a full channel forever (the drop must return), or still decoding when the next
+    // pass opens the file again.
+
+    fn frame(index: u32) -> Frame {
+        Frame {
+            index,
+            time: index as f64 / 30.0,
+            duration: 1.0 / 30.0,
+            width: 2,
+            height: 1,
+            rgba: vec![index as u8; 8],
+        }
+    }
+
+    #[test]
+    fn prefetched_frames_are_the_read_it_wraps_in_order() {
+        let read = (0..50).map(|i| Ok(frame(i)));
+        let got: Vec<u32> = Prefetched::start(read).map(|f| f.unwrap().index).collect();
+        assert_eq!(got, (0..50).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn an_error_reaches_the_pass_where_the_read_gave_it() {
+        let read = (0..5).map(|i| {
+            if i == 3 {
+                Err(SourceError("decoder failed".into()))
+            } else {
+                Ok(frame(i))
+            }
+        });
+        let got: Vec<Result<u32, String>> = Prefetched::start(read)
+            .map(|f| f.map(|f| f.index).map_err(|e| e.0))
+            .collect();
+        assert_eq!(
+            got,
+            vec![Ok(0), Ok(1), Ok(2), Err("decoder failed".into()), Ok(4)]
+        );
+    }
+
+    #[test]
+    fn a_panic_while_reading_ahead_reaches_the_pass() {
+        let read = (0..5).map(|i| {
+            assert!(i != 2, "decoder exploded");
+            Ok(frame(i))
+        });
+        let mut frames = Prefetched::start(read);
+        assert_eq!(frames.next().unwrap().unwrap().index, 0);
+        assert_eq!(frames.next().unwrap().unwrap().index, 1);
+        let rest = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| frames.next()));
+        assert!(rest.is_err(), "the read ended quietly instead of panicking");
+    }
+
+    #[test]
+    fn a_pass_that_stops_early_ends_the_thread() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        let made = Arc::new(AtomicUsize::new(0));
+        let counter = made.clone();
+        // An endless read: only the dropped receiver can stop the thread.
+        let read = (0..).map(move |i| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Ok(frame(i))
+        });
+        let mut frames = Prefetched::start(read);
+        assert_eq!(frames.next().unwrap().unwrap().index, 0);
+        drop(frames);
+        // Joined: nothing decodes after the drop, and at most the channel's frames plus the one in hand were made.
+        let after = made.load(Ordering::SeqCst);
+        assert!(after <= 2 + PREFETCH, "{after} frames decoded");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert_eq!(made.load(Ordering::SeqCst), after);
     }
 }

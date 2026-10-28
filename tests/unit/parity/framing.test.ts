@@ -156,6 +156,59 @@ function reference(): RGBA {
   return { width: 12, height: 10, data };
 }
 
+/** A reference with real chrome around the 8×6 pane at (2, 2): rows 0–1 above it and 8–9 below it, columns 0–1 and
+ *  10–11 beside it. Row 0 is a bar with one glyph pixel, row 1 half text, row 8 a flat bar with ±3 levels of codec
+ *  noise (no exact value on a fifth of the samples, all of them near the mode), row 9 a mode on a quarter (just
+ *  above the fifth an exact mode needs); column 0 is flat, column 1 distinct (1/6, just below it), column 10 a mode
+ *  on 2/6, column 11 exactly 1/6 and near its mode on exactly half the samples (not a majority). `continuing` turns
+ *  row 1 and column 1 into rows whose own mode is a minority colour but most of whose samples match the flat row 0 /
+ *  column 0 beside them, which they then continue. Both sides must paint the same rows and leave the same ones
+ *  transparent. */
+function chromeReference(continuing = false): RGBA {
+  const data = new Uint8ClampedArray(12 * 10 * 4);
+  for (let y = 0; y < 10; y++) {
+    for (let x = 0; x < 12; x++) {
+      let p = [60, 70, 80, 255];
+      if (y === 0) p = x === 5 && !continuing ? [0, 0, 0, 255] : [240, 240, 240, 255];
+      else if (y === 1) {
+        p = continuing
+          ? (x === 2 ? [90, 90, 90, 255] : x === 8 ? [200, 5, 0, 255] : x === 9 ? [201, 6, 0, 255] : [238 + (x % 5), 240, 240, 255])
+          : x % 2
+          ? [200, 210, 220, 255]
+          : [30, 30, 30, 255];
+      } else if (y === 8) p = [40 + (x % 7) - 3, 50 + (x % 5) - 2, 60, 255];
+      else if (y === 9) p = x < 4 ? [10, 20, 30, 255] : [x * 20, 1, 2, 255];
+      else if (x === 1) p = continuing ? (y === 2 ? [90, 90, 90, 255] : [58 + y % 5, 70, 80, 255]) : [y * 20, 5, 5, 255];
+      else if (x === 10) p = y < 4 ? [1, 2, 3, 255] : [y * 20, 6, 6, 255];
+      else if (x === 11) p = y < 5 ? [90 + y, 90, 90, 255] : [y * 30, 7, 7, 255];
+      data.set(p, (y * 12 + x) * 4);
+    }
+  }
+  return { width: 12, height: 10, data };
+}
+
+Deno.test('parity: chrome rows and columns without one background colour stay transparent on both sides', async () => {
+  await compareRun(async (_db, tiles) => {
+    const raw = await tiles.get(baseMeta.id, 0, 0), i = 3 * 32 + 4;
+    raw.pixels.set([19, 29, 39, 255], i * 4);
+    markCovered(raw, i);
+    raw.dirty = true;
+    await tiles.flush();
+    return { sourceMeta: baseMeta, region, regions: [region], source: chromeReference() };
+  });
+});
+
+Deno.test('parity: a chrome row or column without a colour of its own continues the flat neighbour its samples match', async () => {
+  await compareRun(async (_db, tiles) => {
+    const raw = await tiles.get(baseMeta.id, 0, 0), i = 3 * 32 + 4;
+    raw.pixels.set([19, 29, 39, 255], i * 4);
+    markCovered(raw, i);
+    raw.dirty = true;
+    await tiles.flush();
+    return { sourceMeta: baseMeta, region, regions: [region], source: chromeReference(true) };
+  });
+});
+
 Deno.test('parity: negative-origin content, provisional and block evidence, ignore regions', async () => {
   await compareRun(async (_db, tiles) => {
     const raw = await tiles.get(baseMeta.id, -1, 0), i = 7 * 32 + 13;

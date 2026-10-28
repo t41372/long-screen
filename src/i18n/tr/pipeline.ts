@@ -192,6 +192,10 @@ export const pipelineSections: Catalog<typeof zh> = {
       message:
         'Karenin üstündeki ayrıntılar, sayfa hareketi yerine ekrana sabitlenmiş bir arayüze işaret ediyor. Bu sabit örtü hareketli tuvale yazılmadı. Özgün referans arayüz çerçeveli görünümde korundu.',
     },
+    NESTED_LAYER_FOUND: {
+      message:
+        'Bu bölgenin bir kısmı kendi başına kayıyor: {{frames}} karede içeriği bölgeyle birlikte hareket etmedi, bu yüzden ayrı bir görüntü olarak birleştirildi.',
+    },
     FRAGMENT_ATTACHED: {
       message:
         'Tekrar ziyaret sırasında elde edilen kanıtla bağımsız parça mevcut tuvale bütünüyle bağlandı. Parçanın içindeki göreli hareket yolu değişmedi.',

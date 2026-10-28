@@ -206,6 +206,16 @@ impl PyRunResult {
         save(py, &self.inner, &print.id, path)
     }
 
+    /// Writes the result package to `path`: the web page's project ZIP (native-size tiles, the offline viewer,
+    /// coverage and quality data, frame records, diagnostics; docs/FORMAT.md).
+    fn write_package(&self, py: Python<'_>, path: PathBuf) -> PyResult<()> {
+        py.detach(|| {
+            let file = File::create(&path)?;
+            self.inner.write_package(BufWriter::new(file))
+        })
+        .map_err(PyErr::from)
+    }
+
     /// The print as a NumPy uint8 array of shape (height, width, 4), RGBA. A long print is large: 1320 x 12000
     /// pixels is 63 MB. Prefer `save()` when a file is what you need.
     fn print_image(&self, py: Python<'_>) -> PyResult<Py<PyAny>> {

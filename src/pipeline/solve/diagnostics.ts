@@ -86,6 +86,15 @@ export function solveDiagnostic(d: EngineDiagnostic): Diagnostic {
       return { code, severity: 'error', time, frame, message: t('diag.NONFINITE_POSE.message') };
     case 'STICKY_OCCLUSION':
       return { code, severity: 'info', frame, time, canvasId, region, message: t('diag.STICKY_OCCLUSION.message') };
+    case 'NESTED_LAYER_FOUND':
+      return {
+        code,
+        severity: 'info',
+        canvasId,
+        region,
+        detail,
+        message: t('diag.NESTED_LAYER_FOUND.message', { frames: params.frames }),
+      };
     case 'FRAGMENT_ATTACHED':
       return { code, severity: 'info', canvasId, time, frame, confidence, detail, message: t('diag.FRAGMENT_ATTACHED.message') };
     case 'TRAJECTORY_CORRECTED':

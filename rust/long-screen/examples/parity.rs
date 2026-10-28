@@ -52,12 +52,20 @@ fn fingerprint_entry(
     }
     options.settings_row = settings_row;
     options.threads = threads;
+    if std::env::var("LONGSCREEN_LOCALE").as_deref() == Ok("zh") {
+        options.locale = long_screen::engine::catalog::Locale::Zh;
+    }
     let started = std::time::Instant::now();
     let result = match run(source, &options, &mut (), &Control::new()) {
         Ok(r) => r,
         Err(long_screen::Error::Failed { result, .. }) => *result,
         Err(e) => panic!("{e}"),
     };
+    // The result package of the run, for comparing it with the page's (test-results/…/misc/tools/compare-package.ts).
+    if let Ok(path) = std::env::var("LONGSCREEN_PACKAGE") {
+        let file = std::fs::File::create(&path).unwrap();
+        result.write_package(std::io::BufWriter::new(file)).unwrap();
+    }
     if let Ok(pattern) = std::env::var("LONGSCREEN_DUMP") {
         let run = result.project().str("id").unwrap_or_default().to_string();
         for (key, _) in result.store().iter() {

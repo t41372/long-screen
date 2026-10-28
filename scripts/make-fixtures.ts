@@ -134,6 +134,19 @@ await ensure(
       out('fragmented-bdo.mp4'),
     ], raw),
 );
+// The first 90 frames of the demo recording at 320×200 with up to three B-frames in a pyramid, so a frame can wait
+// behind two later-decoded ones. Playwright WebKit's WebCodecs decoder hands 35 of these frames back out of
+// presentation order, which the source must put right. Not every such stream shows it (scroll.mp4's B-frames never
+// wait behind more than one; the same encode at a higher level did not show it either), so this one stays as found.
+await ensure(
+  out('bframes-pyramid.mp4'),
+  () =>
+    ffmpeg([
+      ...['-i', new URL('../static/demo/sample.mp4', import.meta.url).pathname, '-frames:v', '90', '-vf', 'scale=320:200'],
+      ...['-c:v', 'libx264', '-profile:v', 'high', '-preset', 'medium', '-crf', '16', '-bf', '3', '-g', '60', '-pix_fmt', 'yuv420p'],
+      ...['-threads', '1', '-map_metadata', '-1', '-fflags', '+bitexact', '-flags:v', '+bitexact', out('bframes-pyramid.mp4')],
+    ]),
+);
 await ensure(out('scroll.webm'), () => ffmpeg([...rawInput, '-c:v', 'libvpx-vp9', '-crf', '20', '-b:v', '0', out('scroll.webm')], raw));
 await ensure(out('scroll.mov'), () => ffmpeg(['-i', out('scroll.mp4'), '-c', 'copy', out('scroll.mov')]));
 // QuickTime-style negative composition offsets (version 1 ctts, signed), as written by modern encoders.

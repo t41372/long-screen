@@ -1,8 +1,10 @@
 //! The solve pass's session (`long_screen::engine::solve::SolveSession`), one handle per `src/core/wasm/solve.ts`
 //! instance. Inputs and results are `bytes.rs` records:
 //!
-//! - region (`ls_solve_new`): str id, str name, str kind, u8 moving, u8 unassigned, u8 code; its shape is the
-//!   matching `VOTING_REGION_BYTES` descriptor.
+//! - region (`ls_solve_new`): str id, str name, str kind, u8 moving, u8 unassigned, u8 code, u32 epochs and per
+//!   epoch u32 first frame, u32 n + rects (its extra exclusions), u32 n + rects (its candidate sticky blocks), u8
+//!   nested and, when set, the footprint rect, u8 open sides, str parent canvas, u32 n + per frame u8 present, f64 x, f64 y (the
+//!   parent's pose); its shape is the matching `VOTING_REGION_BYTES` descriptor.
 //! - feature: i32 x, i32 y, f64 score, 8 × u32 descriptor
 //! - keyframe: str id, node, canvasId, layer, u32 frame, u32 n + features, u32 width, u32 height, blob gray,
 //!   f64 x, y, scaleX, scaleY, u32 n + patches (f64 x, f64 y, u32 size, blob data)
@@ -11,7 +13,8 @@
 //! - voting record: u32 index, voted layers, thin layers, u32 n + (str region, i32 x0, y0, w, h, blob bits,
 //!   blob clean)
 //! - effects: u32 n, then per effect a u8 tag (0 canvas, 1 attachment, 2 keyframe, 3 graph write, 4 diagnostic in
-//!   `diagnostic.rs`'s form) and its fields (see `write_effect`)
+//!   `diagnostic.rs`'s form, 5 nested container found, 6 nested container's moment, 7 nested container rejected) and its fields (see
+//!   `write_effect`)
 //!
 //! A call that produces a result returns its byte length (or a negative status) and leaves it in the handle;
 //! `ls_solve_take` copies it out. A failed step still leaves its effects for `ls_solve_effects`.
@@ -22,11 +25,12 @@ use crate::pose_graph::{status as graph_status, write_writes};
 use crate::voting::read_voting_regions;
 use crate::{STATUS_BAD_ARGUMENT, STATUS_OK};
 use long_screen::engine::solve::{
-    Begin, Effect, KeyPatch, Keyframe, Placement, Plane, Poll, ScanFields, SolveConfig, SolveError,
-    SolveRegion, SolveSession, VotingRecord, VOTING_RING_BYTES,
+    Begin, Effect, KeyPatch, Keyframe, Nest, Placement, Plane, Poll, ScanFields, SolveConfig,
+    SolveError, SolveRegion, SolveSession, VotingRecord, VOTING_RING_BYTES,
 };
 use long_screen::kernels::features::{Feature, DESCRIPTOR_WORDS};
 use long_screen::kernels::geometry::Rect;
+use long_screen::kernels::regions::RegionEpoch;
 use std::sync::Arc;
 
 struct Session {
@@ -160,6 +164,10 @@ fn write_placements(out: &mut Out, placements: &[Placement]) {
         for r in &p.occlusions {
             write_rect(out, r);
         }
+        out.bool(p.clip.is_some());
+        if let Some(clip) = &p.clip {
+            write_rect(out, clip);
+        }
     }
 }
 
@@ -243,6 +251,30 @@ fn write_effect(out: &mut Out, effect: &Effect) {
             out.u8(4);
             crate::diagnostic::write_diagnostic(out, d);
         }
+        Effect::CanvasDropped(id) => {
+            out.u8(8);
+            out.str(id);
+        }
+        Effect::Nested(n) => {
+            out.u8(5);
+            out.str(&n.region);
+            out.str(&n.canvas);
+            write_rect(out, &n.footprint);
+            out.u8(n.open);
+        }
+        Effect::NestedRejected { region } => {
+            out.u8(7);
+            out.str(region);
+        }
+        Effect::NestedMoment { region, frames } => {
+            out.u8(6);
+            out.str(region);
+            out.u32(frames.len() as u32);
+            for (frame, clip) in frames {
+                out.u32(*frame);
+                write_rect(out, clip);
+            }
+        }
     }
 }
 
@@ -287,6 +319,57 @@ pub extern "C" fn ls_solve_new(input: u32, len: u32, shapes: u32) -> i32 {
         for shape in shapes {
             let (id, name, kind) = (c.str()?, c.str()?, c.str()?);
             let (moving, unassigned, code) = (c.bool()?, c.bool()?, c.u8()?);
+            let epochs = (0..c.u32()?)
+                .map(|_| {
+                    let from = c.u32()?;
+                    let exclusions = (0..c.u32()?)
+                        .map(|_| {
+                            Some(Rect {
+                                x: c.f64()?,
+                                y: c.f64()?,
+                                width: c.f64()?,
+                                height: c.f64()?,
+                            })
+                        })
+                        .collect::<Option<_>>()?;
+                    Some(RegionEpoch { from, exclusions })
+                })
+                .collect::<Option<_>>()?;
+            let mut sticky = Vec::new();
+            for _ in 0..c.u32()? {
+                let (x, y, width, height) = (c.f64()?, c.f64()?, c.f64()?, c.f64()?);
+                sticky.push(Rect {
+                    x,
+                    y,
+                    width,
+                    height,
+                });
+            }
+            let nest = if c.bool()? {
+                let footprint = Rect {
+                    x: c.f64()?,
+                    y: c.f64()?,
+                    width: c.f64()?,
+                    height: c.f64()?,
+                };
+                let open = c.u8()?;
+                let canvas = c.str()?.to_string();
+                let parent_poses = (0..c.u32()?)
+                    .map(|_| {
+                        let present = c.bool()?;
+                        let pose = (c.f64()?, c.f64()?);
+                        Some(present.then_some(pose))
+                    })
+                    .collect::<Option<_>>()?;
+                Some(Nest {
+                    canvas,
+                    footprint,
+                    open,
+                    parent_poses,
+                })
+            } else {
+                None
+            };
             regions.push(SolveRegion {
                 id: id.to_string(),
                 name: name.to_string(),
@@ -295,6 +378,9 @@ pub extern "C" fn ls_solve_new(input: u32, len: u32, shapes: u32) -> i32 {
                 unassigned,
                 code,
                 shape,
+                epochs,
+                sticky,
+                nest,
             });
         }
         (width > 0 && height > 0).then_some(SolveConfig {
@@ -505,6 +591,24 @@ pub extern "C" fn ls_solve_drain(handle: u32) -> i32 {
     let mut out = Out::default();
     write_voting(&mut out, &records);
     finish(session, out)
+}
+
+/// How many frames the session's nested containers need (`SolveSession::nested_until`); -1 for a session without
+/// them or a bad handle.
+#[no_mangle]
+pub extern "C" fn ls_solve_nested_until(handle: u32) -> i32 {
+    handles()
+        .get(handle)
+        .and_then(|s| s.solve.nested_until())
+        .map_or(-1, |n| n as i32)
+}
+
+/// How many nested containers the session would report now (`SolveSession::nested_candidates`); 0 for a bad handle.
+#[no_mangle]
+pub extern "C" fn ls_solve_nested_candidates(handle: u32) -> u32 {
+    handles()
+        .get(handle)
+        .map_or(0, |s| s.solve.nested_candidates() as u32)
 }
 
 /// Moves the session's pose graph into a pose-graph handle (`ls_pose_graph_*`); returns that handle.

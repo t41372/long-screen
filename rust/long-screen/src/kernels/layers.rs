@@ -77,11 +77,19 @@ pub struct Learner {
     pub horizontal_gain: Vec<f64>,
     /// Native-resolution statistics, allocated on the first native pair.
     pub native_row_change: Vec<f64>,
+    /// `native_row_change` over the middle half of each row only (`[w/4, 3w/4)`), where a bar's rounded corners and
+    /// the page they show cannot reach (`regions::bands::extend_past_bar_edges`).
+    pub native_row_middle: Vec<f64>,
     pub native_col_change: Vec<f64>,
     pub native_col_mean: Vec<f64>,
     pub native_frames: u32,
     pub native_width: usize,
     pub native_height: usize,
+    /// For the last informative field: the first analysis row from the top, within the upper 45%, where the strongest
+    /// moving model explained the sampled pixels clearly better than staying put (at least 3 samples, more than twice
+    /// as many as the other way) — where the moving page started below whatever stays on top in that frame. `None`
+    /// without a moving model or such a row. `regions::band_collapse` reads it frame by frame.
+    pub last_top_moving: Option<u32>,
 }
 
 impl Learner {
@@ -112,9 +120,11 @@ impl Learner {
             col_gain: vec![0.0; cols],
             horizontal_gain: vec![0.0; rows],
             native_row_change: Vec::new(),
+            native_row_middle: Vec::new(),
             native_col_change: Vec::new(),
             native_col_mean: Vec::new(),
             native_frames: 0,
+            last_top_moving: None,
             native_width: 0,
             native_height: 0,
         }
@@ -240,7 +250,9 @@ impl Learner {
                 moving = Some(m);
             }
         }
+        self.last_top_moving = None;
         if let Some(moving) = moving {
+            let (mut fixed_votes, mut moving_votes) = (vec![0u32; height], vec![0u32; height]);
             let dx = crate::kernels::geometry::js_round(moving.x) as i64;
             let dy = crate::kernels::geometry::js_round(moving.y) as i64;
             let (w, h) = (width as i64, height as i64);
@@ -258,14 +270,20 @@ impl Learner {
                     if stationary + 6 < motion {
                         self.row_fixed[y as usize] += 1.0;
                         self.pixel_fixed[i] += 1.0;
+                        fixed_votes[y as usize] += 1;
                     }
                     if motion + 6 < stationary {
                         self.row_moving[y as usize] += 1.0;
                         self.pixel_moving[i] += 1.0;
+                        moving_votes[y as usize] += 1;
                     }
                     x += 4;
                 }
             }
+            let upper = (height as f64 * 0.45) as usize;
+            self.last_top_moving = (0..upper)
+                .find(|&y| moving_votes[y] >= 3 && moving_votes[y] > 2 * fixed_votes[y])
+                .map(|y| y as u32);
         }
         true
     }
@@ -273,6 +291,7 @@ impl Learner {
     fn add_native(&mut self, a: &[u8], b: &[u8], w: usize, h: usize) {
         if self.native_row_change.is_empty() {
             self.native_row_change = vec![0.0; h];
+            self.native_row_middle = vec![0.0; h];
             self.native_col_change = vec![0.0; w];
             self.native_col_mean = vec![0.0; w];
             self.native_width = w;
@@ -294,20 +313,42 @@ impl Learner {
                 / 3.0
         };
         let rows_out = SyncPtr(self.native_row_change.as_mut_ptr());
+        let middle_out = SyncPtr(self.native_row_middle.as_mut_ptr());
+        // The first sampled columns at or past the middle half's two ends: the row is walked in three spans so the
+        // inner loops stay branch-free, adding to `sum` in the same left-to-right order as one walk would.
+        let middle_from = (w / 4).div_ceil(step) * step;
+        let middle_to = (w - w / 4).div_ceil(step) * step;
         let chunks = crate::kernels::pool::chunks_for(h * w.div_ceil(step), 32 * 1024);
         crate::kernels::pool::par_for(chunks, |c| {
             for y in crate::kernels::pool::split(h, chunks, c)
                 ..crate::kernels::pool::split(h, chunks, c + 1)
             {
                 let (mut sum, mut n) = (0.0f64, 0u32);
+                let (mut middle, mut m) = (0.0f64, 0u32);
                 let mut x = 0;
+                while x < middle_from.min(w) {
+                    sum += sample((y * w + x) * 4);
+                    n += 1;
+                    x += step;
+                }
+                while x < middle_to.min(w) {
+                    let v = sample((y * w + x) * 4);
+                    sum += v;
+                    middle += v;
+                    n += 1;
+                    m += 1;
+                    x += step;
+                }
                 while x < w {
                     sum += sample((y * w + x) * 4);
                     n += 1;
                     x += step;
                 }
                 // SAFETY: row `y` belongs to this chunk alone.
-                unsafe { *rows_out.get().add(y) += sum / (n.max(1) as f64) };
+                unsafe {
+                    *rows_out.get().add(y) += sum / (n.max(1) as f64);
+                    *middle_out.get().add(y) += middle / (m.max(1) as f64);
+                }
             }
         });
         let samples = h.div_ceil(vstep);

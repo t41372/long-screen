@@ -77,6 +77,8 @@ pub fn build_regions(
                 solid: false,
                 factor,
                 band_side: None,
+                epochs: Vec::new(),
+                sticky: Vec::new(),
             }
         })
         .collect();
@@ -180,6 +182,8 @@ pub fn apply_pane_divider(
             solid: false,
             factor,
             band_side: None,
+            epochs: Vec::new(),
+            sticky: Vec::new(),
         });
         divider_index = Some(regions.len() - 1);
     }
@@ -277,6 +281,8 @@ pub fn expand_bands(
                     solid: false,
                     factor,
                     band_side: None,
+                    epochs: Vec::new(),
+                    sticky: Vec::new(),
                 });
                 regions.len() - 1
             }

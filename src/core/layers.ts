@@ -38,36 +38,62 @@ export class LayerLearner {
 }
 /** Native-resolution pixel ownership computed once per run: compositing loops index a byte instead of testing
  *  region membership per pixel (`rust/long-screen/src/kernels/region.rs::Region::contains`, via `filter_features` and the
- *  atlas label plane below). `resident` is the label plane's ONLY copy in core memory — solve/render/compositor
- *  read it directly (`atlas.resident`) instead of re-uploading `atlas.labels`, so the plane crosses the JS/Wasm
- *  boundary exactly once, at construction. `resident` lives for the whole run; call `dispose()` exactly once
- *  (run()'s finally) when it is no longer needed. */
+ *  atlas label plane below). One label plane per ownership epoch (`Region.epochs`); a run whose regions have no
+ *  epochs has exactly one, `resident`. Each plane is the label plane's ONLY copy in core memory —
+ *  solve/render/compositor/reveal read the plane of the frame they work on (`residentAt`) instead of re-uploading
+ *  it, so a plane crosses the JS/Wasm boundary exactly once, at construction. The planes live for the whole run;
+ *  call `dispose()` exactly once (run()'s finally) when they are no longer needed. */
 export class RegionAtlas {
-  /** Core-resident label plane (0 = owned by no region, otherwise index + 1 into `regions`; first-containing-
-   *  region wins). The single source of truth; `labels` below is a cached copy of it, only materialised the
-   *  first time a JS-side reader actually needs one. */
-  readonly resident: Resident;
-  /** Per-code pixel counts computed once in the same Rust call that builds `resident`, so count() is O(1)
-   *  without a second scan (in Rust OR in TS) of the label plane. */
-  private readonly counts: Uint32Array;
-  private cachedLabels?: Uint8Array;
+  /** First frame of each plane, ascending, starting at 0. */
+  readonly starts: number[];
+  /** Core-resident label planes (0 = owned by no region, otherwise index + 1 into `regions`; first-containing-
+   *  region wins), one per start; codes are the same in every plane. */
+  private readonly planes: { resident: Resident; counts: Uint32Array; labels?: Uint8Array }[];
   constructor(readonly regions: Region[], readonly width: number, readonly height: number) {
     // Throws this exact message regardless of whether the Rust core rejects the count itself or this early
     // check catches it first (rust/wasm/src/regions.rs::ls_regions_label_atlas): one message, two paths.
     if (regions.length > 254) {
       throw new Error('Too many regions for the pixel atlas.');
     }
-    const { resident, counts } = core().labelAtlasResident(regions, width, height);
-    this.resident = resident;
-    this.counts = counts;
+    this.starts = core().epochStarts(regions);
+    this.planes = [];
+    try {
+      for (const start of this.starts) this.planes.push(core().labelAtlasResident(regions, width, height, start));
+    } catch (e) {
+      this.dispose();
+      throw e;
+    }
   }
-  /** Plain-array view of the label plane, for the few JS-side readers (tests, synthetic verify, the
+  /** The first plane (the whole run's, when no region has epochs). */
+  get resident(): Resident {
+    return this.planes[0].resident;
+  }
+  private plane(frame: number): { resident: Resident; counts: Uint32Array; labels?: Uint8Array } {
+    return this.planes[core().epochIndex(this.starts, frame)];
+  }
+  /** The plane in effect at `frame`. */
+  residentAt(frame: number): Resident {
+    return this.plane(frame).resident;
+  }
+  /** Plain-array view of the first label plane, for the few JS-side readers (tests, synthetic verify, the
    *  Uint8Array/Resident overload of consistencyMask's `atlas` parameter): copied out of `resident` and cached on
    *  first access, so a caller that never reads it pays nothing and one that does pays once, not per frame. */
   get labels(): Uint8Array {
-    return this.cachedLabels ??= this.resident.bytes();
+    return this.labelsAt(0);
   }
+  /** Plain-array view of the plane in effect at `frame`, copied out once per plane on first access. */
+  labelsAt(frame: number): Uint8Array {
+    const plane = this.plane(frame);
+    return plane.labels ??= plane.resident.bytes();
+  }
+  /** The region's code in the label planes; a nested container (`Region.parent`) has its parent's, as it owns its
+   *  parent's pixels frame by frame (`Region.nest`), not pixels of its own. */
   code(region: Region): number {
+    if (region.parent) {
+      const parent = this.regions.find((r) => r.id === region.parent);
+      if (!parent) throw new Error(`Region ${region.id} names a parent ${region.parent} that is not part of this atlas.`);
+      return this.code(parent);
+    }
     const index = this.regions.indexOf(region);
     if (index < 0) {
       throw new Error(`Region ${region.id} is not part of this atlas.`);
@@ -77,14 +103,19 @@ export class RegionAtlas {
   contains(code: number, x: number, y: number): boolean {
     return x >= 0 && y >= 0 && x < this.width && y < this.height && this.labels[y * this.width + x] === code;
   }
-  /** Pixel count owned by a region (used for coverage accounting and tests). */
-  count(code: number): number {
-    return this.counts[code] || 0;
+  /** Pixel count owned by a region at `frame` (used for coverage accounting and tests). */
+  count(code: number, frame = 0): number {
+    return this.plane(frame).counts[code] || 0;
   }
-  /** Releases the core-resident label plane; the atlas is unusable afterwards. Idempotent (`Resident.free()`
+  /** How many pixels each plane after the first gives `code`, from that plane's first frame on (the render
+   *  session's `ownedEpochs`); empty when there is one plane. */
+  owned(code: number): [number, number][] {
+    return this.starts.slice(1).map((start, i) => [start, this.planes[i + 1].counts[code] || 0]);
+  }
+  /** Releases the core-resident label planes; the atlas is unusable afterwards. Idempotent (`Resident.free()`
    *  already guards repeat calls), so it is safe to call from both a pass's own cleanup and run()'s finally. */
   dispose(): void {
-    this.resident.free();
+    for (const p of this.planes ?? []) p.resident.free();
   }
 }
 
@@ -105,14 +136,24 @@ export function stationaryBoundary(
 
 /** A sticky navigation band can move initially and become screen-fixed later. Its geometry is per-observation,
  * not a second scroll world. Only exclude an edge band when native texture agrees with zero motion and clearly
- * disagrees with the accepted page translation; uniform gutters alone never provide this evidence. (Rust core.) */
+ * disagrees with the accepted page translation; uniform gutters alone never provide this evidence. The region's candidate
+ * sticky blocks (`Region.sticky`) are excluded in the observations whose page motion does not explain them. (Rust core.) */
 export function stickyOcclusions(
   previous: RGBA | ResidentFrame,
   current: RGBA | ResidentFrame,
   region: Region,
   motion: { x: number; y: number },
   previousOcclusions: Rect[] = [],
+  blockMotion: { x: number; y: number } | null = motion,
 ): Rect[] {
   if (previous.width !== current.width || previous.height !== current.height) return [];
-  return core().stickyOcclusions(previous, current, region.crop || region.rect, motion, previousOcclusions);
+  return core().stickyOcclusions(
+    previous,
+    current,
+    region.crop || region.rect,
+    motion,
+    previousOcclusions,
+    region.sticky ?? [],
+    blockMotion,
+  );
 }

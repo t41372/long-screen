@@ -68,6 +68,10 @@ pub struct OdometryInputs<'a> {
     pub f: f64,
     pub radius: i32,
     pub mask: Option<(&'a [u8], u8)>,
+    /// Where the previous frame's pixels may be read, when that is not `mask`: a nested container
+    /// (`engine::solve::Nest`) shares its parent's labels but showed its content only inside last frame's clip,
+    /// and a row that scrolled in from outside it would be scored against the parent's pixels there.
+    pub reference: Option<(&'a [u8], u8)>,
     pub roi: Rect,
     pub rect: Rect,
     pub region: Option<&'a Region>,
@@ -153,6 +157,7 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
         f,
         radius,
         mask,
+        reference,
         roi,
         rect,
         region,
@@ -168,6 +173,8 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
         confidence,
     } = inputs;
 
+    // The native points are chosen in this frame (`mask`); their shifted partners are read from the previous one.
+    let reference = reference.or(mask);
     let raw_matches = match_features(previous_features, own_features, true);
     let match_points: Vec<MatchPoints> = raw_matches
         .iter()
@@ -261,7 +268,7 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
                     x: m.x * f,
                     y: m.y * f,
                 },
-                mask,
+                reference,
                 radius,
                 &points,
             );
@@ -285,7 +292,7 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
                     image_width as usize,
                     image_height as usize,
                     (best_n.x, best_n.y),
-                    mask,
+                    reference,
                     radius,
                     &points,
                 );
@@ -384,7 +391,7 @@ pub fn odometry(inputs: OdometryInputs) -> OdometryEstimate {
                     image_width as usize,
                     image_height as usize,
                     (n.x, n.y),
-                    mask,
+                    reference,
                     radius,
                     &points,
                 );
@@ -559,6 +566,7 @@ mod tests {
             f: f as f64,
             radius: 3.max(f.div_ceil(2) as i32 + 1),
             mask: None,
+            reference: None,
             roi: Rect {
                 x: 0.0,
                 y: 0.0,

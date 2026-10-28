@@ -20,7 +20,8 @@
 use crate::engine::diagnostic::{Diagnostic, Severity};
 use crate::engine::tiles::{count_covered, Tile, TileCache, TileKey};
 use crate::kernels::framing::{
-    backgrounds, fold_evidence, frame_layout, paint_tile, Layout, OutputTile, SourceTile,
+    backgrounds, fold_evidence, frame_layout, paint_tile, Background, Layout, OutputTile,
+    SourceTile,
 };
 use crate::kernels::geometry::Rect;
 use crate::kernels::region::Region;
@@ -193,7 +194,7 @@ pub struct FramingSession {
     existing_set: HashSet<(i32, i32)>,
     candidates: Vec<(i64, i64)>,
     candidate_set: HashSet<(i64, i64)>,
-    backgrounds: (Vec<u32>, Vec<u32>),
+    backgrounds: (Vec<Background>, Vec<Background>),
     next: usize,
     work: Option<Work>,
     framed: Option<FramedCanvas>,
@@ -1048,7 +1049,10 @@ mod tests {
         assert_eq!((f.width, f.height), (76.0, 60.0));
         assert_eq!(f.source_region, PANE);
         assert_eq!((f.offset_x, f.offset_y, f.reference_frame), (4.0, 4.0, 3));
-        assert_eq!(f.tile_count, 20);
+        // 20 tiles but one: the reference is a gradient, so no column has a background colour and tile (4, 2), which
+        // holds nothing but the right-hand extension, stays transparent and is not saved.
+        assert_eq!(f.tile_count, 19);
+        assert!(!large_host.saves.contains(&framed(4, 2)));
         assert_eq!(f.observed_pixels, host_coverage(&large_host));
         // One provisional bit per source tile, at its first pixel: all 16 land inside the 60 × 50 canvas.
         assert_eq!(f.provisional_pixels, 16);

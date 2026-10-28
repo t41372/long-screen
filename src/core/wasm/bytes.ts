@@ -66,6 +66,10 @@ export class ByteWriter {
     this.bytes.set(utf8, at);
     return this;
   }
+  /** A copy of the record written so far. */
+  toBytes(): Uint8Array {
+    return this.bytes.slice(0, this.length);
+  }
   /** Copies the record into core scratch memory, planned together with `extra` output buffers (scratch plans
    *  share one arena, so everything one call uses is planned at once): `[ptr, length, ...extra pointers]`. */
   place(core: Core, extra: number[] = []): number[] {

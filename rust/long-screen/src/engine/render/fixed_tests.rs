@@ -31,6 +31,7 @@ fn band(height: usize) -> (Vec<RenderRegion>, Vec<u8>) {
             rect: rect(0.0, 0.0, W as f64, height as f64),
             code: 1,
             owned_pixels: (W * height) as f64,
+            owned_epochs: Vec::new(),
         },
         RenderRegion {
             id: "m".into(),
@@ -38,6 +39,7 @@ fn band(height: usize) -> (Vec<RenderRegion>, Vec<u8>) {
             rect: rect(0.0, height as f64, W as f64, (H - height) as f64),
             code: 2,
             owned_pixels: (W * (H - height)) as f64,
+            owned_epochs: Vec::new(),
         },
     ];
     let labels = (0..W * H)

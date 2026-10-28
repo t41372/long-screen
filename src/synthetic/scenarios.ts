@@ -146,11 +146,26 @@ export function jitter(path: Point[], seed: number, amplitude = 1, every = 3): P
 /** A translucent bar pinned to the screen (iOS tab bar, input bar, glass navigation bar): the page scrolling under it
  *  shows through blurred and washed out, and the bar's own icons and labels sit on top, opaque. `layer`'s world
  *  continues past its viewport under the bar, so what shows through is the page beyond the viewport's edge. Nothing
- *  seen through the glass is page content the print should hold. */
-export function glassBar(id: string, rect: Rect, layer: () => Layer, ink: (band: World) => void, tint: RGB = [246, 246, 248]): Overlay {
-  const INK_KEY: RGB = [1, 2, 3], RADIUS = 7, SHOW = .3;
+ *  seen through the glass is page content the print should hold. Like iOS 26's glass and its scroll edge effect, the
+ *  bar shows the page least at the screen's edge (`edge`) and ever more clearly towards the page: `showEdge` of the
+ *  blurred page at the screen's edge, rising with the square of the distance to `showInner` at the bar's inner edge
+ *  (on new_ip_3 and new_ip_9 the rows under the status bar follow the page far less often than the page's own rows). */
+export function glassBar(
+  id: string,
+  rect: Rect,
+  layer: () => Layer,
+  ink: (band: World) => void,
+  edge: 'top' | 'bottom',
+  [showEdge, showInner]: [number, number],
+  tint: RGB = [246, 246, 248],
+): Overlay {
+  const INK_KEY: RGB = [1, 2, 3], RADIUS = 7;
   const marks = new World(rect.width, rect.height, INK_KEY);
   ink(marks);
+  const show = Array.from({ length: rect.height }, (_, y) => {
+    const t = (edge === 'top' ? y : rect.height - 1 - y) / Math.max(1, rect.height - 1);
+    return showEdge + (showInner - showEdge) * t * t;
+  });
   const pw = rect.width + 2 * RADIUS, ph = rect.height + 2 * RADIUS;
   return {
     id,
@@ -193,13 +208,39 @@ export function glassBar(id: string, rect: Rect, layer: () => Layer, ink: (band:
           for (let c = 0; c < 3; c++) {
             let s = 0;
             for (let d = 0; d < k; d++) s += tmp[((y + d) * pw + x + RADIUS) * 3 + c];
-            frame.data[o + c] = Math.round(tint[c] * (1 - SHOW) + (s / k) * SHOW);
+            frame.data[o + c] = Math.round(tint[c] * (1 - show[y]) + (s / k) * show[y]);
           }
         }
       }
       return [rect];
     },
   };
+}
+/** The marks of a phone's status bar that stay put in every frame of the iPhone recordings: the time at the left,
+ *  the Dynamic Island (a black pill) in the middle, signal bars, Wi-Fi and battery at the right. */
+export function statusMarks(band: World, width: number, seed: number, ink: RGB): void {
+  band.textLine(28, 12, 34, seed, ink, 1.3);
+  band.fill({ x: Math.round(width / 2) - 60, y: 10, width: 120, height: 34 }, [0, 0, 0]);
+  for (let k = 0; k < 4; k++) band.fill({ x: width - 98 + k * 5, y: 26 - 3 * k, width: 3, height: 4 + 3 * k }, ink);
+  for (let k = 0; k < 3; k++) band.fill({ x: width - 72 + 3 * k, y: 17 + 4 * k, width: 16 - 6 * k, height: 2 }, ink);
+  band.stroke({ x: width - 48, y: 17, width: 25, height: 12 }, ink);
+  band.stroke({ x: width - 47, y: 18, width: 23, height: 10 }, ink);
+  band.fill({ x: width - 45, y: 20, width: 15, height: 6 }, ink);
+  band.fill({ x: width - 22, y: 21, width: 2, height: 4 }, ink);
+}
+/** A bar's line icon (an SF Symbol): a 2 px outline with a few seeded strokes inside, not a flat block. */
+export function lineIcon(band: World, r: Rect, seed: number, ink: RGB): void {
+  const random = rng(seed);
+  band.stroke(r, ink);
+  band.stroke({ x: r.x + 1, y: r.y + 1, width: r.width - 2, height: r.height - 2 }, ink);
+  for (let k = 0; k < 3; k++) {
+    const at = .25 + random() * .5, span = .3 + random() * .4;
+    if (random() < .5) {
+      band.fill({ x: r.x + 4, y: r.y + Math.round(at * r.height), width: Math.round(span * (r.width - 8)), height: 2 }, ink);
+    } else {
+      band.fill({ x: r.x + Math.round(at * r.width), y: r.y + 4, width: 2, height: Math.round(span * (r.height - 8)) }, ink);
+    }
+  }
 }
 /** A schematic street map: flat land-use blocks, parks and water cut by white roads of several widths, with a few
  *  place labels. Little texture away from the roads, as on a vector map. */
@@ -272,12 +313,31 @@ export const SCENARIO_NAMES = [
   'overscroll',
   'large-title-collapse',
   'glass-tab-bar',
+  'glass-tall-header',
   'sticky-toc-later',
   'hover-card-grow',
   'map-pan-chips',
   'header-lag-collapse',
+  'minimap-thumb',
+  'thumb-beside-page',
+  'thumb-beside-margin',
+  'sticky-toc-fade',
+  'sticky-toc-duty-25',
+  'sticky-toc-duty-31',
+  'sticky-toc-duty-40',
+  'sticky-toc-title',
+  'edge-arc-turn',
+  'overscroll-sideways',
+  'scroll-back-cards',
+  'map-sheet-corners',
 ] as const;
 export type ScenarioName = typeof SCENARIO_NAMES[number];
+/** Nested scrolling, which the engine does not reconstruct yet (docs/ARCHITECTURE.md §九): a scroll box that moves
+ *  with its page, a narrow pane scrolling beside a wide still one inside a panning layout (own_a), and a pane that
+ *  scrolls in only a few frames (the stationary-region rule's known limitation, §十). Not in the catalogue: their
+ *  layers share one engine region, which the per-layer pixel checks cannot express. `tests/unit/nested-scroll.test.ts`
+ *  measures them and guards what they show today. */
+export const NESTED_SCENARIO_NAMES = ['nested-scroll-box', 'pane-majority', 'pane-majority-revisit', 'pane-rare-scroll'] as const;
 /** Deterministic recordings with exact ground truth. Each one isolates a behaviour named in the requirements. */
 export function buildScenario(name: ScenarioName | string): Scenario {
   const W = 640, H = 448, HEADER = 48, bodyViewport = { x: 0, y: HEADER, width: W, height: H - HEADER };
@@ -465,6 +525,112 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           fragments: { left: 0, right: 0 },
           diagnostics: { present: ['MULTIPLE_SCROLL_LAYERS'], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
+      };
+    }
+    case 'nested-scroll-box': {
+      // A scroll box inside an article (13% of the body viewport): it moves with the page, and while the page stands
+      // still for 30 frames only the box scrolls. The box's screen rectangle is the page's rectangle for it moved by
+      // the page path and clipped to the body viewport, so its pose is the page's translation plus its own scroll.
+      const page = makeWorld(900, 2400, 301, 'article'), inner = makeWorld(320, 1400, 302, 'cards');
+      const box = { x: 160, y: 900, width: 320, height: 110 };
+      page.fill(box, [236, 236, 230]);
+      page.stroke({ x: box.x - 2, y: box.y - 2, width: box.width + 4, height: box.height + 4 }, [120, 126, 118]);
+      const pagePath: Point[] = [], viewports: Rect[] = [], boxPath: Point[] = [];
+      const bottom = bodyViewport.y + bodyViewport.height;
+      for (let i = 0; i < 90; i++) {
+        const p = { x: 0, y: i < 35 ? i * 20 : i < 65 ? 700 : 700 + (i - 65) * 16 }, scroll = i < 35 ? 0 : i < 65 ? (i - 35) * 20 : 600;
+        const top = bodyViewport.y + box.y - p.y,
+          y0 = Math.max(bodyViewport.y, Math.min(bottom, top)),
+          y1 = Math.max(y0, Math.min(bottom, top + box.height));
+        pagePath.push(p);
+        viewports.push({ x: box.x - p.x, y: y0, width: box.width, height: y1 - y0 });
+        boxPath.push({ x: 0, y: scroll + y0 - top });
+      }
+      return {
+        name,
+        description: '长文里的内嵌滚动框跟着页面走；页面停住时只有它自己滚。',
+        width: W,
+        height: H,
+        background: [251, 250, 246],
+        layers: [body(page, pagePath), { id: 'box', parent: 'body', viewport: viewports[40], viewports, world: inner, path: boxPath }],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 31)],
+        frames: frames(pagePath.length),
+        expect: expect({ fragments: { body: 0, box: 0 } }),
+      };
+    }
+    case 'pane-majority':
+    case 'pane-majority-revisit': {
+      // own_a's shape: a two-pane layout wider than the screen (a pinch-zoomed page). The view starts on the narrow
+      // right pane and pans down, pans left until the wide left pane fills two thirds of it, the right pane alone
+      // scrolls 320 px, then the view pans back right and up over what it saw first. In the `-revisit` variant the
+      // right pane is as wide as the screen and the view starts and ends on it alone, so the revisits at the end see
+      // only the right pane, 320 px from where a region that missed its scroll would put it (own_a's 1635 px).
+      const revisit = name === 'pane-majority-revisit', LEFT = 420, RIGHT = revisit ? 640 : 480, ON_RIGHT = revisit ? LEFT : 260;
+      const left = makeWorld(LEFT, 2400, 311, 'cards'), right = makeWorld(RIGHT, 3200, 312, 'article');
+      const view: Point[] = [], own: number[] = [];
+      for (let i = 0; i < 90; i++) {
+        if (i < 20) view.push({ x: ON_RIGHT, y: i * 12 }), own.push(0);
+        else if (i < 35) view.push({ x: Math.round(ON_RIGHT - (i - 19) * ON_RIGHT / 15), y: 240 }), own.push(0);
+        else if (i < 55) view.push({ x: 0, y: 240 }), own.push((i - 34) * 16);
+        else if (i < 70) view.push({ x: Math.round((i - 54) * ON_RIGHT / 15), y: 240 }), own.push(320);
+        else view.push({ x: ON_RIGHT, y: 240 - (i - 69) * 12 }), own.push(320);
+      }
+      const pane = (id: string, origin: number, world: World, base: number): Layer => {
+        const viewports: Rect[] = [], path: Point[] = [];
+        view.forEach((v, i) => {
+          const x0 = Math.max(0, origin - v.x), x1 = Math.min(W, origin + world.width - v.x);
+          viewports.push({ x: x0, y: HEADER, width: Math.max(0, x1 - x0), height: H - HEADER });
+          path.push({ x: x0 + v.x - origin, y: v.y + (id === 'right' ? own[i] : 0) });
+        });
+        return { id, viewport: viewports[base], viewports, world, path, ...(id === 'right' ? { parent: 'left' } : {}) };
+      };
+      return {
+        name,
+        description: revisit
+          ? '同 pane-majority，但右栏与视口一样宽，开头和结尾只看得见右栏，回访看得见它错过的滚动。'
+          : '宽的静止左栏占视口多数时，窄右栏自己滚动，之后整个版面二维平移（own_a 的形状）。',
+        width: W,
+        height: H,
+        background: [251, 250, 246],
+        layers: [pane('left', 0, left, 45), pane('right', LEFT, right, 10)],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 32)],
+        frames: frames(view.length),
+        expect: expect({ fragments: { left: 0, right: 0 } }),
+      };
+    }
+    case 'pane-rare-scroll': {
+      // Two fixed panes like `panes`, but the right one (40% of the body) scrolls in only six frames while the left
+      // one scrolls throughout: the nested container docs/ARCHITECTURE.md §十 says the stationary-region rule freezes.
+      const left = makeWorld(380, 2400, 321, 'cards'), right = makeWorld(256, 1600, 322, 'article');
+      const n = 80, lp: Point[] = [], rp: Point[] = [];
+      for (let i = 0; i < n; i++) {
+        lp.push({ x: 0, y: i * 6 });
+        rp.push({ x: 0, y: 20 * (Math.max(0, Math.min(3, i - 29)) + Math.max(0, Math.min(3, i - 59))) });
+      }
+      const divider: Overlay = {
+        id: 'divider',
+        kind: 'fixed',
+        draw: (frame) => {
+          const r = { x: 380, y: HEADER, width: 4, height: H - HEADER };
+          fillRGBA(frame, r, [57, 67, 55]);
+          return [r];
+        },
+      };
+      return {
+        name,
+        description: '两个固定 pane，右边那个只在六帧里自己滚动。',
+        width: W,
+        height: H,
+        background: [251, 250, 246],
+        layers: [{ id: 'left', viewport: { x: 0, y: HEADER, width: 380, height: H - HEADER }, world: left, path: lp }, {
+          id: 'right',
+          viewport: { x: 384, y: HEADER, width: 256, height: H - HEADER },
+          world: right,
+          path: rp,
+        }],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 33), divider],
+        frames: frames(n),
+        expect: expect({ fragments: { left: -1, right: -1 }, limitation: true }),
       };
     }
     case 'gap': {
@@ -708,7 +874,7 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           maxContaminatedOverlay: 2904,
           maxContaminatedOverlayUnobservable: 1517,
           maxContaminatedOverlayRecoverable: 1311,
-          maxProvisional: 1832,
+          maxProvisional: 1304,
           diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
       };
@@ -847,26 +1013,20 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         kind: 'dynamic',
         draw: (frame, index, time) => index < 30 ? tall.draw(frame, index, time) : short.draw(frame, index, time),
       };
-      // maxInvented ratchets the known-limitation reconstruction: today's measured invented 48,360px (test-results/scenarios-d.json), +~5%.
-      // maxProvisional is back at its default 0: the measured provisionalPixels is 0. The old 42,759 (measured
-      // 40,722) was left over from an earlier engine. The per-frame viewports did not remove it: the 51 frames are
-      // byte-identical to the earlier description with a fixed body viewport and a `collapse` overlay painting the
-      // exposed rows, so the viewports change only what the verifier expects, not what the engine sees.
+      // Issue #1. The learner finds the bar's collapse (rust/long-screen/src/kernels/regions/epochs.rs::band_collapse:
+      // 96 → 48 rows at frame 30) and gives the bar and the page ownership epochs, so every check is exact. Before
+      // epochs the page region kept the bar's rows 18–96 and the first frame wrote the tall bar's lower part into the
+      // page canvas: invented 48,360 px (620 × 78), checked only against a 10% limit.
       return {
         name,
-        description: '地址栏收起：正文可视区在录制中途变大。已知局限，只要求不崩溃、不伪造。',
+        description: '地址栏收起：正文可视区在录制中途变大，栏与页面按时期交接这条带。',
         width: W,
         height: H,
         background: [251, 250, 246],
         layers: [layer],
         overlays: [header],
         frames: frames(path.length),
-        expect: expect({
-          fragments: { body: -1 },
-          limitation: true,
-          maxInvented: 50800,
-          diagnostics: { present: ['TEMPORAL_OR_ALIGNMENT_CONFLICT'], absent: ['PROCESSING_ERROR', 'NONFINITE_POSE'] },
-        }),
+        expect: expect({ fragments: { body: 0 } }),
       };
     }
     case 'chrome-everything': {
@@ -894,7 +1054,8 @@ export function buildScenario(name: ScenarioName | string): Scenario {
       // disagreement condemns frame 52 as well, with voting silent for both (a world position entering at
       // the leading edge one frame before the end is off screen in every ring partner that clears Dmin).
       // NONE of the 1,905 sit in analysis cells the voting interior mask (`RegionSlot.interior`, rust/long-screen/src/kernels/voting.rs) excludes from voting.
-      // maxProvisional is the net unhealed flag count at the end: measured 32,151px, +~5%.
+      // maxProvisional bounds the provisional bits left in the final tiles: 2,080 (the render pass alone ends with
+      // 32,151 net flags; the reveal stage replaces most of them).
       // The reveal stage (docs/ARCHITECTURE.md §七) then replaces most of the recoverable residue: measured 1,966px total
       // and 302px recoverable after it; maxContaminatedOverlay and maxContaminatedOverlayRecoverable are those +5%.
       return {
@@ -925,7 +1086,7 @@ export function buildScenario(name: ScenarioName | string): Scenario {
           maxContaminatedOverlayUnobservable: 1664,
           maxContaminatedOverlayRecoverable: 317,
           maxContaminatedDynamic: 60436,
-          maxProvisional: 33759,
+          maxProvisional: 2080,
           diagnostics: { present: ['TEMPORAL_OR_ALIGNMENT_CONFLICT'], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
         }),
       };
@@ -1089,6 +1250,119 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         }),
       };
     }
+    case 'edge-arc-turn': {
+      // The demo recording's path (static/demo/sample.mp4) on a page with plain margins: it starts still at the
+      // page's top-left, pans right along the top bowed 30 and then 20 px down, runs down the right side bowed 36 and
+      // 24 px in, holds in the bottom-right corner and heads back. Each bow eases into its turn like a spring and holds
+      // its far point for a few frames while the other axis keeps moving, 20 px inside the top and 23 px inside the
+      // right side; read as springs, those turns became page edges and the plain margin past them, one colour like an
+      // overscroll band, was left out of the print. No frame runs past the page.
+      const world = makeWorld(1500, 1100, 251, 'cards', 2);
+      world.fill({ x: 1500 - 48, y: 0, width: 48, height: 1100 }, [251, 250, 246]);
+      const ease = {
+        in: (t: number) => t * t,
+        out: (t: number) => 1 - (1 - t) * (1 - t),
+        inOut: (t: number) => (1 - Math.cos(Math.PI * t)) / 2,
+      };
+      const path: Point[] = [];
+      let at = { x: 0, y: 0 };
+      const hold = (n: number) => {
+        for (let i = 0; i < n; i++) path.push({ x: Math.round(at.x), y: Math.round(at.y) });
+      };
+      const move = (to: Point, n: number, e: (t: number) => number, bow: number) => {
+        const length = Math.hypot(to.x - at.x, to.y - at.y) || 1;
+        const normal = { x: -(to.y - at.y) / length, y: (to.x - at.x) / length };
+        for (let i = 1; i <= n; i++) {
+          const t = i / n, s = e(t), bend = bow * Math.sin(Math.PI * t);
+          path.push({
+            x: Math.round(at.x + (to.x - at.x) * s + normal.x * bend),
+            y: Math.round(at.y + (to.y - at.y) * s + normal.y * bend),
+          });
+        }
+        at = to;
+      };
+      hold(9);
+      move({ x: 430, y: 0 }, 28, ease.in, 30);
+      move({ x: 860, y: 0 }, 28, ease.out, 20);
+      move({ x: 860, y: 350 }, 28, ease.inOut, 36);
+      move({ x: 860, y: 700 }, 28, ease.inOut, 24);
+      hold(12);
+      move({ x: 300, y: 400 }, 30, ease.inOut, 0);
+      return {
+        name,
+        description: '沿页缘弯着平移：在录到范围的最外端折返、像回弹一样缓停，但页面在别处才停稳，折返处不是页面的边。',
+        width: W,
+        height: H,
+        background: [251, 250, 246],
+        layers: [body(world, path)],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 251)],
+        frames: frames(path.length),
+        expect: expect({
+          fragments: { body: 0 },
+          bounds: { x: 0, y: HEADER, width: 1500, height: 1100 },
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
+        }),
+      };
+    }
+    case 'overscroll-sideways': {
+      // A real spring while the page pans sideways (test_1, test_4): the page is flung down into its bottom edge while
+      // the hand already scrolls right 40 px a frame, runs 40 px past the edge, springs back while still panning, comes
+      // to rest at the edge and later scrolls away. The overscroll background past the edge is not page content, so
+      // the print must end at the page's bottom edge.
+      const world = makeWorld(2000, 1400, 253, 'cards', 3);
+      const path: Point[] = [];
+      for (let i = 0; i < 5; i++) path.push({ x: 0, y: 600 });
+      for (const y of [660, 730, 800, 860, 910, 950, 980, 1000, 1020, 1034, 1040, 1037, 1031, 1024, 1018, 1013, 1009]) {
+        path.push({ x: path[path.length - 1].x + (y > 1000 || path.length > 18 ? 40 : 0), y });
+      }
+      for (const y of [1006, 1004, 1003, 1002, 1001, 1000, 1000, 1000]) path.push({ x: path[path.length - 1].x + 40, y });
+      const rest = path[path.length - 1];
+      for (let i = 0; i < 10; i++) path.push({ ...rest });
+      for (const y of [960, 880, 780, 680, 600]) path.push({ x: rest.x, y });
+      return {
+        name,
+        description: '横向平移中的回弹：页面越过底边再弹回，弹回时仍在横向平移，越界露出的底色不是页面内容。',
+        width: W,
+        height: H,
+        background: [226, 229, 234],
+        layers: [body(world, path, { pageEdges: true })],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 253)],
+        frames: frames(path.length),
+        expect: expect({
+          fragments: { body: 0 },
+          // The first frame's pose (0, 600) is the canvas origin: the page from row 600 to its bottom edge (row 1400),
+          // and the 680 px the path pans right plus one viewport across.
+          bounds: { x: 0, y: HEADER, width: 680 + W, height: 800 },
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
+        }),
+      };
+    }
+    case 'scroll-back-cards': {
+      // 1080p cards at factor 4 (`factor4`'s page and settings), down diagonally to x = 400 and back up. Moving back
+      // up, each frame shows new text in the region's top rows where the previous frame showed blank card; those
+      // rows' page partners lie above the region, so only standing still can explain them, and the white pixels beside
+      // the glyph edges matched the previous frame's white exactly. Frames 29 and 34 got a sticky band down to the next
+      // card border, and the 776 pixels of text only they showed were missing from the print.
+      const RW = 1920, RH = 1080, RH_HEADER = 80;
+      const world = makeWorld(2400, 2600, 181, 'cards', 4);
+      const path = linearPath([{ x: 0, y: 0 }, { x: 200, y: 900 }, { x: 400, y: 1500 }, { x: 300, y: 700 }], [14, 12, 12]);
+      return {
+        name,
+        description: '1080p 卡片页、分析因子 4：斜向往下再往回滚，顶端新出现的文字不是吸顶栏。',
+        width: RW,
+        height: RH,
+        background: [251, 250, 246],
+        layers: [{ id: 'body', viewport: { x: 0, y: RH_HEADER, width: RW, height: RH - RH_HEADER }, world, path }],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: RW, height: RH_HEADER }, 823)],
+        frames: frames(path.length),
+        expect: expect({
+          fragments: { body: 0 },
+          factor: 4,
+          diagnostics: { present: ['ANALYSIS_PYRAMID'], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR'] },
+        }),
+        settings: { analysisSize: 480 },
+      };
+    }
     case 'large-title-collapse': {
       // An iOS large-title navigation bar (new_ip_1): in the first frames of the scroll the large title rides up with the
       // content and is clipped away while the small centred title fades in, and the bar loses 44 px, the content under it
@@ -1123,7 +1397,12 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         settled: n - 1,
         draw: (frame, index) => {
           const t = progress(index), h = barHeight(index), band = new World(PW, h, paper);
-          band.fill({ x: 12, y: 14, width: 14, height: 22 }, [10, 132, 255]);
+          // The buttons stay put from the first frame (new_ip_1: "Edit" on a glass capsule at the left, a filter icon
+          // on a glass circle at the right); only the title changes while the bar collapses.
+          band.fill({ x: 12, y: 8, width: 60, height: 36 }, [232, 232, 236]);
+          band.textLine(22, 16, 40, 2613, [10, 132, 255], 1.1);
+          band.fill({ x: PW - 48, y: 8, width: 36, height: 36 }, [232, 232, 236]);
+          lineIcon(band, { x: PW - 40, y: 16, width: 20, height: 20 }, 2614, ink);
           if (t > 0) band.textLine(150, 16, 90, 2611, mix(paper, ink, t));
           // The large title rides up with the content until the shrinking bar clips it away.
           if (t < 1) band.textLine(16, TALL - 44 - (scroll[index] - scroll[0]), 210, 2612, ink, 2.2);
@@ -1141,16 +1420,25 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         layers: [layer],
         overlays: [fixedBand('status', { x: 0, y: 0, width: PW, height: TOP }, 262, [20, 20, 24]), header],
         frames: frames(n),
-        // Measured on main (c65e33e): the collapsing bar is learned as part of the page region (fixed region only the
-        // 48 px status bar), so the bar's frames land on top of the print: invented 35,490, mismatched 1,214,
-        // provisional 610; ratchets are those +5 %. Ideal: all 0, and the status bar plus the collapsed bar fixed.
+        // Measured on c8377d7, with the bar's buttons standing still from frame 0 as on new_ip_1: the status bar is the
+        // change test's top band (0–48) and the collapsed bar a region of its own (48–96), fixed because its cells
+        // hardly move (`regions/construct.rs`, activity under 8 % of the page's), so the print starts under the bar.
+        // On new_ip_1 the bar moved enough to stay a moving region until the stationary-region rule froze it; this
+        // opaque bar does not (nor with the page showing through it at up to 50 %, tried), so the scenario guards the
+        // split of a still bar from the page, not that rule. Before the buttons the bar had no standing-still
+        // structure, was learned as part of the page region and its frames landed on the print (invented 35,490,
+        // mismatched 1,214, provisional 510). Still a limitation: the rows the bar gives up while it
+        // collapses (96–140, frames 0–7) belong to the page region for the whole run, so the tall bar's lower part and
+        // the large title riding up through it reach the page canvas: invented 16,770, mismatched 2,592. The collapse
+        // epoch (`epochs.rs::band_collapse`, toolbar-collapse) does not apply: it stretches a full-width top band and
+        // needs 8 frames before the split, and here the bar is a frozen region and shrinks over the first 8 frames.
+        // Ratchets are those +5 %. Ideal: all 0.
         expect: expect({
-          fragments: { body: -1 },
+          fragments: { body: 0 },
           limitation: true,
-          maxInvented: 37300,
-          maxMismatched: 1280,
-          maxProvisional: 650,
-          diagnostics: { present: [], absent: ['PROCESSING_ERROR', 'NONFINITE_POSE'] },
+          maxInvented: 17600,
+          maxMismatched: 2720,
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
         }),
       };
     }
@@ -1236,24 +1524,35 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         // get their band. Frames 6–11 still do not, although the kernel finds the band there with the true page step
         // (on new_ip_8 the same gap is the pose coming through the anchor, which hands sticky_occlusions a zero step);
         // nor do 50–53 and 56, whose header rows have their page partner in the status bar. Measured contaminatedOverlay
-        // 17,304, recoverable 32, provisional 62,342, contaminatedDynamic 92,120 (+64, under its ratchet).
+        // 17,304, recoverable 32, provisional 62,342, contaminatedDynamic 92,120 (+64, under its ratchet). Since a frame
+        // whose still rows lie below rows only the page explains has no band, frame 57 has none either: 640
+        // px of the carousel under the expanding header move from contaminatedDynamic to contaminatedOverlay (17,944, all
+        // but 32 of it unobservable; contaminatedDynamic 91,480), the same pixels, recoverable and provisional unchanged.
+        // Those provisional figures are the render pass's own count; maxProvisional bounds the bits left in the final
+        // tiles, after the reveal stage: 144.
         expect: expect({
           fragments: { body: 0 },
           maxContaminatedOverlay: 18170,
           maxContaminatedOverlayRecoverable: 34,
           maxContaminatedOverlayUnobservable: 91824,
           maxContaminatedDynamic: 96659,
-          maxProvisional: 65460,
+          maxProvisional: 144,
           diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
         }),
       };
     }
     case 'glass-tab-bar': {
       // Frosted-glass bars at both ends of a phone screen (new_ip_9's tab bar, new_ip_3's navigation bar): the page
-      // scrolls under them and shows through blurred and washed out (30 % of a 15 px box blur over a light tint), with
-      // the bars' own title, icons and labels opaque on top. What shows through is not page content: the print holds the
-      // page from the clear area between the bars only. Ideal: both bars are fixed canvases (kept as of frame 0, as
-      // `live-bar`), the page is one canvas with nothing of the glass in it.
+      // scrolls under them and shows through a 15 px box blur over a light tint, 20 % at the screen's edge and more
+      // towards the page (45 % at the header's lower edge, 30 % at the tab bar's upper edge), with the bars' own marks
+      // opaque on top and still in every frame: status marks (time, Dynamic Island, signal, Wi-Fi, battery), two
+      // buttons and the title; five tabs (line icons over labels) and the home indicator. With the learner's row
+      // votes (standing still / following the page, per sampled pixel and informative frame) the status rows give
+      // 0.37 / 0.13 on average, the tab bar's 0.18 / 0.17 (its icon and label rows up to 0.83 / 0.002), the page
+      // 0.012 / 0.34; new_ip_9's status bar gives 0.26–0.52 / 0.06–0.22, its tab bar 0.27–0.45 / 0.02–0.2 and its page
+      // about 0.01 / 0.24 (the same votes, emulated on its frames). What shows through is not page content: the print
+      // holds the page from the clear area between the bars only. Ideal: both bars are fixed canvases (kept as of
+      // frame 0, as `live-bar`), the page is one canvas with nothing of the glass in it.
       const PW = 390, PH = 844, TOP = 100, TAB = 116;
       const world = makeWorld(PW, 4000, 271, 'cards');
       const path = jitter(linearPath([{ x: 0, y: 200 }, { x: 0, y: 1500 }, { x: 0, y: 1300 }, { x: 0, y: 2900 }], [50, 10, 50]), 27, 1, 5);
@@ -1267,32 +1566,138 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         background: [251, 250, 246],
         layers: [layer],
         overlays: [
-          glassBar('header', { x: 0, y: 0, width: PW, height: TOP }, () => layer, (band) => {
-            band.textLine(24, 12, 40, 2711, dark);
-            band.fill({ x: 300, y: 16, width: 64, height: 12 }, dark);
-            band.textLine(140, 58, 110, 2712, dark, 1.3);
-            band.fill({ x: 0, y: TOP - 1, width: PW, height: 1 }, [205, 205, 208]);
-          }),
-          glassBar('tabs', { x: 0, y: PH - TAB, width: PW, height: TAB }, () => layer, (band) => {
-            band.fill({ x: 0, y: 0, width: PW, height: 1 }, [205, 205, 208]);
-            for (let k = 0; k < 4; k++) {
-              const colour: RGB = k ? [142, 142, 147] : [10, 132, 255];
-              band.fill({ x: 34 + k * 92, y: 14, width: 30, height: 26 }, colour);
-              band.textLine(28 + k * 92, 46, 42, 2713 + k, colour, .8);
-            }
-            band.fill({ x: 128, y: TAB - 14, width: 134, height: 5 }, dark);
-          }),
+          glassBar(
+            'header',
+            { x: 0, y: 0, width: PW, height: TOP },
+            () => layer,
+            (band) => {
+              statusMarks(band, PW, 2711, dark);
+              // The navigation row: a back button and an action button (glass circles holding line icons), the title.
+              for (const x of [16, PW - 52]) {
+                band.fill({ x, y: 54, width: 36, height: 36 }, [232, 232, 236]);
+                lineIcon(band, { x: x + 8, y: 62, width: 20, height: 20 }, 2714 + x, dark);
+              }
+              band.textLine(140, 62, 110, 2712, dark, 1.3);
+              band.fill({ x: 0, y: TOP - 1, width: PW, height: 1 }, [205, 205, 208]);
+            },
+            'top',
+            [.2, .45],
+          ),
+          glassBar(
+            'tabs',
+            { x: 0, y: PH - TAB, width: PW, height: TAB },
+            () => layer,
+            (band) => {
+              band.fill({ x: 0, y: 0, width: PW, height: 1 }, [205, 205, 208]);
+              // Five tabs (line icon over a label), the selected one on a lighter capsule, and the home indicator.
+              band.fill({ x: 8, y: 8, width: 70, height: 56 }, [226, 232, 244]);
+              for (let k = 0; k < 5; k++) {
+                const colour: RGB = k ? [142, 142, 147] : [10, 132, 255];
+                lineIcon(band, { x: 28 + k * 76, y: 14, width: 30, height: 26 }, 2717 + k, colour);
+                band.textLine(22 + k * 76, 46, 42, 2713 + k, colour, .8);
+              }
+              band.fill({ x: 128, y: TAB - 14, width: 134, height: 5 }, dark);
+            },
+            'bottom',
+            [.2, .3],
+          ),
         ],
         frames: frames(path.length),
-        // Measured on main (c65e33e): no bar is learned as fixed (the only fixed regions are the page's empty 20 px side
-        // margins); the top bar is learned as part of the page region, putting 35,000 px seen through the glass on the
-        // print (invented), and the tab bar becomes a second moving region with two canvases (UNPLACED_FRAGMENT).
-        // maxInvented is that +5 %. Ideal: invented 0, both bars fixed, one moving region.
+        // Measured on c8377d7: besides the page's empty 20 px side margins, the header (0–96) is a region of its own,
+        // fixed because its cells hardly move (`regions/construct.rs`, activity under 8 % of the page's; without that
+        // rule the stationary-region rule below makes it fixed all the same), and the tab
+        // bar (720–844) is a second region that moves with the page it shows but whose sampled pixels stand still more
+        // often than they follow it, which the stationary-region rule turns fixed (docs/ARCHITECTURE.md §十,
+        // `freeze_stationary_regions`; without it the tab bar is a second scroll layer, MULTIPLE_SCROLL_LAYERS and 30
+        // LOW_CONFIDENCE_PLACEMENT, as on new_ip_9). One page canvas. The vote band (`bands.rs::detect_bands`) finds
+        // nothing: the votes take rows 0–4 only, under its 6-row minimum. Before the marks, with the glass as clear at
+        // the screen's edge as anywhere and flat blocks for icons, the glass rows followed the page as often as the
+        // page itself, the top bar was learned as page (35,000 px seen through it on the print) and the tab bar as a
+        // second moving region with two canvases (UNPLACED_FRAGMENT). Still a limitation: the regions follow analysis
+        // cells, so the glass rows 96–100 stay on the print (invented 1,400), and the fixed canvases do not keep frame
+        // 0's glass. Ratchets are the measured values +5 %. Ideal: invented 0, both bars fixed canvases as of frame 0.
         expect: expect({
-          fragments: { body: -1 },
+          fragments: { body: 0 },
           limitation: true,
-          maxInvented: 36750,
-          diagnostics: { present: [], absent: ['PROCESSING_ERROR', 'NONFINITE_POSE'] },
+          maxInvented: 1470,
+          maxProvisional: 8,
+          diagnostics: {
+            present: [],
+            absent: ['UNPLACED_FRAGMENT', 'MULTIPLE_SCROLL_LAYERS', 'LOW_CONFIDENCE_PLACEMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'],
+          },
+        }),
+      };
+    }
+    case 'glass-tall-header': {
+      // A messaging app's tall glass header (new_ip_3's top, new_ip_2's): the status bar, a strip of bare glass, then
+      // the contact's avatar between a back and a call button, and the name capsule under it, 160 px in all. The
+      // glass is almost opaque at the screen's edge and shows the scrolling page ever more clearly downwards (15 % to
+      // 85 %, blurred), so no row passes the change test and the bare strip follows the page more often than it
+      // stands still. The band comes from the row votes over the status rows (`bands.rs::detect_bands`) and reaches
+      // the avatar and the capsule only through the rows those objects hold (`last_row_of_fixed_objects`, across the
+      // 16 px of bare glass). What shows through is not page content. Ideal: the header is one fixed canvas, the
+      // page canvas holds none of it.
+      const PW = 390, PH = 844, TOP = 180, AT = 92;
+      const world = makeWorld(PW, 4000, 293, 'cards');
+      const path = jitter(linearPath([{ x: 0, y: 200 }, { x: 0, y: 1500 }, { x: 0, y: 1300 }, { x: 0, y: 2900 }], [50, 10, 50]), 29, 1, 5);
+      const layer: Layer = { id: 'body', viewport: { x: 0, y: TOP, width: PW, height: PH - TOP }, world, path };
+      const dark: RGB = [20, 20, 24];
+      return {
+        name,
+        description: '高的毛玻璃页首：状态栏、头像、名字胶囊与按钮都不动，下半段透出页面越来越清楚；透出来的不是长图内容。',
+        width: PW,
+        height: PH,
+        background: [251, 250, 246],
+        layers: [layer],
+        overlays: [
+          glassBar(
+            'header',
+            { x: 0, y: 0, width: PW, height: TOP },
+            () => layer,
+            (band) => {
+              statusMarks(band, PW, 2931, dark);
+              // The Dynamic Island's lighter rim, which stands still against the glass above it.
+              band.fill({ x: Math.round(PW / 2) - 60, y: 10, width: 120, height: 1 }, [70, 70, 74]);
+              // Back and call buttons (glass circles holding line icons) beside the avatar.
+              for (const x of [14, PW - 58]) {
+                band.fill({ x, y: AT + 4, width: 44, height: 44 }, [232, 232, 236]);
+                lineIcon(band, { x: x + 10, y: AT + 14, width: 24, height: 24 }, 2932 + x, dark);
+              }
+              // The avatar: a photo-like disc of a few tones.
+              for (let y = 0; y < 64; y++) {
+                for (let x = 0; x < 64; x++) {
+                  const dx = x - 31.5, dy = y - 31.5;
+                  if (dx * dx + dy * dy > 32 * 32) continue;
+                  const tone = (Math.floor(x / 8) + Math.floor(y / 8)) % 3;
+                  band.set(PW / 2 - 32 + x, AT + y, tone === 0 ? [176, 132, 104] : tone === 1 ? [120, 86, 70] : [214, 178, 150]);
+                }
+              }
+              // The name capsule under it.
+              band.fill({ x: PW / 2 - 70, y: AT + 68, width: 140, height: 24 }, [236, 236, 240]);
+              band.textLine(PW / 2 - 58, AT + 73, 116, 2934, dark, 1);
+            },
+            'top',
+            [.2, 1],
+          ),
+        ],
+        frames: frames(path.length),
+        // Measured on 2dc6318 plus the walk across rows that hold fixed objects: one page region from y 175 and the
+        // header a fixed band 0–175. The walk takes the status rows (0–44, standing still 0.29–0.50 against 0.06–0.17
+        // per sampled pixel and informative frame) and stops at the bare glass (0.03–0.17 against 0.25–0.30); the
+        // band reaches the avatar, the buttons and the capsule (to 175) only by the objects' extension across the
+        // 16 px of bare glass. A guard: with the vote walk off the header splits off a region that is not one band,
+        // the page region starts at 48 and invented rises to 29,276; with the extension off the band is 0–39, the
+        // avatar and a button become fixed regions of their own and invented is 34,842; the stationary-region and
+        // low-activity rules (`merge.rs::freeze_stationary_regions`, `construct.rs`) change nothing here. Still a
+        // limitation: the band ends at the capsule's last fixed row, so the glass's last 5 rows stay on the print
+        // (invented 1,965). Ratchets are the measured values +5 %. Ideal: invented 0, the header fixed to 180.
+        expect: expect({
+          fragments: { body: 0 },
+          limitation: true,
+          maxInvented: 2064,
+          maxMismatched: 12,
+          maxProvisional: 1735,
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
         }),
       };
     }
@@ -1354,13 +1759,15 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         overlays: [fixedBand('header', { x: 0, y: 0, width: DW, height: CHROME }, 282), tocOverlay],
         frames: frames(n),
         // Measured on main (c65e33e): 39,231 px of the TOC stay on the page canvas, every one of them over page content
-        // seen clean before the TOC arrived (recoverable); 7,774 px are left provisional. Ratchets are those +5 %.
-        // Ideal: contaminatedOverlay 0.
+        // seen clean before the TOC arrived (recoverable); 7,774 px are left provisional. Since a frame whose still rows
+        // lie below rows only the page explains has no sticky band, frames 147 and 149 no longer take the TOC's rows
+        // below scrolling text for a band from the region's top: 37,393 and 6,539. Ratchets are those +5 %. Ideal: contaminatedOverlay 0.
+        // The provisional figures are the render pass's own count; maxProvisional bounds the bits left in the final tiles: 816.
         expect: expect({
           fragments: { body: 0 },
-          maxContaminatedOverlay: 41200,
-          maxContaminatedOverlayRecoverable: 41200,
-          maxProvisional: 8170,
+          maxContaminatedOverlay: 39263,
+          maxContaminatedOverlayRecoverable: 39263,
+          maxProvisional: 816,
           diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
         }),
       };
@@ -1495,6 +1902,235 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         }),
       };
     }
+    case 'minimap-thumb':
+    case 'thumb-beside-page':
+    case 'thumb-beside-margin': {
+      // A scrollbar thumb near the window's right edge, 4 px wide, moving 2–3 px a frame while the page scrolls 16: its
+      // columns move in most frames but never with the page. A walk in from the right edge that stops at the first
+      // moving column stops at it, and the blank strip outside it holds no structure, so there is no right band.
+      // - minimap-thumb (new_mac_4, a code editor): inside the thumb a minimap stands still beside the editor pane.
+      //   Ideal: one fixed band holding the minimap and the thumb; the page canvas holds the editor only.
+      // - thumb-beside-page (pub_1): inside the thumb is the page itself, its right part sparse margin notes that
+      //   follow the page. Ideal: no right band; the page canvas holds every column of the page.
+      // - thumb-beside-margin (own_c): inside the thumb a 92 px blank page margin with a resting pointer and a small
+      //   button floating over it. Ideal: no right band either.
+      const THUMB_X = 608, THUMB_W = 4, THUMB_H = 40, PANE = name === 'minimap-thumb' ? 556 : W;
+      const span = 2400, travel = H - HEADER - THUMB_H;
+      const path = linearPath([{ x: 0, y: 0 }, { x: 0, y: 1200 }, { x: 0, y: 1000 }, { x: 0, y: span }], [75, 12, 88]);
+      path.splice(60, 0, ...Array(6).fill(path[60]));
+      const world = new World(PANE, span + H, [251, 250, 246]),
+        random = rng(name === 'minimap-thumb' ? 291 : name === 'thumb-beside-page' ? 292 : 293);
+      const textRight = name === 'minimap-thumb' ? PANE - 4 : name === 'thumb-beside-page' ? 556 : 516;
+      for (let y = 24; y < world.height - 60;) {
+        const roll = random();
+        if (roll < .2) {
+          world.picture({ x: 20, y, width: textRight - 20, height: 90 }, Math.floor(random() * 1e9));
+          y += 104;
+        } else {
+          y += world.paragraph(20, y, textRight - 20, 2 + Math.floor(random() * 4), Math.floor(random() * 1e6)) + 14;
+        }
+        if (name === 'thumb-beside-page' && random() < .25) world.textLine(562, y, 40, Math.floor(random() * 1e6), [90, 94, 90], .8);
+      }
+      const thumb: Overlay = {
+        id: 'thumb',
+        kind: 'dynamic',
+        draw: (frame, index) => {
+          const r = { x: THUMB_X, y: HEADER + Math.round(path[index].y / span * travel), width: THUMB_W, height: THUMB_H };
+          fillRGBA(frame, r, [96, 96, 96]);
+          return [r];
+        },
+      };
+      const overlays: Overlay[] = [fixedBand('header', { x: 0, y: 0, width: W, height: HEADER }, 294), thumb];
+      if (name === 'minimap-thumb') {
+        // The minimap: the code condensed to 2 px bars, standing still (a long file's minimap barely moves).
+        const map = { x: PANE, y: HEADER, width: 44, height: H - HEADER }, mini = new World(map.width, map.height, [238, 238, 242]);
+        for (let y = 4; y < map.height - 4; y += 3) {
+          mini.fill({ x: 4, y, width: 6 + Math.floor(random() * 32), height: 2 }, [112, 118, 136]);
+        }
+        overlays.push({
+          id: 'minimap',
+          kind: 'fixed',
+          draw: (frame) => {
+            for (let y = 0; y < map.height; y++) {
+              frame.data.set(mini.data.subarray(y * map.width * 4, (y + 1) * map.width * 4), ((map.y + y) * frame.width + map.x) * 4);
+            }
+            return [map];
+          },
+        });
+      }
+      if (name === 'thumb-beside-margin') {
+        overlays.push(floatingButton({ x: 556, y: H - 70, width: 36, height: 36 }));
+        overlays.push(
+          cursor((i) => i < 40 ? { x: 560, y: 160 } : i < 50 ? { x: 560 - (i - 40) * 2, y: 160 + (i - 40) * 12 } : { x: 540, y: 280 }),
+        );
+      }
+      return {
+        name,
+        description: name === 'minimap-thumb'
+          ? '代码编辑器：右侧缩略图不动，最外侧滚动条滑块随滚动移动；缩略图与滑块都是屏幕固定界面，不属于页面。'
+          : name === 'thumb-beside-page'
+          ? '滚动条滑块紧贴页面：滑块内侧是跟着页面走的稀疏旁注，不是固定栏。'
+          : '滚动条滑块内侧是空白页边，上面停着鼠标指针和一个浮动按钮，不是固定栏。',
+        width: W,
+        height: H,
+        background: [251, 250, 246],
+        layers: [{ id: 'body', viewport: { x: 0, y: HEADER, width: PANE, height: H - HEADER }, world, path }],
+        overlays,
+        frames: frames(path.length),
+        // Measured on 6947e94 and since a walk may cross a thumb (the same): the thumb's pixels left on the page canvas
+        // beside the page (576, 312 recoverable, the other 264 never seen clean; provisional 136) and in the margin
+        // (480: 348, 132; provisional 56). Ratchets are those +5 % (the unobservable share exactly), except maxProvisional,
+        // which bounds the provisional bits left in the final tiles (60 and 28), not the render pass's count. On 6947e94 the
+        // strip beyond the editor was frozen as a fixed region of its own, cut at an analysis cell (x 552), whose canvas
+        // held the moving thumb and reported 25 temporal conflicts; the band walk now takes minimap and thumb as a right
+        // band from the minimap's edge (x 556), with none.
+        expect: expect({
+          fragments: { body: 0 },
+          ...(name === 'thumb-beside-page'
+            ? {
+              maxContaminatedOverlay: 605,
+              maxContaminatedOverlayRecoverable: 328,
+              maxContaminatedOverlayUnobservable: 264,
+              maxProvisional: 60,
+            }
+            : name === 'thumb-beside-margin'
+            ? {
+              maxContaminatedOverlay: 504,
+              maxContaminatedOverlayRecoverable: 366,
+              maxContaminatedOverlayUnobservable: 132,
+              maxProvisional: 28,
+            }
+            : {}),
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
+        }),
+      };
+    }
+    case 'sticky-toc-fade':
+    case 'sticky-toc-duty-25':
+    case 'sticky-toc-duty-31':
+    case 'sticky-toc-duty-40':
+    case 'sticky-toc-title': {
+      // A docs page on a desktop browser (new_mac_3): an article column with a table of contents pinned in the left
+      // margin for part of the recording, in dark grey text (about 130 levels under its pale box), over a margin that is
+      // flat page colour. It appears and disappears several times, fading over 6 frames each way, so it covers its part
+      // of the screen in only some of the frames (31 % on new_mac_3; 25, 31 and 40 % in the duty variants).
+      // - sticky-toc-fade: 31 %, and the scroll pauses while the TOC fades out, so a paused run's last frame has it
+      //   half faded.
+      // - sticky-toc-title: the recording starts without the TOC on a page whose title runs across the TOC's columns;
+      //   until the TOC first appears those title rows are seen only there. Freezing the TOC's block for the whole
+      //   recording cuts the title out of the page canvas (maxMissing stays 0).
+      // Ideal: nothing of the TOC on the page canvas (contaminatedOverlay 0), nothing of the page missing.
+      const DW = 864, DH = 560, CHROME = 56, n = 210;
+      // Ratchets (contaminatedOverlay, all of it recoverable; provisional): see the measurement note below.
+      const measured: Record<string, [number, number]> = {
+        'sticky-toc-fade': [0, 0],
+        'sticky-toc-duty-25': [0, 0],
+        'sticky-toc-duty-31': [0, 0],
+        'sticky-toc-duty-40': [0, 0],
+        'sticky-toc-title': [3343, 0],
+      };
+      const duty = name === 'sticky-toc-duty-25' ? .25 : name === 'sticky-toc-duty-40' ? .4 : .31;
+      const title = name === 'sticky-toc-title', paused = name === 'sticky-toc-fade';
+      const world = new World(DW, 4300), random = rng(name === 'sticky-toc-title' ? 311 : 312);
+      let y = 40;
+      if (title) {
+        // The page's title block runs from the left edge across the TOC's columns.
+        world.textLine(24, 40, 620, 3111, [30, 34, 30], 2.4);
+        world.picture({ x: 24, y: 110, width: 780, height: 220 }, 3112);
+        y = 360;
+      }
+      for (; y < 4300 - 80;) {
+        const roll = random();
+        if (roll < .12) {
+          // Margin notes and full-bleed figures keep the left margin page content.
+          world.paragraph(24, y, 200, 3, Math.floor(random() * 1e6), .85);
+          y += world.paragraph(260, y, 560, 3, Math.floor(random() * 1e6)) + 12;
+        } else if (roll < .2) {
+          world.picture({ x: 0, y, width: DW, height: 110 }, Math.floor(random() * 1e9));
+          y += 126;
+        } else if (roll < .35) {
+          const h = 120 + Math.floor(random() * 100);
+          world.picture({ x: 260, y, width: 560, height: Math.min(h, 4300 - y - 8) }, Math.floor(random() * 1e9));
+          y += h + 16;
+        } else {
+          y += world.paragraph(260, y, 560, 2 + Math.floor(random() * 5), Math.floor(random() * 1e6)) + 12;
+        }
+      }
+      // The TOC's schedule: four visits whose plateaus plus half their fades add up to `duty` of the frames; the first
+      // starts at frame 40 when the page title must be seen first, else at 20.
+      const FADE = 6, visits = 4, first = title ? 44 : 20;
+      const plateau = Math.round((duty * n) / visits) - FADE, gap = Math.floor((n - first - visits * (plateau + 2 * FADE)) / visits);
+      const alphaAt: number[] = Array(n).fill(0);
+      for (let v = 0, at = first; v < visits; v++, at += plateau + 2 * FADE + gap) {
+        for (let k = 0; k < FADE; k++) {
+          if (at + k < n) alphaAt[at + k] = (k + 1) / (FADE + 1);
+          if (at + FADE + plateau + k < n) alphaAt[at + FADE + plateau + k] = 1 - (k + 1) / (FADE + 1);
+        }
+        for (let k = 0; k < plateau; k++) if (at + FADE + k < n) alphaAt[at + FADE + k] = 1;
+      }
+      // Pauses: in the fade variant the page stands still for 4 frames from the middle of each fade-out.
+      const steps: number[] = [];
+      for (let i = 0; i < n; i++) {
+        const fadingOut = alphaAt[i] > 0 && alphaAt[i] < 1 && i > 0 && alphaAt[i] < alphaAt[i - 1];
+        steps.push(paused && fadingOut && alphaAt[i] < .6 ? 0 : 17);
+      }
+      const path: Point[] = [];
+      for (let i = 0, at = 0; i < n; i++) {
+        if (i) at += steps[i];
+        path.push({ x: 0, y: Math.min(at, 4300 - (DH - CHROME)) });
+      }
+      const tocRect = { x: 24, y: CHROME + 48, width: 196, height: 300 }, toc = new World(tocRect.width, tocRect.height, [250, 247, 244]);
+      for (let k = 0; k < 13; k++) toc.textLine(14 + (k % 3 ? 12 : 0), 12 + k * 21, 120 + (k * 37) % 50, 3120 + k, [113, 111, 107], .85);
+      const tocOverlay: Overlay = {
+        id: 'toc',
+        kind: 'dynamic',
+        draw: (frame, index) => {
+          const a = alphaAt[index];
+          if (!a) return [];
+          for (let y = 0; y < tocRect.height; y++) {
+            for (let x = 0; x < tocRect.width; x++) {
+              const o = ((tocRect.y + y) * frame.width + tocRect.x + x) * 4, m = (y * tocRect.width + x) * 4;
+              for (let c = 0; c < 3; c++) frame.data[o + c] = Math.round(frame.data[o + c] * (1 - a) + toc.data[m + c] * a);
+            }
+          }
+          return [tocRect];
+        },
+      };
+      return {
+        name,
+        description: title
+          ? '桌面文档页：开头没有目录，页面标题横跨目录所在的列；之后目录多次淡入淡出、只在部分帧里钉在左侧。'
+          : `桌面文档页：左侧目录多次淡入淡出，约 ${Math.round(duty * 100)}% 的帧里钉在屏幕上，下面是平坦的页边${
+            paused ? '；目录淡出时滚动停下' : ''
+          }。`,
+        width: DW,
+        height: DH,
+        background: [251, 250, 246],
+        layers: [{ id: 'body', viewport: { x: 0, y: CHROME, width: DW, height: DH - CHROME }, world, path }],
+        overlays: [fixedBand('header', { x: 0, y: 0, width: DW, height: CHROME }, 313), tocOverlay],
+        frames: frames(n),
+        // Measured on 6947e94: every TOC pixel left on the page canvas sits over page content seen clean elsewhere
+        // (recoverable): fade 16,176, duty 25 % 3,376, 31 % 560, 40 % 0, title 16,328; provisional 96, 158, 420, 308,
+        // 345. The page title is never cut out (missing 0). Since a frame whose still rows lie below rows only the page
+        // explains has no sticky band, the TOC's rows below scrolling text are no longer taken for a band from the top (duty 31 %
+        // frame 175, fade frame 35, title frames 92–98, 138, 140), so the page rows above them are written again:
+        // fade 16,048, duty 25 % 3,376, 31 % 0, 40 % 0, title 16,224; provisional 0, 158, 324, 212, 12. Since region
+        // learning names the TOC as a candidate sticky block and each observation whose page motion does not explain it
+        // excludes it (faint fading frames included): 0 everywhere but title 3,184 (the pale box's edge, 1–3 levels off
+        // the page, outside the block's cells); the render pass's provisional flags 0, 150, 372, 380, 0. Duty 31 % and
+        // 40 % rise: the frames that now exclude the TOC (the faintest fading ones; and in 40 %, frames 36, 38, 40, 86
+        // and 87, which come through the anchor while the TOC throws odometry off) no longer heal the render pass's
+        // flags there. Those figures are the render pass's own count; no provisional bit is left in any of these final
+        // tiles, which is what maxProvisional bounds. Ratchets are the measured values +5 %. Ideal: contaminatedOverlay 0.
+        expect: expect({
+          fragments: { body: 0 },
+          maxContaminatedOverlay: measured[name][0],
+          maxContaminatedOverlayRecoverable: measured[name][0],
+          maxProvisional: measured[name][1],
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
+        }),
+      };
+    }
     case 'fixture': {
       // Small encoded-video fixture: 320×240, 32px fixed bar, 2D non-monotonic path with pauses, jitter and jumps.
       const world = makeWorld(900, 1300, 1337, 'cards', 3);
@@ -1513,6 +2149,77 @@ export function buildScenario(name: ScenarioName | string): Scenario {
         overlays: [fixedBand('header', { x: 0, y: 0, width: 320, height: 32 }, 99)],
         frames: frames(path.length),
         expect: expect({ fragments: { body: 0 }, diagnostics: { present: [], absent: ['PROCESSING_ERROR'] } }),
+      };
+    }
+    case 'map-sheet-corners': {
+      // Google Maps' place sheet over a satellite map (new_ip_6, new_ip_7): a white sheet pinned to the bottom of the
+      // screen whose top corners are rounded, so its first rows show the panning map at both ends and their mean change
+      // stays above the change test's 0.9 while their middle stands still. Every pixel of the imagery changes as the map
+      // pans. Ideal: the sheet's band starts at its top edge, and nothing of its white edge is burnt into the map.
+      const PW = 390, PH = 844, SHEET = 180, R = 30;
+      const world = new World(1800, 2400, [96, 110, 84]);
+      for (let ty = 0, k = 0; ty < world.height; ty += 120) {
+        for (let tx = 0; tx < world.width; tx += 120, k++) world.picture({ x: tx, y: ty, width: 120, height: 120 }, 9100 + k);
+      }
+      const path: Point[] = [];
+      let x = 700, y = 900;
+      const step = (dx: number, dy: number) => {
+        x += dx, y += dy;
+        path.push({ x: Math.round(x), y: Math.round(y) });
+      };
+      path.push({ x, y });
+      const drag = (frames: number, dx: number, dy: number) => {
+        for (let i = 0; i < frames; i++) step(dx, dy);
+      };
+      const fling = (frames: number, dx: number, dy: number, decay: number) => {
+        for (let i = 0; i < frames; i++) step(dx * decay ** i, dy * decay ** i);
+      };
+      drag(14, -9, 14);
+      fling(22, -26, 40, .86);
+      drag(8, 0, 0);
+      drag(12, 18, -6);
+      fling(20, 34, -12, .85);
+      drag(6, 0, 0);
+      drag(16, -12, -18);
+      fling(18, -20, -30, .87);
+      const top = PH - SHEET;
+      // The rows of the rounded corners: the sheet spans [inset, PW - inset) there.
+      const inset = (d: number) => Math.round(R - Math.sqrt(R * R - (R - d) * (R - d)));
+      const sheet: Overlay = {
+        id: 'sheet',
+        kind: 'fixed',
+        draw: (frame) => {
+          for (let d = 0; d < SHEET; d++) {
+            const i = d < R ? inset(d) : 0;
+            fillRGBA(frame, { x: i, y: top + d, width: PW - 2 * i, height: 1 }, [255, 255, 255]);
+          }
+          fillRGBA(frame, { x: PW / 2 - 24, y: top + 10, width: 48, height: 5 }, [200, 200, 204]);
+          fillRGBA(frame, { x: 20, y: top + 40, width: 180, height: 16 }, [32, 33, 36]);
+          fillRGBA(frame, { x: 20, y: top + 70, width: 120, height: 10 }, [112, 117, 122]);
+          fillRGBA(frame, { x: PW - 60, y: top + 36, width: 36, height: 36 }, [66, 133, 244]);
+          // The checked rects leave out the corners, where the map shows through.
+          return [{ x: R, y: top, width: PW - 2 * R, height: R }, { x: 0, y: top + R, width: PW, height: SHEET - R }];
+        },
+      };
+      return {
+        name,
+        description:
+          '手机上平移卫星图：底部钉着一张白色地点卡片，卡片上缘是圆角，最上面几行两端露出地图、中间不动；影像每个像素都随平移变化。',
+        width: PW,
+        height: PH,
+        background: [96, 110, 84],
+        layers: [{ id: 'body', viewport: { x: 0, y: 0, width: PW, height: PH }, world, path }],
+        overlays: [sheet],
+        frames: frames(path.length),
+        // Measured before the sheet's native edge was put at its rounded top (504db78): the band started 13 rows down
+        // (677), and the sheet's white edge was burnt into the map: contaminatedOverlay 6,979 (2,789 recoverable),
+        // missing 36, mismatched 54. Now the band starts at 664 and the map canvas is exact. The sheet's canvas holds
+        // the map seen through its corners, 6 temporal conflicts there by construction.
+        expect: expect({
+          fragments: { body: 0 },
+          diagnostics: { present: [], absent: ['UNPLACED_FRAGMENT', 'PROCESSING_ERROR', 'NONFINITE_POSE'] },
+          maxFixedConflicts: 6,
+        }),
       };
     }
     default:

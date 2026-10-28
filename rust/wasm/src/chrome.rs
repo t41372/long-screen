@@ -52,19 +52,26 @@ pub extern "C" fn ls_sticky_occlusions(
     motion_y: f64,
     carry: u32,
     carry_count: u32,
+    blocks: u32,
+    block_count: u32,
+    block_motion_x: f64,
+    block_motion_y: f64,
+    block_measured: u32,
     out: u32,
 ) -> i32 {
     let (w, h) = (width as usize, height as usize);
     if w == 0 || h == 0 {
         return STATUS_BAD_ARGUMENT;
     }
-    let capacity = (carry_count as usize).max(1);
+    // The carried bands or one new band, then the candidate blocks the page's motion does not explain.
+    let capacity = (carry_count as usize).max(1) + block_count as usize;
     // SAFETY: adapter-owned buffers, bounds checked.
-    let (Some(previous), Some(current), Some(region), Some(carry), Some(dst)) = (
+    let (Some(previous), Some(current), Some(region), Some(carry), Some(blocks), Some(dst)) = (
         unsafe { slice(previous, w * h * 4) },
         unsafe { slice(current, w * h * 4) },
         unsafe { slice(region, 32) },
         unsafe { slice(carry, carry_count as usize * 32) },
+        unsafe { slice(blocks, block_count as usize * 32) },
         unsafe { slice_mut(out, capacity * 32) },
     ) else {
         return STATUS_BAD_ARGUMENT;
@@ -78,6 +85,8 @@ pub extern "C" fn ls_sticky_occlusions(
         motion_x,
         motion_y,
         &read_rects(carry),
+        &read_rects(blocks),
+        (block_measured != 0).then_some((block_motion_x, block_motion_y)),
     );
     for (b, d) in bands.iter().zip(dst.chunks_exact_mut(32)) {
         d[0..8].copy_from_slice(&b.x.to_le_bytes());

@@ -136,6 +136,61 @@ fn window_agrees(gray: &[u8], start: usize, count: usize, value: u8, tau: u8) ->
         .any(|&g| (value as i32 - g as i32).unsigned_abs() <= tau as u32)
 }
 
+/// A moving region's per-run voting constants: its analysis box, the displacement floor, and which box cells are
+/// inside it and interior (see [`RegionSlot`]).
+fn region_slot(
+    region: Region,
+    factor: i32,
+    analysis_width: usize,
+    analysis_height: usize,
+    nw: f64,
+    nh: f64,
+) -> RegionSlot {
+    let radius = factor;
+    let box_ = Box::of(&region.rect, factor);
+    let dmin = (0.25 * region.rect.width.min(region.rect.height)).max(64.0);
+    let (gw, gh) = (analysis_width as i32, analysis_height as i32);
+    let mut inside = vec![0u8; box_.cells()];
+    for ly in 0..box_.h {
+        for lx in 0..box_.w {
+            let (ax, ay) = (box_.x0 + lx, box_.y0 + ly);
+            let ok = ax >= 0
+                && ay >= 0
+                && ax < gw
+                && ay < gh
+                && region.contains((ax * factor) as f64, (ay * factor) as f64, nw, nh);
+            inside[(ly * box_.w + lx) as usize] = ok as u8;
+        }
+    }
+    let mut interior = vec![0u8; box_.cells()];
+    for ly in 0..box_.h {
+        for lx in 0..box_.w {
+            if lx < radius || ly < radius || lx >= box_.w - radius || ly >= box_.h - radius {
+                continue;
+            }
+            let mut ok = true;
+            'taps: for oy in -1..=1 {
+                for ox in -1..=1 {
+                    let x = ((box_.x0 + lx + ox) * factor) as f64;
+                    let y = ((box_.y0 + ly + oy) * factor) as f64;
+                    if !region.contains(x, y, nw, nh) {
+                        ok = false;
+                        break 'taps;
+                    }
+                }
+            }
+            interior[(ly * box_.w + lx) as usize] = ok as u8;
+        }
+    }
+    RegionSlot {
+        region,
+        box_,
+        dmin,
+        interior,
+        inside,
+    }
+}
+
 impl Ring {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -156,54 +211,7 @@ impl Ring {
         let (nw, nh) = (native_width as f64, native_height as f64);
         let slots = regions
             .into_iter()
-            .map(|region| {
-                let box_ = Box::of(&region.rect, factor);
-                let dmin = (0.25 * region.rect.width.min(region.rect.height)).max(64.0);
-                let (gw, gh) = (analysis_width as i32, analysis_height as i32);
-                let mut inside = vec![0u8; box_.cells()];
-                for ly in 0..box_.h {
-                    for lx in 0..box_.w {
-                        let (ax, ay) = (box_.x0 + lx, box_.y0 + ly);
-                        let ok = ax >= 0
-                            && ay >= 0
-                            && ax < gw
-                            && ay < gh
-                            && region.contains((ax * factor) as f64, (ay * factor) as f64, nw, nh);
-                        inside[(ly * box_.w + lx) as usize] = ok as u8;
-                    }
-                }
-                let mut interior = vec![0u8; box_.cells()];
-                for ly in 0..box_.h {
-                    for lx in 0..box_.w {
-                        if lx < radius
-                            || ly < radius
-                            || lx >= box_.w - radius
-                            || ly >= box_.h - radius
-                        {
-                            continue;
-                        }
-                        let mut ok = true;
-                        'taps: for oy in -1..=1 {
-                            for ox in -1..=1 {
-                                let x = ((box_.x0 + lx + ox) * factor) as f64;
-                                let y = ((box_.y0 + ly + oy) * factor) as f64;
-                                if !region.contains(x, y, nw, nh) {
-                                    ok = false;
-                                    break 'taps;
-                                }
-                            }
-                        }
-                        interior[(ly * box_.w + lx) as usize] = ok as u8;
-                    }
-                }
-                RegionSlot {
-                    region,
-                    box_,
-                    dmin,
-                    interior,
-                    inside,
-                }
-            })
+            .map(|region| region_slot(region, factor, analysis_width, analysis_height, nw, nh))
             .collect::<Vec<_>>();
         let building = (0..slots.len()).map(|_| None).collect();
         Ring {
@@ -220,6 +228,33 @@ impl Ring {
             bytes: 0,
             building,
         }
+    }
+
+    /// Replaces a slot's region exclusions (its ownership changed at an epoch, `kernels::regions::RegionEpoch`)
+    /// and recomputes which cells are inside and interior. The box stays the same: it follows the region's rect,
+    /// which epochs never move, so frames already in the ring stay comparable cell for cell.
+    pub fn reshape(&mut self, slot: usize, exclusions: Vec<crate::kernels::geometry::Rect>) {
+        let old = &self.slots[slot].region;
+        let region = Region {
+            rect: old.rect,
+            exclusions,
+            crop: old.crop,
+            solid: old.solid,
+            mask: old.mask.as_ref().map(|m| crate::kernels::region::Mask {
+                width: m.width,
+                height: m.height,
+                factor: m.factor,
+                data: m.data.clone(),
+            }),
+        };
+        self.slots[slot] = region_slot(
+            region,
+            self.factor,
+            self.analysis_width,
+            self.analysis_height,
+            self.native_width,
+            self.native_height,
+        );
     }
 
     pub fn resident_frames(&self) -> usize {

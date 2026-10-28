@@ -86,6 +86,8 @@ export class RunContext {
   scan?: ScanSession;
   pauseWaiters: (() => void)[] = [];
   processed = 0;
+  /** The solve pass's progress so far, over both of its runs (`solve.ts`): it never goes back. */
+  solveProgress = 0;
   regions: Region[] = [];
   timings: Record<string, number> = {};
   /** Adds the source's latest decode timing (`FrameSource.stats`) to `timings` under `stage`. */

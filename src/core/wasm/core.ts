@@ -26,7 +26,13 @@ import type { TileCacheHandle } from './tiles.ts';
 import { learner as learnerFactory, type LearnerHandle } from './layers.ts';
 import { type VotingRing, votingRing as votingRingFactory } from './voting.ts';
 import { type RevealInput, revealSession as revealSessionFactory, type RevealSessionHandle } from './reveal.ts';
-import { type FinishAccumulators, finishRegions as finishRegionsImpl, labelAtlasResident as labelAtlasResidentImpl } from './regions.ts';
+import {
+  epochIndex as epochIndexImpl,
+  epochStarts as epochStartsImpl,
+  type FinishAccumulators,
+  finishRegions as finishRegionsImpl,
+  labelAtlasResident as labelAtlasResidentImpl,
+} from './regions.ts';
 import { estimateMotion as scanEstimateMotion, type ScanSession, scanSession as scanSessionFactory } from './scan.ts';
 import { poseGraph as poseGraphFactory, type PoseGraphState } from './pose-graph.ts';
 import { keyframeIndex as keyframeIndexFactory, type KeyframeIndexState } from './keyframes.ts';
@@ -355,8 +361,16 @@ export class Core {
   ): number | undefined {
     return chrome.stationaryBoundary(this, image, axis, from, to, crossFrom, crossTo, choose);
   }
-  stickyOcclusions(previous: FrameInput, current: FrameInput, region: Rect, motion: Point, carry: Rect[]): Rect[] {
-    return chrome.stickyOcclusions(this, previous, current, region, motion, carry);
+  stickyOcclusions(
+    previous: FrameInput,
+    current: FrameInput,
+    region: Rect,
+    motion: Point,
+    carry: Rect[],
+    blocks: Rect[] = [],
+    blockMotion: Point | null = motion,
+  ): Rect[] {
+    return chrome.stickyOcclusions(this, previous, current, region, motion, carry, blocks, blockMotion);
   }
 
   consistencyMask(input: ConsistencyMaskInput): Uint8Array<ArrayBuffer> {
@@ -455,8 +469,16 @@ export class Core {
   }
   /** `RegionAtlas`'s pixel labelling for `regions` in one call, written directly into a new core-resident label
    *  plane (never copied out and back), plus the per-code pixel counts. Caller owns the returned `resident`. */
-  labelAtlasResident(regions: Region[], width: number, height: number): { resident: Resident; counts: Uint32Array } {
-    return labelAtlasResidentImpl(this, this.exports, regions, width, height);
+  labelAtlasResident(regions: Region[], width: number, height: number, frame = 0): { resident: Resident; counts: Uint32Array } {
+    return labelAtlasResidentImpl(this, this.exports, regions, width, height, frame);
+  }
+  /** The frames at which the regions' ownership may change (`Region.epochs`), ascending, starting with 0. */
+  epochStarts(regions: Region[]): number[] {
+    return epochStartsImpl(this, this.exports, regions);
+  }
+  /** Which of `starts` frame `frame` falls in. */
+  epochIndex(starts: number[], frame: number): number {
+    return epochIndexImpl(this, this.exports, starts, frame);
   }
   /** The pose graph state object (`long_screen::engine::pose_graph`): one per `src/core/pose-graph.ts` instance. */
   poseGraph(): PoseGraphState {

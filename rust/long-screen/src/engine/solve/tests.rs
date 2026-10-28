@@ -4,8 +4,9 @@
 //! by odometry or drift control, which must start a fresh fragment and never reach a placement; an attachment or
 //! thin-overlap correction with an invalid pose, which must be rejected before anything is stored; a step the plain
 //! native error rejected but odometry measured, which must be placed instead of starting a fragment (and only then),
-//! and which an anchor re-acquisition that contradicts it must not replace; and frames still in the voting ring when
-//! the frames end, which must still be finalised.
+//! and which an anchor re-acquisition that contradicts it must not replace; a fragment left by a lost frame that
+//! relocalizes onto another canvas after odometry measured its step, which must be tied to that canvas (and only
+//! then); and frames still in the voting ring when the frames end, which must still be finalised.
 //!
 //! Frames are windows onto a synthetic textured page; [`Seams`] replaces a core decision where a test needs one.
 
@@ -17,6 +18,9 @@ use crate::kernels::track::{
 
 type OdometrySeam = Box<dyn FnMut(u32, &mut OdometryEstimate) -> bool>;
 type Seam<T> = Box<dyn FnMut(&mut Option<T>)>;
+/// A lost frame's relocalization: the matched keyframe, the frame's offset from it and the match's confidence.
+pub(crate) type Relocalization = (Arc<Keyframe>, (f64, f64), f64);
+type RelocalizeSeam = Box<dyn FnMut(u32, &mut Option<Relocalization>)>;
 
 /// Replacements for core decisions. `odometry` may edit a frame's estimate and returns whether that frame's anchor
 /// re-acquisition fails; `reacquire` may replace a re-acquisition's result; `thin` also opens the thin-overlap gate.
@@ -28,6 +32,8 @@ pub(crate) struct Seams {
     pub drift: Option<Seam<DriftEstimate>>,
     pub attach: Option<Seam<(f64, f64)>>,
     pub thin: Option<Seam<((f64, f64), f64)>>,
+    /// Replaces a lost frame's relocalization (an unambiguous match).
+    pub relocalize: Option<RelocalizeSeam>,
 }
 
 const W: usize = 160;
@@ -68,6 +74,16 @@ fn session(moving: bool) -> SolveSession {
 }
 
 fn session_sized(moving: bool, width: usize, height: usize) -> SolveSession {
+    session_with(moving, width, height, Vec::new(), Vec::new())
+}
+
+fn session_with(
+    moving: bool,
+    width: usize,
+    height: usize,
+    exclusions: Vec<Rect>,
+    epochs: Vec<RegionEpoch>,
+) -> SolveSession {
     let rect = Rect {
         x: 0.0,
         y: 0.0,
@@ -90,11 +106,14 @@ fn session_sized(moving: bool, width: usize, height: usize) -> SolveSession {
             code: 1,
             shape: Shape {
                 rect,
-                exclusions: Vec::new(),
+                exclusions,
                 crop: None,
                 solid: false,
                 mask: None,
             },
+            epochs,
+            sticky: Vec::new(),
+            nest: None,
         }],
     })
 }
@@ -645,4 +664,478 @@ fn registration_support_preserves_a_thin_overlap_step() {
             assert_eq!(host.canvases().len(), 1);
         }
     }
+}
+
+// Failure cases for ownership epochs in the solve session: a frame before an epoch already using its exclusions;
+// the switch happening a frame late, or only on frames that mint a keyframe; the voting slot keeping the old inside
+// and interior cells; a region without epochs being touched; the region's own exclusions lost when an epoch adds or
+// removes some.
+#[test]
+fn a_region_takes_each_epochs_exclusions_from_its_first_frame() {
+    let page = page();
+    let own = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: W as f64,
+        height: 4.0,
+    };
+    let band = Rect {
+        x: 0.0,
+        y: 40.0,
+        width: W as f64,
+        height: 20.0,
+    };
+    let epochs = vec![
+        RegionEpoch {
+            from: 3,
+            exclusions: vec![band],
+        },
+        RegionEpoch {
+            from: 6,
+            exclusions: Vec::new(),
+        },
+    ];
+    let mut s = session_with(true, W, H, vec![own], epochs);
+    let interior_of = |s: &SolveSession| {
+        s.voting.slots[0]
+            .interior
+            .iter()
+            .filter(|&&c| c == 1)
+            .count()
+    };
+    let mut host = Host::default();
+    let mut interiors = Vec::new();
+    for i in 0..8u32 {
+        host.frame(&mut s, i, window(&page, i as usize * 7));
+        let expected = if (3..6).contains(&i) {
+            vec![own, band]
+        } else {
+            vec![own]
+        };
+        assert_eq!(s.regions[0].shape.exclusions, expected, "frame {i}");
+        interiors.push(interior_of(&s));
+    }
+    assert!(
+        interiors[3] < interiors[2],
+        "the band leaves the interior: {interiors:?}"
+    );
+    assert_eq!(interiors[2], interiors[6], "and comes back");
+    assert_eq!(interiors[3], interiors[5]);
+    // Without epochs nothing changes, frame after frame.
+    let mut plain = session(true);
+    let before = plain.voting.slots[0].interior.clone();
+    for i in 0..4u32 {
+        Host::default().frame(&mut plain, i, window(&page, i as usize * 7));
+    }
+    assert!(plain.regions[0].shape.exclusions.is_empty());
+    assert_eq!(plain.voting.slots[0].interior, before);
+}
+
+/// The page under a static textured panel inside `PANEL` (a table of contents pinned to the screen; the block learned
+/// for it takes a few rows of the page above and below, as cell-aligned blocks do).
+const PANEL: Rect = Rect {
+    x: 20.0,
+    y: 40.0,
+    width: 24.0,
+    height: 48.0,
+};
+
+fn panel_over_page(frame: u32, page: &[u8]) -> Vec<u8> {
+    let mut out = window(page, frame as usize * 7).to_vec();
+    let mut seed = 0x51ed_270bu32;
+    for y in 44..84 {
+        for x in 20..44 {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            let v = (seed % 256) as u8;
+            out[(y * W + x) * 4..(y * W + x) * 4 + 3].copy_from_slice(&[v, v, v]);
+        }
+    }
+    out
+}
+
+// Failure case for a candidate sticky block on a frame placed through the anchor (sticky-toc-duty-40's frames 36, 38,
+// 40, 86 and 87, where the table of contents itself threw odometry off): the lost odometry step, (0, 0), read as a
+// paused page, so the block stayed excluded because the previous frame had excluded it, whatever the page showed
+// there. Here the panel vanished the frame before and page content scrolls through its place: weighed with what the
+// pose moved, the page's step explains the block and it is written.
+#[test]
+fn a_frame_placed_through_the_anchor_weighs_a_sticky_block_with_the_pose_step() {
+    let page = page();
+    let (mut host, mut s) = (Host::default(), session(true));
+    s.regions[0].sticky = vec![PANEL];
+    let armed = std::rc::Rc::new(std::cell::Cell::new(false));
+    let arm = armed.clone();
+    s.seams.odometry = Some(Box::new(move |frame, est| {
+        if frame == 3 {
+            est.decision = OdometryDecision::Lost;
+            est.delta = (0.0, 0.0);
+            est.rescue = None;
+            arm.set(true);
+        }
+        false
+    }));
+    s.seams.reacquire = Some(Box::new(move |top| {
+        if armed.replace(false) {
+            *top = Some(ReacquireEstimate {
+                x: 0,
+                y: 21,
+                ambiguous: false,
+                confidence: 0.9,
+                error: 2.0,
+            });
+        }
+    }));
+    let frames: Vec<FrameDone> = (0..5)
+        .map(|i| {
+            let pixels = if i >= 2 {
+                window(&page, i as usize * 7).to_vec()
+            } else {
+                panel_over_page(i, &page)
+            };
+            host.frame(&mut s, i, &pixels)
+        })
+        .collect();
+    let poses: Vec<f64> = frames.iter().map(|f| f.placements[0].y).collect();
+    assert_eq!(
+        poses,
+        vec![0.0, 7.0, 14.0, 21.0, 28.0],
+        "{:?}",
+        host.codes()
+    );
+    assert!(
+        frames[1].placements[0].occlusions.contains(&PANEL),
+        "the panel over a moving page is excluded"
+    );
+    assert!(
+        frames[2].placements[0].occlusions.contains(&PANEL),
+        "so is the frame it vanishes in"
+    );
+    assert!(
+        !frames[3].placements[0].occlusions.contains(&PANEL),
+        "the anchor frame shows the page there and writes it: {:?}",
+        frames[3].placements[0].occlusions
+    );
+    assert!(!frames[4].placements[0].occlusions.contains(&PANEL));
+}
+
+// A fragment that is never tied back (new_ip_6, Google Maps satellite: frames 1311-1452 opened a fragment in a blurred
+// stretch, and frame 1453 was lost on it and relocalized straight onto the main canvas; the fragment was left as a
+// separate canvas although odometry had measured that very step from the fragment's last frame, so the frame's pose
+// on both canvases was known). Ways the tie could go wrong, written before it was made:
+// - the lost frame relocalizes onto another canvas and the fragment it leaves stays apart (the failure itself);
+// - the fragment is tied without a measured step (odometry gave no rescue): nothing relates its poses to the other
+//   canvas then;
+// - the tie uses the fragment's previous pose instead of the measured step, or the other canvas's keyframe without
+//   the match's offset;
+// - a relocalization onto the region's own canvas, or a magnification change, ties anything.
+/// C scrolls up a page from 600 (frames 0-5); frame 6 jumps to 380, where no keyframe exists, and opens a fragment F
+/// that scrolls down 15 px a frame to 425 (frame 9); frame 10 moves 75 px on to 500, back over C's first frame. Frame 10
+/// is lost (its anchor re-acquisition fails too) and relocalizes onto C's first keyframe at offset `(0, -100)`;
+/// odometry offers the measured 75 px step as a rescue when `rescue`. The frames after it scroll on down 7 px a frame.
+fn lost_off_a_fragment(rescue: bool, onto_own_canvas: bool) -> (Host, Vec<FrameDone>) {
+    let page = page();
+    let (mut host, mut s) = (Host::default(), session(true));
+    let offsets: Vec<usize> = (0..6)
+        .map(|i| 600 - i * 7)
+        .chain([380, 395, 410, 425, 500])
+        .chain((1..8).map(|i| 500 + i * 7))
+        .collect();
+    let mut frames = Vec::new();
+    for (i, &o) in offsets.iter().enumerate().take(6) {
+        frames.push(host.frame(&mut s, i as u32, window(&page, o)));
+    }
+    let first = host
+        .keyframes
+        .values()
+        .find(|k| k.frame == 0)
+        .cloned()
+        .map(Arc::new)
+        .expect("frame 0 is a keyframe");
+    s.seams.odometry = Some(Box::new(move |frame, est| {
+        if frame != 10 {
+            return false;
+        }
+        est.decision = OdometryDecision::Lost;
+        est.rescue = rescue.then_some(Rescue {
+            phase_support: false,
+            delta: (0.0, 75.0),
+            confidence: 0.4,
+            ambiguous: false,
+            weak_step: false,
+            step_error: 20.0,
+        });
+        true
+    }));
+    s.seams.relocalize = Some(Box::new(move |frame, found| match frame {
+        6 => *found = None,
+        10 if onto_own_canvas => {}
+        10 => *found = Some((first.clone(), (0.0, -100.0), 0.8)),
+        _ => {}
+    }));
+    for (i, &o) in offsets.iter().enumerate().skip(6) {
+        frames.push(host.frame(&mut s, i as u32, window(&page, o)));
+    }
+    (host, frames)
+}
+
+fn attachments(host: &Host) -> Vec<&crate::engine::attachments::Attachment> {
+    host.effects
+        .iter()
+        .filter_map(|e| match e {
+            Effect::Attachment(a) => Some(a),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_fragment_left_by_a_measured_step_onto_another_canvas_is_tied_to_it() {
+    let (host, frames) = lost_off_a_fragment(true, false);
+    assert_eq!(
+        frames[6].placements[0].canvas_id,
+        "body-part-1",
+        "{:?}",
+        host.codes()
+    );
+    assert_eq!(frames[10].placements[0].canvas_id, "body-part-0");
+    assert_eq!(frames[10].placements[0].y, -100.0);
+    let tied = attachments(&host);
+    assert_eq!(tied.len(), 1, "{:?}", host.codes());
+    // Frame 10 is at 0 + 15 * 3 + 75 = 120 on the fragment and at -100 on C: every fragment frame moves by -220, so
+    // frame 6 (page 380) lands where C's page 380 is (600 at the origin).
+    assert_eq!(
+        (
+            tied[0].id.as_str(),
+            tied[0].target.as_str(),
+            tied[0].dx,
+            tied[0].dy,
+            tied[0].frame
+        ),
+        ("body-part-1", "body-part-0", 0.0, -220.0, 10)
+    );
+    assert!(host.codes().contains(&"FRAGMENT_ATTACHED"));
+}
+
+#[test]
+fn a_fragment_without_a_measured_step_stays_apart() {
+    let (host, frames) = lost_off_a_fragment(false, false);
+    assert_eq!(frames[10].placements[0].canvas_id, "body-part-0");
+    assert!(attachments(&host).is_empty(), "{:?}", host.codes());
+}
+
+#[test]
+fn a_relocalization_onto_the_fragment_itself_ties_nothing() {
+    let (host, frames) = lost_off_a_fragment(true, true);
+    assert_eq!(frames[6].placements[0].canvas_id, "body-part-1");
+    assert!(attachments(&host).is_empty(), "{:?}", host.codes());
+}
+
+/// A page that scrolls with a box in it whose own content scrolls too: page rows `[BOX_TOP, BOX_TOP + BOX_H)` and
+/// columns `[BOX_LEFT, BOX_LEFT + BOX_W)` show the box's content, scrolled by `own` rows.
+const BOX_LEFT: usize = 10;
+const BOX_W: usize = 140;
+const BOX_TOP: usize = 200;
+const BOX_H: usize = 100;
+
+fn boxed_frame(page: &[u8], inner: &[u8], offset: usize, own: usize) -> Vec<u8> {
+    let mut out = window(page, offset).to_vec();
+    for y in 0..H {
+        let py = y + offset;
+        if !(BOX_TOP..BOX_TOP + BOX_H).contains(&py) {
+            continue;
+        }
+        for x in BOX_LEFT..BOX_LEFT + BOX_W {
+            let (iy, ix) = (py - BOX_TOP + own, x);
+            out[(y * W + x) * 4..(y * W + x) * 4 + 4]
+                .copy_from_slice(&inner[(iy * W + ix) * 4..(iy * W + ix) * 4 + 4]);
+        }
+    }
+    out
+}
+
+/// Solves a box inside a page (`boxed_frame`) as a nested container along `path` (page offset, the box's own
+/// scroll), with the parent's poses exact; the placements, then the effects of draining the pass.
+fn solve_box(path: &[(usize, usize)]) -> (Vec<Placement>, Vec<Effect>) {
+    let page = page();
+    let inner = {
+        // A second texture: the page flipped, so nothing in it matches the page.
+        let mut flipped = vec![0u8; page.len()];
+        for y in 0..PAGE {
+            flipped[y * W * 4..(y + 1) * W * 4]
+                .copy_from_slice(&page[(PAGE - 1 - y) * W * 4..(PAGE - y) * W * 4]);
+        }
+        flipped
+    };
+    let nest = Nest {
+        canvas: "page-part-0".to_string(),
+        footprint: Rect {
+            x: BOX_LEFT as f64,
+            y: BOX_TOP as f64,
+            width: BOX_W as f64,
+            height: BOX_H as f64,
+        },
+        open: 0,
+        parent_poses: path.iter().map(|&(o, _)| Some((0.0, o as f64))).collect(),
+    };
+    let mut s = session(true);
+    s.regions[0].nest = Some(nest);
+    let mut host = Host::default();
+    let placed = path
+        .iter()
+        .enumerate()
+        .map(|(t, &(o, own))| {
+            host.frame(&mut s, t as u32, &boxed_frame(&page, &inner, o, own))
+                .placements[0]
+                .clone()
+        })
+        .collect();
+    s.drain_voting();
+    host.take(&mut s);
+    (placed, std::mem::take(&mut host.effects))
+}
+
+// Failure cases for keeping a nested container after its own run: one that never scrolled by itself (the page carried
+// it all along: a repeated layout or a still widget the first pass mistook); one whose own run broke into pieces (an
+// auto-advancing carousel jumps further than it shows, new_ip_8); one that did scroll by itself in one piece (kept,
+// with the frames its parent shows it in).
+#[test]
+fn a_nested_container_is_kept_only_when_its_own_run_follows_it_scrolling() {
+    let moments = |effects: &[Effect]| {
+        effects
+            .iter()
+            .filter_map(|e| match e {
+                Effect::NestedMoment { frames, .. } => Some(frames.len()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    let rejected = |effects: &[Effect]| {
+        effects
+            .iter()
+            .any(|e| matches!(e, Effect::NestedRejected { .. }))
+    };
+    // Carried: the page scrolls 8 rows a frame, the box never on its own.
+    let carried: Vec<(usize, usize)> = (0..30).map(|t| (t * 8, 0)).collect();
+    let (_, effects) = solve_box(&carried);
+    assert!(
+        rejected(&effects) && moments(&effects).is_empty(),
+        "carried"
+    );
+    // Jumping: the page stands at 160 while the box's content jumps 120 rows (more than the 100 it shows) every 4th
+    // frame.
+    let jumping: Vec<(usize, usize)> = (0..30)
+        .map(|t| {
+            (
+                if t < 20 { t * 8 } else { 160 },
+                if t < 20 { 0 } else { (t - 19) / 4 * 120 },
+            )
+        })
+        .collect();
+    let (_, effects) = solve_box(&jumping);
+    assert!(
+        rejected(&effects) && moments(&effects).is_empty(),
+        "jumping"
+    );
+    // Scrolling: the page scrolls to 160, stands while the box scrolls 6 rows a frame, then moves on.
+    let mut scrolling = Vec::new();
+    let (mut offset, mut own) = (0usize, 0usize);
+    for t in 0..40 {
+        if t > 0 {
+            if t <= 20 || t > 30 {
+                offset += 8;
+            } else {
+                own += 6;
+            }
+        }
+        scrolling.push((offset, own));
+    }
+    let (_, effects) = solve_box(&scrolling);
+    assert!(!rejected(&effects), "scrolling");
+    assert_eq!(moments(&effects).len(), 1, "scrolling");
+}
+
+// Failure cases for a nested container's own solve: starting anywhere but at the parent's pose; following the page
+// instead of its own content; registering on the page around it; frames where it is off screen placed anyway; the
+// rest of the region not occluded for it.
+#[test]
+fn a_nested_container_follows_its_own_content_inside_its_footprint() {
+    let (page, inner) = (page(), {
+        // A second texture: the page flipped, so nothing in it matches the page.
+        let p = page();
+        let mut flipped = vec![0u8; p.len()];
+        for y in 0..PAGE {
+            flipped[y * W * 4..(y + 1) * W * 4]
+                .copy_from_slice(&p[(PAGE - 1 - y) * W * 4..(PAGE - y) * W * 4]);
+        }
+        flipped
+    });
+    // The page scrolls 8 rows a frame to 160, stands while the box scrolls 6 rows a frame, then moves on.
+    let mut path = Vec::new();
+    let (mut offset, mut own) = (0usize, 0usize);
+    for t in 0..40 {
+        if t > 0 {
+            if t <= 20 || t > 30 {
+                offset += 8;
+            } else {
+                own += 6;
+            }
+        }
+        path.push((offset, own));
+    }
+    let frames: Vec<Vec<u8>> = path
+        .iter()
+        .map(|&(o, s)| boxed_frame(&page, &inner, o, s))
+        .collect();
+    // The parent's poses are the page offsets (its canvas is the page): exact, as a first pass would give them.
+    let parent_poses: Vec<Option<(f64, f64)>> =
+        path.iter().map(|&(o, _)| Some((0.0, o as f64))).collect();
+    let nest = Nest {
+        canvas: "page-part-0".to_string(),
+        footprint: Rect {
+            x: BOX_LEFT as f64,
+            y: BOX_TOP as f64,
+            width: BOX_W as f64,
+            height: BOX_H as f64,
+        },
+        open: 0,
+        parent_poses,
+    };
+    let mut s = session(true);
+    s.regions[0].nest = Some(nest);
+    let mut host = Host::default();
+    let mut placed = Vec::new();
+    for (t, pixels) in frames.iter().enumerate() {
+        let done = host.frame(&mut s, t as u32, pixels);
+        placed.push(done.placements[0].clone());
+    }
+    for (t, p) in placed.iter().enumerate() {
+        let (offset, own) = path[t];
+        let screen_top = BOX_TOP as f64 - offset as f64;
+        let visible = screen_top < H as f64 && screen_top + BOX_H as f64 > 0.0;
+        if !visible {
+            assert!(p.skip, "frame {t}: the box is off screen");
+            continue;
+        }
+        if p.skip {
+            continue;
+        }
+        // Its pose is the parent's plus its own scroll, relative to where it started.
+        assert_eq!((p.x, p.y), (0.0, (offset + own) as f64), "frame {t}");
+        let clip = Rect {
+            x: BOX_LEFT as f64,
+            y: screen_top.max(0.0),
+            width: BOX_W as f64,
+            height: (screen_top + BOX_H as f64).min(H as f64) - screen_top.max(0.0),
+        };
+        let covered: f64 = p.occlusions.iter().map(|r| r.width * r.height).sum();
+        assert_eq!(
+            covered,
+            (W * H) as f64 - clip.width * clip.height,
+            "frame {t}: {:?}",
+            p.occlusions
+        );
+    }
+    assert!(placed.iter().filter(|p| !p.skip).count() >= 20);
 }

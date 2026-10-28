@@ -3,7 +3,7 @@
 import { assert, assertEquals } from '@std/assert';
 import { ensureCore } from '../../support/core.ts';
 import { rng } from '../../../src/core/math.ts';
-import type { Rect, Region, RGBA } from '../../../src/types.ts';
+import type { Point, Rect, Region, RGBA } from '../../../src/types.ts';
 import { stationaryBoundary, stickyOcclusions } from '../../../src/core/layers.ts';
 import * as chromeReference from '../../support/reference/chrome.ts';
 
@@ -134,6 +134,85 @@ Deno.test('core parity: stationaryBoundary and stickyOcclusions match the frozen
     assertEquals(want.length ? want[0].y + want[0].height : 0, bottom, `oracle on a band shifted under page step ${dy}`);
     assertEquals(stickyOcclusions(prev, cur, region, { x: 0, y: dy }), want, `sliding band, page step ${dy}`);
   }
+  // A code editor (new_mac_4): text scrolling at the region's top, and below it, inside a blank gap of the page, a
+  // pointer resting on screen beside a column ruler. The rows the page explains end the band's evidence first.
+  const editor = (dy: number): RGBA => {
+    const data = new Uint8ClampedArray(W * H * 4);
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const sy = y + dy, still = x === 380 || x === 381 || (x >= 600 && x < 606 && y >= 70 && y < 90);
+        const v = still ? 250 : sy >= 60 && sy < 120 ? 20 : ((((x * 5) >> 4) + ((sy * 7) >> 5)) * 53 + ((x ^ sy) & 15)) & 255;
+        data.set([v, (v * 3) & 255, 255 - v, 255], (y * W + x) * 4);
+      }
+    }
+    return { width: W, height: H, data };
+  };
+  {
+    const want = chromeReference.stickyOcclusions(editor(0), editor(14), region, { x: 0, y: 14 });
+    assertEquals(want, [], 'oracle: a resting pointer below scrolling text is no band');
+    assertEquals(stickyOcclusions(editor(0), editor(14), region, { x: 0, y: 14 }), want, 'resting pointer');
+  }
+  // A table of contents over part of the page (Region.sticky), at an opacity per frame: on screen over a scrolling
+  // page, fading, away, and with the page standing still.
+  const toc = (dy: number, alpha: number, margin: boolean): RGBA => {
+    const img = make(dy, false), data = img.data.slice();
+    for (let y = 120; y < 420; y++) {
+      for (let x = 30; x < 200; x++) {
+        const i = (y * W + x) * 4, under = margin ? 247 : data[i];
+        const ink = (y - 120) % 21 < 8 && x > 44 && x < 180 ? (x * 37 + y * 11) % 120 : 247;
+        const v = Math.round(under * (1 - alpha) + ink * alpha);
+        data.set([v, v, v], i);
+      }
+    }
+    return { width: W, height: H, data };
+  };
+  const withBlock: Region = { ...region, sticky: [{ x: 30, y: 120, width: 170, height: 300 }] };
+  for (
+    const [prev, cur, dy, carry] of [
+      [toc(0, 1, true), toc(35, 1, true), 35, []],
+      [toc(0, .4, false), toc(35, .6, false), 35, []],
+      [toc(0, 0, false), toc(35, 0, false), 35, []],
+      [toc(0, 0, true), toc(35, 0, true), 35, []],
+      [toc(35, .6, true), toc(35, .4, true), 0, []],
+      [toc(35, 1, true), toc(35, 1, true), 0, withBlock.sticky!],
+      [toc(35, 1, false), toc(35, .8, false), 0, []],
+      [toc(35, .2, false), toc(35, .2, false), 0, []],
+      [toc(0, 0, true), toc(35, .15, true), 35, []],
+    ] as [RGBA, RGBA, number, Rect[]][]
+  ) {
+    assertEquals(
+      stickyOcclusions(prev, cur, withBlock, { x: 0, y: dy }, carry),
+      chromeReference.stickyOcclusions(prev, cur, withBlock, { x: 0, y: dy }, carry),
+      `sticky block, page step ${dy}`,
+    );
+  }
+  assertEquals(chromeReference.stickyOcclusions(toc(0, 1, true), toc(35, 1, true), withBlock, { x: 0, y: 35 }), withBlock.sticky);
+  // A step that came through the anchor: odometry's step is zero, the pose's own step is the page's; or none at all.
+  for (
+    const [carry, blockMotion] of [[[], { x: 0, y: 35 }], [withBlock.sticky!, { x: 0, y: 35 }], [withBlock.sticky!, null]] as [
+      Rect[],
+      Point | null,
+    ][]
+  ) {
+    assertEquals(
+      stickyOcclusions(toc(0, 1, true), toc(35, 1, true), withBlock, { x: 0, y: 0 }, carry, blockMotion),
+      chromeReference.stickyOcclusions(toc(0, 1, true), toc(35, 1, true), withBlock, { x: 0, y: 0 }, carry, blockMotion),
+      'anchored step',
+    );
+  }
+  assertEquals(
+    chromeReference.stickyOcclusions(toc(0, 1, true), toc(35, 1, true), withBlock, { x: 0, y: 0 }, [], { x: 0, y: 35 }),
+    withBlock.sticky,
+  );
+  // Without a step to weigh, a block is only carried while every pixel under it is unchanged.
+  assertEquals(
+    chromeReference.stickyOcclusions(toc(0, 1, true), toc(35, 1, true), withBlock, { x: 0, y: 0 }, withBlock.sticky, null),
+    withBlock.sticky,
+  );
+  assertEquals(
+    chromeReference.stickyOcclusions(toc(0, 1, false), toc(35, .8, false), withBlock, { x: 0, y: 0 }, withBlock.sticky, null),
+    [],
+  );
   // Random small frames: every threshold branch against arbitrary content.
   for (let trial = 0; trial < 40; trial++) {
     const w = 700 + Math.floor(rnd() * 800), h = 40 + Math.floor(rnd() * 200);

@@ -189,6 +189,10 @@ export const pipelineSections: Catalog<typeof zh> = {
       message:
         'Họa tiết ở đầu khung hình cho thấy đây là giao diện cố định theo màn hình, không phải trang đang di chuyển. Phần che phủ cố định này không được ghi vào vùng ảnh chuyển động. Giao diện tham chiếu gốc vẫn được giữ trong bản có viền.',
     },
+    NESTED_LAYER_FOUND: {
+      message:
+        'Một phần của vùng này tự cuộn: trong {{frames}} khung hình, nội dung của nó không di chuyển cùng vùng, nên được ghép thành một ảnh riêng.',
+    },
     FRAGMENT_ATTACHED: {
       message: 'Căn cứ từ lần quay lại đã nối toàn bộ mảnh độc lập vào vùng ảnh hiện có. Quỹ đạo tương đối bên trong mảnh không thay đổi.',
     },

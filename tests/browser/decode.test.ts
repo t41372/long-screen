@@ -1,46 +1,60 @@
 import { assert, assertEquals } from '@std/assert';
 import { harness, realRecordings } from './support.ts';
 const truth = JSON.parse(await Deno.readTextFile(new URL('../fixtures/truth.json', import.meta.url)));
-Deno.test({
-  name: 'browser: WebCodecs decodes every fixture container in presentation order, including ReplayKit-style negative ctts',
-  sanitizeOps: false,
-  sanitizeResources: false,
-  fn: async () => {
-    const h = await harness();
-    try {
-      await h.page.goto(h.base + '/harness.html');
-      await h.page.waitForFunction('!!window.longScreenKit');
-      for (const name of ['scroll.mp4', 'scroll.mov', 'fragmented.mp4', 'scroll.webm', 'negative-cts.mov', 'negative-cts-v0.mov']) {
-        const r = await h.page.evaluate(async (name: string) => {
-          const kit = (window as any).longScreenKit, blob = await (await fetch('/fixtures/' + name)).blob(), file = new File([blob], name);
-          const source = await kit.openMedia(file);
-          let count = 0, last = -Infinity, mono = true, first: number | undefined;
-          for await (const f of source.frames()) {
-            if (f.time < last) {
-              mono = false;
+for (const browser of ['chromium', 'webkit'] as const) {
+  Deno.test({
+    name: `browser ${browser}: WebCodecs decodes every fixture container in presentation order, including ReplayKit-style negative ctts`,
+    sanitizeOps: false,
+    sanitizeResources: false,
+    fn: async () => {
+      const h = await harness({ browser });
+      try {
+        await h.page.goto(h.base + '/harness.html');
+        await h.page.waitForFunction('!!window.longScreenKit');
+        const scroll = { width: 320, height: 240, frames: truth.frames, end: 2 };
+        const cases = [
+          ...['scroll.mp4', 'scroll.mov', 'fragmented.mp4', 'scroll.webm', 'negative-cts.mov', 'negative-cts-v0.mov'].map((name) => ({
+            name,
+            ...scroll,
+          })),
+          // WebKit's decoder returns some of this file's B-frames in decode order; the source puts them back.
+          { name: 'bframes-pyramid.mp4', width: 320, height: 200, frames: 90, end: 3 },
+        ];
+        // scroll.webm is VP9 profile 1 (4:4:4), which WebKit's decoder does not support (docs/CAPABILITIES.md).
+        for (const c of browser === 'webkit' ? cases.filter((c) => c.name !== 'scroll.webm') : cases) {
+          const r = await h.page.evaluate(async (c: { name: string; width: number; height: number }) => {
+            const kit = (window as any).longScreenKit,
+              blob = await (await fetch('/fixtures/' + c.name)).blob(),
+              file = new File([blob], c.name);
+            const source = await kit.openMedia(file);
+            let count = 0, last = -Infinity, mono = true, first: number | undefined;
+            for await (const f of source.frames()) {
+              if (f.time < last) {
+                mono = false;
+              }
+              first ??= f.time;
+              last = f.time;
+              if (f.image.width !== c.width || f.image.height !== c.height || f.image.data.length !== c.width * c.height * 4) {
+                throw new Error('frame geometry');
+              }
+              count++;
             }
-            first ??= f.time;
-            last = f.time;
-            if (f.image.width !== 320 || f.image.height !== 240 || f.image.data.length !== 320 * 240 * 4) {
-              throw new Error('frame geometry');
-            }
-            count++;
-          }
-          source.dispose();
-          return { frames: count, first, last, mono, codec: source.info.codec, notices: source.info.notices };
-        }, name);
-        assertEquals(r.frames, truth.frames, name);
-        assert(r.mono, `${name}: presentation order`);
-        assertEquals(r.notices, [], name);
-        assert(r.last < 2, `${name}: last pts ${r.last}`);
+            source.dispose();
+            return { frames: count, first, last, mono, codec: source.info.codec, notices: source.info.notices };
+          }, c);
+          assertEquals(r.frames, c.frames, c.name);
+          assert(r.mono, `${c.name}: presentation order`);
+          assertEquals(r.notices, [], c.name);
+          assert(r.last < c.end, `${c.name}: last pts ${r.last}`);
+        }
+        assertEquals(h.errors, []);
+        assertEquals(h.external, []);
+      } finally {
+        await h.close();
       }
-      assertEquals(h.errors, []);
-      assertEquals(h.external, []);
-    } finally {
-      await h.close();
-    }
-  },
-});
+    },
+  });
+}
 Deno.test({
   name:
     'browser: the direct copyTo(RGBA) converter is taken (no silent canvas fallback) and agrees with the canvas path within decoder noise',

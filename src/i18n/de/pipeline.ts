@@ -215,6 +215,10 @@ export const pipelineSections: Catalog<typeof zh> = {
       message:
         'Merkmale am oberen Bildrand deuten auf eine am Bildschirm fixierte Oberfläche statt auf Seitenbewegung hin. Diese Verdeckung wird nicht in die bewegte Bildfläche übernommen. Die ursprüngliche Oberfläche bleibt in der gerahmten Ansicht erhalten.',
     },
+    NESTED_LAYER_FOUND: {
+      message:
+        'Ein Teil dieses Bereichs scrollt für sich: In {{frames}} Videobildern bewegte sich sein Inhalt nicht mit dem Bereich, deshalb erhält er ein eigenes Bild.',
+    },
     FRAGMENT_ATTACHED: {
       message:
         'Ein Wiederbesuch lieferte genügend Anhaltspunkte, um ein unabhängiges Fragment als Ganzes an eine bestehende Bildfläche anzufügen. Die relative Bewegungsbahn innerhalb des Fragments bleibt unverändert.',

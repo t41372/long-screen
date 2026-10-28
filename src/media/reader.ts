@@ -73,6 +73,9 @@ export interface Demuxer {
   rotation: number;
   duration: number;
   frameCount?: number;
+  /** The most packets, in decode order, that precede some packet and present after it: 0 without B-frames. A decoder
+   *  that emits frames in decode order needs this many frames held back to restore presentation order. */
+  reorderDepth?: number;
   warnings: string[];
   packets(): AsyncGenerator<Packet>;
   /** Releases the underlying mediabunny `Input` (and whatever cache it holds). Idempotent. */

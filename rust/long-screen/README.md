@@ -9,6 +9,7 @@
 ```sh
 cargo install long-screen
 long-screen recording.mov -o print.png
+long-screen recording.mov --package result.zip   # also the web app's result package: tiles, offline viewer, diagnostics
 ```
 
 ## Library

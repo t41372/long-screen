@@ -1,5 +1,5 @@
 /** Builds dist-portable/: one self-contained HTML file a locked-down machine can open with `file://` (double-click,
- *  no server, no install), zipped next to a Simplified-Chinese README. `deno task build:portable` first runs
+ *  no server, no install), zipped next to an English and Simplified-Chinese README. `deno task build:portable` first runs
  *  `deno task build:prod --out dist-portable/.site`, so the dist/ that `deno task start` serves (and a deploy
  *  uploads) is left alone, and this script only rewrites that build's *output*; nothing under src/, static/ or rust/
  *  changes for it.
@@ -337,17 +337,32 @@ async function gitShortHash(cwd: string): Promise<string> {
 }
 function readmeText(hash: string, stamp: string): string {
   const date = stamp.slice(0, 10);
-  return `Long Screen 便携版（${hash}，${date}）
+  return `Long Screen portable (${hash}, ${date})
+
+How to use: unzip the whole folder, then open long-screen.html in Chrome or Edge, by double-clicking it or dragging it into a browser window. Nothing to install and no network needed; the recording and the print never leave this computer.
+
+What to pick: a screen recording of a page explored along any path (scrolling, panning, going back and forth), as MP4, MOV, WebM or MKV. On Windows use the Snipping Tool's recorder or Xbox Game Bar (Win+Alt+R), on a Mac press Cmd+Shift+5, on a phone use its built-in screen recording. Documents, images and other formats such as AVI, WMV or GIF are refused with a reason.
+
+Browser: Chrome and Edge only. On a Mac a double-click opens Safari, so right-click and choose Open With > Chrome instead. Safari cannot read the video you pick from a page opened this way; Firefox has not been tested. Avoid incognito or private windows: closing the window loses the print.
+
+Good to know:
+- This build runs on one thread. Its prints are the same as the web version's.
+- Exporting opens a Save As dialog and writes straight to disk. If company policy blocks that dialog, the export falls back to a browser download, which is limited to 1 GB per file.
+- The browser keeps only the latest print, for 24 hours, so a reload or crash does not lose it. Export anything you want to keep.
+
+----
+
+Long Screen 便携版（${hash}，${date}）
 
 用法：解压整个文件夹，用 Chrome 或 Edge 打开 long-screen.html：双击，或拖进浏览器窗口。不需要安装软件，不需要网络；录屏和结果都不会离开这台电脑。
 
-要选的文件：一段滚动页面的屏幕录影，MP4、MOV、WebM 或 MKV。Windows 可用“截图工具”的录制功能或 Xbox Game Bar（Win+Alt+R），Mac 用 ⌘⇧5，手机用系统自带的屏幕录制。文档、图片和 AVI / WMV / GIF 等其他格式会被直接拒绝并说明原因。
+要选的文件：一段屏幕录影，页面怎么走都行（滚动、平移、来回翻看），MP4、MOV、WebM 或 MKV。Windows 可用“截图工具”的录制功能或 Xbox Game Bar（Win+Alt+R），Mac 用 ⌘⇧5，手机用系统自带的屏幕录制。文档、图片和 AVI / WMV / GIF 等其他格式会被直接拒绝并说明原因。
 
-浏览器：只支持 Chrome 和 Edge。Mac 上双击默认用 Safari 打开，请改用右键 →“打开方式”→ Chrome。Safari 打开后读不了你选的视频文件；Firefox 没有测试过。不要用无痕 / 隐私窗口，关掉窗口项目就没了。
+浏览器：只支持 Chrome 和 Edge。Mac 上双击默认用 Safari 打开，请改用右键 →“打开方式”→ Chrome。Safari 打开后读不了你选的视频文件；Firefox 没有测试过。不要用无痕 / 隐私窗口，关掉窗口长图就没了。
 
 须知：
 - 这是单线程版本，重建结果和网页版相同。
 - 导出时会弹出“另存为”直接写入磁盘。如果公司策略禁用了这个对话框，会改成浏览器下载，这时单个导出文件上限 1 GB。
-- 项目保存在这个浏览器的本地存储里。清除浏览器数据会删除它们，重要结果请导出。
+- 浏览器只保留最近一张长图，保留 24 小时，刷新或崩溃后还能找回。要留下的结果请导出。
 `;
 }

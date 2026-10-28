@@ -302,6 +302,11 @@ export interface CoreExports {
     motionY: number,
     carry: number,
     carryCount: number,
+    blocks: number,
+    blockCount: number,
+    blockMotionX: number,
+    blockMotionY: number,
+    blockMeasured: number,
     out: number,
   ): number;
   ls_regions_finish(desc: number): number;
@@ -311,7 +316,19 @@ export interface CoreExports {
   ls_regions_read_headers(handle: number, out: number): number;
   ls_regions_read_masks(handle: number, out: number): number;
   ls_regions_read_cells(handle: number, out: number): number;
-  ls_regions_label_atlas(regions: number, count: number, width: number, height: number, labelsOut: number, countsOut: number): number;
+  ls_regions_label_atlas(
+    regions: number,
+    count: number,
+    width: number,
+    height: number,
+    epochs: number,
+    epochsLength: number,
+    frame: number,
+    labelsOut: number,
+    countsOut: number,
+  ): number;
+  ls_regions_epoch_starts(epochs: number, epochsLength: number, count: number, out: number, capacity: number): number;
+  ls_regions_epoch_index(starts: number, count: number, frame: number): number;
   ls_render_new(input: number, len: number): number;
   ls_render_free(handle: number): void;
   ls_render_take(handle: number, out: number, len: number): number;
@@ -351,6 +368,8 @@ export interface CoreExports {
   ls_solve_effects(handle: number): number;
   ls_solve_drain(handle: number): number;
   ls_solve_take_graph(handle: number): number;
+  ls_solve_nested_candidates(handle: number): number;
+  ls_solve_nested_until(handle: number): number;
   ls_keyframe_index_new(): number;
   ls_keyframe_index_free(handle: number): void;
   ls_keyframe_index_add(handle: number, input: number, len: number, features: number, count: number): number;

@@ -65,6 +65,9 @@ impl Store {
                 Effect::Canvas { meta, .. } => {
                     self.rows.insert(format!("canvas/{}", meta.id), meta.name);
                 }
+                Effect::CanvasDropped(id) => {
+                    self.rows.remove(&format!("canvas/{id}"));
+                }
                 Effect::Attachment(a) => {
                     self.rows.insert(format!("attach/{}", a.id), a.target);
                 }
@@ -73,6 +76,17 @@ impl Store {
                 }
                 Effect::Graph(write) => self.graph(write),
                 Effect::Diagnostic(d) => self.diagnostics.push(d.code),
+                Effect::Nested(n) => {
+                    self.rows.insert(format!("nested/{}", n.region), n.canvas);
+                }
+                Effect::NestedRejected { region } => {
+                    self.rows
+                        .insert(format!("rejected/{region}"), String::new());
+                }
+                Effect::NestedMoment { region, frames } => {
+                    self.rows
+                        .insert(format!("moment/{region}"), frames.len().to_string());
+                }
             }
         }
     }
@@ -107,6 +121,9 @@ fn a_native_host_solves_a_scroll_and_its_return_and_relaxes_the_graph() {
                 solid: false,
                 mask: None,
             },
+            epochs: Vec::new(),
+            sticky: Vec::new(),
+            nest: None,
         }],
     });
     let labels = vec![1u8; W * H];
