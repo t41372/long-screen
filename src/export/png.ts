@@ -1,5 +1,28 @@
 import type { TileStore } from '../storage/tiles.ts';
 import type { Rect } from '../types.ts';
+import { core } from '../core/wasm.ts';
+
+/** Consumes native rows once; the core averages all contributing pixels and retains only row accumulators. */
+export async function* resizedRows(
+  rows: AsyncIterable<Uint8Array>,
+  width: number,
+  height: number,
+  output: { width: number; height: number },
+): AsyncGenerator<Uint8Array> {
+  if (width === output.width && height === output.height) {
+    yield* rows;
+    return;
+  }
+  const resize = core().resizeRows(width, height, output.width, output.height);
+  try {
+    for await (const row of rows) {
+      const ready = resize.push(row);
+      if (ready) yield ready;
+    }
+  } finally {
+    resize.free();
+  }
+}
 /** Streams native-resolution rows out of disk tiles; unobserved pixels stay transparent. */
 export async function* rasterRows(
   tiles: TileStore,

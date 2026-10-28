@@ -139,7 +139,13 @@ export const pageSections: Catalog<typeof zh> = {
     export: {
       downloadPng: 'Simpan gambar · PNG <span>↓</span>',
       copyPng: 'Salin gambar',
-      pngNote: 'Satu PNG berukuran asli, tanpa diperkecil atau dipecah menjadi halaman.',
+      outputSize: 'Ukuran keluaran',
+      originalSize: 'Asli · 100%',
+      customSize: 'Atur sisi terpanjang',
+      longestEdge: 'Sisi terpanjang (px)',
+      sizeNote:
+        'Berlaku untuk unduhan dan salinan. Proporsi tetap; teks juga mengecil. Gambar asli, ekspor per halaman, dan proyek tetap berukuran asli.',
+      pngNote: 'Satu PNG dengan ukuran keluaran yang dipilih.',
       advancedSummary: 'Pilihan penyimpanan lainnya',
       exportProject: 'Ekspor proyek lengkap · ZIP',
       projectNote:
@@ -153,7 +159,7 @@ export const pageSections: Catalog<typeof zh> = {
       title: 'Dari rekaman hingga gambar utuh',
       pixelsHeading: 'Piksel mana yang dipertahankan?',
       pixelsBody:
-        'Mode per bingkai mendekode video satu bingkai demi satu. Setiap pengamatan yang selesai memiliki penanda waktu dan catatan penggabungan. Gambar analisis boleh diperkecil, tetapi penggabungan akhir dan ekspor tetap menggunakan skala piksel asli.',
+        'Mode presisi mendekode bingkai demi bingkai. Setiap pengamatan yang diproses memiliki stempel waktu dan catatan komposisi. Analisis dapat memakai gambar kecil; komposisi akhir mempertahankan piksel asli. Gambar unduhan dan salinan dapat diperkecil setelahnya.',
       frameHeading: 'Bingkai dan margin asli',
       frameBody:
         'Secara bawaan, seluruh latar, margin, dan ruang kosong pada area yang bisa digulir tetap disertakan, bukan dipotong sebatas teks. Tampilan berbingkai juga menyimpan UI dari satu bingkai acuan. Teks bilah samping dan ikon bilah alat hanya muncul sekali dalam ukuran asli. Bagian yang diperluas hanya meneruskan latar dekoratif, bukan bukti konten yang terekam. Lapisan konten asli selalu disimpan terpisah. Panel lain dengan gerakan terpisah tidak dibuat seolah-olah mengikuti lintasan yang sama.',

@@ -229,7 +229,7 @@ export const pipelineSections: Catalog<typeof zh> = {
     zipFinalize: 'ZIP64 डायरेक्टरी लिखकर फ़ाइल पूरी तरह सेव की जा रही है',
     projectDone: { message: 'मूल आकार की टाइलें, ऑफ़लाइन व्यूअर, कवरेज और गुणवत्ता डेटा, स्रोत फ़्रेमों के रिकॉर्ड और सभी जाँच विवरण एक्सपोर्ट हो गए।' },
     encodingSingle: 'मूल आकार में पंक्ति {{row}} / {{total}} एनकोड हो रही है',
-    canvasDone: { message: '{{width}} × {{height}} का मूल आकार वाला PNG एक्सपोर्ट हो गया। खाली जगह पारदर्शी है।' },
+    canvasDone: { message: '{{width}} × {{height}} का PNG एक्सपोर्ट हो गया। खाली जगह पारदर्शी है।' },
     encodingSheet: 'मूल आकार में एनकोड किए गए पन्ने: {{count}}',
     sheetsDone: {
       messagePaged: 'मूल आकार में एक्सपोर्ट किए गए पन्ने: {{count}}। पास के पन्नों में अधिकतम {{overlap}}px ओवरलैप है; निर्देशांक मेनिफ़ेस्ट में हैं।',

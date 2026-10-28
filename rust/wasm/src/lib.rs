@@ -46,6 +46,7 @@ mod pyramid;
 mod raster;
 mod regions;
 mod render;
+mod resize;
 mod reveal;
 mod scan;
 mod solve;

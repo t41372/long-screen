@@ -228,7 +228,7 @@ export const pipelineSections: Catalog<typeof zh> = {
     zipFinalize: '正在寫入 ZIP64 目錄並儲存檔案',
     projectDone: { message: '已匯出原尺寸圖塊、離線檢視器、覆蓋範圍與品質資料、來源影格記錄，以及完整診斷。' },
     encodingSingle: '正在以原尺寸編碼第 {{row}}／{{total}} 列',
-    canvasDone: { message: '已匯出 {{width}} × {{height}} 的原尺寸 PNG，未錄到的部分保持透明。' },
+    canvasDone: { message: '已匯出 {{width}} × {{height}} 的 PNG，未錄到的部分保持透明。' },
     encodingSheet: '已編碼 {{count}} 張原尺寸分頁圖片',
     sheetsDone: {
       messagePaged: '已分頁匯出為 {{count}} 張原尺寸圖片，相鄰頁面最多重疊 {{overlap}}px，座標請見 manifest 清單。',

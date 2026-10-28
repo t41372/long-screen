@@ -135,7 +135,13 @@ export const pageSections: Catalog<typeof zh> = {
     export: {
       downloadPng: 'Screenshot bewaren · PNG <span>↓</span>',
       copyPng: 'Screenshot kopiëren',
-      pngNote: 'Eén PNG op ware grootte, zonder verkleining of paginaverdeling.',
+      outputSize: 'Uitvoerformaat',
+      originalSize: 'Origineel · 100%',
+      customSize: 'Langste zijde instellen',
+      longestEdge: 'Langste zijde (px)',
+      sizeNote:
+        'Geldt voor downloads en kopieën. De verhoudingen blijven gelijk; tekst wordt ook kleiner. Het origineel, de pagina’s en het project behouden hun oorspronkelijke formaat.',
+      pngNote: 'Eén PNG in het gekozen uitvoerformaat.',
       advancedSummary: 'Andere manieren om te bewaren',
       exportProject: 'Volledig project exporteren · ZIP',
       projectNote:
@@ -149,7 +155,7 @@ export const pageSections: Catalog<typeof zh> = {
       title: 'Waar je screenshot vandaan komt',
       pixelsHeading: 'Welke pixels blijven behouden?',
       pixelsBody:
-        'De nauwkeurige stand decodeert elk frame. Elke afgeronde waarneming heeft een tijdstip en een samenvoegingsregistratie. Voor de analyse kunnen beelden worden verkleind; bij het samenvoegen en exporteren blijft de oorspronkelijke pixelschaal behouden.',
+        'De nauwkeurige modus decodeert beeld voor beeld. Elke verwerkte waarneming heeft een tijdstempel en een compositierecord. De analyse kan kleinere beelden gebruiken; de uiteindelijke compositie behoudt de oorspronkelijke pixels. Downloads en kopieën kunnen daarna worden verkleind.',
       frameHeading: 'Vensterkader en oorspronkelijke marges',
       frameBody:
         'Standaard blijven de achtergrond, marges en witruimte van het hele scrolbare gebied behouden; er wordt niet bijgesneden tot de tekst. De weergave met kader bewaart daarnaast de vaste interface uit één referentieframe. Tekst in zijbalken en werkbalkpictogrammen verschijnen één keer op ware grootte. Uitgebreide gebieden zetten alleen de decoratieve achtergrond voort: ze zijn geen bewijs van waargenomen inhoud. De oorspronkelijke inhoudslaag blijft altijd apart bewaard. Andere onafhankelijke panelen worden niet voorgesteld alsof ze hetzelfde bewegingstraject volgen.',

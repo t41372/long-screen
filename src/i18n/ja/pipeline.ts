@@ -244,7 +244,7 @@ export const pipelineSections: Catalog<typeof zh> = {
       message: '原寸タイル、オフラインビューアー、撮影範囲・品質データ、元のフレーム記録、すべての診断情報を書き出しました。',
     },
     encodingSingle: '原寸で{{total}}行中{{row}}行目をエンコード中',
-    canvasDone: { message: '{{width}} × {{height}} の原寸 PNG を保存しました。映っていない場所は透明のままです。' },
+    canvasDone: { message: '{{width}} × {{height}} の PNG を保存しました。映っていない場所は透明のままです。' },
     encodingSheet: '原寸の分割画像を{{count}}枚エンコードしました',
     sheetsDone: {
       messagePaged:

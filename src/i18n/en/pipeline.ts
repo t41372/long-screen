@@ -275,7 +275,7 @@ export const pipelineSections: Catalog<typeof zh> = {
     },
     encodingSingle: 'Encoding row {{row}} / {{total}} at native scale',
     canvasDone: {
-      message: 'Exported a {{width}} × {{height}} native-size PNG; gaps stay transparent.',
+      message: 'Exported a {{width}} × {{height}} PNG; gaps stay transparent.',
     },
     encodingSheet: 'Encoded {{count}} native-size sheet image(s)',
     sheetsDone: {

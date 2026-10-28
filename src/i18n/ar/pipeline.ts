@@ -263,7 +263,7 @@ export const pipelineSections: Catalog<typeof zh> = {
     },
     encodingSingle: 'جارٍ ترميز الصف {{row}} من {{total}} بالحجم الأصلي',
     canvasDone: {
-      message: 'صُدّرت صورة PNG بأبعاد \u2066{{width}} × {{height}}\u2069 بالحجم الأصلي. بقيت الفجوات شفافة.',
+      message: 'صُدّرت صورة PNG بأبعاد \u2066{{width}} × {{height}}\u2069. بقيت الفجوات شفافة.',
     },
     encodingSheet: 'عدد صور الصفحات المرمّزة بالحجم الأصلي: {{count}}',
     sheetsDone: {

@@ -196,6 +196,10 @@ cargo run --release -p long-screen --example parity -- recording ../test_case/pu
 
 录屏模式两边都用 ffmpeg 解码（`-fps_mode passthrough`、尺寸取 ffprobe、帧时间取排序后的包时间、PQ/HLG 经核心的 HDR 转换），与原生命令行用的系统解码器无关。`performance` 行的 `tileEncodes` 随网页渲染趟每 1.2 s 的墙钟落盘变化（网页自己连跑两次也不同），其余每一行都应相同。
 
+## 输出尺寸
+
+`deno test --allow-all tests/browser/output-size.test.ts` 在 Chrome（en）和 WebKit（zh-Hant）里经真实录屏、worker、裁切、缩图、PNG 下载验证完整链路，Chrome 还读取系统剪贴板核对尺寸。检查三种比例、自定最长边、无效输入、裁切后缩图、原尺寸 PNG 字节恢复、分页保持原尺寸，以及重新载入后保留裁切、输出尺寸回到原尺寸。产物在 `test-results/output-size/`：PNG、分页 ZIP、含尺寸／SHA-256 的 `report.json`；`layout/` 包含 en 在 390、1024、1440、1920 px 的示例结果、设置翻盖、日志和展开图。单独核对缩图面积平均的逐像素参照及超过 32767 px 的输入：`deno test --allow-read --allow-write --allow-env tests/unit/export.test.ts tests/unit/export-size.test.ts`；内核的非整数边界、细线、透明度与长图行缓冲测试：`cd rust && cargo test -p long-screen --no-default-features --lib kernels::resize`。
+
 ## 仍未验证
 
 - 实体 Safari / iPhone / iPad / Android 全流程。移动尺寸截图不能替代真机。手机上的转换路线（iOS Safari 的 HDR 平面、Android Chrome 是否也交出无法拷贝的帧）只靠首帧核对兜底，没有实测。

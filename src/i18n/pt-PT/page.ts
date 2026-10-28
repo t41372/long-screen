@@ -150,7 +150,13 @@ export const pageSections: Catalog<typeof zh> = {
     export: {
       downloadPng: 'Transferir captura · PNG <span>↓</span>',
       copyPng: 'Copiar captura',
-      pngNote: 'Um único PNG no tamanho original, sem reduzir nem dividir em páginas.',
+      outputSize: 'Tamanho de saída',
+      originalSize: 'Original · 100%',
+      customSize: 'Definir lado mais comprido',
+      longestEdge: 'Lado mais comprido (px)',
+      sizeNote:
+        'Aplica-se às transferências e cópias. Mantém as proporções; o texto também diminui. O original, as páginas e o projeto mantêm o tamanho original.',
+      pngNote: 'Um PNG com o tamanho de saída escolhido.',
       advancedSummary: 'Outras formas de exportar',
       exportProject: 'Exportar projeto completo · ZIP',
       projectNote:
@@ -164,7 +170,7 @@ export const pageSections: Catalog<typeof zh> = {
       title: 'Uma captura com origem conhecida',
       pixelsHeading: 'Que píxeis são preservados?',
       pixelsBody:
-        'O modo exato descodifica fotograma a fotograma. Cada observação concluída tem uma marca temporal e um registo de composição. A análise pode usar imagens reduzidas; a composição final e a exportação mantêm a escala original dos píxeis.',
+        'O modo preciso descodifica fotograma a fotograma. Cada observação processada tem uma marca temporal e um registo de composição. A análise pode usar imagens reduzidas; a composição final mantém os píxeis originais. As transferências e cópias podem ser reduzidas depois.',
       frameHeading: 'Moldura e margens originais',
       frameBody:
         'Por predefinição, preservam-se o fundo, as margens e os espaços em branco de toda a área deslocável, sem recortar até aos limites do texto. A versão com moldura também mantém a interface de um fotograma de referência: o texto lateral e os ícones da barra de ferramentas aparecem uma vez, no tamanho original. As áreas ampliadas apenas prolongam o fundo decorativo e não são evidência de reconstrução. A camada de conteúdo original é sempre guardada separadamente. Os outros painéis independentes não são apresentados como se seguissem a mesma trajetória.',

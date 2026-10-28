@@ -265,7 +265,7 @@ export const pipelineSections: Catalog<typeof zh> = {
         'Özgün boyutlu görüntü blokları, çevrimdışı görüntüleyici, kapsam ve kalite verileri, kaynak kare kayıtları ve tüm tanılama verileri dışa aktarıldı.',
     },
     encodingSingle: 'Özgün ölçekte kodlanan satır: {{row}} / {{total}}',
-    canvasDone: { message: '{{width}} × {{height}} boyutunda özgün ölçekli PNG dışa aktarıldı. Boşluklar saydam kaldı.' },
+    canvasDone: { message: '{{width}} × {{height}} boyutunda PNG dışa aktarıldı. Boşluklar saydam kaldı.' },
     encodingSheet: 'Özgün boyutta {{count}} parça kodlandı',
     sheetsDone: {
       messagePaged:

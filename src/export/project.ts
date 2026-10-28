@@ -8,7 +8,8 @@ import { utf8 } from '../codec/crc.ts';
 import { createTarget } from './target.ts';
 import { offlineViewer } from './offline.ts';
 import { encodePNG } from '../codec/png.ts';
-import { rasterRows } from './png.ts';
+import { rasterRows, resizedRows } from './png.ts';
+import { type ImageSize, outputDimensions } from './size.ts';
 import { canvasRect, clampCrop } from './crop.ts';
 import { t as translate } from '../i18n/index.ts';
 export interface ExportResult {
@@ -129,7 +130,7 @@ export async function exportProject(
     throw error;
   }
 }
-/** `single`: always one PNG of the whole canvas at native size (the PNG format allows 2³¹−1 per side and rows are
+/** `single`: always one PNG of the whole canvas, optionally reduced by `size` (the PNG format allows 2³¹−1 per side and rows are
  *  streamed, so size only costs time); `auto`: one PNG when it stays within common viewer limits, otherwise
  *  overlapping native-size sheets in a ZIP; `sheets`: always the paged ZIP, even when the canvas would fit one PNG
  *  (a canvas that fits one page still yields a ZIP, with exactly one sheet plus its manifest). `crop` (world pixels,
@@ -144,11 +145,14 @@ export async function exportCanvas(
   handle?: FileSystemFileHandle,
   layout: CanvasLayout = 'auto',
   crop?: Rect,
+  size?: ImageSize,
 ): Promise<ExportResult> {
   const rect = crop ? clampCrop(crop, meta.bounds) : canvasRect(meta.bounds);
   if (!rect) {
     throw new Error(`The crop ${JSON.stringify(crop)} leaves nothing of this canvas to export.`);
   }
+  if (size !== undefined && layout !== 'single') throw new Error('Resizing requires a single PNG export.');
+  const output = outputDimensions(rect, size);
   // These are viewer/interoperability and cache limits, not false claims about the PNG specification.
   const sheetWidth = Math.min(
       4096,
@@ -166,20 +170,25 @@ export async function exportCanvas(
     if (single) {
       for await (
         const bytes of encodePNG(
-          rect.width,
-          rect.height,
-          rasterRows(
-            tiles,
-            meta.id,
-            rect,
-            (row) => onProgress(translate('exports.encodingSingle', { row, total: rect.height }), row / rect.height),
+          output.width,
+          output.height,
+          resizedRows(
+            rasterRows(
+              tiles,
+              meta.id,
+              rect,
+              (row) => onProgress(translate('exports.encodingSingle', { row, total: rect.height }), row / rect.height),
+            ),
+            rect.width,
+            rect.height,
+            output,
           ),
         )
       ) {
         await target.sink.write(bytes);
       }
       await target.sink.close();
-      return { ...await target.result(), message: translate('exports.canvasDone.message', { width: rect.width, height: rect.height }) };
+      return { ...await target.result(), message: translate('exports.canvasDone.message', output) };
     }
     const overlap = 32;
     zip = new ZipWriter(target.sink);

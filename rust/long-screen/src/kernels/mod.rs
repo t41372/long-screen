@@ -48,6 +48,7 @@ pub mod pyramid;
 pub mod raster;
 pub mod region;
 pub mod regions;
+pub mod resize;
 pub mod reveal;
 pub mod temporal;
 pub mod track;

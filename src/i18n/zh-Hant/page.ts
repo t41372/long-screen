@@ -146,7 +146,12 @@ export const pageSections: Catalog<typeof zh> = {
     export: {
       downloadPng: '下載大截圖 · PNG <span>↓</span>',
       copyPng: '複製大截圖',
-      pngNote: '一整張原尺寸 PNG，不縮小、不分頁。',
+      outputSize: '輸出尺寸',
+      originalSize: '原尺寸 · 100%',
+      customSize: '自訂最長邊',
+      longestEdge: '最長邊（px）',
+      sizeNote: '下載和複製時依這個尺寸縮小，保持比例。縮小後文字也會變小；原圖、分頁和完整專案保留原尺寸。',
+      pngNote: '一整張 PNG，使用選定的輸出尺寸。',
       advancedSummary: '其他匯出方式',
       exportProject: '匯出完整專案 · ZIP',
       projectNote: '包含原尺寸圖塊、離線檢視器、覆蓋範圍與品質資料，以及完整診斷，方便封存或排查問題。',
@@ -158,7 +163,7 @@ export const pageSections: Catalog<typeof zh> = {
       title: '使用說明',
       pixelsHeading: '哪些像素會保留下來？',
       pixelsBody:
-        '逐格模式會逐一解碼影格。每筆處理完成的觀測都有時間戳記與合成記錄。分析時可以使用縮圖，但最終合成與匯出都保留原始像素尺寸。',
+        '精確模式逐格解碼。所有完成處理的觀察都有時間戳記和合成記錄。分析可以使用縮圖，最終合成保留原始像素；下載和複製時可以另選較小尺寸。',
       frameHeading: '外框與原有留白',
       frameBody:
         '預設會保留整個可捲動區域的背景、邊距與留白，不會裁到文字邊緣。含外框的版本會另外保留一個影格的參考介面：側邊欄文字與工具列圖示都以原尺寸出現一次，向外延伸的部分只是裝飾背景，不算重建依據。原始內容圖層一律另外保留，其他獨立窗格也不會被假裝拼成同一條移動軌跡。',

@@ -149,7 +149,13 @@ export const pageSections: Catalog<typeof zh> = {
     export: {
       downloadPng: 'Scarica l’immagine · PNG <span>↓</span>',
       copyPng: 'Copia l’immagine',
-      pngNote: 'Un solo PNG a risoluzione originale, senza riduzioni né suddivisioni.',
+      outputSize: 'Dimensioni di uscita',
+      originalSize: 'Originale · 100%',
+      customSize: 'Imposta lato più lungo',
+      longestEdge: 'Lato più lungo (px)',
+      sizeNote:
+        'Si applica a download e copie. Mantiene le proporzioni; anche il testo si riduce. L’originale, le pagine e il progetto mantengono le dimensioni originali.',
+      pngNote: 'Un PNG nelle dimensioni di uscita scelte.',
       advancedSummary: 'Altre opzioni di esportazione',
       exportProject: 'Esporta il progetto completo · ZIP',
       projectNote:
@@ -163,7 +169,7 @@ export const pageSections: Catalog<typeof zh> = {
       title: 'Un’immagine di cui conosci l’origine',
       pixelsHeading: 'Quali pixel vengono conservati?',
       pixelsBody:
-        'La modalità esatta decodifica il video fotogramma per fotogramma. Ogni osservazione completata conserva un riferimento temporale e un resoconto della composizione. L’analisi può usare immagini ridotte; la composizione finale e l’esportazione mantengono i pixel alla scala originale.',
+        'La modalità precisa decodifica ogni fotogramma. Ogni osservazione elaborata ha un timestamp e un registro di composizione. L’analisi può usare immagini ridotte; la composizione finale conserva i pixel originali. Download e copie possono essere ridotti in seguito.',
       frameHeading: 'Cornice e margini originali',
       frameBody:
         'Per impostazione predefinita vengono mantenuti sfondo, margini e spazi vuoti dell’intera area scorrevole, senza ritagliare attorno al testo. La vista con cornice conserva anche l’interfaccia di un fotogramma di riferimento: testi delle barre laterali e icone compaiono una sola volta, nelle dimensioni originali. Le aree estese proseguono soltanto lo sfondo decorativo e non sono contenuto osservato. Il livello del contenuto originale resta sempre disponibile separatamente. Gli altri pannelli indipendenti non vengono mai presentati come se condividessero lo stesso movimento.',

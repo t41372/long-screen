@@ -283,7 +283,7 @@ export const pipelineSections: Catalog<typeof zh> = {
         'Foram exportados os blocos no tamanho original, o visualizador offline, os dados de cobertura e qualidade, os registros dos quadros de origem e os diagnósticos completos.',
     },
     encodingSingle: 'Codificando linha {{row}} de {{total}} no tamanho original',
-    canvasDone: { message: 'PNG de {{width}} × {{height}} exportado no tamanho original. As lacunas continuam transparentes.' },
+    canvasDone: { message: 'PNG de {{width}} × {{height}} exportado. As lacunas continuam transparentes.' },
     encodingSheet: 'Páginas codificadas no tamanho original: {{count}}',
     sheetsDone: {
       messagePaged:

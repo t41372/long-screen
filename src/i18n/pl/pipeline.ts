@@ -281,7 +281,7 @@ export const pipelineSections: Catalog<typeof zh> = {
     },
     encodingSingle: 'Kodowanie wiersza {{row}} / {{total}} w oryginalnej skali',
     canvasDone: {
-      message: 'Wyeksportowano PNG {{width}} × {{height}} w oryginalnej rozdzielczości. Luki pozostają przezroczyste.',
+      message: 'Wyeksportowano PNG {{width}} × {{height}}. Luki pozostają przezroczyste.',
     },
     encodingSheet: 'Liczba zakodowanych części w oryginalnej rozdzielczości: {{count}}',
     sheetsDone: {

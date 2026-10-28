@@ -233,7 +233,7 @@ export const pipelineSections = {
     },
     encodingSingle: '无缩放编码 {{row}} / {{total}} 行',
     canvasDone: {
-      message: '已导出 {{width}} × {{height}} 原尺寸 PNG，缺口保持透明。',
+      message: '已导出 {{width}} × {{height}} PNG，缺口保持透明。',
     },
     encodingSheet: '已编码 {{count}} 张原尺寸分页图片',
     sheetsDone: {

@@ -204,7 +204,7 @@ export const pipelineSections: Catalog<typeof zh> = {
     zipFinalize: 'กำลังเขียนไดเรกทอรี ZIP64 และบันทึกไฟล์ให้สมบูรณ์',
     projectDone: { message: 'ส่งออกไทล์ขนาดต้นฉบับ ตัวดูออฟไลน์ ข้อมูลความครอบคลุมและคุณภาพ บันทึกเฟรมต้นฉบับ และข้อมูลวิเคราะห์ทั้งหมดแล้ว' },
     encodingSingle: 'กำลังเข้ารหัสแถว {{row}} / {{total}} ที่ขนาดต้นฉบับ',
-    canvasDone: { message: 'ส่งออก PNG ขนาดต้นฉบับ {{width}} × {{height}} แล้ว ช่องว่างยังโปร่งใส' },
+    canvasDone: { message: 'ส่งออก PNG ขนาด {{width}} × {{height}} แล้ว ช่องว่างยังโปร่งใส' },
     encodingSheet: 'เข้ารหัสภาพขนาดต้นฉบับแล้ว {{count}} หน้า',
     sheetsDone: {
       messagePaged: 'ส่งออกเป็นภาพขนาดต้นฉบับ {{count}} หน้าแล้ว หน้าที่ติดกันซ้อนทับสูงสุด {{overlap}}px พร้อมพิกัดในไฟล์รายการ',

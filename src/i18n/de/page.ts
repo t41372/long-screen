@@ -149,7 +149,13 @@ export const pageSections: Catalog<typeof zh> = {
     export: {
       downloadPng: 'Bild speichern · PNG <span>↓</span>',
       copyPng: 'Bild kopieren',
-      pngNote: 'Eine PNG-Datei in Originalgröße, ohne Verkleinerung oder Aufteilung.',
+      outputSize: 'Ausgabegröße',
+      originalSize: 'Original · 100%',
+      customSize: 'Längste Seite festlegen',
+      longestEdge: 'Längste Seite (px)',
+      sizeNote:
+        'Gilt für Downloads und Kopien. Das Seitenverhältnis bleibt gleich; auch Text wird kleiner. Original, Seitenausgabe und Projekt behalten die Originalgröße.',
+      pngNote: 'Eine PNG-Datei in der gewählten Ausgabegröße.',
       advancedSummary: 'Weitere Exportmöglichkeiten',
       exportProject: 'Ganzes Projekt exportieren · ZIP',
       projectNote:
@@ -163,7 +169,7 @@ export const pageSections: Catalog<typeof zh> = {
       title: 'Ein Bild mit nachvollziehbarer Herkunft',
       pixelsHeading: 'Welche Pixel bleiben erhalten?',
       pixelsBody:
-        'Der exakte Modus dekodiert jedes einzelne Videobild. Jede abgeschlossene Beobachtung erhält einen Zeitstempel und einen Eintrag zum Zusammensetzen. Die Analyse kann verkleinerte Bilder nutzen; Zusammensetzen und Export behalten die ursprüngliche Pixelgröße bei.',
+        'Der bildgenaue Modus decodiert jedes Einzelbild. Jede verarbeitete Beobachtung hat einen Zeitstempel und einen Kompositionsnachweis. Die Analyse kann verkleinerte Bilder nutzen; die fertige Komposition behält die Originalpixel. Downloads und Kopien können anschließend verkleinert werden.',
       frameHeading: 'Rahmen und ursprüngliche Ränder',
       frameBody:
         'Standardmäßig bleiben Hintergrund, Ränder und Leerflächen des gesamten scrollbaren Bereichs erhalten. Es wird nicht auf Textgrenzen zugeschnitten. Die gerahmte Ansicht enthält zusätzlich die Oberfläche aus einem Referenzbild: Texte in Seitenleisten und Symbole in Werkzeugleisten erscheinen einmal in Originalgröße. Erweiterte Flächen setzen lediglich den dekorativen Hintergrund fort und gelten nicht als beobachteter Inhalt. Die ursprüngliche Inhaltsebene bleibt immer separat erhalten. Andere unabhängige Bereiche werden nie so dargestellt, als teilten sie dieselbe Bewegung.',

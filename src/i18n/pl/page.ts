@@ -149,7 +149,13 @@ export const pageSections: Catalog<typeof zh> = {
     export: {
       downloadPng: 'Pobierz obraz · PNG <span>↓</span>',
       copyPng: 'Kopiuj obraz',
-      pngNote: 'Jeden PNG w oryginalnej rozdzielczości, bez zmniejszania i dzielenia.',
+      outputSize: 'Rozmiar wyjściowy',
+      originalSize: 'Oryginał · 100%',
+      customSize: 'Ustaw dłuższy bok',
+      longestEdge: 'Dłuższy bok (px)',
+      sizeNote:
+        'Dotyczy pobierania i kopiowania. Proporcje pozostają bez zmian; tekst też się zmniejsza. Oryginał, eksport stron i projekt zachowują oryginalny rozmiar.',
+      pngNote: 'Jeden PNG w wybranym rozmiarze.',
       advancedSummary: 'Inne opcje eksportu',
       exportProject: 'Eksportuj cały projekt · ZIP',
       projectNote:
@@ -163,7 +169,7 @@ export const pageSections: Catalog<typeof zh> = {
       title: 'Obraz o znanym pochodzeniu',
       pixelsHeading: 'Które piksele zostają zachowane?',
       pixelsBody:
-        'Tryb dokładny dekoduje nagranie klatka po klatce. Każda ukończona obserwacja ma znacznik czasu i zapis sposobu złożenia. Analiza może korzystać ze zmniejszonych obrazów, ale końcowe składanie i eksport zachowują oryginalną skalę pikseli.',
+        'Tryb dokładny dekoduje klatka po klatce. Każda przetworzona obserwacja ma znacznik czasu i zapis kompozycji. Analiza może używać pomniejszonych obrazów; końcowa kompozycja zachowuje oryginalne piksele. Obrazy do pobrania i skopiowania można potem zmniejszyć.',
       frameHeading: 'Ramka i oryginalne marginesy',
       frameBody:
         'Domyślnie zachowywane są tło, marginesy i puste miejsca całego przewijanego obszaru. Obraz nie jest przycinany do granic tekstu. Widok z ramką zawiera dodatkowo interfejs z jednej klatki odniesienia: tekst w panelach bocznych i ikony pasków narzędzi pojawiają się raz, w oryginalnym rozmiarze. Rozszerzone obszary jedynie przedłużają dekoracyjne tło i nie są zaobserwowaną treścią. Oryginalna warstwa treści zawsze pozostaje dostępna osobno. Inne niezależne panele nie są przedstawiane tak, jakby dzieliły tę samą ścieżkę ruchu.',

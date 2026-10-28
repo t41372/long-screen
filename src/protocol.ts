@@ -5,6 +5,7 @@
 import type { CanvasMeta, ConversionReport, Diagnostic, MediaInfo, Progress, Project, Rect, Settings } from './types.ts';
 import type { Row } from './storage/db.ts';
 import type { CanvasLayout, ExportResult } from './export/project.ts';
+import type { ImageSize } from './export/size.ts';
 import type { StoredTile } from './storage/tiles.ts';
 import type { Locale } from './i18n/index.ts';
 
@@ -74,7 +75,15 @@ export interface Commands {
   /** Deletes every stored print. */
   sweep: { req: Record<string, never>; res: true };
   export: {
-    req: { projectId: string; canvasId?: string; format: 'project' | 'png'; layout?: CanvasLayout; handle?: FileSystemFileHandle };
+    req: {
+      projectId: string;
+      canvasId?: string;
+      format: 'project' | 'png';
+      layout?: CanvasLayout;
+      handle?: FileSystemFileHandle;
+      /** Only a single PNG: reduce after the saved crop. Omitted preserves native pixels. */
+      size?: ImageSize;
+    };
     res: ExportResult;
   };
   'cleanup-export': { req: { key: string }; res: true };

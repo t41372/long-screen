@@ -267,7 +267,7 @@ export const pipelineSections: Catalog<typeof zh> = {
         'Экспортированы блоки исходного размера, автономный просмотрщик, данные о покрытии и качестве, записи исходных кадров и полная диагностика.',
     },
     encodingSingle: 'Кодирование строки {{row}} из {{total}} в исходном масштабе',
-    canvasDone: { message: 'Экспортирован PNG {{width}} × {{height}} в исходном размере. Пробелы остались прозрачными.' },
+    canvasDone: { message: 'Экспортирован PNG {{width}} × {{height}}. Пробелы остались прозрачными.' },
     encodingSheet: 'Закодировано частей исходного размера: {{count}}',
     sheetsDone: {
       messagePaged:

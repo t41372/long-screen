@@ -275,7 +275,7 @@ export const pipelineSections: Catalog<typeof zh> = {
         'Tegels op ware grootte, offline viewer, dekkings- en kwaliteitsgegevens, bronframeregistraties en volledige diagnostiek zijn geëxporteerd.',
     },
     encodingSingle: 'Rij {{row}} / {{total}} coderen op ware grootte',
-    canvasDone: { message: 'PNG van {{width}} × {{height}} op ware grootte geëxporteerd. Gaten blijven transparant.' },
+    canvasDone: { message: 'PNG van {{width}} × {{height}} geëxporteerd. Gaten blijven transparant.' },
     encodingSheet: 'Gecodeerde delen op ware grootte: {{count}}',
     sheetsDone: {
       messagePaged:

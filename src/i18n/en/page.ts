@@ -148,7 +148,13 @@ export const pageSections: Catalog<typeof zh> = {
     export: {
       downloadPng: 'Take the screenshot · PNG <span>↓</span>',
       copyPng: 'Copy screenshot',
-      pngNote: 'One full-size PNG — not scaled down, not split into pages.',
+      outputSize: 'Output size',
+      originalSize: 'Original · 100%',
+      customSize: 'Custom longest edge',
+      longestEdge: 'Longest edge (px)',
+      sizeNote:
+        'Applies to downloads and copies. Keeps proportions; text gets smaller too. The original, paged exports and project keep their native size.',
+      pngNote: 'One PNG at the selected output size.',
       advancedSummary: 'Other ways to take it',
       exportProject: 'Export full project · ZIP',
       projectNote: 'Native-size tiles + offline viewer + coverage/quality data + full diagnostics, for archiving or troubleshooting.',
@@ -161,7 +167,7 @@ export const pageSections: Catalog<typeof zh> = {
       title: 'A canvas with a source',
       pixelsHeading: 'Which pixels are kept?',
       pixelsBody:
-        'Frame-accurate mode decodes frame by frame. Every completed observation has a timestamp and a compositing record. Analysis can be downscaled; final compositing and export keep the original pixel scale.',
+        'Frame-accurate mode decodes frame by frame. Every completed observation has a timestamp and a compositing record. Analysis may use smaller images; final compositing keeps native pixels. Downloads and copies can be reduced afterward.',
       frameHeading: 'Frame and natural margins',
       frameBody:
         "By default the whole scrollable area's background, margins and whitespace are kept, with no cropping to text bounds. The framed view additionally keeps one frame of reference UI: sidebar text and toolbar icons appear once at native size, and extended areas simply continue the decorative background — they are not reconstruction evidence. The original content layer is always kept separately. Other independent panes are never made to look like they share the same track.",

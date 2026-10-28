@@ -76,6 +76,9 @@ export interface CoreExports {
     out: number,
   ): number;
   ls_png_filter_sub(rgba: number, width: number, height: number, out: number): number;
+  ls_resize_new(width: number, height: number, outWidth: number, outHeight: number): number;
+  ls_resize_push(handle: number, input: number, out: number): number;
+  ls_resize_free(handle: number): void;
   ls_png_encode(rgba: number, width: number, height: number): number;
   ls_png_encode_len(handle: number): number;
   ls_png_encode_read(handle: number, out: number): number;

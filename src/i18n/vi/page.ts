@@ -139,7 +139,13 @@ export const pageSections: Catalog<typeof zh> = {
     export: {
       downloadPng: 'Lưu ảnh · PNG <span>↓</span>',
       copyPng: 'Sao chép ảnh',
-      pngNote: 'Một ảnh PNG ở kích thước gốc, không thu nhỏ, không chia trang.',
+      outputSize: 'Kích thước xuất',
+      originalSize: 'Gốc · 100%',
+      customSize: 'Tùy chỉnh cạnh dài nhất',
+      longestEdge: 'Cạnh dài nhất (px)',
+      sizeNote:
+        'Áp dụng khi tải xuống và sao chép. Giữ nguyên tỷ lệ; chữ cũng nhỏ đi. Ảnh gốc, bản xuất chia trang và dự án giữ nguyên kích thước gốc.',
+      pngNote: 'Một ảnh PNG theo kích thước đã chọn.',
       advancedSummary: 'Cách lưu khác',
       exportProject: 'Xuất toàn bộ dự án · ZIP',
       projectNote:
@@ -153,7 +159,7 @@ export const pageSections: Catalog<typeof zh> = {
       title: 'Ảnh được ghép từ đâu?',
       pixelsHeading: 'Những điểm ảnh nào được giữ lại?',
       pixelsBody:
-        'Chế độ từng khung hình giải mã video lần lượt theo từng khung hình. Mỗi lần quan sát đã hoàn tất đều có dấu thời gian và bản ghi ghép ảnh. Ảnh phân tích có thể được thu nhỏ, nhưng bước ghép cuối cùng và xuất ảnh luôn giữ kích thước điểm ảnh gốc.',
+        'Chế độ chính xác giải mã từng khung hình. Mỗi quan sát đã xử lý có dấu thời gian và bản ghi ghép ảnh. Phân tích có thể dùng ảnh thu nhỏ; ảnh ghép cuối giữ nguyên pixel gốc. Sau đó có thể thu nhỏ ảnh để tải xuống và sao chép.',
       frameHeading: 'Viền cửa sổ và khoảng lề gốc',
       frameBody:
         'Theo mặc định, công cụ giữ toàn bộ nền, lề và khoảng trắng trong vùng cuộn, không cắt sát theo chữ. Chế độ có viền còn giữ giao diện từ một khung hình tham chiếu. Chữ ở thanh bên và biểu tượng trên thanh công cụ chỉ xuất hiện một lần ở kích thước gốc. Phần mở rộng chỉ nối tiếp nền trang trí, không phải bằng chứng về nội dung đã ghi hình. Lớp nội dung gốc luôn được giữ riêng. Các khung khác di chuyển độc lập không bị ghép như thể chúng có cùng quỹ đạo.',

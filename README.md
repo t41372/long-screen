@@ -71,11 +71,13 @@ Automatic mode keeps moving content and fixed UI separate; multiple independent 
 </details>
 
 <details>
-<summary><b>Export: PNG, paged export, crop and the project ZIP</b></summary>
+<summary><b>Export: PNG, output size, crop, paged export and the project ZIP</b></summary>
 
-**Current canvas PNG / paged export**: if the size fits, it's streamed and encoded directly to PNG; if it exceeds the compatible size, multiple native-size PNGs are output, with world coordinates and a 32px overlap noted. It never silently downscales.
+**Current canvas PNG**: download or copy one PNG at the selected output size. Original (100%) preserves native pixels; 75%, 50%, 25% or a custom longest edge reduce both dimensions together. The output dimensions update after cropping, and smaller prints are never enlarged. This choice resets to Original on reload or a new print. Reducing dimensions also makes text smaller and does not guarantee a platform's file-size limit.
 
-**Crop**: once a print is composed, Crop puts a box over it to drag or type; the PNG, the paged export and the copy then take only that part of the canvas, still at native size. The crop is kept with the print (a reload keeps it) and Whole print undoes it. The full project ZIP is never cropped.
+**Paged export**: explicitly export multiple native-size PNGs, with world coordinates and a 32px overlap noted. The output-size choice does not affect pages or the full project ZIP. PNG encoding and downsampling stream rows from tiles, so they do not need a full-image browser canvas.
+
+**Crop**: once a print is composed, Crop puts a box over it to drag or type; the PNG, the paged export and the copy then take only that part of the canvas. Resizing applies after the crop. The crop is kept with the print (a reload keeps it) and Whole print undoes it. The full project ZIP is never cropped.
 
 **Full project ZIP64**: native-size PNG tiles, preview pyramid, offline viewer, pixel coverage bitmap, block-level confidence / conflict / source-frame data, a contribution record for every processed frame, motion analysis logs, the pose graph, and all diagnostics. The original video is not copied into the project. After unzipping, open its `index.html` directly to view it offline.
 

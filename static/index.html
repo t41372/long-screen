@@ -261,13 +261,24 @@
               <button id="crop-cancel" class="chip" data-i18n="page.crop.cancel">取消</button>
               <button id="crop-apply" class="primary" data-i18n="page.crop.apply">裁好了</button>
             </div>
+            <div class="output-size-bar" id="output-size-bar" hidden>
+              <div class="output-size-controls">
+                <label class="crop-field"><span data-i18n="page.export.outputSize">输出尺寸</span><select id="output-size" class="pill-select" aria-describedby="output-size-note">
+                  <option value="1" data-i18n="page.export.originalSize">原尺寸 · 100%</option>
+                  <option value="0.75">75%</option><option value="0.5">50%</option><option value="0.25">25%</option>
+                  <option value="custom" data-i18n="page.export.customSize">自定最长边</option>
+                </select></label>
+                <label class="crop-field" id="output-edge-field" hidden><span data-i18n="page.export.longestEdge">最长边（px）</span><input type="number" id="output-max-edge" min="1" max="2147483647" step="1" value="8192" required inputmode="numeric" aria-describedby="output-size-note"></label>
+                <output id="output-dimensions" for="output-size output-max-edge" aria-live="polite"></output>
+              </div>
+              <p class="hint" id="output-size-note" data-i18n="page.export.sizeNote">下载和复制按这个尺寸缩小，保持比例。缩小后文字也会变小；原图、分页和完整项目保留原尺寸。</p>
+            </div>
             <div class="take-row">
               <button id="export-png" class="primary big" disabled data-i18n-html="page.export.downloadPng">下载大截图 · PNG <span>↓</span></button>
               <button id="copy-png" class="secondary big" disabled data-i18n="page.export.copyPng">复制大截图</button>
               <details class="export-advanced">
                 <summary data-i18n="page.export.advancedSummary">更多导出方式</summary>
                 <div class="export-options">
-                  <p class="hint" data-i18n="page.export.pngNote">一整张原尺寸 PNG，不缩小、不分页。</p>
                   <button id="export-project" class="secondary full" disabled data-i18n="page.export.exportProject">导出完整项目 · ZIP</button>
                   <p class="hint" data-i18n="page.export.projectNote">原尺寸瓦片 + 离线查看器 + 覆盖/质量数据 + 完整诊断，供存档或排查。</p>
                   <button id="export-sheets" class="secondary full" disabled data-i18n="page.export.exportSheets">分页导出 · 多张 PNG（ZIP）</button>
@@ -330,7 +341,7 @@
       <div class="dialog-header"><h2 data-i18n="page.help.title">使用说明</h2><button class="chip round" data-close="help-dialog" aria-label="关闭" data-i18n-attr="aria-label:page.closeLabel">×</button></div>
       <div class="help-copy">
         <h3 data-i18n="page.help.pixelsHeading">哪些像素被保留？</h3>
-        <p data-i18n="page.help.pixelsBody">精确模式逐帧解码。所有完成处理的观察都有时间戳和合成记录。分析可以缩图，最终合成与导出保持原始像素尺度。</p>
+        <p data-i18n="page.help.pixelsBody">精确模式逐帧解码。所有完成处理的观察都有时间戳和合成记录。分析可以缩图，最终合成保留原始像素；下载和复制时可以另选较小尺寸。</p>
         <h3 data-i18n="page.help.frameHeading">外框与自然留白</h3>
         <p data-i18n="page.help.frameBody">默认保留整个捲动区域的背景、边距和留白，不裁到文字边界。带外框视图额外保留一帧参考界面：侧栏文字、工具图示以原尺寸出现一次，扩展处仅续接装饰背景，不属于重建证据。原始内容层始终单独保留。其他独立 pane 不会被假装拼成同一轨迹。</p>
         <h3 data-i18n="page.help.scopeHeading">这里不是“万能页面理解”</h3>

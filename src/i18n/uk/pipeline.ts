@@ -266,7 +266,7 @@ export const pipelineSections: Catalog<typeof zh> = {
         'Експортовано блоки початкового розміру, автономний переглядач, дані про покриття та якість, записи початкових кадрів і повну діагностику.',
     },
     encodingSingle: 'Кодування рядка {{row}} із {{total}} у початковому масштабі',
-    canvasDone: { message: 'Експортовано PNG {{width}} × {{height}} у початковому розмірі. Прогалини залишилися прозорими.' },
+    canvasDone: { message: 'Експортовано PNG {{width}} × {{height}}. Прогалини залишилися прозорими.' },
     encodingSheet: 'Закодовано частин початкового розміру: {{count}}',
     sheetsDone: {
       messagePaged:

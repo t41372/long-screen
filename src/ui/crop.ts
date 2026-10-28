@@ -26,7 +26,7 @@ export interface Crop {
 type Grip = 'move' | 'n' | 's' | 'e' | 'w' | 'nw' | 'ne' | 'sw' | 'se';
 const GRIPS: Grip[] = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'];
 
-export function createCrop(state: AppState, viewer: TiledViewer): Crop {
+export function createCrop(state: AppState, viewer: TiledViewer, onChange: () => void = () => {}): Crop {
   let crops = new Map<string, Rect>(), draft: Rect | undefined, saving = false;
   const box = $('crop-box'), size = $('crop-size');
   const fields = {
@@ -45,6 +45,7 @@ export function createCrop(state: AppState, viewer: TiledViewer): Crop {
     const kept = current(), button = $('crop-btn');
     button.textContent = kept ? t('ui.crop.buttonCropped', { width: kept.width, height: kept.height }) : t('page.crop.button');
     button.setAttribute('aria-pressed', String(!!kept));
+    onChange();
   }
   function show(): void {
     if (state.cropping) {

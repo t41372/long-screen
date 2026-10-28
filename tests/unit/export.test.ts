@@ -366,6 +366,63 @@ Deno.test('export: rasterRows streams rows of exact width from tiles', async () 
   }
   assertEquals(rows, 30);
 });
+
+// A deliberately slow, whole-image area reference: independent of the production row accumulator. Alpha weights
+// colors, and every fractional footprint includes its edge pixels. A transparent hole must never become black ink.
+function areaReference(image: { width: number; height: number; data: Uint8ClampedArray }, width: number, height: number) {
+  const out = new Uint8Array(width * height * 4), sx = image.width / width, sy = image.height / height;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const sum = [0, 0, 0, 0];
+      for (let iy = Math.floor(y * sy); iy < Math.ceil((y + 1) * sy); iy++) {
+        for (let ix = Math.floor(x * sx); ix < Math.ceil((x + 1) * sx); ix++) {
+          const weight = (Math.min(ix + 1, (x + 1) * sx) - Math.max(ix, x * sx)) *
+            (Math.min(iy + 1, (y + 1) * sy) - Math.max(iy, y * sy));
+          const i = (iy * image.width + ix) * 4, alpha = image.data[i + 3] * weight;
+          for (let c = 0; c < 3; c++) sum[c] += image.data[i + c] * alpha;
+          sum[3] += alpha;
+        }
+      }
+      const i = (y * width + x) * 4;
+      out[i + 3] = Math.round(sum[3] / (sx * sy));
+      if (out[i + 3]) { for (let c = 0; c < 3; c++) out[i + c] = Math.round(sum[c] / sum[3]); }
+    }
+  }
+  return out;
+}
+
+Deno.test('export: resizing a crop across tile seams matches an independent area reference and leaves native bytes intact', async () => {
+  const { p, store, meta } = await project(170, 140);
+  const crop = { x: 51, y: 49, width: 107, height: 81 }, native = fakeHandle(), reduced = fakeHandle(), again = fakeHandle();
+  await exportCanvas(store, p, meta, () => {}, native.handle, 'single', crop);
+  const result = await exportCanvas(store, p, meta, () => {}, reduced.handle, 'single', crop, { maxEdge: 40 });
+  const original = await decodePNG(native.bytes()), image = await decodePNG(reduced.bytes());
+  assertEquals([image.width, image.height], [40, 30]);
+  assert(result.message.includes('40 × 30'));
+  assert(!result.message.includes('原尺寸'), 'a reduced PNG must not claim native resolution');
+  const expected = areaReference(original, 40, 30);
+  assert(image.data.every((v, i) => Math.abs(v - expected[i]) <= 1), 'all output pixels match the independent reference within rounding');
+  await exportCanvas(store, p, meta, () => {}, again.handle, 'single', crop, { maxEdge: 8192 });
+  assertEquals(again.bytes(), native.bytes(), 'resetting / a larger limit preserves the native PNG byte for byte');
+  await assertRejects(
+    () => exportCanvas(store, p, meta, () => {}, fakeHandle().handle, 'single', crop, { maxEdge: NaN }),
+    Error,
+    'Invalid output size',
+  );
+  await assertRejects(
+    () => exportCanvas(store, p, meta, () => {}, fakeHandle().handle, 'sheets', crop, { maxEdge: 40 }),
+    Error,
+    'single PNG',
+  );
+});
+
+Deno.test('export: resize streams a print taller than common browser canvas limits', async () => {
+  const { p, store, meta } = await project(3, 40001), target = fakeHandle();
+  await exportCanvas(store, p, meta, () => {}, target.handle, 'single', undefined, { maxEdge: 1000 });
+  const image = await decodePNG(target.bytes());
+  assertEquals([image.width, image.height], [1, 1000]);
+  assert(image.data.some((v, i) => i % 4 === 3 && v > 0), 'the long print contains actual pixels');
+});
 // Without a file handle or OPFS (Safari Private Browsing, and Deno here) the export is assembled in memory up to a
 // limit. Failure modes: bytes reordered or aliased when the writer reuses its buffer, a result handed out before the
 // export is closed, the limit silently ignored or failing without saying why.

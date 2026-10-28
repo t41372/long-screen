@@ -150,7 +150,13 @@ export const pageSections: Catalog<typeof zh> = {
     export: {
       downloadPng: 'Descargar captura · PNG <span>↓</span>',
       copyPng: 'Copiar captura',
-      pngNote: 'Un solo PNG a tamaño original, sin reducir ni dividir en páginas.',
+      outputSize: 'Tamaño de salida',
+      originalSize: 'Original · 100%',
+      customSize: 'Definir lado más largo',
+      longestEdge: 'Lado más largo (px)',
+      sizeNote:
+        'Se aplica a descargas y copias. Mantiene las proporciones; el texto también se reduce. El original, las páginas y el proyecto conservan su tamaño original.',
+      pngNote: 'Un PNG con el tamaño de salida elegido.',
       advancedSummary: 'Otras formas de exportar',
       exportProject: 'Exportar proyecto completo · ZIP',
       projectNote:
@@ -164,7 +170,7 @@ export const pageSections: Catalog<typeof zh> = {
       title: 'Una captura con trazabilidad',
       pixelsHeading: '¿Qué píxeles se conservan?',
       pixelsBody:
-        'El modo exacto decodifica fotograma a fotograma. Cada observación procesada tiene una marca de tiempo y un registro de composición. El análisis puede usar imágenes reducidas; la composición final y la exportación conservan la escala original de los píxeles.',
+        'El modo preciso decodifica fotograma a fotograma. Cada observación procesada tiene una marca de tiempo y un registro de composición. El análisis puede usar imágenes reducidas; la composición final conserva los píxeles originales. Las descargas y copias se pueden reducir después.',
       frameHeading: 'Marco y márgenes originales',
       frameBody:
         'Por defecto se conservan el fondo, los márgenes y los espacios en blanco de toda el área desplazable, sin recortar hasta los bordes del texto. La vista con marco añade la interfaz de un fotograma de referencia: el texto de la barra lateral y los iconos aparecen una sola vez, a tamaño original. Las zonas ampliadas solo prolongan el fondo decorativo y no cuentan como contenido reconstruido. La capa de contenido original siempre se conserva aparte. Los demás paneles independientes no se presentan como si compartieran una misma trayectoria.',

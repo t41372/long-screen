@@ -136,7 +136,13 @@ export const pageSections: Catalog<typeof zh> = {
     export: {
       downloadPng: 'Görüntüyü kaydet · PNG <span>↓</span>',
       copyPng: 'Görüntüyü kopyala',
-      pngNote: 'Özgün boyutunda tek bir PNG. Küçültülmez, sayfalara bölünmez.',
+      outputSize: 'Çıktı boyutu',
+      originalSize: 'Özgün · 100%',
+      customSize: 'En uzun kenarı belirle',
+      longestEdge: 'En uzun kenar (px)',
+      sizeNote:
+        'İndirmeler ve kopyalar için geçerlidir. Oranlar korunur; metin de küçülür. Özgün görüntü, sayfalı dışa aktarım ve proje özgün boyutlarını korur.',
+      pngNote: 'Seçilen çıktı boyutunda tek PNG.',
       advancedSummary: 'Diğer kaydetme seçenekleri',
       exportProject: 'Tüm projeyi dışa aktar · ZIP',
       projectNote:
@@ -150,7 +156,7 @@ export const pageSections: Catalog<typeof zh> = {
       title: 'Görüntünüz nasıl oluşur?',
       pixelsHeading: 'Hangi pikseller korunur?',
       pixelsBody:
-        'Kare kare modunda video sırayla çözülür. Tamamlanan her gözlemin zaman damgası ve birleştirme kaydı tutulur. Analiz için küçük kopyalar kullanılabilir; son birleştirmede ve dışa aktarmada özgün piksel ölçeği korunur.',
+        'Hassas mod her kareyi ayrı çözer. İşlenen her gözlemin zaman damgası ve birleştirme kaydı vardır. Analiz küçük görüntüler kullanabilir; son birleştirme özgün pikselleri korur. İndirilen ve kopyalanan görüntüler daha sonra küçültülebilir.',
       frameHeading: 'Pencere çerçevesi ve özgün boşluklar',
       frameBody:
         'Varsayılan olarak kaydırılabilir alanın arka planı, kenar boşlukları ve beyaz alanları korunur; görüntü metnin sınırlarına göre kırpılmaz. Çerçeveli görünüm ayrıca bir referans karesindeki sabit arayüzü korur. Yan çubuk metni ve araç çubuğu simgeleri özgün boyutlarında bir kez görünür. Genişletilen alanlarda yalnızca dekoratif arka plan sürdürülür; bu alanlar kayıtta gözlenen içerik sayılmaz. Özgün içerik katmanı her zaman ayrıca saklanır. Diğer bağımsız paneller aynı hareket yolunu izliyormuş gibi gösterilmez.',

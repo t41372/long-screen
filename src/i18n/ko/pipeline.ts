@@ -246,7 +246,7 @@ export const pipelineSections: Catalog<typeof zh> = {
     zipFinalize: 'ZIP64 디렉터리를 쓰고 파일 저장을 마치는 중',
     projectDone: { message: '원본 크기 타일, 오프라인 뷰어, 촬영 범위·품질 데이터, 원본 프레임 기록, 전체 진단 정보를 내보냈습니다.' },
     encodingSingle: '원본 크기로 {{total}}행 중 {{row}}행 인코딩 중',
-    canvasDone: { message: '{{width}} × {{height}} 원본 크기 PNG를 내보냈습니다. 빠진 부분은 투명하게 남습니다.' },
+    canvasDone: { message: '{{width}} × {{height}} PNG를 내보냈습니다. 빠진 부분은 투명하게 남습니다.' },
     encodingSheet: '원본 크기 분할 이미지 {{count}}장 인코딩 완료',
     sheetsDone: {
       messagePaged:

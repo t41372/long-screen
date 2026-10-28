@@ -144,7 +144,12 @@ export const pageSections = {
     export: {
       downloadPng: '下载大截图 · PNG <span>↓</span>',
       copyPng: '复制大截图',
-      pngNote: '一整张原尺寸 PNG，不缩小、不分页。',
+      outputSize: '输出尺寸',
+      originalSize: '原尺寸 · 100%',
+      customSize: '自定最长边',
+      longestEdge: '最长边（px）',
+      sizeNote: '下载和复制按这个尺寸缩小，保持比例。缩小后文字也会变小；原图、分页和完整项目保留原尺寸。',
+      pngNote: '一整张 PNG，使用选定的输出尺寸。',
       advancedSummary: '更多导出方式',
       exportProject: '导出完整项目 · ZIP',
       projectNote: '原尺寸瓦片 + 离线查看器 + 覆盖/质量数据 + 完整诊断，供存档或排查。',
@@ -155,7 +160,8 @@ export const pageSections = {
     help: {
       title: '使用说明',
       pixelsHeading: '哪些像素被保留？',
-      pixelsBody: '精确模式逐帧解码。所有完成处理的观察都有时间戳和合成记录。分析可以缩图，最终合成与导出保持原始像素尺度。',
+      pixelsBody:
+        '精确模式逐帧解码。所有完成处理的观察都有时间戳和合成记录。分析可以缩图，最终合成保留原始像素；下载和复制时可以另选较小尺寸。',
       frameHeading: '外框与自然留白',
       frameBody:
         '默认保留整个捲动区域的背景、边距和留白，不裁到文字边界。带外框视图额外保留一帧参考界面：侧栏文字、工具图示以原尺寸出现一次，扩展处仅续接装饰背景，不属于重建证据。原始内容层始终单独保留。其他独立 pane 不会被假装拼成同一轨迹。',

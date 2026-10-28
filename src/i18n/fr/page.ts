@@ -149,7 +149,13 @@ export const pageSections: Catalog<typeof zh> = {
     export: {
       downloadPng: 'Télécharger la capture · PNG <span>↓</span>',
       copyPng: 'Copier la capture',
-      pngNote: 'Un seul PNG à sa taille d’origine, sans réduction ni découpage.',
+      outputSize: 'Taille de sortie',
+      originalSize: 'Original · 100%',
+      customSize: 'Définir le côté le plus long',
+      longestEdge: 'Côté le plus long (px)',
+      sizeNote:
+        'Pour les téléchargements et les copies. Les proportions sont conservées ; le texte devient aussi plus petit. L’original, les pages et le projet gardent leur taille d’origine.',
+      pngNote: 'Un PNG à la taille de sortie choisie.',
       advancedSummary: 'Autres formats d’export',
       exportProject: 'Exporter le projet complet · ZIP',
       projectNote:
@@ -163,7 +169,7 @@ export const pageSections: Catalog<typeof zh> = {
       title: 'Une capture dont on connaît l’origine',
       pixelsHeading: 'Quels pixels sont conservés ?',
       pixelsBody:
-        'Le mode exact décode la vidéo image par image. Chaque observation terminée est associée à un horodatage et à une trace de son assemblage. L’analyse peut utiliser des images réduites ; l’assemblage final et l’export conservent les pixels à leur taille d’origine.',
+        'Le mode précis décode chaque image. Chaque observation traitée possède un horodatage et un enregistrement de composition. L’analyse peut utiliser des images réduites ; la composition finale conserve les pixels d’origine. Les téléchargements et copies peuvent ensuite être réduits.',
       frameHeading: 'Le cadre et les marges d’origine',
       frameBody:
         'Par défaut, le fond, les marges et les espaces vides de toute la zone défilante sont conservés, sans recadrage autour du texte. La vue encadrée conserve aussi une image de référence de l’interface : les textes des panneaux latéraux et les icônes des barres d’outils apparaissent une seule fois, à leur taille d’origine. Seul le fond décoratif est prolongé ; il ne constitue pas du contenu observé. Le contenu reconstitué reste toujours disponible séparément. Les autres panneaux indépendants ne sont jamais présentés comme s’ils partageaient le même déplacement.',

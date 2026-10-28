@@ -1351,6 +1351,33 @@ button:disabled {
 .crop-field input[aria-invalid] {
   box-shadow: inset 0 0 0 2px var(--err);
 }
+.has-result .foot > .output-size-bar {
+  display: grid;
+  gap: 6px;
+}
+.output-size-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+}
+.output-size-controls .pill-select {
+  max-width: 100%;
+  margin: 0;
+}
+.output-size-controls .crop-field {
+  flex: 0 1 auto;
+}
+.output-size-controls .crop-field input {
+  width: 112px;
+}
+#output-dimensions {
+  padding-block: 7px;
+  font-size: 12px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  direction: ltr;
+}
 #crop-apply {
   margin-inline-start: auto;
 }

@@ -260,7 +260,7 @@ export const pipelineSections: Catalog<typeof zh> = {
         'Đã xuất ô ảnh gốc, trình xem ngoại tuyến, dữ liệu phạm vi ghi hình và chất lượng, bản ghi khung hình nguồn, cùng toàn bộ chẩn đoán.',
     },
     encodingSingle: 'Đang mã hóa hàng {{row}} / {{total}} ở kích thước gốc',
-    canvasDone: { message: 'Đã xuất PNG {{width}} × {{height}} ở kích thước gốc. Khoảng trống vẫn trong suốt.' },
+    canvasDone: { message: 'Đã xuất PNG {{width}} × {{height}}. Khoảng trống vẫn trong suốt.' },
     encodingSheet: 'Đã mã hóa {{count}} ảnh từng phần ở kích thước gốc',
     sheetsDone: {
       messagePaged:

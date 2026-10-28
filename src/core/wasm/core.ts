@@ -18,6 +18,7 @@ import * as chrome from './chrome.ts';
 import * as consistency from './consistency.ts';
 import type { ConsistencyMaskInput } from './consistency.ts';
 import * as png from './png.ts';
+import { resizeRows as resizeRowsFactory } from './resize.ts';
 import * as composite from './compositor.ts';
 import type { CompositorHandle } from './compositor.ts';
 import * as tilesDomain from './tiles.ts';
@@ -363,6 +364,9 @@ export class Core {
   }
   pngFilterSub(rgba: Uint8Array, width: number, height: number): Uint8Array<ArrayBuffer> {
     return png.pngFilterSub(this, rgba, width, height);
+  }
+  resizeRows(width: number, height: number, outputWidth: number, outputHeight: number) {
+    return resizeRowsFactory(this, width, height, outputWidth, outputHeight);
   }
   pngEncode(rgba: Uint8Array, width: number, height: number): Uint8Array<ArrayBuffer> {
     return png.pngEncode(this, rgba, width, height);

@@ -290,7 +290,7 @@ export const pipelineSections: Catalog<typeof zh> = {
     },
     encodingSingle: 'Codifica della riga {{row}} / {{total}} alla scala originale',
     canvasDone: {
-      message: 'Esportato un PNG di {{width}} × {{height}} alla risoluzione originale. Le parti mancanti restano trasparenti.',
+      message: 'Esportato un PNG di {{width}} × {{height}}. Le parti mancanti restano trasparenti.',
     },
     encodingSheet: 'Immagini parziali codificate alla risoluzione originale: {{count}}',
     sheetsDone: {

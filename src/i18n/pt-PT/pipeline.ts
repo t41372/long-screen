@@ -289,7 +289,7 @@ export const pipelineSections: Catalog<typeof zh> = {
     },
     encodingSingle: 'A codificar a linha {{row}} de {{total}} no tamanho original',
     canvasDone: {
-      message: 'PNG de {{width}} × {{height}} exportado no tamanho original. As lacunas continuam transparentes.',
+      message: 'PNG de {{width}} × {{height}} exportado. As lacunas continuam transparentes.',
     },
     encodingSheet: 'Páginas codificadas no tamanho original: {{count}}',
     sheetsDone: {

@@ -270,7 +270,7 @@ const handlers: Handlers = {
       const layout: CanvasLayout = payload.layout === 'single' || payload.layout === 'sheets' ? payload.layout : 'auto';
       // The canvas's kept crop, if any, applies to every per-canvas export (PNG, sheets, the clipboard copy).
       const crop = await store.get<Rect>(`${CROP_PREFIX}${meta.id}`);
-      return await exportCanvas(store, project, meta, progress, payload.handle, layout, crop);
+      return await exportCanvas(store, project, meta, progress, payload.handle, layout, crop, payload.size);
     } finally {
       exporting = false;
     }

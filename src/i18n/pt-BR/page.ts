@@ -139,7 +139,13 @@ export const pageSections: Catalog<typeof zh> = {
     export: {
       downloadPng: 'Baixar captura · PNG <span>↓</span>',
       copyPng: 'Copiar captura',
-      pngNote: 'Um único PNG no tamanho original, sem reduzir nem dividir em páginas.',
+      outputSize: 'Tamanho de saída',
+      originalSize: 'Original · 100%',
+      customSize: 'Definir lado mais longo',
+      longestEdge: 'Lado mais longo (px)',
+      sizeNote:
+        'Vale para downloads e cópias. Mantém as proporções; o texto também diminui. O original, as páginas e o projeto mantêm o tamanho original.',
+      pngNote: 'Um PNG no tamanho de saída escolhido.',
       advancedSummary: 'Outras formas de exportar',
       exportProject: 'Exportar projeto completo · ZIP',
       projectNote:
@@ -153,7 +159,7 @@ export const pageSections: Catalog<typeof zh> = {
       title: 'Uma captura com origem conhecida',
       pixelsHeading: 'Quais pixels são preservados?',
       pixelsBody:
-        'O modo exato decodifica quadro a quadro. Cada observação concluída tem uma marca de tempo e um registro de composição. A análise pode usar imagens reduzidas; a composição final e a exportação mantêm a escala original dos pixels.',
+        'O modo preciso decodifica quadro a quadro. Cada observação processada tem uma marca de tempo e um registro de composição. A análise pode usar imagens reduzidas; a composição final mantém os pixels originais. Downloads e cópias podem ser reduzidos depois.',
       frameHeading: 'Moldura e margens originais',
       frameBody:
         'Por padrão, são preservados o fundo, as margens e os espaços em branco de toda a área de rolagem, sem recortar até os limites do texto. A versão com moldura também mantém a interface de um quadro de referência: o texto lateral e os ícones da barra de ferramentas aparecem uma vez, no tamanho original. As áreas ampliadas apenas prolongam o fundo decorativo e não são evidência de reconstrução. A camada de conteúdo original sempre é guardada separadamente. Outros painéis independentes não são apresentados como se seguissem a mesma trajetória.',

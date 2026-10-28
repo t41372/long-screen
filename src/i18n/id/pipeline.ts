@@ -274,7 +274,7 @@ export const pipelineSections: Catalog<typeof zh> = {
         'Petak berukuran asli, penampil offline, data cakupan dan kualitas, catatan bingkai sumber, serta diagnostik lengkap telah diekspor.',
     },
     encodingSingle: 'Mengodekan baris {{row}} dari {{total}} pada ukuran asli',
-    canvasDone: { message: 'PNG ukuran asli {{width}} × {{height}} telah diekspor. Bagian yang tidak terekam tetap transparan.' },
+    canvasDone: { message: 'PNG {{width}} × {{height}} telah diekspor. Bagian yang tidak terekam tetap transparan.' },
     encodingSheet: '{{count}} gambar bagian berukuran asli telah dikodekan',
     sheetsDone: {
       messagePaged:

@@ -288,7 +288,7 @@ export const pipelineSections: Catalog<typeof zh> = {
     },
     encodingSingle: 'Encodage de la ligne {{row}} / {{total}} à la taille d’origine',
     canvasDone: {
-      message: 'PNG de {{width}} × {{height}} exporté à sa taille d’origine. Les zones manquantes restent transparentes.',
+      message: 'PNG de {{width}} × {{height}} exporté. Les zones manquantes restent transparentes.',
     },
     encodingSheet: 'Images partielles encodées à leur taille d’origine : {{count}}',
     sheetsDone: {
